@@ -1,0 +1,22 @@
+.DS_Store
+*.log
+*.tmp
+*.swp
+*~
+
+# Local secrets and environment overrides.
+.env
+.env.*
+!.env.example
+
+# Downloaded model artifacts and local caches.
+models/
+artifacts/
+cache/
+
+# Python and shell tooling caches.
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
