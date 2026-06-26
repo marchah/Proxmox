@@ -192,7 +192,7 @@ install_lmstudio_stack() {
   log "Installing LM Studio and configuring ${MODEL_FILE}"
 
   run_in_container bash -lc "apt-get update"
-  run_in_container bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git jq python3 python3-venv sudo"
+  run_in_container bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git jq libatomic1 libgomp1 python3 python3-venv sudo"
   run_in_container bash -lc "useradd --create-home --shell /bin/bash lmstudio || true"
   run_in_container bash -lc "usermod -aG video,render lmstudio 2>/dev/null || usermod -aG video lmstudio || true"
   run_in_container bash -lc "install -d -o lmstudio -g lmstudio /models /models/hf /models/lmstudio-home"
