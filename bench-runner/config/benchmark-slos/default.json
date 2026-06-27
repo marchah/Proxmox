@@ -1,0 +1,46 @@
+{
+  "description": "Default homelab SLOs for interactive local inference. Tune after the first real baseline.",
+  "benchmarks": {
+    "openai-direct": {
+      "error_count_max": 0,
+      "latency_p95_seconds_max": 60,
+      "ttft_p95_seconds_max": 15,
+      "aggregate_output_tokens_per_second_min": 1
+    }
+  },
+  "telemetry": {
+    "temperature_sensor_thresholds": {
+      "amdgpu junction": {
+        "warn": 105,
+        "fail": 110
+      },
+      "amdgpu edge": {
+        "warn": 80,
+        "fail": 90
+      },
+      "amdgpu mem": {
+        "warn": 85,
+        "fail": 95
+      },
+      "cpu Tctl": {
+        "warn": 85,
+        "fail": 95
+      },
+      "cpu Tccd1": {
+        "warn": 85,
+        "fail": 95
+      },
+      "nvme Composite": {
+        "warn": 70,
+        "fail": 80
+      },
+      "default": {
+        "warn": 85,
+        "fail": 95
+      }
+    },
+    "min_memory_available_gib_warn": 2,
+    "gpu_memory_used_ratio_warn": 0.9,
+    "gpu_memory_used_ratio_fail": 0.98
+  }
+}

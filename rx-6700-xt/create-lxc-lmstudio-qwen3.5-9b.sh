@@ -3,9 +3,9 @@
 set -Eeuo pipefail
 
 # This script is intentionally specific. Different GPUs or models should get a
-# separate script because ROCm flags, context sizes, and runtime settings vary.
+# separate script because GPU runtime flags, context sizes, and settings vary.
+# The RX 6700 XT is driven via Vulkan (mesa RADV).
 readonly GPU_NAME="Radeon RX 6700 XT"
-readonly ROCM_GFX_OVERRIDE="10.3.0"
 readonly LMSTUDIO_INSTALL_URL="https://lmstudio.ai/install.sh"
 readonly MODEL_REPO="unsloth/Qwen3.5-9B-GGUF"
 readonly MODEL_FILE="Qwen3.5-9B-Q4_K_M.gguf"
@@ -13,7 +13,9 @@ readonly MODEL_KEY="qwen3.5-9b"
 readonly MODEL_SHA256="03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
 readonly MODEL_CONTEXT_LENGTH="64000"
 readonly MODEL_GPU_OFFLOAD="max"
-readonly MODEL_PARALLEL="1"
+# 4 continuous-batching slots: scales to ~92 tok/s under concurrency vs ~53 tok/s flat
+# at 1, with identical single-user latency (see rx-6700-xt/README.md benchmarks).
+readonly MODEL_PARALLEL="4"
 readonly MODEL_SERVER_BIND="0.0.0.0"
 readonly MODEL_SERVER_PORT="1234"
 
@@ -51,8 +53,8 @@ Useful overrides:
   PASSWORD='temporary-root-password' ./create-lxc-lmstudio-qwen3.5-9b.sh
 
 Important:
-  The container is privileged so /dev/kfd and /dev/dri passthrough works with
-  less friction. Treat it as a trusted container.
+  The container is privileged so /dev/dri passthrough (the Vulkan render node)
+  works with less friction. Treat it as a trusted container.
 USAGE
 }
 
@@ -96,9 +98,9 @@ assert_vmid_available() {
 }
 
 assert_gpu_devices_exist() {
-  [[ -e /dev/kfd ]] || die "/dev/kfd not found; AMD GPU compute device is missing"
   [[ -d /dev/dri ]] || die "/dev/dri not found; AMD DRM device directory is missing"
   [[ -e /dev/dri/card0 ]] || die "/dev/dri/card0 not found; AMD DRM card device is missing"
+  [[ -e /dev/dri/renderD128 ]] || die "/dev/dri/renderD128 not found; AMD DRM render node (Vulkan) is missing"
 }
 
 create_container() {
@@ -138,23 +140,18 @@ create_container() {
 configure_gpu_passthrough() {
   local conf_file
   local dri_major
-  local kfd_major
 
-  log "Configuring RX 6700 XT device passthrough"
+  log "Configuring RX 6700 XT device passthrough (Vulkan render node)"
 
   conf_file="/etc/pve/lxc/${VMID}.conf"
   dri_major="$(stat -c '%t' /dev/dri/card0 2>/dev/null || true)"
-  kfd_major="$(stat -c '%t' /dev/kfd 2>/dev/null || true)"
 
   [[ -n ${dri_major} ]] || die "could not determine /dev/dri/card0 major"
-  [[ -n ${kfd_major} ]] || die "could not determine /dev/kfd major"
 
   {
-    printf '\n# AMD GPU passthrough for LM Studio on RX 6700 XT\n'
+    printf '\n# AMD GPU (/dev/dri) passthrough for LM Studio Vulkan on RX 6700 XT\n'
     printf 'lxc.cgroup2.devices.allow: c %d:* rwm\n' "0x${dri_major}"
-    printf 'lxc.cgroup2.devices.allow: c %d:* rwm\n' "0x${kfd_major}"
     printf 'lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir\n'
-    printf 'lxc.mount.entry: /dev/kfd dev/kfd none bind,optional,create=file\n'
   } >>"${conf_file}"
 }
 
@@ -192,7 +189,7 @@ install_lmstudio_stack() {
   log "Installing LM Studio and configuring ${MODEL_FILE}"
 
   run_in_container bash -lc "apt-get update"
-  run_in_container bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git jq libatomic1 libgomp1 python3 python3-venv sudo"
+  run_in_container bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git jq libatomic1 libgomp1 mesa-vulkan-drivers libvulkan1 vulkan-tools python3 python3-venv sudo"
   run_in_container bash -lc "useradd --create-home --shell /bin/bash lmstudio || true"
   run_in_container bash -lc "usermod -aG video,render lmstudio 2>/dev/null || usermod -aG video lmstudio || true"
   run_in_container bash -lc "install -d -o lmstudio -g lmstudio /models /models/hf /models/lmstudio-home"
@@ -208,8 +205,7 @@ install_lmstudio_stack() {
     "${MODEL_GPU_OFFLOAD}" \
     "${MODEL_PARALLEL}" \
     "${MODEL_SERVER_BIND}" \
-    "${MODEL_SERVER_PORT}" \
-    "${ROCM_GFX_OVERRIDE}" <<'CONTAINER_SCRIPT'
+    "${MODEL_SERVER_PORT}" <<'CONTAINER_SCRIPT'
 set -Eeuo pipefail
 
 LMSTUDIO_INSTALL_URL="$1"
@@ -222,7 +218,6 @@ MODEL_GPU_OFFLOAD="$7"
 MODEL_PARALLEL="$8"
 MODEL_SERVER_BIND="$9"
 MODEL_SERVER_PORT="${10}"
-ROCM_GFX_OVERRIDE="${11}"
 
 cat >/usr/local/bin/install-lmstudio-qwen3.5-9b <<'EOS'
 #!/usr/bin/env bash
@@ -277,6 +272,11 @@ sleep 5
   --user-repo "${MODEL_REPO}" \
   --yes || true
 
+# Unload any prior copy, then load with GPU offload via the selected Vulkan
+# runtime. Don't gate on /sys VRAM counters — they are unreliable under this
+# passthrough (they read near-zero even while the GPU is doing the inference);
+# verify with throughput instead.
+"${LMS_BIN}" unload --all >/dev/null 2>&1 || true
 "${LMS_BIN}" load "${MODEL_KEY}" \
   --context-length "${MODEL_CONTEXT_LENGTH}" \
   --gpu "${MODEL_GPU_OFFLOAD}" \
@@ -302,7 +302,6 @@ RemainAfterExit=yes
 User=lmstudio
 Group=lmstudio
 Environment=HOME=/home/lmstudio
-Environment=HSA_OVERRIDE_GFX_VERSION=${ROCM_GFX_OVERRIDE}
 ExecStart=/usr/local/bin/install-lmstudio-qwen3.5-9b '${LMSTUDIO_INSTALL_URL}' '${MODEL_REPO}' '${MODEL_FILE}' '${MODEL_KEY}' '${MODEL_SHA256}' '${MODEL_CONTEXT_LENGTH}' '${MODEL_GPU_OFFLOAD}' '${MODEL_PARALLEL}' '${MODEL_SERVER_BIND}' '${MODEL_SERVER_PORT}'
 ExecStop=/home/lmstudio/.lmstudio/bin/lms daemon down
 Restart=on-failure
@@ -311,6 +310,15 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Pin the Vulkan loader to the AMD (RADV) ICD so the engine can't bind to the
+# llvmpipe software device that also advertises Vulkan.
+RADV_ICD="$(ls /usr/share/vulkan/icd.d/radeon_icd*.json 2>/dev/null | head -1)"
+if [[ -n "${RADV_ICD}" ]]; then
+  mkdir -p /etc/systemd/system/lmstudio.service.d
+  printf '[Service]\nEnvironment=VK_ICD_FILENAMES=%s\n' "${RADV_ICD}" \
+    > /etc/systemd/system/lmstudio.service.d/vulkan.conf
+fi
 
 systemctl daemon-reload
 systemctl enable --now lmstudio.service
