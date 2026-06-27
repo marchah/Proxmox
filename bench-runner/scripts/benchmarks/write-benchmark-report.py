@@ -326,6 +326,28 @@ def collect_gpu_clock_mhz(snapshot: dict[str, Any]) -> dict[str, float]:
     return values
 
 
+def cpu_utilization(records: list[dict[str, Any]]) -> tuple[float | None, float | None]:
+    """Derive CPU utilization % from consecutive /proc/stat (cpu total) samples."""
+    utils: list[float] = []
+    prev = None
+    for record in records:
+        total = record.get("cpu", {}).get("stat", {}).get("total")
+        if not isinstance(total, dict):
+            prev = None
+            continue
+        if prev is not None:
+            idle = (total.get("idle", 0) + total.get("iowait", 0)) - (prev.get("idle", 0) + prev.get("iowait", 0))
+            delta = sum(v for v in total.values() if isinstance(v, (int, float))) - sum(
+                v for v in prev.values() if isinstance(v, (int, float))
+            )
+            if delta > 0:
+                utils.append(max(0.0, min(100.0, 100.0 * (1.0 - idle / delta))))
+        prev = total
+    if not utils:
+        return None, None
+    return max(utils), sum(utils) / len(utils)
+
+
 def telemetry_summary(target_dir: Path, filename: str = "telemetry.jsonl") -> dict[str, Any]:
     records = iter_jsonl(target_dir / filename)
     if not records:
@@ -393,8 +415,19 @@ def telemetry_summary(target_dir: Path, filename: str = "telemetry.jsonl") -> di
     for total, available in zip(mem_total, mem_available):
         used_mem_kb.append(max(total - available, 0))
 
+    max_cpu_util, mean_cpu_util = cpu_utilization(records)
+    load1 = [
+        record["loadavg"][0]
+        for record in records
+        if isinstance(record.get("loadavg"), list) and record["loadavg"]
+        and isinstance(record["loadavg"][0], (int, float))
+    ]
+
     return {
         "samples": len(records),
+        "max_cpu_util_percent": max_cpu_util,
+        "mean_cpu_util_percent": mean_cpu_util,
+        "max_loadavg_1m": max(load1) if load1 else None,
         "first_timestamp": records[0].get("timestamp"),
         "last_timestamp": records[-1].get("timestamp"),
         "max_temp_c": max(temps) if temps else None,
@@ -620,6 +653,8 @@ def render_report(run_dir: Path, description: str) -> str:
         lines.append(f"### {row['name']}")
         lines.append("")
         lines.append(f"- Samples: `{telemetry.get('samples', 0)}`")
+        lines.append(f"- Max / mean CPU utilization: `{fmt(telemetry.get('max_cpu_util_percent'))}% / {fmt(telemetry.get('mean_cpu_util_percent'))}%`")
+        lines.append(f"- Max load average (1m): `{fmt(telemetry.get('max_loadavg_1m'))}`")
         lines.append(f"- Max temperature across sensors: `{fmt(telemetry.get('max_temp_c'))} C`")
         lines.append(f"- Max memory used: `{fmt(telemetry.get('max_memory_used_gib'))} GiB`")
         lines.append(f"- Min memory available: `{fmt(telemetry.get('min_memory_available_gib'))} GiB`")
@@ -657,6 +692,8 @@ def render_report(run_dir: Path, description: str) -> str:
                 "figures reflect the server itself, not the benchmark client.",
                 "",
                 f"- Samples: `{target.get('samples', 0)}`",
+                f"- Max / mean CPU utilization: `{fmt(target.get('max_cpu_util_percent'))}% / {fmt(target.get('mean_cpu_util_percent'))}%`",
+                f"- Max load average (1m): `{fmt(target.get('max_loadavg_1m'))}`",
                 f"- Max temperature across sensors: `{fmt(target.get('max_temp_c'))} C`",
                 f"- Max memory used: `{fmt(target.get('max_memory_used_gib'))} GiB`",
                 f"- Min memory available: `{fmt(target.get('min_memory_available_gib'))} GiB`",

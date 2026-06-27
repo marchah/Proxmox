@@ -7,14 +7,7 @@
 # `item` is the benchmark command string from the loop in benchmark.yml.
 - name: "Reload model before: {{ item }}"
   ansible.builtin.command:
-    argv:
-      - pct
-      - exec
-      - "{{ gpu_vmid }}"
-      - "--"
-      - bash
-      - "-lc"
-      - "export HOME=/home/lmstudio; L=/home/lmstudio/.lmstudio/bin/lms; $L unload --all >/dev/null 2>&1 || true; $L load {{ model_key }} --gpu max --context-length {{ model_context }} --parallel {{ parallel }} --yes"
+    argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_reload_cmd }}"]
   changed_when: true
   when: reload_model | bool
 

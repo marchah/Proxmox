@@ -128,6 +128,32 @@ def stats(values: list[float]) -> dict[str, float | None]:
     }
 
 
+def is_garbage_output(text: str) -> bool:
+    """Heuristic: a non-trivial response that is mostly '?' / replacement chars.
+
+    The Vulkan cold-prefill cliff returns HTTP 200 with all-'?' output, which
+    would otherwise count as a successful request and publish throughput for
+    invalid output. Conservative — needs >50% bad chars on an 8+ char response —
+    so normal text (including a trailing '?') is never flagged.
+    """
+    stripped = text.strip()
+    if len(stripped) < 8:
+        return False
+    bad = sum(1 for ch in stripped if ch in "?�")
+    return bad / len(stripped) > 0.5
+
+
+def expected_substrings(expected: Any) -> list[str]:
+    """Normalize a promptset 'expected' field to a list of required substrings."""
+    if isinstance(expected, dict):
+        return [str(x) for x in expected.get("contains", [])]
+    if isinstance(expected, (list, tuple)):
+        return [str(x) for x in expected]
+    if isinstance(expected, str) and expected:
+        return [expected]
+    return []
+
+
 def parse_stream_line(line: bytes) -> dict[str, Any] | None:
     line = line.strip()
     if not line or not line.startswith(b"data:"):
@@ -155,6 +181,7 @@ def request_chat(
     scenario: str,
     scenario_group: str | None,
     scenario_tags: list[str],
+    expected_contains: list[str] | None = None,
 ) -> dict[str, Any]:
     body = {
         "model": model,
@@ -227,6 +254,19 @@ def request_chat(
     estimated_output_tokens = max(1, round(len(output_text.split()) * 1.25)) if output_text else 0
     output_tokens = completion_tokens or estimated_output_tokens
     total_seconds = finished - started
+
+    # A 200 with garbage (the cold-prefill cliff) or output missing required
+    # content is not a successful request — demote it so it lands in error_count
+    # and is excluded from latency/throughput stats.
+    if status == "ok":
+        if is_garbage_output(output_text):
+            status = "invalid_output"
+            error = "non-text output (>50% '?'/replacement chars) — likely the cold-prefill cliff"
+        elif expected_contains:
+            missing = [s for s in expected_contains if s.lower() not in output_text.lower()]
+            if missing:
+                status = "invalid_output"
+                error = f"expected substring(s) not found: {missing}"
 
     return {
         "timestamp": now_iso(),
@@ -389,6 +429,7 @@ def main() -> int:
                     scenario=scenario_name,
                     scenario_group=scenario.get("group"),
                     scenario_tags=list(scenario.get("tags", [])),
+                    expected_contains=expected_substrings(scenario.get("expected")),
                 )
                 for scenario_name, scenario, index in jobs
             ]

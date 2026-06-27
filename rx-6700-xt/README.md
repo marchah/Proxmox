@@ -83,8 +83,8 @@ resident in VRAM once it loads (check with `cat /sys/class/drm/card0/device/mem_
 > ⚠️ **Correctness cliff — cold prefill above ~6k tokens.** On this GPU (RX 6700 XT,
 > Vulkan/RADV) a *cold* prefill (a prompt not served from the prefix cache) starts
 > emitting garbage — strings of `?` — once it exceeds ~6–7k tokens (probabilistically),
-> and does so reliably by ~8k. It is **not** thermal or VRAM (junction ~95 °C, >14 GiB host RAM free); it is
-> numerical instability in the large-prefill compute. Worse, it is **sticky**: once a
+> and does so reliably by ~8k. It is **not** thermal or VRAM (junction ~95 °C, >14 GiB host RAM free); it looks
+> like runtime numerical instability in the large-prefill compute. Worse, it is **sticky**: once a
 > request trips it, the model serves garbage to *every* later request (even "Hello") until
 > the model is reloaded. Bisection (reload + one cold prefill per size):
 >
@@ -148,9 +148,10 @@ junction peaked ~95–103 °C, clocks held, no thermal throttling.
 **Observations**
 
 - **GPU-bound, confirmed from the model container**: ~99% GPU utilization on every
-  workload, with >14 GiB RAM free on CT 120 during inference. Target-side telemetry samples
-  the model container itself (not just the bench-runner client), so the limiter is confirmed
-  to be GPU compute, not host CPU or memory.
+  workload, while the model container's CPU peaks at only ~10% and >14 GiB RAM stays free.
+  Target-side telemetry samples the model container itself (not just the bench-runner
+  client) and the report now derives its CPU utilization, so the limiter is confirmed to be
+  GPU compute, not host CPU or memory.
 - VRAM use is ~7.2 GiB of 12 GiB during inference, freed when idle.
 - **One slot = serial service**: concurrent clients queue rather than batch, so aggregate
   throughput never exceeds the cold single-stream rate (~33 tok/s) and tail latency climbs
@@ -231,9 +232,9 @@ cache-warm soak: ~73 tok/s at concurrency 2, junction ~102 °C, no throttling.)
 - **Interactive single user → concurrency 1**: ~53 tok/s, TTFT ~0.2 s on a cached/short
   prompt (a cold 512-token prefill adds ~1.4 s).
 - The practical ceiling is **GPU compute** (~53 tok/s single-stream) and **large cold
-  prefill** — not heat or VRAM (confirmed from the model container: GPU ~99%, >14 GiB
-  free). Beyond that you'd need a faster/larger GPU or a smaller/faster-quant model, not
-  config tuning.
+  prefill** — not heat or VRAM (confirmed from the model container: GPU ~99%, CPU only
+  ~10%, >14 GiB free). Beyond that you'd need a faster/larger GPU or a smaller/faster-quant
+  model, not config tuning.
 
 ## Requirements
 

@@ -65,13 +65,16 @@ def main() -> int:
         else:
             sys.stderr.write(f"finalize-run: SLO file not found: {slo_file}\n")
 
-    subprocess.run(
+    report = subprocess.run(
         [PYTHON_BIN, str(SCRIPT_DIR / "write-benchmark-report.py"), str(run_dir), "--description", description],
         check=False,
     )
+    report_status = report.returncode
 
-    print(f"finalize-run: regenerated SLO/report for {run_dir} (slo exit {slo_status})")
-    return 0 if slo_status == 0 else 1
+    print(f"finalize-run: regenerated SLO/report for {run_dir} (slo exit {slo_status}, report exit {report_status})")
+    # REPORT.md is a promised artifact, so a failed report — not just a failed
+    # SLO — fails finalize.
+    return 0 if slo_status == 0 and report_status == 0 else 1
 
 
 if __name__ == "__main__":

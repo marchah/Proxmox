@@ -26,6 +26,12 @@
     model_key: qwen3.5-9b
     model_context: 64000
     reload_model: true
+    # Reload LM Studio as the service user (not root) so reloads don't leave
+    # root-owned state in /home/lmstudio. Used at every reload site.
+    model_reload_cmd: >-
+      S='sudo -u lmstudio env HOME=/home/lmstudio /home/lmstudio/.lmstudio/bin/lms';
+      $S unload --all >/dev/null 2>&1 || true;
+      $S load {{ model_key }} --gpu max --context-length {{ model_context }} --parallel {{ parallel }} --yes
     # Optional host-orchestrated context-length sweep (reloads CT 120 per context,
     # benches it via the host-telemetry sidecar). Off by default; enable with
     # -e context_sweep=true. Set benchmarks=[] to run only the context sweep.
@@ -137,14 +143,8 @@
 
     - name: (Re)load the model with the requested parallel slots
       ansible.builtin.command:
-        argv:
-          - pct
-          - exec
-          - "{{ gpu_vmid }}"
-          - "--"
-          - bash
-          - "-lc"
-          - "export HOME=/home/lmstudio; L=/home/lmstudio/.lmstudio/bin/lms; $L unload --all >/dev/null 2>&1 || true; $L load {{ model_key }} --gpu max --context-length {{ model_context }} --parallel {{ parallel }} --yes"
+        argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_reload_cmd }}"]
+      changed_when: true
       when: reload_model | bool
 
     - name: List result runs before the batch
@@ -157,10 +157,19 @@
     # telemetry (see ansible/benchmark_item.yml). The per-item reload stops a
     # cliff-corrupted model from poisoning later benchmarks; failures are
     # collected in batch_item_results and surfaced at the end, after results are
-    # fetched, so the whole batch still runs.
-    - name: Run the benchmark batch (reload model + target telemetry per item)
-      ansible.builtin.include_tasks: benchmark_item.yml
-      loop: "{{ benchmarks }}"
+    # fetched, so the whole batch still runs. The always-block restores a clean
+    # model even if the last item left it in the sticky cliff-corrupted state.
+    - name: Run the benchmark batch (per-item reload + target telemetry)
+      block:
+        - name: Run each benchmark item
+          ansible.builtin.include_tasks: benchmark_item.yml
+          loop: "{{ benchmarks }}"
+      always:
+        - name: Restore a clean model after the batch (cliff safety)
+          ansible.builtin.command:
+            argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_reload_cmd }}"]
+          changed_when: true
+          when: reload_model | bool and (benchmarks | length > 0)
 
     - name: List result runs after the batch
       ansible.builtin.command:
@@ -245,14 +254,8 @@
 
     - name: Restore the model to the configured context/parallel after the sweep
       ansible.builtin.command:
-        argv:
-          - pct
-          - exec
-          - "{{ gpu_vmid }}"
-          - "--"
-          - bash
-          - "-lc"
-          - "export HOME=/home/lmstudio; L=/home/lmstudio/.lmstudio/bin/lms; $L unload --all >/dev/null 2>&1 || true; $L load {{ model_key }} --gpu max --context-length {{ model_context }} --parallel {{ parallel }} --yes"
+        argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_reload_cmd }}"]
+      changed_when: true
       when: context_sweep | bool and reload_model | bool
 
     - name: Summary

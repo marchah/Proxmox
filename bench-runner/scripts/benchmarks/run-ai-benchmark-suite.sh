@@ -323,9 +323,13 @@ if [[ -n "${BENCHMARK_SLO_FILE:-}" ]]; then
 fi
 
 if [[ "${BENCHMARK_WRITE_REPORT:-true}" == "true" ]]; then
-  "${PYTHON_BIN}" "${SCRIPT_DIR}/write-benchmark-report.py" \
+  # REPORT.md is a promised artifact: a failed render is a run failure.
+  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/write-benchmark-report.py" \
     "${RUN_DIR}" \
-    --description "${BENCHMARK_DESCRIPTION:-Server-side benchmark run.}" || true
+    --description "${BENCHMARK_DESCRIPTION:-Server-side benchmark run.}"; then
+    overall_status=1
+    printf 'Report generation failed for %s\n' "${RUN_DIR}" >&2
+  fi
 fi
 
 printf 'Benchmark run written to %s\n' "${RUN_DIR}"
