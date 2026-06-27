@@ -80,6 +80,26 @@ resident in VRAM once it loads (check with `cat /sys/class/drm/card0/device/mem_
 
 ### LM Studio
 
+> ⚠️ **Correctness cliff — cold prefill above ~7k tokens.** On this GPU (RX 6700 XT,
+> Vulkan/RADV) a *cold* prefill (a prompt not served from the prefix cache) starts
+> emitting garbage — strings of `?` — once it exceeds ~7k tokens, and does so reliably by
+> ~8k. It is **not** thermal or VRAM (junction ~95 °C, >14 GiB host RAM free); it is
+> numerical instability in the large-prefill compute. Worse, it is **sticky**: once a
+> request trips it, the model serves garbage to *every* later request (even "Hello") until
+> the model is reloaded. Bisection (reload + one cold prefill per size):
+>
+> | Cold prefill | Garbage |
+> | ---: | ---: |
+> | ~6,656 tok | 0/4 |
+> | ~7,168 tok | 1/4 |
+> | ~7,680 tok | 2/4 |
+> | ~8,192 tok | 4/4 |
+>
+> Prefix-cached prompts of the same length are fine (the cache skips the cold compute),
+> which is why earlier cached runs missed it. Keep one-off prompts under ~6k tokens, lean
+> on prefix caching for longer stable contexts, and reload the model if output turns to
+> `?`. Any benchmark number below for ≥8k input is therefore **invalid (garbage output)**.
+
 #### `--parallel 1`
 
 Measured from the `bench-runner` LXC against this container's endpoint. Setup:
@@ -112,80 +132,103 @@ concurrency. There is no batching gain at one slot — see `--parallel 4` below 
 | 8,192 | ~15 s |
 | 32,768 | ~152 s |
 
-Repeated prompts hit LM Studio's prefix cache → sub-second TTFT.
+Repeated prompts hit LM Studio's prefix cache → sub-second TTFT. (These `--parallel 1`
+numbers are from older prefix-cached runs; the 8k/32k rows predate the correctness cliff
+above — a *cold* prefill at those sizes now produces garbage, not a slow-but-valid TTFT.)
 
 **Soak** (~6 min, concurrency 2): 52.8 tok/s (serialized — single slot); junction
 peaked 101–103 °C, clocks held, no thermal throttling.
 
 **Observations**
 
-- **GPU-bound**: 99% GPU utilization on every workload (GPU telemetry is
-  host-real even from the bench-runner). CPU/RAM headroom on the model
-  container is now captured via target-side telemetry
-  (`host/run-with-target-telemetry.sh`); earlier runs only sampled the
-  bench-runner client, so treat their "CPU/RAM not limiting" note as
-  unconfirmed until a run with `target-telemetry.jsonl` says so.
+- **GPU-bound, confirmed from the model container**: ~99% GPU utilization on every
+  workload, with >14 GiB RAM free on CT 120 during inference. Target-side telemetry now
+  samples the model container itself (not just the bench-runner client), so the limiter is
+  confirmed to be GPU compute, not host CPU or memory.
 - VRAM use is ~7.2 GiB of 12 GiB during inference, freed when idle.
 - **One slot = serial service**: concurrent clients queue rather than batch, so
   aggregate throughput never exceeds the single-stream ~53 tok/s and tail latency
   climbs linearly (c16 → 38 s, TTFT → 36 s). Concurrency pays off only with more slots.
-- **Prefill dominates at long context**: cold time-to-first-token scales
-  super-linearly with prompt size (8k ≈ 15 s, 32k ≈ 152 s).
+- **Prefill dominates at long context** — cold TTFT climbs steeply with prompt size, but
+  only up to the correctness cliff (~7k cold tokens); the 8k/32k timings above were
+  prefix-cached, not valid cold prefills.
 - **Thermals are fine**: junction peaked ~101–103 °C under sustained load, below the
   105 °C warn line, with no clock throttling.
 
 #### `--parallel 4`
 
-Same setup, model reloaded with `--parallel 4` (4 continuous-batching slots).
+Same setup, model reloaded with `--parallel 4` (4 continuous-batching slots). The numbers
+below are from `make bench` with **distinct (uncached) prompts per request** — the suite
+now adds a unique nonce to each synthetic request, so these are honest *cold* figures.
+Earlier runs reused one identical prompt, so every request after the first was a
+prefix-cache hit; that inflated aggregate throughput to ~90 tok/s and hid the cold cost.
 
-**Concurrency scaling** (512-token prompt, 128 output, 32 requests/point):
+**Single stream (baseline):** ~53 tok/s, TTFT 0.20 s p50 / 0.36 s p95, GPU ~99% util.
+
+**Concurrency scaling** (cold, 512-token prompt, 128 output, 32 requests/point):
 
 | Concurrency | Aggregate tok/s | p95 latency | p50 TTFT |
 | ---: | ---: | ---: | ---: |
-| 1 | 51.7 | 1.8 s | 0.13 s |
-| 2 | 77.3 | 3.2 s | 0.18 s |
-| 4 | **92.3** | 7.4 s | 0.51 s |
-| 8 | 90.2 | 11.1 s | 6.3 s |
-| 16 | 91.5 | 21.9 s | 13.7 s |
+| 1 | 33.0 | 3.7 s | 1.4 s |
+| 2 | 40.0 | 7.3 s | 1.6 s |
+| 4 | 41.7 | 11.3 s | 4.0 s |
+| 8 | 44.8 | 22.4 s | 12.4 s |
+| 16 | **47.1** | 45.5 s | 33.2 s |
 
-**Prefill / TTFT:** identical to `--parallel 1` (8k ≈ 15 s, 32k ≈ 152 s) — prefill is
-per-request and parallel-independent.
+With distinct prompts every request pays a cold ~512-token prefill (~1.4 s), so batching
+gains are modest — aggregate rises gently to ~47 tok/s by c16, not the ~90 the cache-warm
+workload showed. The honest ceiling depends on prompt reuse: ~47 tok/s for all-distinct
+prompts, up to ~90 tok/s when requests share a long cached prefix (e.g. a fixed system
+prompt).
 
-**Soak** (concurrency 2): 73.4 tok/s, junction peaked 102 °C, clocks held, no throttle.
+**Prefill / TTFT vs input length** (cold, concurrency 1):
+
+| Input tokens | Cold TTFT | Notes |
+| ---: | ---: | --- |
+| 512 | ~1.4 s | |
+| 2,048 | ~4.5 s | |
+| ~6,656 | ~14 s | last reliably-coherent cold size |
+| 8,192 | — | **garbage output — correctness cliff** |
+| 32,768 | — | **garbage output** |
+
+Cold prefill scales ~linearly (~2 s per 1k tokens) up to the cliff. Prefix-cached repeats
+are sub-second.
+
+**Soak:** not reported for this run — the soak ran after the input-length sweep tripped the
+cliff, so the model was already serving garbage and its throughput is meaningless. (Earlier
+cache-warm soak: ~73 tok/s at concurrency 2, junction ~102 °C, no throttling.)
 
 **Observations**
 
-- **Batching scales throughput**: aggregate climbs to ~92 tok/s at concurrency 4 — vs
-  the flat ~53 tok/s a single slot delivers, a ~1.75× gain for concurrent load.
-- **Single-user latency is unchanged**: at concurrency 1 it's the same ~52 tok/s,
-  ~0.13 s TTFT as `--parallel 1`, so the extra slots cost nothing for one user.
-- **Better tail latency under load** than one slot (c16 p95 21.9 s vs 38.4 s; TTFT
-  13.7 s vs 36.1 s) — requests batch instead of queueing end-to-end.
-- **Saturation knee at c≈4**: throughput plateaus past it (~90 tok/s) while latency
-  keeps climbing — don't push beyond.
-- Prefill and thermals unchanged — prefill is per-request and parallel-independent;
-  junction peaked ~102 °C, no clock throttling.
+- **Prefix caching dominates throughput.** Cold distinct-prompt aggregate peaks ~47 tok/s
+  (c16); cache-warm identical prompts reach ~90. Quote the one that matches your traffic.
+- **Single user is snappy only when cached**: at concurrency 1 with a cached/short prompt,
+  ~53 tok/s and ~0.2 s TTFT; a cold 512-token prefill instead costs ~1.4 s TTFT.
+- **Modest batching gain on cold load**: 33 → 47 tok/s from c1 to c16, with tail latency
+  climbing steeply (c16 p95 ~46 s) — past c≈4 you buy little throughput for a lot of
+  latency.
+- **Correctness cliff at ~7–8k cold prefill** (see the callout) — the real hard limit,
+  ahead of any throughput tuning.
+- Thermals fine: junction ~95–102 °C under load, no clock throttling.
 
 #### Conclusions
 
-- **Use `--parallel 4` for any concurrent serving.** A single slot serializes requests,
-  capping aggregate throughput at the single-stream rate (~53 tok/s); four slots batch
-  and scale to ~90 tok/s. Single-user latency is identical (~52 tok/s, TTFT ~0.13 s at
-  concurrency 1), so the extra slots cost nothing for one user. `--parallel 1` only makes
-  sense for strictly single-user or VRAM-constrained setups. (The provisioning script
-  now defaults to `--parallel 4`; drop it to 1 only for strictly single-user or
-  VRAM-tight setups.)
-- **Interactive single user → concurrency 1**: ~52 tok/s, TTFT ~0.13–0.21 s (snappy), at
-  either `--parallel` setting.
-- **Max useful throughput → concurrency ~4 with `--parallel 4`**: ~90 tok/s at acceptable
-  latency (p95 ~7 s, TTFT < 1 s). Don't push past c=4 — throughput plateaus, latency climbs.
-- **Keep fresh prompts modest** (≤ 2–4k tokens) for fast first-token; long one-off
-  prompts are expensive (8k ≈ 15 s, 32k ≈ 152 s prefill). Lean on prefix caching for
-  long, stable contexts.
-- The practical ceiling is **GPU compute** (~52 tok/s single-stream, ~90 aggregate with
-  batching) and **long-context prefill** — not heat or VRAM. Serving concurrency helps
-  only up to the slot count; beyond that you'd need a faster/larger GPU or a
-  smaller/faster-quant model, not config tuning.
+- **Cold prefill is capped at ~6k tokens.** The correctness cliff above (~7–8k cold tokens
+  → garbage, sticky until reload) is the hard limit on this GPU — design around it: keep
+  one-off prompts under ~6k, or rely on prefix caching for longer stable contexts.
+- **Throughput depends on prompt reuse.** All-distinct (cold) prompts top out ~47 tok/s
+  aggregate at high concurrency; requests sharing a cached prefix reach ~90. Quote the
+  figure that matches your traffic, not the cache-warm best case alone.
+- **Use `--parallel 4` for any concurrent serving.** A single slot serializes requests;
+  four slots batch. Single-user cost is nil (concurrency 1 is the same either way), so the
+  provisioning script defaults to `--parallel 4` — drop to 1 only for strictly single-user
+  or VRAM-tight setups.
+- **Interactive single user → concurrency 1**: ~53 tok/s, TTFT ~0.2 s on a cached/short
+  prompt (a cold 512-token prefill adds ~1.4 s).
+- The practical ceiling is **GPU compute** (~53 tok/s single-stream) and **large cold
+  prefill** — not heat or VRAM (confirmed from the model container: GPU ~99%, >14 GiB
+  free). Beyond that you'd need a faster/larger GPU or a smaller/faster-quant model, not
+  config tuning.
 
 ## Requirements
 
