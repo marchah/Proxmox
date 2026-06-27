@@ -1,4 +1,4 @@
-# Bug report: garbage output on cold prefill ≥ ~7k tokens (Vulkan/RADV, Navi 22)
+# Bug report: garbage output on cold prefill ≥ ~6k tokens (Vulkan/RADV, Navi 22)
 
 Ready-to-submit write-up for the cold-prefill correctness cliff documented in
 `README.md`. File against **llama.cpp** (Vulkan backend) — and/or **LM Studio**,
@@ -17,9 +17,9 @@ Vulkan (RADV/Navi 22): large *cold* prefill (≳7k tokens) produces all-`?` garb
 
 On a Radeon RX 6700 XT (Navi 22 / gfx1031) via the Vulkan backend, a single
 **cold** prompt (one not served from the prefix cache) whose prefill exceeds
-~7k tokens makes the model emit pure garbage — long runs of the `?` replacement
+~6–7k tokens makes the model emit pure garbage — long runs of the `?` replacement
 character — instead of text. It is **probabilistic** near the threshold and
-**deterministic** above it:
+**deterministic** by ~8k:
 
 | Cold prefill (≈ tokens) | Garbage runs |
 | ---: | ---: |
@@ -27,6 +27,10 @@ character — instead of text. It is **probabilistic** near the threshold and
 | 7,168 | 1 / 4 |
 | 7,680 | 2 / 4 |
 | 8,192 | 4 / 4 |
+
+(That table reloads before each probe. A back-to-back input-length sweep with no
+reload between sizes also tripped at ~6,144 from a healthy model, so ~6k is the
+practical ceiling.)
 
 Once a request trips it, **every subsequent request returns garbage** — even a
 1-token "Hello" — until the model is unloaded/reloaded. It is **not** thermal,
