@@ -212,7 +212,7 @@ cache-warm soak: ~73 tok/s at concurrency 2, junction ~102 °C, no throttling.)
 - **Modest batching gain on cold load**: 33 → 47 tok/s from c1 to c16, with tail latency
   climbing steeply (c16 p95 ~46 s) — past c≈4 you buy little throughput for a lot of
   latency.
-- **Correctness cliff at ~7–8k cold prefill** (see the callout) — the real hard limit,
+- **Correctness cliff at ~6–8k cold prefill** (see the callout) — the real hard limit,
   ahead of any throughput tuning.
 - Thermals fine: junction ~95–102 °C under load, no clock throttling.
 
