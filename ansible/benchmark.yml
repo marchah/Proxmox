@@ -153,33 +153,14 @@
       register: results_before
       changed_when: false
 
-    # Each benchmark is wrapped so we also sample the model container's CPU/RAM
-    # /processes (see host/run-with-target-telemetry.sh). failed_when:false keeps
-    # the whole batch running even if one benchmark exits non-zero (the suite now
-    # propagates benchmark/SLO failures); we surface any failures at the end,
-    # after results have been fetched.
-    - name: Run the benchmark batch (with target-side telemetry)
-      ansible.builtin.command:
-        argv:
-          - bash
-          - "{{ host_suite_dir }}/host/run-with-target-telemetry.sh"
-          - "--"
-          - pct
-          - exec
-          - "{{ bench_vmid }}"
-          - "--"
-          - bash
-          - "-lc"
-          - "{{ item }}"
-      environment:
-        GPU_VMID: "{{ gpu_vmid }}"
-        BENCH_VMID: "{{ bench_vmid }}"
-        TARGET_PROCESS_PATTERNS: "lms,LM Studio,python"
-        REQUIRE_TARGET_TELEMETRY: "true"
+    # Each item reloads the model first, then runs the benchmark with target-side
+    # telemetry (see ansible/benchmark_item.yml). The per-item reload stops a
+    # cliff-corrupted model from poisoning later benchmarks; failures are
+    # collected in batch_item_results and surfaced at the end, after results are
+    # fetched, so the whole batch still runs.
+    - name: Run the benchmark batch (reload model + target telemetry per item)
+      ansible.builtin.include_tasks: benchmark_item.yml
       loop: "{{ benchmarks }}"
-      register: batch_results
-      failed_when: false
-      changed_when: true
 
     - name: List result runs after the batch
       ansible.builtin.command:
@@ -284,7 +265,7 @@
     # exited non-zero rather than letting a red run masquerade as success.
     - name: Fail if any benchmark exited non-zero
       vars:
-        failed_benchmarks: "{{ batch_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+        failed_benchmarks: "{{ (batch_item_results | default([])) | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
       ansible.builtin.fail:
         msg: "{{ failed_benchmarks | length }} benchmark(s) failed (results still fetched): {{ failed_benchmarks | join('; ') }}"
       when: failed_benchmarks | length > 0
