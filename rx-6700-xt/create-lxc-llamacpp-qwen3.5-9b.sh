@@ -320,10 +320,27 @@ exec "${LLAMACPP_DIR}/llama-server" \
 EOS
 chmod 755 /usr/local/bin/llamacpp-serve
 
-# 5. Reload helper: the llama.cpp analog of `lms load --context-length
-# --parallel`. Rewrites the tunables, restarts the server, and BLOCKS until
-# llama-server is serving again — so callers (a benchmark preflight, the context
-# sweep) don't race the restart while the model reloads into VRAM. Run as root.
+# 5. Health-wait + reload helpers. llama-server sets context/parallel at start,
+# so a "reload" restarts the service; both the initial boot and a reload must
+# BLOCK until /health is ready (loading the model into VRAM takes time and
+# systemctl returns as soon as the process spawns), so callers — the installer
+# below, a benchmark preflight, the context sweep — don't race a not-yet-serving
+# (or failed-to-load) server. Run as root.
+cat >/usr/local/bin/llamacpp-wait-health <<'EOS'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+port="$(. /etc/llamacpp.env; printf '%s' "${MODEL_SERVER_PORT:-1234}")"
+for _ in $(seq 1 150); do
+  if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 2
+done
+printf 'llamacpp: server did not become healthy in time\n' >&2
+exit 1
+EOS
+chmod 755 /usr/local/bin/llamacpp-wait-health
+
 cat >/usr/local/bin/llamacpp-reload <<'EOS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -334,17 +351,7 @@ sed -i \
   -e "s/^MODEL_PARALLEL=.*/MODEL_PARALLEL=${parallel}/" \
   /etc/llamacpp.env
 systemctl restart llamacpp.service
-# Wait for the /health endpoint to report ready (200) — model load into VRAM
-# takes time, and `systemctl restart` returns as soon as the process spawns.
-port="$(. /etc/llamacpp.env; printf '%s' "${MODEL_SERVER_PORT:-1234}")"
-for _ in $(seq 1 150); do
-  if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep 2
-done
-printf 'llamacpp-reload: server did not become healthy in time\n' >&2
-exit 1
+exec /usr/local/bin/llamacpp-wait-health
 EOS
 chmod 755 /usr/local/bin/llamacpp-reload
 
@@ -379,6 +386,10 @@ fi
 
 systemctl daemon-reload
 systemctl enable --now llamacpp.service
+# Block until the model is actually serving. Type=simple returns as soon as the
+# process spawns, but the model load into VRAM can still fail afterward — without
+# this wait, provisioning would report success over a dead/not-ready server.
+/usr/local/bin/llamacpp-wait-health
 CONTAINER_SCRIPT
 }
 

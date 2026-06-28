@@ -173,8 +173,12 @@ def main() -> int:
         "tools": {
             "python3": command_version("python3", ["--version"]),
             "curl": command_version("curl", ["--version"]),
+            # The model-server binary (lms / llama-server) runs on the GPU
+            # container, not in this unprivileged runner, so this probe is
+            # usually empty here. The engine and its version are recorded via
+            # build-info instead (the Ansible batch captures runtime +
+            # engine_version from the model container).
             "lms": command_version("lms", ["--version"]),
-            "llama-server": command_version("llama-server", ["--version"]),
             "llama-benchy": command_version("llama-benchy", ["--help"]),
             "lm_eval": command_version("lm_eval", ["--help"]),
             "rocm-smi": command_version("rocm-smi", ["--showdriverversion", "--json"]),
