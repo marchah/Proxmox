@@ -258,15 +258,19 @@ cat >>"${remote_script}" <<'REMOTE'
 REMOTE
 
 printf 'Running benchmarks on %s...\n' "${SERVER_HOST}"
+# Capture the remote exit code instead of aborting under set -e, so a failed
+# benchmark still has its partial results downloaded before we propagate it.
+benchmark_status=0
 SSHPASS="${USER_PASSWORD}" sshpass -e ssh "${SSH_OPTIONS[@]}" \
   "${USER_NAME}@${SERVER_HOST}" \
-  'bash -s' <"${remote_script}"
+  'bash -s' <"${remote_script}" || benchmark_status=$?
 
 remote_run_dir="/results/${BENCHMARK_RUN_ID}"
 local_run_dir="${LOCAL_RESULTS_ROOT}/${BENCHMARK_RUN_ID}"
 
 printf 'Downloading results from %s...\n' "${remote_run_dir}"
-download_run "${remote_run_dir}" "${local_run_dir}"
+download_run "${remote_run_dir}" "${local_run_dir}" || \
+  printf 'Warning: could not download %s\n' "${remote_run_dir}" >&2
 
 if [[ -f "${local_run_dir}/manifest.json" ]]; then
   "${PYTHON_BIN}" "${SCRIPT_DIR}/write-benchmark-report.py" \
@@ -274,5 +278,11 @@ if [[ -f "${local_run_dir}/manifest.json" ]]; then
     --description "${BENCHMARK_DESCRIPTION}" >/dev/null || true
 fi
 
-printf 'Remote benchmark run complete.\n'
+if [[ "${benchmark_status}" -ne 0 ]]; then
+  printf 'Remote benchmark exited %s; downloaded partial results to %s\n' \
+    "${benchmark_status}" "${local_run_dir}" >&2
+else
+  printf 'Remote benchmark run complete.\n'
+fi
 printf 'Local results: %s\n' "${local_run_dir}"
+exit "${benchmark_status}"

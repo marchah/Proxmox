@@ -246,6 +246,7 @@ files=(
   "BENCHMARKS.md"
   "FUTURE_IMPROVEMENTS.md"
   "README.md"
+  "config/.env.example"
   "config/benchmark-profiles/baseline.env"
   "config/benchmark-profiles/concurrency.env"
   "config/benchmark-profiles/quality.env"

@@ -109,6 +109,10 @@ main() {
   pct status "${BENCH_VMID}" >/dev/null 2>&1 || die "bench container ${BENCH_VMID} not found"
 
   mkdir -p "${OUT_DIR}"
+  # Unique per-sweep stamp so re-running never reuses a /results/ctx-<n> id
+  # (which would mix stale artifacts from a prior sweep).
+  local sweep_stamp sweep_status=0
+  sweep_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   local report="${OUT_DIR}/context-sweep.md"
   {
     printf '# Context-Length Sweep\n\n'
@@ -120,23 +124,26 @@ main() {
   } >"${report}"
 
   for context in ${CONTEXTS}; do
-    local run_id="ctx-${context}"
+    local run_id="ctx-${context}-${sweep_stamp}"
     local point_dir="${OUT_DIR}/${run_id}"
     mkdir -p "${point_dir}"
 
     log "Reloading ${MODEL_KEY} at context ${context}"
     if ! reload_model "${context}"; then
       printf '| %s | reload failed | | | | | |\n' "${context}" >>"${report}"
+      sweep_status=1
       continue
     fi
     sleep "${RELOAD_SETTLE_SECONDS}"
 
     log "Benchmarking context ${context} with GPU host telemetry"
-    GPU_VMID="${GPU_VMID}" OUT_DIR="${point_dir}/host" TELEMETRY_INTERVAL=1 \
+    if ! GPU_VMID="${GPU_VMID}" OUT_DIR="${point_dir}/host" TELEMETRY_INTERVAL=1 \
       "${SCRIPT_DIR}/run-with-host-telemetry.sh" \
       pct exec "${BENCH_VMID}" -- bash -lc \
-        "BENCHMARK_RUN_ID='${run_id}' RUN_LLAMA_BENCHY=false BENCHMARK_REQUESTS='${BENCHMARK_REQUESTS}' BENCHMARK_DESCRIPTION='Context sweep ${context}' llm-bench-baseline" \
-      || log "benchmark for context ${context} returned non-zero"
+        "BENCHMARK_RUN_ID='${run_id}' RUN_LLAMA_BENCHY=false BENCHMARK_REQUESTS='${BENCHMARK_REQUESTS}' BENCHMARK_DESCRIPTION='Context sweep ${context}' llm-bench-baseline"; then
+      log "benchmark for context ${context} returned non-zero"
+      sweep_status=1
+    fi
 
     pct pull "${BENCH_VMID}" \
       "/results/${run_id}/openai-direct/openai-direct-summary.json" \
@@ -150,6 +157,8 @@ main() {
   log "Done"
   printf 'Context sweep report: %s\n' "${report}"
   cat "${report}"
+  # Report is complete; surface any reload/benchmark failure as the exit code.
+  return "${sweep_status}"
 }
 
 main "$@"

@@ -525,7 +525,10 @@ def main() -> int:
         close_handle = False
     else:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        handle = Path(args.output).open("a", encoding="utf-8")
+        # Truncate, not append: one sampler invocation owns its telemetry file.
+        # Appending would accumulate stale samples if a run id / output path is
+        # reused (e.g. a re-run context sweep's ctx-<n> ids).
+        handle = Path(args.output).open("w", encoding="utf-8")
         close_handle = True
 
     stop = False
