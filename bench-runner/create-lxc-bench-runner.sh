@@ -332,7 +332,10 @@ if [[ ! -x /home/bench/.local/bin/uv ]]; then
 fi
 
 if [[ ${INSTALL_LLAMA_BENCHY} == 1 ]]; then
-  sudo -u bench bash -lc "export PATH=\"\$HOME/.local/bin:\$PATH\"; uv tool install --force \"${LLAMA_BENCHY_SPEC}\""
+  # sentencepiece + tiktoken let transformers convert "slow" tokenizers, so a
+  # LLAMA_BENCHY_TOKENIZER pointing at a real HF repo yields exact token counts
+  # instead of llama-benchy's gpt2 approximation. (Harmless if unused.)
+  sudo -u bench bash -lc "export PATH=\"\$HOME/.local/bin:\$PATH\"; uv tool install --force \"${LLAMA_BENCHY_SPEC}\" --with sentencepiece --with tiktoken"
   ln -sfn /home/bench/.local/bin/llama-benchy /usr/local/bin/llama-benchy
 fi
 

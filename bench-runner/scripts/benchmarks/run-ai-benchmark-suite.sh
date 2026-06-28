@@ -289,6 +289,21 @@ if [[ "${RUN_LLAMA_BENCHY:-false}" == "true" ]]; then
         --format json
         --save-result "${RUN_DIR}/llama-benchy/llama-benchy-results.json"
       )
+      # Skip llama-benchy's "capital of France -> Paris" coherence gate. A
+      # reasoning model (e.g. Qwen3.5) leads its reply with a <think> block, so
+      # the gate sees no bare "Paris", declares the model incoherent, and aborts
+      # the whole benchmark. Skipping it lets the throughput run proceed; set
+      # LLAMA_BENCHY_SKIP_COHERENCE=false to re-enable for a non-reasoning model.
+      if [[ "${LLAMA_BENCHY_SKIP_COHERENCE:-true}" == "true" ]]; then
+        llama_benchy_args+=(--skip-coherence)
+      fi
+      # Accurate token accounting needs a real tokenizer. llama-benchy otherwise
+      # defaults to the served model id (here the alias "qwen3.5-9b", not a HF
+      # repo) and falls back to a gpt2 approximation. Point LLAMA_BENCHY_TOKENIZER
+      # at the model's HF repo (e.g. unsloth/Qwen3.5-9B-GGUF) for exact counts.
+      if [[ -n "${LLAMA_BENCHY_TOKENIZER:-}" ]]; then
+        llama_benchy_args+=(--tokenizer "${LLAMA_BENCHY_TOKENIZER}")
+      fi
     fi
     run_with_telemetry "llama-benchy" "${llama_benchy_command[@]}" "${llama_benchy_args[@]}"
   fi

@@ -287,12 +287,14 @@ LM Studio reliably produces sticky garbage (≥6 k). Throughput at 32 k is tiny
   The ceiling is GPU compute and cold-prefill cost (~1.4 s/1 k tokens), not heat or
   memory. Thermals fine (junction ≤ 103 °C, no throttling).
 
-> **Methodology note.** Numbers are the `openai-direct` target only — the same
-> target the LM Studio numbers below use. The suite's optional `llama-benchy`
-> target currently fails to resolve a tokenizer for the served alias (it has no
-> PyTorch and falls back to a 1024-token tokenizer), so a full `make bench` exits
-> non-zero on that secondary target even though every GPU measurement passed; run
-> with `RUN_LLAMA_BENCHY=false` for a clean batch.
+> **Methodology note.** Numbers above are the `openai-direct` target, which counts
+> tokens from the server's exact `usage.completion_tokens` — treat it as the
+> source of truth. The suite's `llama-benchy` target also runs (the suite passes
+> `--skip-coherence`, since a reasoning model's `<think>`-prefixed reply trips
+> llama-benchy's "capital of France → Paris" gate). Its tok/s reads ~10 % high
+> (≈62 vs 56) because it counts output with a gpt2 approximation: the served GGUF
+> exposes no transformers-loadable tokenizer, so `--tokenizer` falls back. Set
+> `LLAMA_BENCHY_TOKENIZER=<hf-repo-with-a-real-tokenizer>` for exact counts.
 
 ### LM Studio
 
