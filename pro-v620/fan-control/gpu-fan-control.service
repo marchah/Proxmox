@@ -1,0 +1,20 @@
+[Unit]
+Description=GPU fan control (Radeon Pro V620 blower on PUMP_FAN1, GPU-temp driven)
+Documentation=https://github.com/Marchah/Proxmox/tree/main/pro-v620/fan-control
+# Needs the nct6687 (writable PWM) module and amdgpu bound to the card.
+Wants=systemd-modules-load.service
+After=systemd-modules-load.service
+ConditionPathExistsGlob=/sys/class/hwmon/hwmon*/name
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/gpu-fan-control.env
+ExecStart=/usr/local/sbin/gpu-fan-control
+# Failsafe (chosen): on ANY stop/crash hand PUMP_FAN1 back to the BIOS/SIO auto
+# curve. ExecStopPost also covers SIGKILL, where the script's EXIT trap cannot run.
+ExecStopPost=/usr/local/sbin/gpu-fan-control --failsafe
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
