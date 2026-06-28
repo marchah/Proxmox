@@ -174,6 +174,7 @@ def main() -> int:
             "python3": command_version("python3", ["--version"]),
             "curl": command_version("curl", ["--version"]),
             "lms": command_version("lms", ["--version"]),
+            "llama-server": command_version("llama-server", ["--version"]),
             "llama-benchy": command_version("llama-benchy", ["--help"]),
             "lm_eval": command_version("lm_eval", ["--help"]),
             "rocm-smi": command_version("rocm-smi", ["--showdriverversion", "--json"]),

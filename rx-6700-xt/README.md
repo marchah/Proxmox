@@ -2,6 +2,18 @@
 
 Scripts in this folder target the desktop server with a Radeon RX 6700 XT.
 
+Two **interchangeable LLM runtime** scripts serve the *same* model on this GPU
+via Vulkan, differing only in the inference engine. Both default to CT `120`,
+expose an OpenAI-compatible API on `0.0.0.0:1234`, and serve the model under the
+identifier `qwen3.5-9b`, so the `bench-runner` suite benchmarks either one
+unchanged. They are mutually exclusive (only one can use the 12 GiB GPU at a
+time, and both claim VMID 120) — destroy the existing CT 120 before creating the
+other:
+
+- `create-lxc-lmstudio-qwen3.5-9b.sh` — LM Studio's `lms` CLI (hot model reload).
+- `create-lxc-llamacpp-qwen3.5-9b.sh` — llama.cpp's `llama-server` (reload =
+  restart, via the `llamacpp-reload` helper).
+
 ## LM Studio Qwen3.5 9B LXC
 
 `create-lxc-lmstudio-qwen3.5-9b.sh` creates an Ubuntu LXC intended to run LM
@@ -55,6 +67,63 @@ Check the OpenAI-compatible endpoint:
 curl http://<container-ip>:1234/v1/models
 ```
 
+## llama.cpp Qwen3.5 9B LXC
+
+`create-lxc-llamacpp-qwen3.5-9b.sh` creates the same kind of Ubuntu LXC but runs
+**llama.cpp's `llama-server`** (a pinned prebuilt Vulkan release) instead of LM
+Studio. It serves the identical model and exposes the same OpenAI-compatible API,
+so it is a drop-in alternative engine for benchmarking.
+
+This script is deliberately narrow:
+
+- GPU: Radeon RX 6700 XT
+- GPU runtime: Vulkan (mesa RADV)
+- Engine: llama.cpp `llama-server`, prebuilt Vulkan x64 release (pinned by tag +
+  SHA-256 in the script — bump both from the [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases))
+- Repository: `unsloth/Qwen3.5-9B-GGUF`
+- File: `Qwen3.5-9B-Q4_K_M.gguf`
+- Identifier (`--alias`): `qwen3.5-9b`
+- Context length: `64000` (`--ctx-size`)
+- GPU offload: `--n-gpu-layers 99` (all layers)
+- Parallel slots: `--parallel 4` (continuous batching, on by default)
+- API bind: `0.0.0.0:1234`
+- Model storage: `/models`
+
+Run it on the Proxmox host as `root` (destroy the existing CT 120 first if it is
+the LM Studio container):
+
+```bash
+./create-lxc-llamacpp-qwen3.5-9b.sh
+```
+
+The script creates a privileged Ubuntu LXC with the same `/models` mount and
+`/dev/dri` passthrough as the LM Studio one, plus the Vulkan userspace and the
+**libglvnd/EGL stack** (`libglvnd0 libgl1 libglx0 libegl1`) — without the latter
+the Mesa ICD loader can silently report zero Vulkan devices inside the container.
+It installs:
+
+- a `llamacpp` user and a `llamacpp.service` systemd unit (`Type=simple`, runs
+  `llama-server` in the foreground)
+- `/etc/llamacpp.env` holding the tunable start flags (context length, parallel)
+- `/usr/local/bin/llamacpp-serve` (the service entrypoint) and
+  `/usr/local/bin/llamacpp-reload`
+
+Unlike LM Studio's `lms load`, llama-server sets context length and parallel
+slots at process start, so changing them means restarting the server. Use the
+helper rather than editing by hand:
+
+```bash
+pct exec 120 -- llamacpp-reload <context-length> <parallel>   # e.g. 32768 4
+```
+
+Check the service and endpoint:
+
+```bash
+pct exec 120 -- systemctl status llamacpp.service
+pct exec 120 -- journalctl -u llamacpp.service -n 100 --no-pager   # shows the chosen Vulkan device
+curl http://<container-ip>:1234/v1/models                          # id == qwen3.5-9b
+```
+
 ## Storage
 
 The container stores model files under `/models`, backed by local Proxmox
@@ -77,6 +146,12 @@ You should see `AMD Radeon RX 6700 XT` under the `radv` driver, and the model
 resident in VRAM once it loads (check with `cat /sys/class/drm/card0/device/mem_info_vram_used`).
 
 ## Benchmarks
+
+All numbers below were measured against the **LM Studio** engine. The llama.cpp
+runtime serves the identical model and is benchmarked the same way (point the
+`bench-runner` at CT 120), but its figures — and whether the cold-prefill
+correctness cliff below reproduces under `llama-server` — have not been captured
+yet; do not assume they carry over.
 
 ### LM Studio
 
@@ -241,4 +316,5 @@ cache-warm soak: ~73 tok/s at concurrency 2, junction ~102 °C, no throttling.)
 - Proxmox host with `pct` and `pveam`
 - Ubuntu 24.04 LXC template available or downloadable
 - AMD GPU visible on the Proxmox host as `/dev/dri` (with a `renderD128` render node)
-- Network access from the LXC to download LM Studio and the Hugging Face model
+- Network access from the LXC to download the inference engine (LM Studio or the
+  llama.cpp release) and the Hugging Face model

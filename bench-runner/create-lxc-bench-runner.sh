@@ -127,7 +127,7 @@ discover_target_base_url() {
     fi
   fi
 
-  TARGET_BASE_URL="http://lmstudio:1234/v1"
+  TARGET_BASE_URL="http://llm-runtime:1234/v1"
 }
 
 create_container() {
@@ -388,7 +388,7 @@ is currently served there. MODEL_IDENTIFIER defaulted to
 "local-model" and benchmarks will FAIL until this is fixed.
 
 Fix one of:
-  - Start the LM Studio container, load a model, then edit
+  - Start the LLM runtime container (CT 120), load a model, then edit
     /opt/bench-runner/config/local-model.env (MODEL_IDENTIFIER=).
   - Re-create this LXC with OPENAI_MODEL=<served-model-id>.
   - Re-create this LXC with TARGET_BASE_URL=http://<ip>:1234/v1.
@@ -406,7 +406,7 @@ cat >/opt/bench-runner/config/local-model.env <<EOF
 : "\${RUN_LM_EVAL:=false}"
 : "\${LLAMA_BENCHY_USE_UVX:=false}"
 : "\${BENCHMARK_OUT_ROOT:=${RESULTS_DIR}}"
-: "\${BENCHMARK_PROCESS_PATTERNS:=lms,LM Studio,python,llama-benchy,lm_eval}"
+: "\${BENCHMARK_PROCESS_PATTERNS:=lms,LM Studio,llama-server,python,llama-benchy,lm_eval}"
 EOF
 
 cat >/etc/bench-runner.env <<EOF

@@ -11,11 +11,12 @@ Running from the benchmark runner LXC records client-side metrics (latency, TTFT
 throughput) **and** GPU telemetry — utilization, VRAM, core clocks, and
 temperatures — because `system-sampler.py` reads the Proxmox host's
 `/sys/class/drm` and hwmon even from this unprivileged container. So the GPU and
-temperature SLO checks run from here; you do not need to benchmark on the LM Studio
-host to get GPU data.
+temperature SLO checks run from here; you do not need to benchmark on the LLM
+runtime host to get GPU data.
 
 Caveat: the amdgpu counters are only meaningful under active load — LM Studio frees
-VRAM when idle (so `mem_info_vram_used` reads near-zero between requests), and
+VRAM when idle (so `mem_info_vram_used` reads near-zero between requests; a
+resident `llama-server` keeps it allocated), and
 `gpu_busy_percent` can occasionally return `EBUSY`. Read the per-run telemetry
 peaks, and judge whether the model is truly on the GPU by throughput (~50 tok/s on
 GPU vs ~5-10 on CPU for this 9B-Q4), not the idle VRAM counter.
@@ -39,7 +40,8 @@ When a run is launched through the Ansible batch (or wrapped manually with
 `host/run-with-target-telemetry.sh`), the run folder also gets:
 
 - `target-telemetry.jsonl` - the same sampler run **inside the model container
-  (CT 120)**, so its CPU/RAM/process fields reflect LM Studio itself. This is the
+  (CT 120)**, so its CPU/RAM/process fields reflect the model server itself
+  (LM Studio or `llama-server`). This is the
   authoritative source for "was the server CPU/RAM-bound?". After merging it, the
   wrapper regenerates the run's `REPORT.md` (a "Model Server Telemetry" section)
   and `SLO.md` (a `model-server-target` entry) via `finalize-run.py`, so the
@@ -59,7 +61,7 @@ Telemetry includes the best available local data:
 
 Run benchmarks from the benchmark runner LXC. The runner targets the configured
 OpenAI-compatible endpoint in `MODEL_API_URL`; by default the creation script
-sets that to CT `120`'s LM Studio URL.
+sets that to CT `120`'s URL (whichever runtime engine is serving there).
 
 ```bash
 cd /opt/bench-runner
@@ -237,9 +239,11 @@ GPU_VMID=120 BENCH_VMID=200 \
 
 The Ansible batch (`make bench`) wraps every benchmark with this automatically.
 
-Context-length / VRAM sweep — reload LM Studio at each context length and
+Context-length / VRAM sweep — reload the model at each context length and
 measure VRAM, TTFT, latency, and throughput per step (context/KV cache is
-usually the dominant VRAM bottleneck):
+usually the dominant VRAM bottleneck). The sweep script is currently
+**LM Studio-specific** (it reloads via the `lms` CLI); for a llama.cpp CT 120,
+reload with `llamacpp-reload` instead:
 
 ```bash
 CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh
@@ -267,9 +271,9 @@ BENCHMARK_RUNS=3
 BENCHMARK_REQUESTS=3
 BENCHMARK_CONCURRENCY=1
 TELEMETRY_INTERVAL=1
-MODEL_API_URL=http://<lmstudio-lxc-ip>:1234/v1
+MODEL_API_URL=http://<runtime-lxc-ip>:1234/v1
 MODEL_IDENTIFIER=<served-model-id>
-BENCHMARK_RUN_ID=lmstudio-baseline
+BENCHMARK_RUN_ID=baseline
 ```
 
 ## Extra Things Worth Logging

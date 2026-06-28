@@ -12,12 +12,17 @@ root**. macOS is only the authoring/editing environment; the scripts run remotel
 
 Two containers form the system:
 
-- **CT 120 `lmstudio`** (`rx-6700-xt/`): a *privileged* Ubuntu LXC that runs LM Studio's
-  `lms` CLI serving `Qwen3.5-9B-Q4_K_M.gguf` on a Radeon RX 6700 XT, exposing an
-  OpenAI-compatible API at `0.0.0.0:1234`.
+- **CT 120** (`rx-6700-xt/`): a *privileged* Ubuntu LXC — the **LLM runtime** — serving
+  `Qwen3.5-9B-Q4_K_M.gguf` on a Radeon RX 6700 XT via Vulkan, exposing an OpenAI-compatible
+  API at `0.0.0.0:1234`. Two **interchangeable engine scripts** target this slot; both
+  default to VMID 120 and serve the model under the id `qwen3.5-9b`, so they are mutually
+  exclusive — run one at a time (only one can use the GPU):
+  - `create-lxc-lmstudio-qwen3.5-9b.sh` — LM Studio's `lms` CLI (hostname `lmstudio`).
+  - `create-lxc-llamacpp-qwen3.5-9b.sh` — llama.cpp's `llama-server` (hostname `llamacpp`).
 - **CT 200 `bench-runner`** (`bench-runner/`): an *unprivileged* Debian LXC that benchmarks
   that endpoint. It auto-discovers CT 120's IP at provisioning time. It lives in the
-  `200+` test/temporary range because it is disposable — destroy it when done.
+  `200+` test/temporary range because it is disposable — destroy it when done. The suite is
+  engine-neutral (it speaks OpenAI `/v1`), so it benchmarks either engine unchanged.
 
 VMIDs `120`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
 
@@ -26,8 +31,9 @@ VMIDs `120`/`200` and hostnames are defaults overridable via env vars (`VMID=`, 
 All run on the Proxmox host as root.
 
 ```bash
-# Provision the LM Studio GPU container (CT 120)
-./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh
+# Provision the GPU LLM-runtime container (CT 120) — pick ONE engine (mutually exclusive)
+./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
+./rx-6700-xt/create-lxc-llamacpp-qwen3.5-9b.sh    # llama.cpp (llama-server)
 
 # Provision the benchmark runner (CT 200); auto-targets CT 120's API
 ./bench-runner/create-lxc-bench-runner.sh
@@ -64,12 +70,27 @@ a `main()` that runs an explicit ordered pipeline (resolve template → create c
 configure → install → summarize). Heredocs (`<<'CONTAINER_SCRIPT'`) push self-contained
 sub-scripts into the container via `pct exec ... bash -s`. Match this idiom when extending.
 
-**GPU/model scripts are intentionally narrow, not generic.** Per the README, each GPU
+**GPU/model/engine scripts are intentionally narrow, not generic.** Per the README, each GPU
 folder owns its own model/runtime assumptions (GPU runtime flags, context size, VRAM sizing).
-A different GPU or model should get a *new* script, not a parameterized mega-launcher.
+A different GPU, model, *or inference engine* should get a *new* script, not a parameterized
+mega-launcher — the RX 6700 XT already has two sibling scripts (`...-lmstudio-...` and
+`...-llamacpp-...`) serving the same model on the same GPU via Vulkan.
 For the RX 6700 XT this means Vulkan (mesa RADV) — the container installs `mesa-vulkan-drivers`
 and passes through `/dev/dri` (render node `renderD128`) — plus a pinned model repo/file/SHA-256
 in a privileged container.
+
+Engine differences that matter when extending the llama.cpp script:
+- It installs a **pinned prebuilt Vulkan `llama-server` release** (tag + tarball SHA-256 in
+  the config block; bump both from the ggml-org/llama.cpp releases page). It extracts to a
+  flat `llama-<tag>/` dir and symlinks `/opt/llamacpp/current`. It also installs the
+  **libglvnd/EGL stack** (`libglvnd0 libgl1 libglx0 libegl1`) on top of `mesa-vulkan-drivers`
+  — without it the Mesa ICD loader can silently report **zero** Vulkan devices in the container.
+- LM Studio hot-reloads context/parallel via `lms load`; **llama.cpp sets them as start-time
+  flags**, so its container ships a `llamacpp-reload <ctx> <parallel>` helper (rewrites
+  `/etc/llamacpp.env` + `systemctl restart`) and a `Type=simple` service running
+  `/usr/local/bin/llamacpp-serve`.
+- `llama-server --alias qwen3.5-9b` makes `/v1/models` report a stable id (else it reports the
+  model file path); that id is what the bench-runner records as `MODEL_IDENTIFIER`.
 
 ### Dual-mode install (critical gotcha)
 
@@ -125,10 +146,10 @@ so a run that captures no server samples fails (manual `run-with-target-telemetr
 default to opt-out).
 
 **`RUN_*` toggles gate each benchmark target**: `RUN_OPENAI_DIRECT`, `RUN_LLAMA_BENCHY`,
-`RUN_LM_EVAL`. The runner targets only the LM Studio OpenAI endpoint, so it runs
+`RUN_LM_EVAL`. The runner targets only the LLM runtime's OpenAI endpoint, so it runs
 `openai-direct` + `llama-benchy` by default; `lm-eval` runs only in the `quality` profile.
 The Hermes, raw `llama-bench`, and vLLM benchmark paths were removed — they couldn't run in
-this unprivileged, LM-Studio-only LXC. The suite's built-in `SCENARIOS` (smoke/short/medium/
+this unprivileged, OpenAI-API-only LXC. The suite's built-in `SCENARIOS` (smoke/short/medium/
 long) remain only as a manual `--scenario` fallback; every profile uses the promptset.
 
 The `llm-bench-*` wrappers in `/usr/local/bin` are thin: they `source /etc/bench-runner.env`,
@@ -153,7 +174,12 @@ set `BENCHMARK_PROFILE`/`BENCHMARK_RUN_ID`, and exec the suite. They are generat
   Ansible batch wraps every run with it and merges `target-telemetry.jsonl` into the result.
   `run-context-sweep.sh` reloads LM Studio at each context length and
   correlates VRAM with TTFT/latency/throughput — still useful, because the per-context reload
-  is the part the in-LXC suite can't do.
+  is the part the in-LXC suite can't do. **Caveat: the model-reload paths — `run-context-
+  sweep.sh` and the Ansible batch's per-item reload (`ansible/benchmark.yml` `model_reload_cmd`,
+  `ansible/benchmark_item.yml`) — are LM-Studio-specific (they shell out to the `lms` CLI).**
+  The in-LXC suite and telemetry are engine-neutral; only these host reload hooks assume LM
+  Studio. For a llama.cpp CT 120, reload with `llamacpp-reload <ctx> <parallel>` instead (they
+  have not been generalized — minimal scope).
 
 ### Results & data model
 
@@ -175,7 +201,7 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
 - **VMID allocation** (homelab-wide scheme — pick a new script's default `VMID` from the
   matching range):
   - `100-119` — infra / services
-  - `120-139` — AI/LLM containers (CT 120 `lmstudio`)
+  - `120-139` — AI/LLM containers (CT 120 LLM runtime: `lmstudio` or `llamacpp`)
   - `140-159` — databases
   - `200+` — test / temporary (CT 200 `bench-runner` — disposable benchmark LXC)
 - Keep downloaded model weights and generated results out of git (already covered by
@@ -184,5 +210,6 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   re-downloadable; back up container config / service files / small state separately.
 - The RX 6700 XT is driven via **Vulkan** (mesa RADV): the container installs the Vulkan
   userspace (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and passes through `/dev/dri`
-  (render node `renderD128`). LM Studio offloads with `--gpu max`; verify with `vulkaninfo`
-  and a non-trivial `mem_info_vram_used`.
+  (render node `renderD128`). The engine offloads all layers to the GPU (LM Studio
+  `--gpu max`, llama.cpp `-ngl 99`); verify with `vulkaninfo` and a non-trivial
+  `mem_info_vram_used`.

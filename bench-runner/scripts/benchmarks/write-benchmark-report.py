@@ -171,6 +171,7 @@ def summarize_tools(versions: dict[str, Any]) -> list[tuple[str, str, str]]:
     rows = []
     for name in [
         "lms",
+        "llama-server",
         "llama-benchy",
         "llama_benchy_bin",
         "lm_eval",

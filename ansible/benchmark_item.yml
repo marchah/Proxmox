@@ -27,7 +27,7 @@
   environment:
     GPU_VMID: "{{ gpu_vmid }}"
     BENCH_VMID: "{{ bench_vmid }}"
-    TARGET_PROCESS_PATTERNS: "lms,LM Studio,python"
+    TARGET_PROCESS_PATTERNS: "lms,LM Studio,llama-server,python"
     REQUIRE_TARGET_TELEMETRY: "true"
   register: bench_item
   failed_when: false

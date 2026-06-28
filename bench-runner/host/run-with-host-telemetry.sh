@@ -18,7 +18,7 @@ readonly SUMMARIZER="${SCRIPT_DIR}/../scripts/benchmarks/summarize-telemetry.py"
 GPU_VMID="${GPU_VMID:-120}"
 OUT_DIR="${OUT_DIR:-./host-telemetry}"
 TELEMETRY_INTERVAL="${TELEMETRY_INTERVAL:-1}"
-HOST_PROCESS_PATTERNS="${HOST_PROCESS_PATTERNS:-lms,LM Studio,llmster}"
+HOST_PROCESS_PATTERNS="${HOST_PROCESS_PATTERNS:-lms,LM Studio,llama-server,llmster}"
 
 readonly REMOTE_SAMPLER="/tmp/bench-system-sampler.py"
 readonly REMOTE_OUT="/tmp/bench-host-telemetry.jsonl"

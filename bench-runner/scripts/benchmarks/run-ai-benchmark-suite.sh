@@ -45,7 +45,7 @@ overall_status=0
 
 MODEL_API_URL="${MODEL_API_URL:-http://127.0.0.1:1234/v1}"
 MODEL_IDENTIFIER="${MODEL_IDENTIFIER:-local-model}"
-BENCHMARK_PROCESS_PATTERNS="${BENCHMARK_PROCESS_PATTERNS:-lms,LM Studio,python,llama-benchy,lm_eval}"
+BENCHMARK_PROCESS_PATTERNS="${BENCHMARK_PROCESS_PATTERNS:-lms,LM Studio,llama-server,python,llama-benchy,lm_eval}"
 BENCHMARK_RUNS="${BENCHMARK_RUNS:-3}"
 export MODEL_API_URL MODEL_IDENTIFIER
 export BENCHMARK_PROFILE BENCHMARK_PROMPTSET BENCHMARK_SCENARIOS
@@ -84,7 +84,7 @@ sys.stderr.write(f"Preflight OK: model '{model}' is served at {base_url}\n")
 PY
 
   if [[ "${preflight_status}" -eq 2 ]]; then
-    printf 'Aborting: model API at %s is unreachable. Start the model server (CT 120) or set MODEL_API_URL.\n' "${MODEL_API_URL}" >&2
+    printf 'Aborting: model API at %s is unreachable. Start the LLM runtime (CT 120) or set MODEL_API_URL.\n' "${MODEL_API_URL}" >&2
     printf 'Set BENCHMARK_PREFLIGHT=false to skip this check.\n' >&2
     exit 1
   elif [[ "${preflight_status}" -eq 3 ]]; then
