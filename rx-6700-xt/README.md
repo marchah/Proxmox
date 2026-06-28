@@ -147,11 +147,74 @@ resident in VRAM once it loads (check with `cat /sys/class/drm/card0/device/mem_
 
 ## Benchmarks
 
-All numbers below were measured against the **LM Studio** engine. The llama.cpp
-runtime serves the identical model and is benchmarked the same way (point the
-`bench-runner` at CT 120), but its figures — and whether the cold-prefill
-correctness cliff below reproduces under `llama-server` — have not been captured
-yet; do not assume they carry over.
+Two engines, same GPU/model, measured the same way (`make bench RUNTIME=<engine>`,
+`openai-direct` target). The **llama.cpp** section is the newer data; the
+**LM Studio** section is the original. Headline: on this GPU llama.cpp matches LM
+Studio single-stream (~55 vs ~53 tok/s), scales **higher** under concurrency
+(~80 vs ~47 tok/s aggregate), and — notably — **does not reproduce the LM Studio
+cold-prefill correctness cliff** (8 k cold prefill returned valid output, 8/8).
+
+### llama.cpp
+
+llama.cpp `llama-server` (build `b9828`, Vulkan), `--parallel 4`, 64 k total
+context (→ 16 128 tokens per slot). Measured from the `bench-runner` LXC via
+`openai-direct`, distinct (cold) synthetic prompts. `--reasoning-format none`, so
+the model's `<think>` tokens count as normal output (Qwen3.5 is a reasoning model).
+
+**Single stream (baseline):** 55.97 tok/s, TTFT 0.13 s p50 / 0.20 s p95, GPU ~99 %
+util, 7.05 GiB VRAM (of 12), junction 87 °C — all SLOs pass.
+
+**Concurrency scaling** (cold, ~512-token prompt, 128 output, 32 requests/point):
+
+| Concurrency | OK | Aggregate tok/s | p95 latency | p50 TTFT |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 32/32 | 42.2 | 3.0 s | 0.80 s |
+| 2 | 32/32 | 63.1 | 4.1 s | 1.54 s |
+| 4 | 32/32 | **80.0** | 6.5 s | 3.05 s |
+| 8 | 32/32 | 79.8 | 12.8 s | 9.46 s |
+| 16 | 32/32 | 79.8 | 25.7 s | 22.27 s |
+
+Saturation knee at concurrency 4 (~80 tok/s); past it throughput is flat while
+tail latency doubles each step. Every point was 32/32 OK — no garbage, no errors.
+This is markedly higher than LM Studio's cold aggregate (~42–47 tok/s) for the
+same workload.
+
+**Prefill / TTFT vs input length** (cold, concurrency 1, 32 output, 8 req/point):
+
+| Input tokens | OK | Cold TTFT p95 | Notes |
+| ---: | ---: | ---: | --- |
+| 128 | 8/8 | 0.35 s | |
+| 512 | 8/8 | 0.80 s | |
+| 2,048 | 8/8 | 2.71 s | |
+| 8,192 | 8/8 | 11.58 s | **valid output — no cliff** |
+| 32,768 | 0/8 | — | exceeds the 16 128-token per-slot context (64 k ÷ 4 slots) |
+
+Cold prefill scales ~linearly (~1.4 s per 1k tokens). Unlike LM Studio, 8 k cold
+prefill stays coherent (8/8 OK) — the ≥6 k garbage cliff did **not** reproduce on
+`llama-server b9828`. The 32 768 point is a hard rejection (input > per-slot
+context), not corruption; to bench beyond ~16 k, lower `--parallel` or raise
+`--ctx-size` (VRAM permitting).
+
+**Soak** (concurrency 2): 18/18 OK, 81.7 tok/s, coherent output; junction peaked
+~96 °C, no clock throttling.
+
+**Observations**
+
+- **GPU-bound**: ~99 % GPU utilization on every workload, ~7.05 GiB / 12 GiB VRAM,
+  model-container CPU only ~30 % max (from target-side telemetry). Limiter is GPU
+  compute, not host CPU/RAM.
+- **Concurrency helps more than on LM Studio**: ~42 → 80 tok/s from c1 to c4 with
+  all-distinct prompts, vs LM Studio's ~33 → ~47.
+- **No correctness cliff observed** up to 8 k cold prefill (the LM Studio failure
+  mode). Re-verify if you push context higher.
+- Thermals fine: junction ≤ 96 °C under sustained load, no throttling.
+
+> **Methodology note.** Numbers are the `openai-direct` target only — the same
+> target the LM Studio numbers below use. The suite's optional `llama-benchy`
+> target currently fails to resolve a tokenizer for the served alias (it has no
+> PyTorch and falls back to a 1024-token tokenizer), so a full `make bench` exits
+> non-zero on that secondary target even though every GPU measurement passed; run
+> with `RUN_LLAMA_BENCHY=false` for a clean batch.
 
 ### LM Studio
 
