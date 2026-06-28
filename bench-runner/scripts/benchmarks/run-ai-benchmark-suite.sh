@@ -29,6 +29,12 @@ fi
 
 readonly OUT_ROOT="${BENCHMARK_OUT_ROOT:-/results}"
 readonly RUN_ID="${BENCHMARK_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+# RUN_ID becomes a path component and BENCHMARK_OVERWRITE rm -rf's RUN_DIR, so it
+# must be a simple name — reject slashes / ".." to prevent path traversal.
+if [[ ! "${RUN_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  printf 'Invalid BENCHMARK_RUN_ID %q: use a simple name ([A-Za-z0-9._-], no slashes or "..").\n' "${RUN_ID}" >&2
+  exit 1
+fi
 readonly RUN_DIR="${OUT_ROOT}/${RUN_ID}"
 readonly TELEMETRY_INTERVAL="${TELEMETRY_INTERVAL:-1}"
 
