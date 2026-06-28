@@ -46,6 +46,7 @@ This script is deliberately narrow:
 - Context length: `65536` (`--ctx-size`; see below — KV cache is cheap on this MoE)
 - GPU offload: `--n-gpu-layers 99` (all layers, including MoE experts)
 - Parallel slots: `--parallel 4` (continuous batching, on by default)
+- Attention / batch: `--flash-attn on --batch-size 4096 --ubatch-size 1024` (tuned — see Benchmarks → Tuning)
 - API bind: `0.0.0.0:1234`
 - Model storage: `/models`
 
@@ -190,6 +191,31 @@ The 32,768 point is a hard rejection (input > per-slot context at `--parallel 4`
 **not** corruption — drop to `--parallel 1` for single prompts beyond 16k.
 
 **Soak** (~6 min, concurrency 2): 106.7 tok/s sustained, 0 errors, coherent.
+
+(The tables above are the initial run; the tuned `--flash-attn on --batch-size 4096
+--ubatch-size 1024` flags — now the serve default — add ~3% on top, see below.)
+
+### Tuning (flash attention + batch size)
+
+An `off` / `on` / `on+batch` sweep (baseline + concurrency + prefill, `--parallel 4`)
+selected the serve defaults. Aggregate tok/s:
+
+| Concurrency | `-fa off` | `-fa on` | `-fa on` + `-ub 1024 -b 4096` |
+| ---: | ---: | ---: | ---: |
+| 1 | 58.4 | 66.0 | 67.4 |
+| 2 | 80.2 | 96.0 | 97.2 |
+| 4 | 101.8 | 128.4 | **132.7** |
+| 8 | 99.5 | 126.6 | 130.9 |
+
+- **Flash attention** is the big lever: **+26% at c4** vs off, plus +4.5% single-stream,
+  ~−40% TTFT, and −0.5 GiB VRAM. (`-fa`'s default `auto` already enables it on this
+  model/backend; we pin `on` for determinism.)
+- **`-ub 1024 -b 4096`** adds the last ~3% at the knee (and +2–7% on 512–2048 prefills)
+  for negligible VRAM.
+- Trade-off: on a single >8k **cold** prefill, FA is marginally slower (8192-token TTFT
+  ~5.0 s → ~5.5 s) — irrelevant for the concurrent/agent serving this card does.
+
+Net default: **~132 tok/s aggregate (+30% vs FA-off), 83 tok/s single-stream, ~0.13 s TTFT.**
 
 ### GPU thermals (Radeon Pro V620, passively cooled via the `gpu-fan-control` Pump Fan)
 

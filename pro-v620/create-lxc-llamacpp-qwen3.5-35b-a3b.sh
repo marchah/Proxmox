@@ -315,6 +315,13 @@ EOF
 
 # 4. Server wrapper: read fresh config on each (re)start, pin the lib dir, exec
 # llama-server. Continuous batching is on by default, so no -cb flag is needed.
+# --flash-attn on + a larger batch (--batch-size 4096 --ubatch-size 1024) were
+# picked from an on/off/+batch sweep on this card (see pro-v620/README.md): vs
+# flash-attn off they give ~+30% concurrent throughput (~102 -> ~133 tok/s
+# aggregate at concurrency 4), ~-40% TTFT, and -0.5 GiB VRAM; the batch bump adds
+# the last ~3%. FA's default 'auto' already enabled it here, but pinning 'on' is
+# deterministic. (On a single >8k cold prefill FA is marginally slower — a fine
+# trade for the concurrency/TTFT win in agent/serving use.)
 # --reasoning-format none keeps the model's <think> tokens inline in the OpenAI
 # `content` stream (instead of siphoning them into `reasoning_content`), so an
 # OpenAI-compatible benchmark counts every generated token and measures TTFT at
@@ -337,6 +344,9 @@ exec "${LLAMACPP_DIR}/llama-server" \
   --n-gpu-layers "${MODEL_GPU_LAYERS}" \
   --ctx-size "${MODEL_CONTEXT_LENGTH}" \
   --parallel "${MODEL_PARALLEL}" \
+  --flash-attn on \
+  --batch-size 4096 \
+  --ubatch-size 1024 \
   --reasoning-format none \
   --alias "${MODEL_ALIAS}"
 EOS
