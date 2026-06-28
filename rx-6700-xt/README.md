@@ -296,6 +296,40 @@ LM Studio reliably produces sticky garbage (≥6 k). Throughput at 32 k is tiny
 > exposes no transformers-loadable tokenizer, so `--tokenizer` falls back. Set
 > `LLAMA_BENCHY_TOKENIZER=<hf-repo-with-a-real-tokenizer>` for exact counts.
 
+#### Reasoning mode (thinking on/off)
+
+Qwen3.5 is a reasoning model; the container serves it with thinking **on** (the
+model's default), and `--reasoning-format none` keeps the `<think>` block inline
+in `content` so the benchmark counts those tokens. A side experiment re-ran the
+whole batch with thinking disabled (`--chat-template-kwargs '{"enable_thinking":
+false}'`) to see if it was worth changing the default — **it is not**, but the
+data is kept here so we don't have to re-run it:
+
+| Metric (`--parallel 4`) | thinking ON | thinking OFF |
+| --- | ---: | ---: |
+| Baseline single-stream | 56.0 tok/s | 55.9 tok/s |
+| Concurrency c1/c2/c4/c8/c16 (agg tok/s) | 42 / 63 / 80 / 80 / 80 | 41 / 42 / 73 / 74 / 67 |
+| Input-length → 8 k / 32 k | 8/8 valid / exceeds ctx | identical |
+| Soak | 81.7 tok/s | 80.7 tok/s |
+
+(`--parallel 1` was identical on/off: baseline ~55.8 tok/s, concurrency flat
+~40–42, input-length 8/8 valid all the way to 32 k, soak ~55.9 tok/s.)
+
+Decode rate, prefill/TTFT, correctness, and soak are **identical** — thinking
+does not change how fast the GPU emits tokens. The only delta is the concurrency
+*aggregate*, and that is an artifact, not a speedup: with thinking on every
+request fills `max_tokens` with reasoning and keeps all batch slots saturated;
+with thinking off the model answers briefly and hits EOS early, leaving slots
+idle (so the aggregate is lower and noisier). Thinking-off simply generates fewer
+tokens to measure.
+
+To disable reasoning anyway (e.g. for direct-answer serving), add
+`--chat-template-kwargs '{"enable_thinking": false}'` to the `llamacpp-serve`
+wrapper (`/usr/local/bin/llamacpp-serve` in the container, and the heredoc in
+`create-lxc-llamacpp-qwen3.5-9b.sh`). That makes **off the default**; a client can
+still re-enable it per-request with `{"chat_template_kwargs": {"enable_thinking":
+true}}` (verified — the per-request value overrides the server default).
+
 ### LM Studio
 
 > ⚠️ **Correctness cliff — cold prefill above ~6k tokens.** On this GPU (RX 6700 XT,
