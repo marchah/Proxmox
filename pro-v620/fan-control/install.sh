@@ -15,17 +15,20 @@
 #
 # The nct6687 driver is built from an external repository (default
 # https://github.com/Fred78290/nct6687d) — the de-facto Linux driver for the
-# Nuvoton NCT6687D. Override the source/ref with NCT6687D_REPO / NCT6687D_REF.
+# Nuvoton NCT6687D. This code is built and loaded into the kernel as root, so
+# NCT6687D_REF must be a FULL 40-char commit SHA you have reviewed (a moving
+# branch like `master` is rejected). To move to a newer driver, review the
+# upstream diff and pin its commit SHA via NCT6687D_REF.
 
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 
-# Out-of-tree driver source. Pinned to a commit known-good on kernel 7.0.12-1-pve;
-# if a future kernel fails to build, retry with NCT6687D_REF=master.
+# Out-of-tree driver source. Pinned to a full commit SHA known-good on kernel
+# 7.0.12-1-pve. To bump, review the upstream diff and replace this SHA.
 NCT6687D_REPO="${NCT6687D_REPO:-https://github.com/Fred78290/nct6687d}"
-NCT6687D_REF="${NCT6687D_REF:-e069fac}"
+NCT6687D_REF="${NCT6687D_REF:-e069fac2107fb88d30be41375bd2c35ef17e3677}"
 
 readonly SBIN_PATH="/usr/local/sbin/gpu-fan-control"
 readonly ENV_PATH="/etc/gpu-fan-control.env"
@@ -65,16 +68,40 @@ ensure_build_deps() {
   [ -d "/usr/src/linux-headers-${kver}" ] || die "kernel headers for $kver still missing after install"
 }
 
+# Refuse to build anything but a reviewed, immutable full commit SHA (the module
+# runs as root in-kernel). Override only with eyes open via NCT6687D_ALLOW_UNPINNED=1.
+validate_driver_ref() {
+  if [ "${NCT6687D_ALLOW_UNPINNED:-0}" = "1" ]; then
+    warn "NCT6687D_ALLOW_UNPINNED=1 — building '$NCT6687D_REF' without a pinned SHA (supply-chain risk)"
+    return
+  fi
+  [[ "$NCT6687D_REF" =~ ^[0-9a-f]{40}$ ]] \
+    || die "NCT6687D_REF must be a full 40-char commit SHA you have reviewed (got '$NCT6687D_REF'); set NCT6687D_ALLOW_UNPINNED=1 to override"
+}
+
 ensure_driver() {
   if dkms status 2>/dev/null | grep -q '^nct6687d'; then
     log "nct6687d already registered with DKMS"
   else
+    validate_driver_ref
     local tmp; tmp="$(mktemp -d)"
     log "cloning $NCT6687D_REPO @ $NCT6687D_REF"
     git clone "$NCT6687D_REPO" "$tmp" >/dev/null 2>&1 || die "git clone failed"
     git -C "$tmp" checkout --quiet "$NCT6687D_REF" || die "checkout $NCT6687D_REF failed"
+    # Confirm we built exactly the reviewed commit (no-op under ALLOW_UNPINNED branches).
+    if [[ "$NCT6687D_REF" =~ ^[0-9a-f]{40}$ ]]; then
+      [ "$(git -C "$tmp" rev-parse HEAD)" = "$NCT6687D_REF" ] || die "checked-out HEAD != $NCT6687D_REF"
+    fi
+    # Install via DKMS directly (the upstream 'make dkms/install' target shells
+    # out to sudo, which a minimal Proxmox host may not have — we are already root).
+    for f in dkms.conf Makefile nct6687.c; do
+      [ -f "$tmp/$f" ] || die "driver source missing $f — upstream layout changed?"
+    done
     log "building + installing nct6687 via DKMS"
-    make -C "$tmp" dkms/install || die "DKMS build/install failed"
+    rm -rf /usr/src/nct6687d-1
+    install -d /usr/src/nct6687d-1
+    cp "$tmp/dkms.conf" "$tmp/Makefile" "$tmp/nct6687.c" /usr/src/nct6687d-1/
+    dkms install nct6687d/1 || die "DKMS build/install failed (see /var/lib/dkms/nct6687d/1/build/make.log)"
     rm -rf "$tmp"
   fi
 

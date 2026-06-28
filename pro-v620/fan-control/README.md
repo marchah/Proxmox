@@ -23,15 +23,26 @@ DKMS, which exposes **writable** `pwmN` / `pwmN_enable`. `install.sh` blacklists
 ## Control logic
 
 - Curve is driven by the **edge** temperature (the stable "GPU temp"); the
-  **junction** (hotspot) forces 100% as a safety override (with hysteresis).
+  **hottest** of the hotspot sensors (**junction + mem**) forces 100% as a
+  safety override (with hysteresis).
 - The fan **never stops** — `MIN_PWM_RAW` is a hard floor, because the blower is
   the card's only cooling. (It does not stall at the floor; the 9733 12V blower
   still holds ~750 RPM at 12.5% and does not stall even at 10%.)
 - Default profile is **Quiet**: `edge ≤35 °C → 12.5%`, linear ramp, `edge ≥88 °C
-  → 100%`; `junction ≥90 °C → 100%`. Tune in `/etc/gpu-fan-control.env`.
-- **Failsafe:** on any stop or crash the service hands `PUMP_FAN1` back to the
-  BIOS/SIO auto curve (`pwmN_enable=2`) via the script's EXIT trap and the
-  unit's `ExecStopPost`. Independently, amdgpu hardware throttles at 100 °C and
+  → 100%`; `junction|mem ≥90 °C → 100%`. Tune in `/etc/gpu-fan-control.env`.
+- **Fail toward cooling.** If a sensor that was present at startup goes missing,
+  or all GPU temps are unreadable, the daemon forces 100% rather than silently
+  dropping a limit.
+- **Blower tach watchdog.** The blower is the card's only cooling, so its RPM is
+  watched: if it reads below `FAN_MIN_RPM` while airflow is commanded
+  (`FAN_FAIL_GRACE` polls), the daemon forces 100% and logs `CRITICAL`; set
+  `FAN_FAIL_ACTION=poweroff` to power the host off when airflow can't be
+  restored. Auto-disables for fans without a tachometer.
+- **Failsafe:** on any stop or crash the service restores a **verified** safe
+  state — it hands `PUMP_FAN1` back to the BIOS/SIO auto curve (`pwmN_enable=2`)
+  and, only if that can't be confirmed, forces a verified manual 100%; it never
+  leaves the blower at the idle floor. Via the script's EXIT trap and the unit's
+  `ExecStopPost`. Independently, amdgpu hardware throttles at 100 °C and
   emergency-shuts at ~105 °C.
 
 ## Files
@@ -54,8 +65,11 @@ Run on the Proxmox host as root (idempotent):
 ./pro-v620/fan-control/install.sh
 ```
 
-Overrides: `NCT6687D_REF=master ./install.sh` (use latest driver if a new kernel
-fails to build the pinned commit).
+The installer pins the driver to a reviewed **full commit SHA** (it is built and
+loaded into the kernel as root). To move to a newer driver — e.g. if a future
+kernel fails to build the pinned commit — review the upstream diff and pin its
+SHA: `NCT6687D_REF=<40-char-sha> ./pro-v620/fan-control/install.sh`. A moving ref
+like `master` is rejected unless you set `NCT6687D_ALLOW_UNPINNED=1`.
 
 ## Operate
 
