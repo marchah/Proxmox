@@ -59,7 +59,9 @@ reload_model() {
   local context="$1"
   case "${RUNTIME}" in
     llamacpp)
-      pct exec "${GPU_VMID}" -- llamacpp-reload "${context}" "${MODEL_PARALLEL}"
+      # Absolute path: the Ubuntu container's PATH omits /usr/local/bin even for
+      # a login shell, so neither bare `pct exec` nor `bash -lc` would find it.
+      pct exec "${GPU_VMID}" -- /usr/local/bin/llamacpp-reload "${context}" "${MODEL_PARALLEL}"
       ;;
     lmstudio)
       pct exec "${GPU_VMID}" -- bash -s -- \

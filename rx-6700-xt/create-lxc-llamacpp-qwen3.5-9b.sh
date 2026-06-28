@@ -295,6 +295,12 @@ EOF
 
 # 4. Server wrapper: read fresh config on each (re)start, pin the lib dir, exec
 # llama-server. Continuous batching is on by default, so no -cb flag is needed.
+# --reasoning-format none keeps a reasoning model's <think> tokens inline in the
+# OpenAI `content` stream (instead of siphoning them into `reasoning_content`),
+# so an OpenAI-compatible benchmark counts every generated token and measures
+# TTFT at the true first token — matching LM Studio's inline behaviour. Qwen3.5
+# is a reasoning model, so without this the `content` stream is empty and the
+# benchmark would flag every request as invalid_output.
 cat >/usr/local/bin/llamacpp-serve <<'EOS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -309,6 +315,7 @@ exec "${LLAMACPP_DIR}/llama-server" \
   --n-gpu-layers "${MODEL_GPU_LAYERS}" \
   --ctx-size "${MODEL_CONTEXT_LENGTH}" \
   --parallel "${MODEL_PARALLEL}" \
+  --reasoning-format none \
   --alias "${MODEL_ALIAS}"
 EOS
 chmod 755 /usr/local/bin/llamacpp-serve

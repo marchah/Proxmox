@@ -48,7 +48,8 @@
         target_process_patterns: "llama-server,python"
         # llama-server sets context/parallel at start, so "reload" = restart via
         # the helper the llama.cpp container ships (blocks until healthy).
-        reload_cmd: "llamacpp-reload {{ model_context }} {{ parallel }}"
+        # Absolute path: the Ubuntu container's PATH omits /usr/local/bin.
+        reload_cmd: "/usr/local/bin/llamacpp-reload {{ model_context }} {{ parallel }}"
     runtime_label: "{{ runtimes[runtime].label }}"
     model_reload_cmd: "{{ runtimes[runtime].reload_cmd }}"
     # Optional host-orchestrated context-length sweep (reloads CT 120 per context,
