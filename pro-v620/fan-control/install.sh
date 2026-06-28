@@ -11,7 +11,8 @@
 #      nct6683 is READ-ONLY on this board, so it cannot set fan PWM. Blacklist
 #      nct6683 and load nct6687 at boot.
 #   3. Install the gpu-fan-control daemon, its env file, and systemd unit.
-#   4. Enable + start the service.
+#   4. Enable, then RESTART the service (so a re-run activates the new version),
+#      and verify it is active.
 #
 # The nct6687 driver is built from an external repository (default
 # https://github.com/Fred78290/nct6687d) — the de-facto Linux driver for the
@@ -35,6 +36,8 @@ readonly ENV_PATH="/etc/gpu-fan-control.env"
 readonly UNIT_PATH="/etc/systemd/system/gpu-fan-control.service"
 readonly BLACKLIST_PATH="/etc/modprobe.d/nct6687.conf"
 readonly MODLOAD_PATH="/etc/modules-load.d/nct6687.conf"
+# Records the driver commit SHA we built, so a bumped NCT6687D_REF triggers a rebuild.
+readonly DRIVER_SHA_FILE="/var/lib/gpu-fan-control.driver-sha"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
@@ -79,30 +82,67 @@ validate_driver_ref() {
     || die "NCT6687D_REF must be a full 40-char commit SHA you have reviewed (got '$NCT6687D_REF'); set NCT6687D_ALLOW_UNPINNED=1 to override"
 }
 
+# Build + DKMS-install the pinned driver (clean: drops any stale registration).
+build_driver() {
+  validate_driver_ref
+  local tmp; tmp="$(mktemp -d)"
+  log "cloning $NCT6687D_REPO @ $NCT6687D_REF"
+  git clone "$NCT6687D_REPO" "$tmp" >/dev/null 2>&1 || die "git clone failed"
+  git -C "$tmp" checkout --quiet "$NCT6687D_REF" || die "checkout $NCT6687D_REF failed"
+  # Confirm we built exactly the reviewed commit (no-op under ALLOW_UNPINNED branches).
+  if [[ "$NCT6687D_REF" =~ ^[0-9a-f]{40}$ ]]; then
+    [ "$(git -C "$tmp" rev-parse HEAD)" = "$NCT6687D_REF" ] || die "checked-out HEAD != $NCT6687D_REF"
+  fi
+  for f in dkms.conf Makefile nct6687.c; do
+    [ -f "$tmp/$f" ] || die "driver source missing $f — upstream layout changed?"
+  done
+  log "building + installing nct6687 via DKMS"
+  # Drop any stale registration so a new SHA / kernel rebuild starts clean.
+  dkms status 2>/dev/null | grep -q '^nct6687d' && dkms remove nct6687d/1 --all >/dev/null 2>&1 || true
+  rm -rf /usr/src/nct6687d-1
+  install -d /usr/src/nct6687d-1
+  # Install via DKMS directly (the upstream 'make dkms/install' target shells out
+  # to sudo, which a minimal Proxmox host may not have — we are already root).
+  cp "$tmp/dkms.conf" "$tmp/Makefile" "$tmp/nct6687.c" /usr/src/nct6687d-1/
+  dkms install nct6687d/1 || die "DKMS build/install failed (see /var/lib/dkms/nct6687d/1/build/make.log)"
+  rm -rf "$tmp"
+  printf '%s\n' "$NCT6687D_REF" > "$DRIVER_SHA_FILE"
+}
+
+# Make nct6687 (the writable driver) the loaded module. On a rebuild, force a
+# reload so the NEW build is live — modprobe alone won't replace a loaded module.
+activate_driver() {  # $1 = 1 if we just (re)built
+  modprobe -r nct6683 2>/dev/null || true
+  if [ "${1:-0}" = "1" ] && lsmod | grep -q '^nct6687\b'; then
+    systemctl stop gpu-fan-control 2>/dev/null || true   # release the chip + fail safe
+    modprobe -r nct6687 2>/dev/null \
+      || warn "nct6687 in use; the new driver build will become active on next reboot"
+  fi
+  modprobe nct6687 2>/dev/null || true
+}
+
 ensure_driver() {
-  if dkms status 2>/dev/null | grep -q '^nct6687d'; then
-    log "nct6687d already registered with DKMS"
+  local kver; kver="$(uname -r)"
+  local installed_sha=""; [ -f "$DRIVER_SHA_FILE" ] && installed_sha="$(cat "$DRIVER_SHA_FILE" 2>/dev/null)"
+  local registered=0 built_here=0
+  dkms status 2>/dev/null | grep -q '^nct6687d' && registered=1
+  dkms status nct6687d 2>/dev/null | grep -F "$kver" | grep -q ': installed' && built_here=1
+
+  # Rebuild when not registered, when the reviewed SHA changed, or when there is
+  # no module for the running kernel (e.g. after a kernel upgrade). A bare
+  # registration check would silently ignore a bumped NCT6687D_REF.
+  local need=0 reason=""
+  if   (( ! registered )); then need=1; reason="not registered with DKMS"
+  elif [ "${NCT6687D_ALLOW_UNPINNED:-0}" != "1" ] && [ "$NCT6687D_REF" != "$installed_sha" ]; then
+    need=1; reason="driver SHA change (${installed_sha:-unknown} -> $NCT6687D_REF)"
+  elif (( ! built_here )); then need=1; reason="no module built for kernel $kver"
+  fi
+
+  if (( need )); then
+    log "installing nct6687d ($reason)"
+    build_driver
   else
-    validate_driver_ref
-    local tmp; tmp="$(mktemp -d)"
-    log "cloning $NCT6687D_REPO @ $NCT6687D_REF"
-    git clone "$NCT6687D_REPO" "$tmp" >/dev/null 2>&1 || die "git clone failed"
-    git -C "$tmp" checkout --quiet "$NCT6687D_REF" || die "checkout $NCT6687D_REF failed"
-    # Confirm we built exactly the reviewed commit (no-op under ALLOW_UNPINNED branches).
-    if [[ "$NCT6687D_REF" =~ ^[0-9a-f]{40}$ ]]; then
-      [ "$(git -C "$tmp" rev-parse HEAD)" = "$NCT6687D_REF" ] || die "checked-out HEAD != $NCT6687D_REF"
-    fi
-    # Install via DKMS directly (the upstream 'make dkms/install' target shells
-    # out to sudo, which a minimal Proxmox host may not have — we are already root).
-    for f in dkms.conf Makefile nct6687.c; do
-      [ -f "$tmp/$f" ] || die "driver source missing $f — upstream layout changed?"
-    done
-    log "building + installing nct6687 via DKMS"
-    rm -rf /usr/src/nct6687d-1
-    install -d /usr/src/nct6687d-1
-    cp "$tmp/dkms.conf" "$tmp/Makefile" "$tmp/nct6687.c" /usr/src/nct6687d-1/
-    dkms install nct6687d/1 || die "DKMS build/install failed (see /var/lib/dkms/nct6687d/1/build/make.log)"
-    rm -rf "$tmp"
+    log "nct6687d up to date (sha ${installed_sha:-?}, built for $kver)"
   fi
 
   # Prefer the writable out-of-tree nct6687 over the read-only in-tree nct6683.
@@ -114,9 +154,7 @@ ensure_driver() {
     log "loading nct6687 at boot"
     printf 'nct6687\n' > "$MODLOAD_PATH"
   fi
-  # Swap drivers now (no reboot needed): drop the read-only one, load the writable one.
-  modprobe -r nct6683 2>/dev/null || true
-  modprobe nct6687 2>/dev/null || true
+  activate_driver "$need"
 
   nct6687_writable || die "nct6687 present but PWM still not writable — check 'dmesg | grep nct6687' and that the chip is an NCT6687D"
   log "nct6687 writable PWM confirmed"
@@ -139,8 +177,11 @@ install_service() {
 }
 
 enable_service() {
-  log "enabling + starting gpu-fan-control.service"
-  systemctl enable --now gpu-fan-control.service
+  log "enabling + (re)starting gpu-fan-control.service"
+  systemctl enable gpu-fan-control.service >/dev/null 2>&1 || die "failed to enable the unit"
+  # restart (not enable --now): on a re-run --now leaves the OLD process running,
+  # so installed safety fixes would not take effect until reboot/manual restart.
+  systemctl restart gpu-fan-control.service
   sleep 4
   systemctl is-active --quiet gpu-fan-control.service \
     || die "service failed to start — see: journalctl -u gpu-fan-control -n 30"

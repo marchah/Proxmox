@@ -12,9 +12,11 @@
 # The V620 is a passively cooled datacenter card — the blower is its ONLY
 # cooling — so the daemon is defensive about it:
 #   * the curve is driven by EDGE temp; the HOTTEST of junction+mem forces 100%;
-#   * a required sensor going missing forces 100% (never silently lose a limit);
+#   * EVERY sensor present at startup is required: if any disappears, force 100%;
 #   * the blower's tachometer is watched — if it stops spinning while we command
 #     airflow, force 100% and (optionally) power off to protect the GPU;
+#   * every PWM write is read back; persistent write failures escalate (we cannot
+#     trust the fan when our commands are not taking effect);
 #   * the fan never stops, and any read failure fails toward MORE cooling.
 #
 # Intentionally NOT `set -e`: this is a long-running loop where a transient sysfs
@@ -34,7 +36,8 @@ EDGE_MAX_C="${EDGE_MAX_C:-88}"                   # at/above -> 100%
 PWM_MIN_PCT="${PWM_MIN_PCT:-12}"                 # ramp anchor; idle floor pinned by MIN_PWM_RAW
 
 # Safety override: the HOTTEST of these hotspot sensors forces 100% (hysteresis).
-# Both junction (crit 100C) and mem/GDDR6 (crit 98C) are watched.
+# Each label listed here must be present at startup (junction crit 100C, mem/GDDR6
+# crit 98C) and is then required — losing any one mid-run forces 100%.
 HOTSPOT_TEMP_LABELS="${HOTSPOT_TEMP_LABELS:-junction mem}"
 HOTSPOT_OVERRIDE_C="${HOTSPOT_OVERRIDE_C:-90}"
 HOTSPOT_RESUME_C="${HOTSPOT_RESUME_C:-87}"
@@ -42,11 +45,13 @@ HOTSPOT_RESUME_C="${HOTSPOT_RESUME_C:-87}"
 POLL_INTERVAL="${POLL_INTERVAL:-4}"              # seconds
 PWM_STEP="${PWM_STEP:-4}"                        # min raw delta before re-writing
 MIN_PWM_RAW="${MIN_PWM_RAW:-32}"                 # hard floor (~12.5%); never below
+PWM_READBACK_TOL="${PWM_READBACK_TOL:-4}"        # max |written-readback| counted as success
 
-# Blower tach watchdog (the only cooling — a dead blower must not pass silently).
+# Failure handling — the V620 is passively cooled, so loss of control = no cooling.
 FAN_RPM_MONITOR="${FAN_RPM_MONITOR:-auto}"       # auto|on|off (auto = on iff a tach reads >0 at start)
 FAN_MIN_RPM="${FAN_MIN_RPM:-150}"                # below this, while commanding airflow, = not spinning
-FAN_FAIL_GRACE="${FAN_FAIL_GRACE:-3}"            # consecutive bad polls before declaring failure
+FAN_FAIL_GRACE="${FAN_FAIL_GRACE:-3}"            # consecutive bad polls before declaring a blower failure
+WRITE_FAIL_GRACE="${WRITE_FAIL_GRACE:-3}"        # consecutive failed PWM writes before CRITICAL
 FAN_FAIL_ACTION="${FAN_FAIL_ACTION:-warn}"       # warn | poweroff (power off to protect the GPU)
 FAN_FAIL_POWEROFF_GRACE="${FAN_FAIL_POWEROFF_GRACE:-15}"  # bad polls before poweroff (if enabled)
 
@@ -79,18 +84,6 @@ read_temp_c() {  # $1 = hwmon dir, $2 = label ; echoes °C or returns 1
   return 1
 }
 
-# Hottest of the configured hotspot labels; echoes °C or returns 1 if none read.
-read_hotspot_c() {  # $1 = gpu hwmon dir
-  local d="$1" label v max="" labels
-  read -ra labels <<< "$HOTSPOT_TEMP_LABELS"
-  for label in "${labels[@]}"; do
-    v="$(read_temp_c "$d" "$label")" || continue
-    if [ -z "$max" ] || (( v > max )); then max="$v"; fi
-  done
-  [ -n "$max" ] && { echo "$max"; return 0; }
-  return 1
-}
-
 pct_to_raw() {  # $1 = pct ; echoes 0-255 clamped to [MIN_PWM_RAW,255]
   local raw=$(( $1 * 255 / 100 ))
   (( raw < MIN_PWM_RAW )) && raw=$MIN_PWM_RAW
@@ -113,11 +106,40 @@ read_fan_rpm() {  # echoes the blower RPM (fanN_input) or returns 1
   cat "$FAN_CHIP/fan${FAN_PWM_CHANNEL}_input" 2>/dev/null
 }
 
-write_pwm() {  # $1 = raw ; (re)asserts manual mode then writes
+# Write PWM in manual mode and CONFIRM it took effect (the SIO can reject/clamp a
+# write, which must not be mistaken for success). Returns nonzero on any failure.
+write_pwm() {  # $1 = raw
   [ -n "$FAN_CHIP" ] || return 1
-  local en="$FAN_CHIP/pwm${FAN_PWM_CHANNEL}_enable" pw="$FAN_CHIP/pwm${FAN_PWM_CHANNEL}"
+  local en="$FAN_CHIP/pwm${FAN_PWM_CHANNEL}_enable" pw="$FAN_CHIP/pwm${FAN_PWM_CHANNEL}" got d
   [ "$(cat "$en" 2>/dev/null)" = "1" ] || echo 1 > "$en" 2>/dev/null || return 1
   echo "$1" > "$pw" 2>/dev/null || return 1
+  got="$(cat "$pw" 2>/dev/null)" || return 1
+  [ -n "$got" ] || return 1
+  d=$(( got - $1 )); (( d < 0 )) && d=$(( -d ))
+  (( d <= PWM_READBACK_TOL ))
+}
+
+# Apply a target PWM, tracking success/failure. last_raw is updated ONLY on a
+# confirmed write, so a failed write keeps us retrying (and the failure visible)
+# rather than pretending the new speed is in effect. Persistent write failures
+# escalate exactly like a dead blower — control is effectively lost either way.
+write_fail=0
+apply_pwm() {  # $1 = target raw ; returns write_pwm status
+  local target="$1"
+  if write_pwm "$target"; then
+    last_raw="$target"
+    write_fail=0
+    return 0
+  fi
+  write_fail=$(( write_fail + 1 ))
+  if (( write_fail == WRITE_FAIL_GRACE )) || (( write_fail % 15 == 0 )); then
+    log "CRITICAL: PWM write/readback failing (#${write_fail}, target=${target}) on ${FAN_CHIP:-?} — fan control may be lost"
+  fi
+  if [ "$FAN_FAIL_ACTION" = poweroff ] && (( write_fail >= FAN_FAIL_POWEROFF_GRACE )); then
+    log "CRITICAL: PWM control not restored after ${write_fail} writes; powering off to protect the GPU (FAN_FAIL_ACTION=poweroff)"
+    systemctl poweroff 2>/dev/null || poweroff 2>/dev/null || true
+  fi
+  return 1
 }
 
 # Restore a verified-safe fan state. Prefer BIOS/SIO auto (enable=2); if that
@@ -138,7 +160,6 @@ failsafe() {
     log "failsafe: PUMP_FAN1 (pwm${FAN_PWM_CHANNEL}) handed back to BIOS auto (enable=2)"
     return 0
   fi
-  # Auto not confirmed -> force verified manual 100%.
   echo 1 > "$en" 2>/dev/null
   echo 255 > "$pw" 2>/dev/null
   v="$(cat "$pw" 2>/dev/null)"
@@ -163,14 +184,24 @@ FAN_CHIP="$(resolve_hwmon "$FAN_HWMON_NAME" || true)"
 [ -n "$FAN_CHIP" ] || { log "FATAL: '$FAN_HWMON_NAME' hwmon not found (is the nct6687 module loaded?)"; exit 1; }
 [ -n "$GPU_CHIP" ] || { log "FATAL: '$GPU_HWMON_NAME' hwmon not found (is amdgpu bound to the V620?)"; exit 1; }
 
-# Which sensors exist now becomes what we REQUIRE later: if one disappears
-# mid-run we fail toward cooling rather than silently dropping a limit.
-EXPECT_EDGE=0;    read_temp_c   "$GPU_CHIP" "$CURVE_TEMP_LABEL" >/dev/null 2>&1 && EXPECT_EDGE=1
-EXPECT_HOTSPOT=0; read_hotspot_c "$GPU_CHIP"                    >/dev/null 2>&1 && EXPECT_HOTSPOT=1
-(( EXPECT_EDGE )) || { log "FATAL: curve sensor '$CURVE_TEMP_LABEL' not present on $GPU_CHIP"; exit 1; }
-(( EXPECT_HOTSPOT )) || log "WARN: no hotspot sensor ($HOTSPOT_TEMP_LABELS) found — high-temp override DISABLED"
+# Curve sensor is mandatory.
+read_temp_c "$GPU_CHIP" "$CURVE_TEMP_LABEL" >/dev/null 2>&1 \
+  || { log "FATAL: curve sensor '$CURVE_TEMP_LABEL' not present on $GPU_CHIP"; exit 1; }
 
-# Decide whether to watch the blower tach (auto: only if it reports RPM now).
+# Every configured hotspot label must be present now; each then becomes REQUIRED,
+# so losing any one mid-run forces the safety state (a single remaining sensor must
+# not mask the loss of another). Empty list disables the override entirely.
+read -ra HOTSPOT_LABELS <<< "$HOTSPOT_TEMP_LABELS"
+if (( ${#HOTSPOT_LABELS[@]} == 0 )); then
+  log "WARN: no hotspot sensors configured (HOTSPOT_TEMP_LABELS empty) — high-temp override DISABLED"
+else
+  for label in "${HOTSPOT_LABELS[@]}"; do
+    read_temp_c "$GPU_CHIP" "$label" >/dev/null 2>&1 \
+      || { log "FATAL: hotspot sensor '$label' not present on $GPU_CHIP (adjust HOTSPOT_TEMP_LABELS if this card differs)"; exit 1; }
+  done
+fi
+
+# Watch the blower tach? (auto: only if it reports RPM now — off for 2-wire fans.)
 fan_monitor=0
 case "$FAN_RPM_MONITOR" in
   on)  fan_monitor=1 ;;
@@ -182,7 +213,7 @@ case "$FAN_RPM_MONITOR" in
     ;;
 esac
 
-log "started: GPU=$GPU_CHIP FAN=$FAN_CHIP pwm${FAN_PWM_CHANNEL}; curve ${PWM_MIN_PCT}%@${EDGE_MIN_C}C..100%@${EDGE_MAX_C}C; hotspot override>=${HOTSPOT_OVERRIDE_C}C (${HOTSPOT_TEMP_LABELS}); tach_watchdog=${fan_monitor} fail_action=${FAN_FAIL_ACTION}"
+log "started: GPU=$GPU_CHIP FAN=$FAN_CHIP pwm${FAN_PWM_CHANNEL}; curve ${PWM_MIN_PCT}%@${EDGE_MIN_C}C..100%@${EDGE_MAX_C}C; hotspot override>=${HOTSPOT_OVERRIDE_C}C (${HOTSPOT_TEMP_LABELS:-none}); tach_watchdog=${fan_monitor} fail_action=${FAN_FAIL_ACTION}"
 
 last_raw=-1
 override=0
@@ -194,13 +225,22 @@ while :; do
   [ -d "$FAN_CHIP" ] || FAN_CHIP="$(resolve_hwmon "$FAN_HWMON_NAME" || true)"
 
   edge="$(read_temp_c "$GPU_CHIP" "$CURVE_TEMP_LABEL")" || edge=""
-  hotspot="$(read_hotspot_c "$GPU_CHIP")"               || hotspot=""
   rpm="$(read_fan_rpm)"                                 || rpm=""
 
-  # --- sensor fault: a sensor we relied on at startup is now missing ---
+  # Hotspot = hottest of the REQUIRED labels; flag if any required one is missing.
+  hotspot=""
+  hotspot_missing=0
+  if (( ${#HOTSPOT_LABELS[@]} )); then
+    for label in "${HOTSPOT_LABELS[@]}"; do
+      v="$(read_temp_c "$GPU_CHIP" "$label")" || { hotspot_missing=1; continue; }
+      if [ -z "$hotspot" ] || (( v > hotspot )); then hotspot="$v"; fi
+    done
+  fi
+
+  # --- sensor fault: a required sensor present at startup is now missing ---
   sensor_fault=0
-  if (( EXPECT_EDGE ))    && [ -z "$edge" ];    then sensor_fault=1; fi
-  if (( EXPECT_HOTSPOT )) && [ -z "$hotspot" ]; then sensor_fault=1; fi
+  [ -z "$edge" ] && sensor_fault=1
+  (( hotspot_missing )) && sensor_fault=1
 
   # --- blower fault: commanding airflow but the tach says it's not spinning ---
   blower_fault=0
@@ -213,10 +253,10 @@ while :; do
     (( fan_fail >= FAN_FAIL_GRACE )) && blower_fault=1
   fi
 
-  # --- faults force 100% and fail loud ---
+  # --- faults force 100% and fail loud (writes still verified by apply_pwm) ---
   if (( sensor_fault || blower_fault )); then
     (( sensor_fault )) && (( loops % 10 == 1 )) && \
-      log "WARN: required GPU sensor missing (edge='${edge:-}' hotspot='${hotspot:-}'); forcing 100%"
+      log "WARN: required GPU sensor missing (edge='${edge:-}' hotspot_missing=${hotspot_missing}); forcing 100%"
     if (( blower_fault )); then
       if (( fan_fail == FAN_FAIL_GRACE )) || (( fan_fail % 15 == 0 )); then
         log "CRITICAL: blower not spinning (rpm='${rpm:-?}' < ${FAN_MIN_RPM} while commanding pwm>=${MIN_PWM_RAW}) — V620 has NO other cooling; forced 100%"
@@ -226,8 +266,7 @@ while :; do
         systemctl poweroff 2>/dev/null || poweroff 2>/dev/null || true
       fi
     fi
-    write_pwm 255 || log "ERROR: failed writing PWM during fault"
-    last_raw=255
+    apply_pwm 255
     sleep "$POLL_INTERVAL"; continue
   fi
 
@@ -242,14 +281,13 @@ while :; do
   else                    target="$(raw_for_temp "$edge")"
   fi
 
-  # Hysteresis: only write on a meaningful change (or first pass / full speed).
+  # Write on first pass, a meaningful change, or to hold full speed; log only on a
+  # real change (so a sustained override / re-assert does not spam the journal).
   diff=$(( target - last_raw )); (( diff < 0 )) && diff=$(( -diff ))
   if (( last_raw < 0 || diff >= PWM_STEP || target == 255 )); then
-    if write_pwm "$target"; then
+    prev=$last_raw
+    if apply_pwm "$target" && (( prev != target )); then
       log "edge=${edge}C hotspot=${hotspot:-?}C rpm=${rpm:-?} override=$override -> pwm=${target}/255 ($(( target * 100 / 255 ))%)"
-      last_raw=$target
-    else
-      log "ERROR: failed writing pwm=${target} to ${FAN_CHIP:-?}"
     fi
   fi
 

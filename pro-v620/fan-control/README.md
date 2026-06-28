@@ -30,14 +30,18 @@ DKMS, which exposes **writable** `pwmN` / `pwmN_enable`. `install.sh` blacklists
   still holds ~750 RPM at 12.5% and does not stall even at 10%.)
 - Default profile is **Quiet**: `edge ≤35 °C → 12.5%`, linear ramp, `edge ≥88 °C
   → 100%`; `junction|mem ≥90 °C → 100%`. Tune in `/etc/gpu-fan-control.env`.
-- **Fail toward cooling.** If a sensor that was present at startup goes missing,
-  or all GPU temps are unreadable, the daemon forces 100% rather than silently
-  dropping a limit.
+- **Fail toward cooling.** Every sensor present at startup (edge *and* each of
+  `HOTSPOT_TEMP_LABELS`) is then required: if **any one** disappears the daemon
+  forces 100% — a surviving sensor can't mask the loss of another. Missing a
+  configured sensor *at startup* is fatal (run degraded silently is exactly what
+  we avoid).
 - **Blower tach watchdog.** The blower is the card's only cooling, so its RPM is
   watched: if it reads below `FAN_MIN_RPM` while airflow is commanded
-  (`FAN_FAIL_GRACE` polls), the daemon forces 100% and logs `CRITICAL`; set
-  `FAN_FAIL_ACTION=poweroff` to power the host off when airflow can't be
-  restored. Auto-disables for fans without a tachometer.
+  (`FAN_FAIL_GRACE` polls), the daemon forces 100% and logs `CRITICAL`. Every PWM
+  write is **read back**; persistent write failures (`WRITE_FAIL_GRACE`) escalate
+  the same way, since control is lost even if the fan still reads some RPM. Set
+  `FAN_FAIL_ACTION=poweroff` to power the host off when control can't be restored.
+  The tach watchdog auto-disables for fans without a tachometer.
 - **Failsafe:** on any stop or crash the service restores a **verified** safe
   state — it hands `PUMP_FAN1` back to the BIOS/SIO auto curve (`pwmN_enable=2`)
   and, only if that can't be confirmed, forces a verified manual 100%; it never
