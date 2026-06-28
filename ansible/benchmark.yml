@@ -1,0 +1,283 @@
+---
+# One-command LM Studio benchmark batch, driven from this machine.
+#
+#   ansible-playbook -i ansible/inventory.ini ansible/benchmark.yml \
+#     -e @ansible/secrets.yml -e parallel=4
+#
+# It pushes the LOCAL bench-runner suite to the Proxmox host (so runs use your
+# latest, even uncommitted code), provisions CT 200 if it is missing, injects
+# HF_TOKEN, (re)loads the model at the requested --parallel, runs the batch, and
+# fetches the result folders back into rx-6700-xt/results/<runtime>/parallel-<n>/.
+#
+# The containers have no SSH of their own, so tasks act on them via `pct` on the
+# Proxmox host (this is the "light" orchestrator around the existing bash scripts).
+- name: LM Studio benchmark batch
+  hosts: proxmox
+  gather_facts: false
+
+  vars:
+    bench_vmid: 200
+    gpu_vmid: 120
+    runtime_label: lmstudio
+    # Default to 4 slots = the operational CT 120 default, so a plain `make bench`
+    # never downgrades the running model. Override with -e parallel=1 for a
+    # single-slot run.
+    parallel: 4
+    model_key: qwen3.5-9b
+    model_context: 64000
+    reload_model: true
+    # Reload LM Studio as the service user (not root) so reloads don't leave
+    # root-owned state in /home/lmstudio. Used at every reload site.
+    model_reload_cmd: >-
+      S='sudo -u lmstudio env HOME=/home/lmstudio /home/lmstudio/.lmstudio/bin/lms';
+      $S unload --all >/dev/null 2>&1 || true;
+      $S load {{ model_key }} --gpu max --context-length {{ model_context }} --parallel {{ parallel }} --yes
+    # Optional host-orchestrated context-length sweep (reloads CT 120 per context,
+    # benches it via the host-telemetry sidecar). Off by default; enable with
+    # -e context_sweep=true. Set benchmarks=[] to run only the context sweep.
+    context_sweep: false
+    context_sweep_contexts: "4096 16384 32768 65536"
+    repo_root: "{{ playbook_dir }}/.."
+    host_suite_dir: /tmp/proxmox-bench
+    results_dest: "{{ playbook_dir }}/../rx-6700-xt/results/{{ runtime_label }}/parallel-{{ parallel }}"
+    benchmarks:
+      - "llm-bench-baseline"
+      - "llm-bench-sweep concurrency --points 1 2 4 8 16 --requests 32"
+      - "llm-bench-sweep input-length --points 128 512 2048 8192 32768 --output-tokens 32"
+      - "llm-bench-soak"
+
+  tasks:
+    - name: Wipe any previous suite copy on the host
+      ansible.builtin.file:
+        path: "{{ host_suite_dir }}"
+        state: absent
+
+    - name: Push the local bench-runner suite to the host (latest, incl. uncommitted)
+      ansible.builtin.copy:
+        src: "{{ repo_root }}/bench-runner/"
+        dest: "{{ host_suite_dir }}/"
+        mode: preserve
+
+    - name: Make the host orchestration scripts executable
+      ansible.builtin.file:
+        path: "{{ host_suite_dir }}/host/{{ item }}"
+        mode: "0755"
+      loop:
+        - run-context-sweep.sh
+        - run-with-host-telemetry.sh
+        - run-with-target-telemetry.sh
+
+    - name: Capture the local source commit (controller)
+      delegate_to: localhost
+      ansible.builtin.command: "git -C {{ repo_root }} rev-parse HEAD"
+      register: local_git_commit
+      changed_when: false
+      failed_when: false
+
+    - name: Capture the local working-tree dirtiness (controller)
+      delegate_to: localhost
+      ansible.builtin.command: "git -C {{ repo_root }} status --short"
+      register: local_git_status
+      changed_when: false
+      failed_when: false
+
+    - name: Record build-info into the host suite copy (provenance for runs)
+      ansible.builtin.copy:
+        dest: "{{ host_suite_dir }}/config/build-info.json"
+        mode: "0644"
+        content: |
+          {
+            "git_commit": "{{ local_git_commit.stdout | default('') | trim }}",
+            "git_dirty": {{ ((local_git_status.stdout | default('')) | trim | length > 0) | to_json }},
+            "source": "ansible/benchmark.yml",
+            "parallel": {{ parallel | int }}
+          }
+
+    - name: Check whether the bench-runner LXC already exists
+      ansible.builtin.command: "pct status {{ bench_vmid }}"
+      register: ct_status
+      failed_when: false
+      changed_when: false
+
+    - name: Provision the bench-runner LXC (only if missing)
+      ansible.builtin.command: "bash ./create-lxc-bench-runner.sh"
+      args:
+        chdir: "{{ host_suite_dir }}"
+      when: ct_status.rc != 0
+
+    # Provisioning only installs the suite at container-creation time, so an
+    # existing CT 200 would otherwise keep running whatever code it was born
+    # with. Always overlay the latest scripts/config so runs use the code we
+    # just pushed. A tar overlay (not a wipe) preserves the provisioning-time
+    # config/local-model.env, which is not part of the repo.
+    - name: Sync the latest suite into the container (overlay; preserves local-model.env)
+      ansible.builtin.shell: |
+        set -e
+        cd "{{ host_suite_dir }}"
+        tar -czf /tmp/bench-suite.tgz scripts config $(ls -1 ./*.md 2>/dev/null | xargs -n1 basename)
+        pct push {{ bench_vmid }} /tmp/bench-suite.tgz /tmp/bench-suite.tgz
+        pct exec {{ bench_vmid }} -- bash -lc '
+          install -d -o bench -g bench /opt/bench-runner &&
+          tar -xzf /tmp/bench-suite.tgz -C /opt/bench-runner &&
+          rm -f /tmp/bench-suite.tgz &&
+          chown -R bench:bench /opt/bench-runner &&
+          chmod +x /opt/bench-runner/scripts/benchmarks/*.sh /opt/bench-runner/scripts/benchmarks/*.py'
+        rm -f /tmp/bench-suite.tgz
+      changed_when: true
+
+    - name: Render the HF_TOKEN fragment on the host
+      ansible.builtin.copy:
+        dest: "{{ host_suite_dir }}/hf.env"
+        content: "HF_TOKEN={{ hf_token }}\n"
+        mode: "0600"
+      no_log: true
+      when: hf_token | default('') | length > 0
+
+    - name: Inject HF_TOKEN into the container's /etc/bench-runner.env (idempotent)
+      ansible.builtin.shell: |
+        set -e
+        pct push {{ bench_vmid }} {{ host_suite_dir }}/hf.env /tmp/hf.env
+        pct exec {{ bench_vmid }} -- bash -lc 'sed -i "/^HF_TOKEN=/d" /etc/bench-runner.env 2>/dev/null || true; cat /tmp/hf.env >> /etc/bench-runner.env; rm -f /tmp/hf.env; chmod 600 /etc/bench-runner.env'
+      no_log: true
+      when: hf_token | default('') | length > 0
+
+    - name: (Re)load the model with the requested parallel slots
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_reload_cmd }}"]
+      changed_when: true
+      when: reload_model | bool
+
+    - name: List result runs before the batch
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ bench_vmid }}", "--", bash, "-lc", "ls -1 /results 2>/dev/null || true"]
+      register: results_before
+      changed_when: false
+
+    # Each item reloads the model first, then runs the benchmark with target-side
+    # telemetry (see ansible/benchmark_item.yml). The per-item reload stops a
+    # cliff-corrupted model from poisoning later benchmarks; failures are
+    # collected in batch_item_results and surfaced at the end, after results are
+    # fetched, so the whole batch still runs. The always-block restores a clean
+    # model even if the last item left it in the sticky cliff-corrupted state.
+    - name: Run the benchmark batch (per-item reload + target telemetry)
+      block:
+        - name: Run each benchmark item
+          ansible.builtin.include_tasks: benchmark_item.yml
+          loop: "{{ benchmarks }}"
+      always:
+        # Don't let a restore failure abort the play before results are fetched;
+        # it's reported at the end alongside any benchmark failures.
+        - name: Restore a clean model after the batch (cliff safety)
+          ansible.builtin.command:
+            argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_reload_cmd }}"]
+          changed_when: true
+          register: post_batch_restore
+          failed_when: false
+          when: reload_model | bool and (benchmarks | length > 0)
+
+    - name: List result runs after the batch
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ bench_vmid }}", "--", bash, "-lc", "ls -1 /results"]
+      register: results_after
+      changed_when: false
+
+    - name: Determine the new run folders
+      ansible.builtin.set_fact:
+        new_runs: "{{ results_after.stdout_lines | difference(results_before.stdout_lines) }}"
+
+    - name: Archive the new runs inside the container
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ bench_vmid }}", "--", bash, "-lc", "cd /results && tar -czf /tmp/bench-results.tgz {{ new_runs | join(' ') }}"]
+      when: new_runs | length > 0
+
+    - name: Pull the archive to the Proxmox host
+      ansible.builtin.command: "pct pull {{ bench_vmid }} /tmp/bench-results.tgz {{ host_suite_dir }}/bench-results.tgz"
+      when: new_runs | length > 0
+
+    - name: Fetch the archive to this machine
+      ansible.builtin.fetch:
+        src: "{{ host_suite_dir }}/bench-results.tgz"
+        dest: "/tmp/proxmox-bench-results.tgz"
+        flat: true
+      when: new_runs | length > 0
+
+    - name: Ensure the local results dir exists
+      delegate_to: localhost
+      ansible.builtin.file:
+        path: "{{ results_dest }}"
+        state: directory
+      when: new_runs | length > 0
+
+    - name: Extract the runs locally
+      delegate_to: localhost
+      # macOS ships BSD tar, which lacks the GNU options the unarchive module
+      # requires; extract directly (BSD tar unpacks .tgz fine).
+      ansible.builtin.command:
+        argv: [tar, -xzf, /tmp/proxmox-bench-results.tgz, -C, "{{ results_dest }}"]
+      changed_when: true
+      when: new_runs | length > 0
+
+    # --- Optional: host-orchestrated context-length sweep -------------------
+    - name: Run the context-length sweep (optional)
+      ansible.builtin.command: "bash {{ host_suite_dir }}/host/run-context-sweep.sh"
+      args:
+        chdir: "{{ host_suite_dir }}"
+      environment:
+        GPU_VMID: "{{ gpu_vmid }}"
+        BENCH_VMID: "{{ bench_vmid }}"
+        MODEL_KEY: "{{ model_key }}"
+        MODEL_PARALLEL: "{{ parallel }}"
+        CONTEXTS: "{{ context_sweep_contexts }}"
+        OUT_DIR: "{{ host_suite_dir }}/context-sweep"
+      when: context_sweep | bool
+
+    - name: Archive the context-sweep output
+      ansible.builtin.command: "tar -czf {{ host_suite_dir }}/context-sweep.tgz -C {{ host_suite_dir }} context-sweep"
+      when: context_sweep | bool
+
+    - name: Fetch the context-sweep archive to this machine
+      ansible.builtin.fetch:
+        src: "{{ host_suite_dir }}/context-sweep.tgz"
+        dest: "/tmp/proxmox-context-sweep.tgz"
+        flat: true
+      when: context_sweep | bool
+
+    - name: Ensure the local runtime results dir exists
+      delegate_to: localhost
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../rx-6700-xt/results/{{ runtime_label }}"
+        state: directory
+      when: context_sweep | bool
+
+    - name: Extract the context sweep locally
+      delegate_to: localhost
+      ansible.builtin.command:
+        argv: [tar, -xzf, /tmp/proxmox-context-sweep.tgz, -C, "{{ playbook_dir }}/../rx-6700-xt/results/{{ runtime_label }}"]
+      changed_when: true
+      when: context_sweep | bool
+
+    - name: Restore the model to the configured context/parallel after the sweep
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_reload_cmd }}"]
+      changed_when: true
+      when: context_sweep | bool and reload_model | bool
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ (new_runs | length) }} new run(s) fetched into {{ results_dest }}:
+          {{ new_runs | join(', ') if new_runs else '(none)' }}
+
+    # Results are already fetched above, so fail loudly *now* if any benchmark
+    # exited non-zero or the post-batch model restore failed — rather than letting
+    # a red run masquerade as success.
+    - name: Fail if any benchmark failed or the model restore failed
+      vars:
+        failed_benchmarks: "{{ (batch_item_results | default([])) | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+        restore_failed: "{{ post_batch_restore is defined and (post_batch_restore.rc | default(0)) != 0 }}"
+      ansible.builtin.fail:
+        msg: >-
+          Run had failures (results still fetched) —
+          failed benchmark(s): {{ failed_benchmarks | join('; ') if failed_benchmarks else 'none' }};
+          post-batch model restore failed: {{ restore_failed }}{{ ' (reload CT ' ~ gpu_vmid ~ ' manually)' if restore_failed else '' }}.
+      when: (failed_benchmarks | length > 0) or restore_failed

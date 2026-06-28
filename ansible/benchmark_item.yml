@@ -1,0 +1,40 @@
+# One benchmark item: reload the model, then run it with target-side telemetry.
+#
+# Reloading per item is deliberate: a cold prefill above ~7k tokens corrupts the
+# model on this GPU (see rx-6700-xt/README.md "Correctness cliff"), and the
+# corruption is sticky until reload. Without a per-item reload, the long
+# input-length sweep poisons every later benchmark (e.g. the soak) with garbage.
+# `item` is the benchmark command string from the loop in benchmark.yml.
+- name: "Reload model before: {{ item }}"
+  ansible.builtin.command:
+    argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_reload_cmd }}"]
+  changed_when: true
+  when: reload_model | bool
+
+- name: "Benchmark: {{ item }}"
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ host_suite_dir }}/host/run-with-target-telemetry.sh"
+      - "--"
+      - pct
+      - exec
+      - "{{ bench_vmid }}"
+      - "--"
+      - bash
+      - "-lc"
+      - "{{ item }}"
+  environment:
+    GPU_VMID: "{{ gpu_vmid }}"
+    BENCH_VMID: "{{ bench_vmid }}"
+    TARGET_PROCESS_PATTERNS: "lms,LM Studio,python"
+    REQUIRE_TARGET_TELEMETRY: "true"
+  register: bench_item
+  failed_when: false
+  changed_when: true
+
+# Accumulate results so the play can fail at the end (after fetching results)
+# if any item exited non-zero, rather than aborting the batch mid-way.
+- name: Record benchmark result
+  ansible.builtin.set_fact:
+    batch_item_results: "{{ (batch_item_results | default([])) + [{'item': item, 'rc': bench_item.rc}] }}"
