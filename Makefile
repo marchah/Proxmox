@@ -20,8 +20,8 @@ ping: ## Test SSH connectivity to the Proxmox host
 check: ## Syntax-check the playbook
 	ansible-playbook $(PLAYBOOK) --syntax-check
 
-smoke: ## Plumbing test: push suite + reload model, run NO benchmarks (RUNTIME overridable)
-	ansible-playbook $(PLAYBOOK) -e runtime=$(RUNTIME) -e '{"benchmarks": []}'
+smoke: ## Plumbing test: push suite + reload model, run NO benchmarks (RUNTIME/PARALLEL overridable)
+	ansible-playbook $(PLAYBOOK) -e parallel=$(PARALLEL) -e runtime=$(RUNTIME) -e '{"benchmarks": []}'
 
 bench: ## Run the full batch (PARALLEL=4 default; RUNTIME=lmstudio|llamacpp; e.g. make bench RUNTIME=llamacpp)
 	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) -e parallel=$(PARALLEL) -e runtime=$(RUNTIME)

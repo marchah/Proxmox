@@ -43,7 +43,7 @@
           S='sudo -u lmstudio env HOME=/home/lmstudio /home/lmstudio/.lmstudio/bin/lms';
           $S unload --all >/dev/null 2>&1 || true;
           $S load {{ model_key }} --gpu max --context-length {{ model_context }} --parallel {{ parallel }} --yes
-        version_cmd: "sudo -u lmstudio env HOME=/home/lmstudio /home/lmstudio/.lmstudio/bin/lms --version 2>/dev/null | head -1"
+        version_cmd: "sudo -u lmstudio env HOME=/home/lmstudio /home/lmstudio/.lmstudio/bin/lms --version 2>&1"
       llamacpp:
         label: llamacpp
         target_process_patterns: "llama-server,python"
@@ -51,7 +51,7 @@
         # the helper the llama.cpp container ships (blocks until healthy).
         # Absolute path: the Ubuntu container's PATH omits /usr/local/bin.
         reload_cmd: "/usr/local/bin/llamacpp-reload {{ model_context }} {{ parallel }}"
-        version_cmd: "/opt/llamacpp/current/llama-server --version 2>&1 | head -1"
+        version_cmd: "/opt/llamacpp/current/llama-server --version 2>&1"
     runtime_label: "{{ runtimes[runtime].label }}"
     model_reload_cmd: "{{ runtimes[runtime].reload_cmd }}"
     # Optional host-orchestrated context-length sweep (reloads CT 120 per context,
@@ -104,9 +104,11 @@
       failed_when: false
 
     # Capture the engine build from the model container itself (CT 120), where the
-    # binary actually lives — the bench-runner can't see it. Best effort: empty if
-    # CT 120 is down or the version command differs. Recorded in build-info so it
-    # travels into each run's versions.json.
+    # binary actually lives — the bench-runner can't see it. The version_cmd merges
+    # stderr (llama-server prints to it) but does NOT pipe to head, so its real exit
+    # code survives; build-info only records the first output line when rc == 0, so
+    # a loader/missing-file error never masquerades as an engine version. Best
+    # effort: empty if CT 120 is down or the command fails.
     - name: Capture the model engine version from CT 120 (best effort)
       ansible.builtin.command:
         argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ runtimes[runtime].version_cmd }}"]
@@ -125,7 +127,7 @@
             "source": "ansible/benchmark.yml",
             "parallel": {{ parallel | int }},
             "runtime": {{ runtime | to_json }},
-            "engine_version": {{ (engine_version_raw.stdout | default('') | trim) | to_json }}
+            "engine_version": {{ ( ((engine_version_raw.stdout | default('')).splitlines() | first | default('') | trim) if (engine_version_raw.rc | default(1)) == 0 else '' ) | to_json }}
           }
 
     - name: Check whether the bench-runner LXC already exists
