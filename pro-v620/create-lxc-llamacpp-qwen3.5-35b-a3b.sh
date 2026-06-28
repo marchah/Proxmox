@@ -31,15 +31,17 @@ readonly MODEL_SHA256="1b0ac637dfa092bbba2793977db9485a40c4f8b42df5fe342f0076d61
 # you pin MODEL_IDENTIFIER / model_key in the benchmark tooling (ansible default
 # is still qwen3.5-9b), set it to this. See pro-v620/README.md.
 readonly MODEL_ALIAS="qwen3.5-35b-a3b"
-# 128k total context = 32k per slot at --parallel 4, sized for ~4 concurrent
-# agents each up to 32k. This MoE's KV cache is cheap (~20 KB/token measured on
-# the V620), so 128k costs only ~2 GiB over the ~22 GB weights (~23 GiB total,
-# verified) and a larger --ctx-size does NOT slow shorter requests (attention is
-# over actual length, not the max). It fits up to the model's ~256k native limit
-# if needed, but bigger contexts DECODE slower (see pro-v620/README.md capacity
-# notes) — raise only if agents actually need >32k. Retune without re-provisioning
-# via `llamacpp-reload <context-length> <parallel>`.
-readonly MODEL_CONTEXT_LENGTH="131072"
+# 256k total context — the model's native maximum (262144), 64k per slot at
+# --parallel 4. This MoE's KV cache is cheap (~20 KB/token), so even 256k fits the
+# V620: ~25.7 GiB of 32 GiB (verified), ~6 GiB margin. A larger --ctx-size does
+# NOT slow shorter requests (attention is over actual length, not the max), so
+# this ceiling is "free" for normal traffic. Daytime ~4 agents share it (64k per
+# slot); for a single long-running (e.g. overnight) agent that needs the whole
+# 256k window, switch to one slot: `llamacpp-reload 262144 1`. Bigger contexts
+# DECODE slower, and a cold 256k prefill takes minutes (fine for an agent that
+# grows context incrementally with prefix caching) — see pro-v620/README.md.
+# Retune live via `llamacpp-reload <context-length> <parallel>`.
+readonly MODEL_CONTEXT_LENGTH="262144"
 # -ngl 99 offloads every layer (including all MoE experts) to the GPU; the whole
 # ~22 GB model fits in the V620's 32 GB (the llama.cpp equivalent of LM Studio's
 # --gpu max).

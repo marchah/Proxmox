@@ -43,7 +43,7 @@ This script is deliberately narrow:
 - Repository: `unsloth/Qwen3.5-35B-A3B-GGUF`
 - File: `Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf` (MoE, single file)
 - Identifier (`--alias`): `qwen3.5-35b-a3b`
-- Context length: `131072` (`--ctx-size`; 32k per slot at `--parallel 4` — KV cache is cheap on this MoE)
+- Context length: `262144` (`--ctx-size`; the model's ~256k native max, 64k per slot at `--parallel 4` — KV cache is cheap on this MoE)
 - GPU offload: `--n-gpu-layers 99` (all layers, including MoE experts)
 - Parallel slots: `--parallel 4` (continuous batching, on by default)
 - Attention / batch: `--flash-attn on --batch-size 4096 --ubatch-size 1024` (tuned — see Benchmarks → Tuning)
@@ -90,17 +90,20 @@ and blocks until `/health` is ready):
 pct exec 120 -- llamacpp-reload <context-length> <parallel>
 ```
 
-The `131072` / `--parallel 4` default splits 128k context across 4
-continuous-batching slots (**32k each**) — sized for ~4 concurrent agents at up to
-32k context. This MoE's KV cache is cheap (~20 KB/token measured), so 128k costs
-only ~2 GiB over the weights (~23 GiB total). A larger `--ctx-size` does not slow
-shorter requests, and it fits up to the model's **~256k native limit** — but
-larger contexts decode slower (see [Multi-agent capacity](#multi-agent-capacity-4--32k)),
-so raise it only if agents actually need >32k. Retune live:
+The `262144` / `--parallel 4` default is the model's **~256k native maximum**,
+split across 4 continuous-batching slots (**64k each**). This MoE's KV cache is
+cheap (~20 KB/token), so even 256k fits the V620 at ~25.7 GiB of 32 (verified,
+~6 GiB margin). A larger `--ctx-size` does not slow shorter requests (attention is
+over actual length), so this ceiling is free for normal traffic — but *using*
+large contexts decodes slower (see [Multi-agent capacity](#multi-agent-capacity-4--32k)).
+
+**Per-slot context = total ÷ parallel.** Switch modes live for the workload:
 
 ```bash
-pct exec 120 -- llamacpp-reload 131072 1   # one slot, full 128k window
-pct exec 120 -- llamacpp-reload 196608 4   # 4 slots × 48k, if agents exceed 32k
+# Daytime — ~4 concurrent agents, 64k each (the default):
+pct exec 120 -- llamacpp-reload 262144 4
+# Overnight — ONE agent needs the full 256k window (single slot, no concurrency):
+pct exec 120 -- llamacpp-reload 262144 1
 ```
 
 (If you ever need more context than VRAM allows, KV-cache quantization is the
@@ -158,7 +161,7 @@ cat /sys/class/drm/card0/device/mem_info_vram_used                  # ~22 GB whi
 ## Benchmarks
 
 Run the suite from the repo root with `make bench` (the defaults are now
-`RUNTIME=llamacpp`, `model_key=qwen3.5-35b-a3b`, `model_context=131072`, so no
+`RUNTIME=llamacpp`, `model_key=qwen3.5-35b-a3b`, `model_context=262144`, so no
 overrides are needed). Results land in `pro-v620/results/llamacpp/parallel-<n>/`.
 
 The throughput/prefill tables below were measured at 64k context (`--parallel 4`);
@@ -236,11 +239,18 @@ to spare. Two performance realities:
   **70–150 s to first token**. **Prefix caching** (automatic per slot) is essential:
   on follow-up turns it re-prefills only the new tokens, turning that into seconds.
 
-Guidance: treat 32k as a **ceiling, not the operating point** — trim agent history
-(≈4–8k keeps decode ~20–30 tok/s/agent), cap output/reasoning length, and reuse a
-stable prefix per agent so the slot cache hits. Speculative decoding (`--model-draft`)
-does **not** help this profile: it targets single-stream decode, not prefill, and its
-benefit shrinks under concurrency and at large context.
+Guidance: treat the per-slot ceiling as a **ceiling, not the operating point** —
+trim agent history (≈4–8k keeps decode ~20–30 tok/s/agent), cap output/reasoning
+length, and reuse a stable prefix per agent so the slot cache hits. Speculative
+decoding (`--model-draft`) does **not** help this profile: it targets single-stream
+decode, not prefill, and its benefit shrinks under concurrency and at large context.
+
+**Overnight long-context mode (`262144/1`)** is verified healthy — one slot owns
+the full **256k** window (25.9 GiB VRAM). A *cold* 256k prefill takes several
+minutes, so this suits a single long-running agent that grows its context
+incrementally (each turn prefix-cached, only new tokens prefilled), not repeated
+cold 256k loads. Switch with `llamacpp-reload 262144 1`, and back to `262144 4`
+for daytime concurrency.
 
 ### GPU thermals (Radeon Pro V620, passively cooled via the `gpu-fan-control` Pump Fan)
 
