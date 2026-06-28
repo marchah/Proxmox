@@ -88,6 +88,19 @@ PY
   fi
 fi
 
+# A reused run id must not inherit stale artifacts (e.g. a previous run's
+# llama-benchy/ dir would reappear in the regenerated report). Reject a
+# non-empty run dir unless BENCHMARK_OVERWRITE=true is set to clear it.
+if [[ -d "${RUN_DIR}" && -n "$(ls -A "${RUN_DIR}" 2>/dev/null)" ]]; then
+  if [[ "${BENCHMARK_OVERWRITE:-false}" == "true" ]]; then
+    printf 'Run dir %s exists; BENCHMARK_OVERWRITE=true — clearing it.\n' "${RUN_DIR}" >&2
+    rm -rf -- "${RUN_DIR:?}"
+  else
+    printf 'Run dir already exists and is non-empty: %s\n' "${RUN_DIR}" >&2
+    printf 'Use a fresh BENCHMARK_RUN_ID, or set BENCHMARK_OVERWRITE=true to clear it.\n' >&2
+    exit 1
+  fi
+fi
 mkdir -p "${RUN_DIR}"
 
 resolve_project_path() {

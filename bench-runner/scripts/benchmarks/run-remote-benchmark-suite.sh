@@ -269,8 +269,11 @@ remote_run_dir="/results/${BENCHMARK_RUN_ID}"
 local_run_dir="${LOCAL_RESULTS_ROOT}/${BENCHMARK_RUN_ID}"
 
 printf 'Downloading results from %s...\n' "${remote_run_dir}"
-download_run "${remote_run_dir}" "${local_run_dir}" || \
-  printf 'Warning: could not download %s\n' "${remote_run_dir}" >&2
+download_status=0
+download_run "${remote_run_dir}" "${local_run_dir}" || download_status=$?
+if [[ "${download_status}" -ne 0 ]]; then
+  printf 'Warning: could not download %s (exit %s)\n' "${remote_run_dir}" "${download_status}" >&2
+fi
 
 if [[ -f "${local_run_dir}/manifest.json" ]]; then
   "${PYTHON_BIN}" "${SCRIPT_DIR}/write-benchmark-report.py" \
@@ -278,11 +281,14 @@ if [[ -f "${local_run_dir}/manifest.json" ]]; then
     --description "${BENCHMARK_DESCRIPTION}" >/dev/null || true
 fi
 
-if [[ "${benchmark_status}" -ne 0 ]]; then
-  printf 'Remote benchmark exited %s; downloaded partial results to %s\n' \
-    "${benchmark_status}" "${local_run_dir}" >&2
+# Fail if either the remote benchmark or the result download failed.
+exit_status="${benchmark_status}"
+[[ "${exit_status}" -eq 0 ]] && exit_status="${download_status}"
+if [[ "${exit_status}" -ne 0 ]]; then
+  printf 'Remote run had failures (benchmark exit %s, download exit %s); partial results in %s\n' \
+    "${benchmark_status}" "${download_status}" "${local_run_dir}" >&2
 else
   printf 'Remote benchmark run complete.\n'
 fi
 printf 'Local results: %s\n' "${local_run_dir}"
-exit "${benchmark_status}"
+exit "${exit_status}"

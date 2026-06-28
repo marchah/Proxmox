@@ -145,9 +145,12 @@ main() {
       sweep_status=1
     fi
 
-    pct pull "${BENCH_VMID}" \
+    if ! pct pull "${BENCH_VMID}" \
       "/results/${run_id}/openai-direct/openai-direct-summary.json" \
-      "${point_dir}/openai-direct-summary.json" 2>/dev/null || true
+      "${point_dir}/openai-direct-summary.json" 2>/dev/null; then
+      log "no summary retrieved for context ${context}"
+      sweep_status=1
+    fi
 
     format_row "${context}" \
       "${point_dir}/openai-direct-summary.json" \
