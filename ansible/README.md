@@ -1,6 +1,9 @@
 # Ansible: one-command benchmark batch
 
-Drives the LM Studio benchmark batch on the Proxmox host from this machine. It:
+Drives the LLM-runtime benchmark batch on the Proxmox host from this machine.
+Works for either inference engine on CT 120 — `RUNTIME=lmstudio` (the default) or
+`RUNTIME=llamacpp`, which selects the reload command, results label, and telemetry
+patterns. It:
 
 1. pushes the local `bench-runner/` suite to the host (latest, incl. uncommitted),
 2. provisions CT 200 if it is missing (idempotent),
@@ -37,6 +40,7 @@ make check           # syntax-check the playbook
 make smoke           # plumbing test (push + reload, no benchmarks)
 make bench           # full batch, --parallel 4 (the operational default)
 make bench PARALLEL=1 # single-slot run
+make bench RUNTIME=llamacpp   # benchmark a llama.cpp CT 120 (default is lmstudio)
 make context-sweep   # context-length sweep on top of the batch
 ```
 
@@ -50,9 +54,9 @@ ansible-playbook ansible/benchmark.yml -e @ansible/secrets.yml
 ansible-playbook ansible/benchmark.yml -e @ansible/secrets.yml -e parallel=1
 ```
 
-Useful extra vars: `parallel`, `reload_model=false` (skip the model reload),
-`runtime_label=vllm` (separate results folder for another runtime), or override the
-`benchmarks` list.
+Useful extra vars: `runtime` (`lmstudio`|`llamacpp`), `parallel`,
+`reload_model=false` (skip the model reload), `runtime_label=<name>` (force a
+separate results folder), or override the `benchmarks` list.
 
 ### Optional: context-length sweep
 
@@ -80,3 +84,6 @@ configured context/`--parallel` afterward (unless `reload_model=false`).
   run data is not committed.
 - Provisioning is skipped if CT 200 already exists; the model reload and the batch
   run every invocation.
+- The batch auto-retargets CT 120's current IP before running, so a recreated or
+  renumbered model container (e.g. after an `lmstudio`→`llamacpp` swap that picks up
+  a new DHCP lease) is benchmarked correctly without hand-editing `local-model.env`.

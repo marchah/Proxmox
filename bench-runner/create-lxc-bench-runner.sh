@@ -127,7 +127,7 @@ discover_target_base_url() {
     fi
   fi
 
-  TARGET_BASE_URL="http://lmstudio:1234/v1"
+  TARGET_BASE_URL="http://llm-runtime:1234/v1"
 }
 
 create_container() {
@@ -332,7 +332,10 @@ if [[ ! -x /home/bench/.local/bin/uv ]]; then
 fi
 
 if [[ ${INSTALL_LLAMA_BENCHY} == 1 ]]; then
-  sudo -u bench bash -lc "export PATH=\"\$HOME/.local/bin:\$PATH\"; uv tool install --force \"${LLAMA_BENCHY_SPEC}\""
+  # sentencepiece + tiktoken let transformers convert "slow" tokenizers, so a
+  # LLAMA_BENCHY_TOKENIZER pointing at a real HF repo yields exact token counts
+  # instead of llama-benchy's gpt2 approximation. (Harmless if unused.)
+  sudo -u bench bash -lc "export PATH=\"\$HOME/.local/bin:\$PATH\"; uv tool install --force \"${LLAMA_BENCHY_SPEC}\" --with sentencepiece --with tiktoken"
   ln -sfn /home/bench/.local/bin/llama-benchy /usr/local/bin/llama-benchy
 fi
 
@@ -388,7 +391,7 @@ is currently served there. MODEL_IDENTIFIER defaulted to
 "local-model" and benchmarks will FAIL until this is fixed.
 
 Fix one of:
-  - Start the LM Studio container, load a model, then edit
+  - Start the LLM runtime container (CT 120), load a model, then edit
     /opt/bench-runner/config/local-model.env (MODEL_IDENTIFIER=).
   - Re-create this LXC with OPENAI_MODEL=<served-model-id>.
   - Re-create this LXC with TARGET_BASE_URL=http://<ip>:1234/v1.
@@ -406,7 +409,7 @@ cat >/opt/bench-runner/config/local-model.env <<EOF
 : "\${RUN_LM_EVAL:=false}"
 : "\${LLAMA_BENCHY_USE_UVX:=false}"
 : "\${BENCHMARK_OUT_ROOT:=${RESULTS_DIR}}"
-: "\${BENCHMARK_PROCESS_PATTERNS:=lms,LM Studio,python,llama-benchy,lm_eval}"
+: "\${BENCHMARK_PROCESS_PATTERNS:=lms,LM Studio,llama-server,python,llama-benchy,lm_eval}"
 EOF
 
 cat >/etc/bench-runner.env <<EOF

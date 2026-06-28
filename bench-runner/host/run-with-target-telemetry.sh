@@ -14,7 +14,7 @@ set -Eeuo pipefail
 # whether the model server was CPU/RAM-bound we must sample the model
 # container. We push system-sampler.py into the target, run it there during the
 # command (its own /proc reports the server's CPU/RAM, and its PID namespace
-# finally matches the `lms`/`LM Studio` process patterns), then merge the
+# finally matches the `lms`/`LM Studio`/`llama-server` process patterns), then merge the
 # captured target-telemetry.jsonl into each new /results/<run-id>/ folder so it
 # travels with the run and survives the result fetch.
 
@@ -25,7 +25,7 @@ readonly SAMPLER="${SCRIPT_DIR}/../scripts/benchmarks/system-sampler.py"
 GPU_VMID="${GPU_VMID:-120}"
 BENCH_VMID="${BENCH_VMID:-200}"
 TELEMETRY_INTERVAL="${TELEMETRY_INTERVAL:-1}"
-TARGET_PROCESS_PATTERNS="${TARGET_PROCESS_PATTERNS:-lms,LM Studio,python}"
+TARGET_PROCESS_PATTERNS="${TARGET_PROCESS_PATTERNS:-lms,LM Studio,llama-server,python}"
 RESULTS_DIR="${RESULTS_DIR:-/results}"
 BENCH_RUNNER_DIR="${BENCH_RUNNER_DIR:-/opt/bench-runner}"
 # When true, fail the wrapper if target telemetry could not be captured (no

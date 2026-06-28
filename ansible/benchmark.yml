@@ -1,5 +1,6 @@
 ---
-# One-command LM Studio benchmark batch, driven from this machine.
+# One-command LLM runtime benchmark batch, driven from this machine.
+# Engine selected by `runtime` (lmstudio | llamacpp); see the `runtimes` map below.
 #
 #   ansible-playbook -i ansible/inventory.ini ansible/benchmark.yml \
 #     -e @ansible/secrets.yml -e parallel=4
@@ -11,14 +12,17 @@
 #
 # The containers have no SSH of their own, so tasks act on them via `pct` on the
 # Proxmox host (this is the "light" orchestrator around the existing bash scripts).
-- name: LM Studio benchmark batch
+- name: LLM runtime benchmark batch
   hosts: proxmox
   gather_facts: false
 
   vars:
     bench_vmid: 200
     gpu_vmid: 120
-    runtime_label: lmstudio
+    # Which inference engine CT 120 is running. Selects the reload command,
+    # results label, and target telemetry process patterns from `runtimes`
+    # below. Override with -e runtime=llamacpp (or `make bench RUNTIME=llamacpp`).
+    runtime: lmstudio
     # Default to 4 slots = the operational CT 120 default, so a plain `make bench`
     # never downgrades the running model. Override with -e parallel=1 for a
     # single-slot run.
@@ -26,12 +30,30 @@
     model_key: qwen3.5-9b
     model_context: 64000
     reload_model: true
-    # Reload LM Studio as the service user (not root) so reloads don't leave
-    # root-owned state in /home/lmstudio. Used at every reload site.
-    model_reload_cmd: >-
-      S='sudo -u lmstudio env HOME=/home/lmstudio /home/lmstudio/.lmstudio/bin/lms';
-      $S unload --all >/dev/null 2>&1 || true;
-      $S load {{ model_key }} --gpu max --context-length {{ model_context }} --parallel {{ parallel }} --yes
+    # Per-engine reload command + labels. The reload command is re-templated by
+    # Ansible, so its inner {{ model_key }}/{{ model_context }}/{{ parallel }}
+    # resolve at run time.
+    runtimes:
+      lmstudio:
+        label: lmstudio
+        target_process_patterns: "lms,LM Studio,python"
+        # Reload as the service user (not root) so reloads don't leave root-owned
+        # state in /home/lmstudio.
+        reload_cmd: >-
+          S='sudo -u lmstudio env HOME=/home/lmstudio /home/lmstudio/.lmstudio/bin/lms';
+          $S unload --all >/dev/null 2>&1 || true;
+          $S load {{ model_key }} --gpu max --context-length {{ model_context }} --parallel {{ parallel }} --yes
+        version_cmd: "sudo -u lmstudio env HOME=/home/lmstudio /home/lmstudio/.lmstudio/bin/lms --version 2>&1"
+      llamacpp:
+        label: llamacpp
+        target_process_patterns: "llama-server,python"
+        # llama-server sets context/parallel at start, so "reload" = restart via
+        # the helper the llama.cpp container ships (blocks until healthy).
+        # Absolute path: the Ubuntu container's PATH omits /usr/local/bin.
+        reload_cmd: "/usr/local/bin/llamacpp-reload {{ model_context }} {{ parallel }}"
+        version_cmd: "/opt/llamacpp/current/llama-server --version 2>&1"
+    runtime_label: "{{ runtimes[runtime].label }}"
+    model_reload_cmd: "{{ runtimes[runtime].reload_cmd }}"
     # Optional host-orchestrated context-length sweep (reloads CT 120 per context,
     # benches it via the host-telemetry sidecar). Off by default; enable with
     # -e context_sweep=true. Set benchmarks=[] to run only the context sweep.
@@ -81,6 +103,19 @@
       changed_when: false
       failed_when: false
 
+    # Capture the engine build from the model container itself (CT 120), where the
+    # binary actually lives — the bench-runner can't see it. The version_cmd merges
+    # stderr (llama-server prints to it) but does NOT pipe to head, so its real exit
+    # code survives; build-info only records the first output line when rc == 0, so
+    # a loader/missing-file error never masquerades as an engine version. Best
+    # effort: empty if CT 120 is down or the command fails.
+    - name: Capture the model engine version from CT 120 (best effort)
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ runtimes[runtime].version_cmd }}"]
+      register: engine_version_raw
+      changed_when: false
+      failed_when: false
+
     - name: Record build-info into the host suite copy (provenance for runs)
       ansible.builtin.copy:
         dest: "{{ host_suite_dir }}/config/build-info.json"
@@ -90,7 +125,9 @@
             "git_commit": "{{ local_git_commit.stdout | default('') | trim }}",
             "git_dirty": {{ ((local_git_status.stdout | default('')) | trim | length > 0) | to_json }},
             "source": "ansible/benchmark.yml",
-            "parallel": {{ parallel | int }}
+            "parallel": {{ parallel | int }},
+            "runtime": {{ runtime | to_json }},
+            "engine_version": {{ ( ((engine_version_raw.stdout | default('')).splitlines() | first | default('') | trim) if (engine_version_raw.rc | default(1)) == 0 else '' ) | to_json }}
           }
 
     - name: Check whether the bench-runner LXC already exists
@@ -140,6 +177,34 @@
         pct exec {{ bench_vmid }} -- bash -lc 'sed -i "/^HF_TOKEN=/d" /etc/bench-runner.env 2>/dev/null || true; cat /tmp/hf.env >> /etc/bench-runner.env; rm -f /tmp/hf.env; chmod 600 /etc/bench-runner.env'
       no_log: true
       when: hf_token | default('') | length > 0
+
+    # The reload path reaches CT 120 by VMID, but the benchmark reaches it by the
+    # MODEL_API_URL baked into CT 200 at provisioning, which the overlay preserves.
+    # After a runtime swap (destroy + recreate CT 120) DHCP can hand out a new IP,
+    # leaving that URL stale. Re-point it at CT 120's current IP every run so the
+    # batch always benchmarks the live endpoint. Port 1234 and MODEL_IDENTIFIER are
+    # unchanged (both engines serve qwen3.5-9b on 1234).
+    - name: Discover the model container's current IP
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ gpu_vmid }}", "--", hostname, -I]
+      register: gpu_ip
+      changed_when: false
+      failed_when: false
+
+    - name: Point the bench-runner at CT 120's current endpoint
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ bench_vmid }}"
+          - --
+          - bash
+          - -lc
+          - >-
+            sed -i -E 's#(MODEL_API_URL:=)http://[^"/]+/v1#\1http://{{ gpu_ip.stdout.split()[0] }}:1234/v1#'
+            /etc/bench-runner.env /opt/bench-runner/config/local-model.env
+      changed_when: true
+      when: gpu_ip.stdout | default('') | trim | length > 0
 
     - name: (Re)load the model with the requested parallel slots
       ansible.builtin.command:
@@ -225,6 +290,7 @@
       environment:
         GPU_VMID: "{{ gpu_vmid }}"
         BENCH_VMID: "{{ bench_vmid }}"
+        RUNTIME: "{{ runtime }}"
         MODEL_KEY: "{{ model_key }}"
         MODEL_PARALLEL: "{{ parallel }}"
         CONTEXTS: "{{ context_sweep_contexts }}"

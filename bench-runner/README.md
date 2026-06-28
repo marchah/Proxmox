@@ -4,7 +4,9 @@ This folder creates a small disposable LXC for running the local AI benchmark
 suite.
 
 The goal is repeatable results across Proxmox changes while keeping benchmark
-tooling out of the LM Studio container.
+tooling out of the LLM runtime container (CT 120). The suite targets an
+OpenAI-compatible `/v1` endpoint, so it benchmarks either runtime engine
+(LM Studio or llama.cpp) without changes.
 
 ## What Gets Installed
 
@@ -82,9 +84,9 @@ The wrappers call the benchmark suite with these profiles:
 - `soak`
 - `quality`
 
-The runner only targets the LM Studio OpenAI-compatible endpoint. Each profile
-runs `openai-direct` and `llama-benchy` by default; the `quality` profile also
-runs `lm-eval`.
+The runner only targets the LLM runtime's OpenAI-compatible endpoint (LM Studio
+or llama.cpp). Each profile runs `openai-direct` and `llama-benchy` by default;
+the `quality` profile also runs `lm-eval`.
 
 For advanced overrides:
 
@@ -109,11 +111,15 @@ Each writes `curve.md`/`curve.json`; the concurrency sweep flags the saturation 
 
 The suite already records GPU util/VRAM/clocks/temps from inside the LXC (see
 Metrics Scope below), so the context sweep is the main host-side tool — it reloads
-LM Studio at each context length, which the in-LXC suite can't do:
+the model at each context length, which the in-LXC suite can't do. The sweep and
+the Ansible batch are **engine-aware** via `RUNTIME` (`lmstudio` | `llamacpp`):
+lmstudio reloads via the `lms` CLI, llamacpp via the container's `llamacpp-reload`
+helper (restart, waits for `/health`).
 
 ```bash
-# Sweep LM Studio context length and correlate VRAM with TTFT/latency/throughput
-CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh
+# Sweep context length and correlate VRAM with TTFT/latency/throughput
+CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh                 # lmstudio (default)
+RUNTIME=llamacpp CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh # llama.cpp
 
 # Optional (redundant with the suite's own telemetry): sample a container's GPU
 # around any command — handy for non-benchmark commands

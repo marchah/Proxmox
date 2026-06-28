@@ -45,7 +45,7 @@ overall_status=0
 
 MODEL_API_URL="${MODEL_API_URL:-http://127.0.0.1:1234/v1}"
 MODEL_IDENTIFIER="${MODEL_IDENTIFIER:-local-model}"
-BENCHMARK_PROCESS_PATTERNS="${BENCHMARK_PROCESS_PATTERNS:-lms,LM Studio,python,llama-benchy,lm_eval}"
+BENCHMARK_PROCESS_PATTERNS="${BENCHMARK_PROCESS_PATTERNS:-lms,LM Studio,llama-server,python,llama-benchy,lm_eval}"
 BENCHMARK_RUNS="${BENCHMARK_RUNS:-3}"
 export MODEL_API_URL MODEL_IDENTIFIER
 export BENCHMARK_PROFILE BENCHMARK_PROMPTSET BENCHMARK_SCENARIOS
@@ -84,7 +84,7 @@ sys.stderr.write(f"Preflight OK: model '{model}' is served at {base_url}\n")
 PY
 
   if [[ "${preflight_status}" -eq 2 ]]; then
-    printf 'Aborting: model API at %s is unreachable. Start the model server (CT 120) or set MODEL_API_URL.\n' "${MODEL_API_URL}" >&2
+    printf 'Aborting: model API at %s is unreachable. Start the LLM runtime (CT 120) or set MODEL_API_URL.\n' "${MODEL_API_URL}" >&2
     printf 'Set BENCHMARK_PREFLIGHT=false to skip this check.\n' >&2
     exit 1
   elif [[ "${preflight_status}" -eq 3 ]]; then
@@ -289,6 +289,21 @@ if [[ "${RUN_LLAMA_BENCHY:-false}" == "true" ]]; then
         --format json
         --save-result "${RUN_DIR}/llama-benchy/llama-benchy-results.json"
       )
+      # Skip llama-benchy's "capital of France -> Paris" coherence gate. A
+      # reasoning model (e.g. Qwen3.5) leads its reply with a <think> block, so
+      # the gate sees no bare "Paris", declares the model incoherent, and aborts
+      # the whole benchmark. Skipping it lets the throughput run proceed; set
+      # LLAMA_BENCHY_SKIP_COHERENCE=false to re-enable for a non-reasoning model.
+      if [[ "${LLAMA_BENCHY_SKIP_COHERENCE:-true}" == "true" ]]; then
+        llama_benchy_args+=(--skip-coherence)
+      fi
+      # Accurate token accounting needs a real tokenizer. llama-benchy otherwise
+      # defaults to the served model id (here the alias "qwen3.5-9b", not a HF
+      # repo) and falls back to a gpt2 approximation. Point LLAMA_BENCHY_TOKENIZER
+      # at the model's HF repo (e.g. unsloth/Qwen3.5-9B-GGUF) for exact counts.
+      if [[ -n "${LLAMA_BENCHY_TOKENIZER:-}" ]]; then
+        llama_benchy_args+=(--tokenizer "${LLAMA_BENCHY_TOKENIZER}")
+      fi
     fi
     run_with_telemetry "llama-benchy" "${llama_benchy_command[@]}" "${llama_benchy_args[@]}"
   fi

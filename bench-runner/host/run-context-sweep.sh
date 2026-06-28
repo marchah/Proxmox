@@ -2,17 +2,22 @@
 
 set -Eeuo pipefail
 
-# Run on the Proxmox host. Sweeps LM Studio context length: for each length it
+# Run on the Proxmox host. Sweeps the model's context length: for each length it
 # reloads the model in the GPU container, runs a short OpenAI-direct baseline
 # from the bench-runner LXC while sampling GPU telemetry, and records VRAM, GPU
 # utilization, TTFT, latency, and throughput per context. Context length (KV
 # cache) is usually the dominant VRAM/serving bottleneck, so this maps it.
+#
+# Works for both LLM runtime engines, selected by RUNTIME (default lmstudio):
+#   lmstudio — reload via the `lms` CLI (unload/load at the new context).
+#   llamacpp — reload via the container's `llamacpp-reload` helper (restart).
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 
 GPU_VMID="${GPU_VMID:-120}"
 BENCH_VMID="${BENCH_VMID:-200}"
+RUNTIME="${RUNTIME:-lmstudio}"
 MODEL_KEY="${MODEL_KEY:-qwen3.5-9b}"
 MODEL_GPU_OFFLOAD="${MODEL_GPU_OFFLOAD:-max}"
 MODEL_PARALLEL="${MODEL_PARALLEL:-1}"
@@ -32,7 +37,8 @@ Run on the Proxmox host as root:
 
 Env overrides:
   GPU_VMID=120 BENCH_VMID=200   Container ids.
-  MODEL_KEY=qwen3.5-9b          LM Studio model identifier to (re)load.
+  RUNTIME=lmstudio              Engine on the GPU container: lmstudio | llamacpp.
+  MODEL_KEY=qwen3.5-9b          Model identifier to (re)load (lmstudio reload + label).
   CONTEXTS="4096 16384 32768 65536"
   BENCHMARK_REQUESTS=5          Requests per context point.
   OUT_DIR=./context-sweep       Output directory.
@@ -45,11 +51,22 @@ log() { printf '\n==> %s\n' "$*"; }
 require_root() { [[ ${EUID} -eq 0 ]] || die "run on the Proxmox host as root"; }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"; }
 
+# Reload the model at a given context length. Dispatches on RUNTIME: LM Studio
+# hot-reloads via `lms load`; llama.cpp sets context/parallel at start, so its
+# container ships `llamacpp-reload` (rewrite env + restart, blocks until the
+# server is healthy again). Both return only once the model is serving.
 reload_model() {
   local context="$1"
-  pct exec "${GPU_VMID}" -- bash -s -- \
-    "${LMS_USER}" "${LMS_BIN}" "${MODEL_KEY}" "${context}" \
-    "${MODEL_GPU_OFFLOAD}" "${MODEL_PARALLEL}" <<'REMOTE'
+  case "${RUNTIME}" in
+    llamacpp)
+      # Absolute path: the Ubuntu container's PATH omits /usr/local/bin even for
+      # a login shell, so neither bare `pct exec` nor `bash -lc` would find it.
+      pct exec "${GPU_VMID}" -- /usr/local/bin/llamacpp-reload "${context}" "${MODEL_PARALLEL}"
+      ;;
+    lmstudio)
+      pct exec "${GPU_VMID}" -- bash -s -- \
+        "${LMS_USER}" "${LMS_BIN}" "${MODEL_KEY}" "${context}" \
+        "${MODEL_GPU_OFFLOAD}" "${MODEL_PARALLEL}" <<'REMOTE'
 set -Eeuo pipefail
 user="$1"; lms="$2"; key="$3"; ctx="$4"; gpu="$5"; parallel="$6"
 home="/home/${user}"
@@ -57,6 +74,11 @@ sudo -u "$user" env HOME="$home" "$lms" unload --all >/dev/null 2>&1 || true
 sudo -u "$user" env HOME="$home" "$lms" load "$key" \
   --context-length "$ctx" --gpu "$gpu" --parallel "$parallel" --yes
 REMOTE
+      ;;
+    *)
+      die "unknown RUNTIME '${RUNTIME}' (expected lmstudio or llamacpp)"
+      ;;
+  esac
 }
 
 format_row() {
