@@ -144,14 +144,21 @@ def is_garbage_output(text: str) -> bool:
 
 
 def expected_substrings(expected: Any) -> list[str]:
-    """Normalize a promptset 'expected' field to a list of required substrings."""
+    """Normalize a promptset 'expected' field to a list of required substrings.
+
+    Accepts a bare string or a list, either at the top level or under a
+    `contains` key. A string is treated as one substring (not split into chars).
+    """
+    def as_list(value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value] if value else []
+        if isinstance(value, (list, tuple)):
+            return [str(x) for x in value]
+        return []
+
     if isinstance(expected, dict):
-        return [str(x) for x in expected.get("contains", [])]
-    if isinstance(expected, (list, tuple)):
-        return [str(x) for x in expected]
-    if isinstance(expected, str) and expected:
-        return [expected]
-    return []
+        return as_list(expected.get("contains"))
+    return as_list(expected)
 
 
 def parse_stream_line(line: bytes) -> dict[str, Any] | None:
@@ -259,7 +266,10 @@ def request_chat(
     # content is not a successful request — demote it so it lands in error_count
     # and is excluded from latency/throughput stats.
     if status == "ok":
-        if is_garbage_output(output_text):
+        if not output_text.strip():
+            status = "invalid_output"
+            error = "empty response (HTTP 200 but no generated text)"
+        elif is_garbage_output(output_text):
             status = "invalid_output"
             error = "non-text output (>50% '?'/replacement chars) — likely the cold-prefill cliff"
         elif expected_contains:

@@ -165,10 +165,14 @@
           ansible.builtin.include_tasks: benchmark_item.yml
           loop: "{{ benchmarks }}"
       always:
+        # Don't let a restore failure abort the play before results are fetched;
+        # it's reported at the end alongside any benchmark failures.
         - name: Restore a clean model after the batch (cliff safety)
           ansible.builtin.command:
             argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_reload_cmd }}"]
           changed_when: true
+          register: post_batch_restore
+          failed_when: false
           when: reload_model | bool and (benchmarks | length > 0)
 
     - name: List result runs after the batch
@@ -265,10 +269,15 @@
           {{ new_runs | join(', ') if new_runs else '(none)' }}
 
     # Results are already fetched above, so fail loudly *now* if any benchmark
-    # exited non-zero rather than letting a red run masquerade as success.
-    - name: Fail if any benchmark exited non-zero
+    # exited non-zero or the post-batch model restore failed — rather than letting
+    # a red run masquerade as success.
+    - name: Fail if any benchmark failed or the model restore failed
       vars:
         failed_benchmarks: "{{ (batch_item_results | default([])) | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+        restore_failed: "{{ post_batch_restore is defined and (post_batch_restore.rc | default(0)) != 0 }}"
       ansible.builtin.fail:
-        msg: "{{ failed_benchmarks | length }} benchmark(s) failed (results still fetched): {{ failed_benchmarks | join('; ') }}"
-      when: failed_benchmarks | length > 0
+        msg: >-
+          Run had failures (results still fetched) —
+          failed benchmark(s): {{ failed_benchmarks | join('; ') if failed_benchmarks else 'none' }};
+          post-batch model restore failed: {{ restore_failed }}{{ ' (reload CT ' ~ gpu_vmid ~ ' manually)' if restore_failed else '' }}.
+      when: (failed_benchmarks | length > 0) or restore_failed

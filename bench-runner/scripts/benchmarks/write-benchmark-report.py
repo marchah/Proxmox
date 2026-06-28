@@ -327,7 +327,12 @@ def collect_gpu_clock_mhz(snapshot: dict[str, Any]) -> dict[str, float]:
 
 
 def cpu_utilization(records: list[dict[str, Any]]) -> tuple[float | None, float | None]:
-    """Derive CPU utilization % from consecutive /proc/stat (cpu total) samples."""
+    """Derive CPU utilization % from consecutive /proc/stat (cpu total) samples.
+
+    Excludes guest/guest_nice from the total: Linux already folds them into
+    user/nice, so summing them again would inflate the denominator.
+    """
+    fields = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal")
     utils: list[float] = []
     prev = None
     for record in records:
@@ -337,9 +342,7 @@ def cpu_utilization(records: list[dict[str, Any]]) -> tuple[float | None, float 
             continue
         if prev is not None:
             idle = (total.get("idle", 0) + total.get("iowait", 0)) - (prev.get("idle", 0) + prev.get("iowait", 0))
-            delta = sum(v for v in total.values() if isinstance(v, (int, float))) - sum(
-                v for v in prev.values() if isinstance(v, (int, float))
-            )
+            delta = sum(total.get(k, 0) for k in fields) - sum(prev.get(k, 0) for k in fields)
             if delta > 0:
                 utils.append(max(0.0, min(100.0, 100.0 * (1.0 - idle / delta))))
         prev = total
