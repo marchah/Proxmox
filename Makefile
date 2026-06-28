@@ -5,6 +5,7 @@
 PLAYBOOK := ansible/benchmark.yml
 SECRETS  := ansible/secrets.yml
 PARALLEL ?= 4
+RUNTIME  ?= lmstudio
 
 .DEFAULT_GOAL := help
 .PHONY: help ping check smoke bench context-sweep
@@ -22,8 +23,8 @@ check: ## Syntax-check the playbook
 smoke: ## Plumbing test: push suite + reload model, run NO benchmarks
 	ansible-playbook $(PLAYBOOK) -e '{"benchmarks": []}'
 
-bench: ## Run the full batch (default PARALLEL=4 = operational; e.g. make bench PARALLEL=1)
-	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) -e parallel=$(PARALLEL)
+bench: ## Run the full batch (PARALLEL=4 default; RUNTIME=lmstudio|llamacpp; e.g. make bench RUNTIME=llamacpp)
+	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) -e parallel=$(PARALLEL) -e runtime=$(RUNTIME)
 
-context-sweep: ## Run the context-length sweep on top of the batch (PARALLEL overridable)
-	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) -e parallel=$(PARALLEL) -e context_sweep=true
+context-sweep: ## Run the context-length sweep on top of the batch (PARALLEL/RUNTIME overridable)
+	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) -e parallel=$(PARALLEL) -e runtime=$(RUNTIME) -e context_sweep=true

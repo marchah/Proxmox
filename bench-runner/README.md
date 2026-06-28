@@ -111,14 +111,15 @@ Each writes `curve.md`/`curve.json`; the concurrency sweep flags the saturation 
 
 The suite already records GPU util/VRAM/clocks/temps from inside the LXC (see
 Metrics Scope below), so the context sweep is the main host-side tool — it reloads
-the model at each context length, which the in-LXC suite can't do. Note: the
-context sweep (and the Ansible batch) are currently **LM Studio-specific** — they
-reload via the `lms` CLI. For a llama.cpp CT 120, reload with `llamacpp-reload`
-(`pct exec 120 -- llamacpp-reload <ctx> <parallel>`) instead.
+the model at each context length, which the in-LXC suite can't do. The sweep and
+the Ansible batch are **engine-aware** via `RUNTIME` (`lmstudio` | `llamacpp`):
+lmstudio reloads via the `lms` CLI, llamacpp via the container's `llamacpp-reload`
+helper (restart, waits for `/health`).
 
 ```bash
-# Sweep context length and correlate VRAM with TTFT/latency/throughput (LM Studio)
-CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh
+# Sweep context length and correlate VRAM with TTFT/latency/throughput
+CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh                 # lmstudio (default)
+RUNTIME=llamacpp CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh # llama.cpp
 
 # Optional (redundant with the suite's own telemetry): sample a container's GPU
 # around any command — handy for non-benchmark commands

@@ -174,12 +174,13 @@ set `BENCHMARK_PROFILE`/`BENCHMARK_RUN_ID`, and exec the suite. They are generat
   Ansible batch wraps every run with it and merges `target-telemetry.jsonl` into the result.
   `run-context-sweep.sh` reloads LM Studio at each context length and
   correlates VRAM with TTFT/latency/throughput — still useful, because the per-context reload
-  is the part the in-LXC suite can't do. **Caveat: the model-reload paths — `run-context-
-  sweep.sh` and the Ansible batch's per-item reload (`ansible/benchmark.yml` `model_reload_cmd`,
-  `ansible/benchmark_item.yml`) — are LM-Studio-specific (they shell out to the `lms` CLI).**
-  The in-LXC suite and telemetry are engine-neutral; only these host reload hooks assume LM
-  Studio. For a llama.cpp CT 120, reload with `llamacpp-reload <ctx> <parallel>` instead (they
-  have not been generalized — minimal scope).
+  is the part the in-LXC suite can't do. **The model-reload paths are engine-aware via a
+  `runtime` selector (`lmstudio` | `llamacpp`):** `ansible/benchmark.yml` carries a `runtimes`
+  map (per-engine `reload_cmd` + `target_process_patterns` + results `label`) and
+  `host/run-context-sweep.sh` dispatches `reload_model` on `RUNTIME`. lmstudio reloads via the
+  `lms` CLI; llamacpp via the container's `llamacpp-reload <ctx> <parallel>` (restart, blocks
+  until `/health` is ready). Drive it with `make bench RUNTIME=llamacpp` /
+  `make context-sweep RUNTIME=llamacpp` (default `lmstudio`).
 
 ### Results & data model
 

@@ -314,7 +314,9 @@ EOS
 chmod 755 /usr/local/bin/llamacpp-serve
 
 # 5. Reload helper: the llama.cpp analog of `lms load --context-length
-# --parallel`. Rewrites the tunables and restarts the server. Run as root.
+# --parallel`. Rewrites the tunables, restarts the server, and BLOCKS until
+# llama-server is serving again — so callers (a benchmark preflight, the context
+# sweep) don't race the restart while the model reloads into VRAM. Run as root.
 cat >/usr/local/bin/llamacpp-reload <<'EOS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -325,6 +327,17 @@ sed -i \
   -e "s/^MODEL_PARALLEL=.*/MODEL_PARALLEL=${parallel}/" \
   /etc/llamacpp.env
 systemctl restart llamacpp.service
+# Wait for the /health endpoint to report ready (200) — model load into VRAM
+# takes time, and `systemctl restart` returns as soon as the process spawns.
+port="$(. /etc/llamacpp.env; printf '%s' "${MODEL_SERVER_PORT:-1234}")"
+for _ in $(seq 1 150); do
+  if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 2
+done
+printf 'llamacpp-reload: server did not become healthy in time\n' >&2
+exit 1
 EOS
 chmod 755 /usr/local/bin/llamacpp-reload
 

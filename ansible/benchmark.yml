@@ -1,5 +1,6 @@
 ---
-# One-command LM Studio benchmark batch, driven from this machine.
+# One-command LLM runtime benchmark batch, driven from this machine.
+# Engine selected by `runtime` (lmstudio | llamacpp); see the `runtimes` map below.
 #
 #   ansible-playbook -i ansible/inventory.ini ansible/benchmark.yml \
 #     -e @ansible/secrets.yml -e parallel=4
@@ -11,14 +12,17 @@
 #
 # The containers have no SSH of their own, so tasks act on them via `pct` on the
 # Proxmox host (this is the "light" orchestrator around the existing bash scripts).
-- name: LM Studio benchmark batch
+- name: LLM runtime benchmark batch
   hosts: proxmox
   gather_facts: false
 
   vars:
     bench_vmid: 200
     gpu_vmid: 120
-    runtime_label: lmstudio
+    # Which inference engine CT 120 is running. Selects the reload command,
+    # results label, and target telemetry process patterns from `runtimes`
+    # below. Override with -e runtime=llamacpp (or `make bench RUNTIME=llamacpp`).
+    runtime: lmstudio
     # Default to 4 slots = the operational CT 120 default, so a plain `make bench`
     # never downgrades the running model. Override with -e parallel=1 for a
     # single-slot run.
@@ -26,12 +30,27 @@
     model_key: qwen3.5-9b
     model_context: 64000
     reload_model: true
-    # Reload LM Studio as the service user (not root) so reloads don't leave
-    # root-owned state in /home/lmstudio. Used at every reload site.
-    model_reload_cmd: >-
-      S='sudo -u lmstudio env HOME=/home/lmstudio /home/lmstudio/.lmstudio/bin/lms';
-      $S unload --all >/dev/null 2>&1 || true;
-      $S load {{ model_key }} --gpu max --context-length {{ model_context }} --parallel {{ parallel }} --yes
+    # Per-engine reload command + labels. The reload command is re-templated by
+    # Ansible, so its inner {{ model_key }}/{{ model_context }}/{{ parallel }}
+    # resolve at run time.
+    runtimes:
+      lmstudio:
+        label: lmstudio
+        target_process_patterns: "lms,LM Studio,python"
+        # Reload as the service user (not root) so reloads don't leave root-owned
+        # state in /home/lmstudio.
+        reload_cmd: >-
+          S='sudo -u lmstudio env HOME=/home/lmstudio /home/lmstudio/.lmstudio/bin/lms';
+          $S unload --all >/dev/null 2>&1 || true;
+          $S load {{ model_key }} --gpu max --context-length {{ model_context }} --parallel {{ parallel }} --yes
+      llamacpp:
+        label: llamacpp
+        target_process_patterns: "llama-server,python"
+        # llama-server sets context/parallel at start, so "reload" = restart via
+        # the helper the llama.cpp container ships (blocks until healthy).
+        reload_cmd: "llamacpp-reload {{ model_context }} {{ parallel }}"
+    runtime_label: "{{ runtimes[runtime].label }}"
+    model_reload_cmd: "{{ runtimes[runtime].reload_cmd }}"
     # Optional host-orchestrated context-length sweep (reloads CT 120 per context,
     # benches it via the host-telemetry sidecar). Off by default; enable with
     # -e context_sweep=true. Set benchmarks=[] to run only the context sweep.
@@ -225,6 +244,7 @@
       environment:
         GPU_VMID: "{{ gpu_vmid }}"
         BENCH_VMID: "{{ bench_vmid }}"
+        RUNTIME: "{{ runtime }}"
         MODEL_KEY: "{{ model_key }}"
         MODEL_PARALLEL: "{{ parallel }}"
         CONTEXTS: "{{ context_sweep_contexts }}"
