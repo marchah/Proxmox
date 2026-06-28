@@ -59,6 +59,20 @@ Both default to CT `120` and serve an OpenAI-compatible API on `0.0.0.0:1234`,
 so they are **mutually exclusive** — run one at a time (only one can use the
 12 GiB GPU). See [rx-6700-xt/README.md](rx-6700-xt/README.md).
 
+**Recommended: llama.cpp with `--parallel 4`** (the script default). For
+`Qwen3.5-9B-Q4_K_M` at 64 k context on this GPU:
+
+| Metric | LM Studio | **llama.cpp** |
+| --- | ---: | ---: |
+| Single-stream | 53 tok/s | **56 tok/s** |
+| Concurrent aggregate (4 slots) | ~47 tok/s | **80 tok/s** |
+| Cold prefill ≥ 6 k tokens | **garbage** | correct (to 32 k) |
+
+Single-user speed is a wash (~56 tok/s, ~0.2 s first token), but llama.cpp roughly
+doubles concurrent throughput and — unlike LM Studio — never corrupts long cold
+prompts. Both are GPU-bound (~99 % util, ~7 GiB / 12 GiB VRAM). Full data and
+methodology: [rx-6700-xt/README.md#recommendation](rx-6700-xt/README.md#recommendation).
+
 Run directly on the Proxmox host without cloning the repo:
 
 ```bash
