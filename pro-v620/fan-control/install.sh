@@ -105,8 +105,12 @@ build_driver() {
   # to sudo, which a minimal Proxmox host may not have — we are already root).
   cp "$tmp/dkms.conf" "$tmp/Makefile" "$tmp/nct6687.c" /usr/src/nct6687d-1/
   dkms install nct6687d/1 || die "DKMS build/install failed (see /var/lib/dkms/nct6687d/1/build/make.log)"
+  # Record the SHA we actually built (resolved HEAD), so an unpinned branch ref is
+  # stored as a real commit — not the literal "master" — and later pinning to that
+  # exact commit correctly skips a rebuild.
+  local built_sha; built_sha="$(git -C "$tmp" rev-parse HEAD 2>/dev/null)"
   rm -rf "$tmp"
-  printf '%s\n' "$NCT6687D_REF" > "$DRIVER_SHA_FILE"
+  printf '%s\n' "${built_sha:-$NCT6687D_REF}" > "$DRIVER_SHA_FILE"
 }
 
 # Make nct6687 (the writable driver) the loaded module. On a rebuild, force a
@@ -128,13 +132,14 @@ ensure_driver() {
   dkms status 2>/dev/null | grep -q '^nct6687d' && registered=1
   dkms status nct6687d 2>/dev/null | grep -F "$kver" | grep -q ': installed' && built_here=1
 
-  # Rebuild when not registered, when the reviewed SHA changed, or when there is
-  # no module for the running kernel (e.g. after a kernel upgrade). A bare
-  # registration check would silently ignore a bumped NCT6687D_REF.
+  # Rebuild when not registered, in unpinned mode (the ref is a moving target, so
+  # always rebuild it), when the reviewed SHA changed, or when there is no module
+  # for the running kernel (e.g. after a kernel upgrade). A bare registration check
+  # would silently ignore a bumped NCT6687D_REF or an unpinned override.
   local need=0 reason=""
   if   (( ! registered )); then need=1; reason="not registered with DKMS"
-  elif [ "${NCT6687D_ALLOW_UNPINNED:-0}" != "1" ] && [ "$NCT6687D_REF" != "$installed_sha" ]; then
-    need=1; reason="driver SHA change (${installed_sha:-unknown} -> $NCT6687D_REF)"
+  elif [ "${NCT6687D_ALLOW_UNPINNED:-0}" = "1" ]; then need=1; reason="unpinned mode (rebuilding $NCT6687D_REF)"
+  elif [ "$NCT6687D_REF" != "$installed_sha" ]; then need=1; reason="driver SHA change (${installed_sha:-unknown} -> $NCT6687D_REF)"
   elif (( ! built_here )); then need=1; reason="no module built for kernel $kver"
   fi
 

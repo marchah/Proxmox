@@ -73,7 +73,8 @@ The installer pins the driver to a reviewed **full commit SHA** (it is built and
 loaded into the kernel as root). To move to a newer driver — e.g. if a future
 kernel fails to build the pinned commit — review the upstream diff and pin its
 SHA: `NCT6687D_REF=<40-char-sha> ./pro-v620/fan-control/install.sh`. A moving ref
-like `master` is rejected unless you set `NCT6687D_ALLOW_UNPINNED=1`.
+like `master` is rejected unless you set `NCT6687D_ALLOW_UNPINNED=1`, in which case
+the driver is **rebuilt on every run** (and the resolved commit SHA is recorded).
 
 ## Operate
 
