@@ -12,13 +12,17 @@ root**. macOS is only the authoring/editing environment; the scripts run remotel
 
 Two containers form the system:
 
-- **CT 120** (`rx-6700-xt/`): a *privileged* Ubuntu LXC — the **LLM runtime** — serving
-  `Qwen3.5-9B-Q4_K_M.gguf` on a Radeon RX 6700 XT via Vulkan, exposing an OpenAI-compatible
-  API at `0.0.0.0:1234`. Two **interchangeable engine scripts** target this slot; both
-  default to VMID 120 and serve the model under the id `qwen3.5-9b`, so they are mutually
-  exclusive — run one at a time (only one can use the GPU):
-  - `create-lxc-lmstudio-qwen3.5-9b.sh` — LM Studio's `lms` CLI (hostname `lmstudio`).
-  - `create-lxc-llamacpp-qwen3.5-9b.sh` — llama.cpp's `llama-server` (hostname `llamacpp`).
+- **CT 120** (`pro-v620/`): a *privileged* Ubuntu LXC — the **LLM runtime** — serving
+  `Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf` (MoE, 35B total / ~3B active) on a **Radeon Pro V620**
+  (Navi 21 / gfx1030, 32 GB) via Vulkan, exposing an OpenAI-compatible API at `0.0.0.0:1234`
+  under the id `qwen3.5-35b-a3b`:
+  - `pro-v620/create-lxc-llamacpp-qwen3.5-35b-a3b.sh` — llama.cpp's `llama-server`
+    (hostname `llamacpp`). This is the current GPU/model.
+  - **Prior GPU (`rx-6700-xt/`, kept for reference):** the V620 replaced a Radeon RX 6700 XT
+    (12 GiB) that served `Qwen3.5-9B-Q4_K_M.gguf` (id `qwen3.5-9b`) via two interchangeable
+    engine scripts — `create-lxc-lmstudio-qwen3.5-9b.sh` (LM Studio `lms`) and
+    `create-lxc-llamacpp-qwen3.5-9b.sh` (llama.cpp). The README found llama.cpp better on
+    that card, which is why the V620 ships only the llama.cpp script.
 - **CT 200 `bench-runner`** (`bench-runner/`): an *unprivileged* Debian LXC that benchmarks
   that endpoint. It auto-discovers CT 120's IP at provisioning time. It lives in the
   `200+` test/temporary range because it is disposable — destroy it when done. The suite is
@@ -31,7 +35,9 @@ VMIDs `120`/`200` and hostnames are defaults overridable via env vars (`VMID=`, 
 All run on the Proxmox host as root.
 
 ```bash
-# Provision the GPU LLM-runtime container (CT 120) — pick ONE engine (mutually exclusive)
+# Provision the GPU LLM-runtime container (CT 120) — current GPU: Radeon Pro V620
+./pro-v620/create-lxc-llamacpp-qwen3.5-35b-a3b.sh # llama.cpp (llama-server), Qwen3.5-35B-A3B MoE
+# Prior GPU (RX 6700 XT) — kept for reference; pick ONE engine (mutually exclusive)
 ./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
 ./rx-6700-xt/create-lxc-llamacpp-qwen3.5-9b.sh    # llama.cpp (llama-server)
 
@@ -73,11 +79,16 @@ sub-scripts into the container via `pct exec ... bash -s`. Match this idiom when
 **GPU/model/engine scripts are intentionally narrow, not generic.** Per the README, each GPU
 folder owns its own model/runtime assumptions (GPU runtime flags, context size, VRAM sizing).
 A different GPU, model, *or inference engine* should get a *new* script, not a parameterized
-mega-launcher — the RX 6700 XT already has two sibling scripts (`...-lmstudio-...` and
-`...-llamacpp-...`) serving the same model on the same GPU via Vulkan.
-For the RX 6700 XT this means Vulkan (mesa RADV) — the container installs `mesa-vulkan-drivers`
-and passes through `/dev/dri` (render node `renderD128`) — plus a pinned model repo/file/SHA-256
-in a privileged container.
+mega-launcher — the RX 6700 XT has two sibling scripts (`...-lmstudio-...` and
+`...-llamacpp-...`) serving the same model on the same GPU via Vulkan, and the V620 got a
+brand-new folder/script (`pro-v620/create-lxc-llamacpp-qwen3.5-35b-a3b.sh`) for its larger
+32 GB / MoE model rather than a flag on the 6700 XT script.
+Both GPUs use Vulkan (mesa RADV) — Navi 22/gfx1031 on the 6700 XT, Navi 21/gfx1030 on the
+V620 — the container installs `mesa-vulkan-drivers` and passes through `/dev/dri` (render node
+`renderD128`), plus a pinned model repo/file/SHA-256 in a privileged container. (The V620
+model is a single-file unsharded GGUF, so the download/verify path is unchanged; on 32 GB it
+defaults to ctx 65536 / `--parallel 4` (this MoE's KV cache is cheap, ~20 KB/token), tunable
+via `llamacpp-reload`.)
 
 Engine differences that matter when extending the llama.cpp script:
 - It installs a **pinned prebuilt Vulkan `llama-server` release** (tag + tarball SHA-256 in
@@ -89,8 +100,12 @@ Engine differences that matter when extending the llama.cpp script:
   flags**, so its container ships a `llamacpp-reload <ctx> <parallel>` helper (rewrites
   `/etc/llamacpp.env` + `systemctl restart`) and a `Type=simple` service running
   `/usr/local/bin/llamacpp-serve`.
-- `llama-server --alias qwen3.5-9b` makes `/v1/models` report a stable id (else it reports the
-  model file path); that id is what the bench-runner records as `MODEL_IDENTIFIER`.
+- `llama-server --alias <id>` makes `/v1/models` report a stable id (else it reports the
+  model file path); that id is what the bench-runner records as `MODEL_IDENTIFIER` (the V620
+  serves `qwen3.5-35b-a3b`, the 6700 XT served `qwen3.5-9b`). The bench-runner auto-detects
+  it from `/v1/models`, but `ansible/benchmark.yml` and `host/run-context-sweep.sh` still
+  default `model_key`/`MODEL_KEY` to `qwen3.5-9b` — override to the served id when benchmarking
+  the V620.
 
 ### Dual-mode install (critical gotcha)
 
@@ -202,15 +217,16 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
 - **VMID allocation** (homelab-wide scheme — pick a new script's default `VMID` from the
   matching range):
   - `100-119` — infra / services
-  - `120-139` — AI/LLM containers (CT 120 LLM runtime: `lmstudio` or `llamacpp`)
+  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp` on the V620; the
+    prior 6700 XT also offered an `lmstudio` variant)
   - `140-159` — databases
   - `200+` — test / temporary (CT 200 `bench-runner` — disposable benchmark LXC)
 - Keep downloaded model weights and generated results out of git (already covered by
   `.gitignore`: `models/`, `results/`, `artifacts/`, `bench-results*.tgz`, `.env*`).
 - Container model storage (`/models`) uses `backup=0` — weights are large and
   re-downloadable; back up container config / service files / small state separately.
-- The RX 6700 XT is driven via **Vulkan** (mesa RADV): the container installs the Vulkan
-  userspace (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and passes through `/dev/dri`
-  (render node `renderD128`). The engine offloads all layers to the GPU (LM Studio
-  `--gpu max`, llama.cpp `-ngl 99`); verify with `vulkaninfo` and a non-trivial
-  `mem_info_vram_used`.
+- Both AMD GPUs are driven via **Vulkan** (mesa RADV) — the V620 (Navi 21/gfx1030) and the
+  prior RX 6700 XT (Navi 22/gfx1031): the container installs the Vulkan userspace
+  (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and passes through `/dev/dri` (render node
+  `renderD128`). The engine offloads all layers to the GPU (LM Studio `--gpu max`, llama.cpp
+  `-ngl 99`); verify with `vulkaninfo` and a non-trivial `mem_info_vram_used`.

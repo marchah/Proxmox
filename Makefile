@@ -5,7 +5,7 @@
 PLAYBOOK := ansible/benchmark.yml
 SECRETS  := ansible/secrets.yml
 PARALLEL ?= 4
-RUNTIME  ?= lmstudio
+RUNTIME  ?= llamacpp
 
 .DEFAULT_GOAL := help
 .PHONY: help ping check smoke bench context-sweep

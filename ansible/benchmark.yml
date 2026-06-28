@@ -21,14 +21,19 @@
     gpu_vmid: 120
     # Which inference engine CT 120 is running. Selects the reload command,
     # results label, and target telemetry process patterns from `runtimes`
-    # below. Override with -e runtime=llamacpp (or `make bench RUNTIME=llamacpp`).
-    runtime: lmstudio
+    # below. The V620 (current GPU) runs llamacpp; override with -e runtime=lmstudio
+    # only for the prior RX 6700 XT setup.
+    runtime: llamacpp
     # Default to 4 slots = the operational CT 120 default, so a plain `make bench`
     # never downgrades the running model. Override with -e parallel=1 for a
     # single-slot run.
     parallel: 4
-    model_key: qwen3.5-9b
-    model_context: 64000
+    # Served model id (== llama-server --alias on CT 120). The bench-runner also
+    # auto-detects it from /v1/models, but the reload/label/telemetry paths use it.
+    model_key: qwen3.5-35b-a3b
+    # 64k total (matches the CT 120 default). This MoE's KV cache is cheap, so 64k
+    # fits the V620 easily; at parallel 4 that is ~16k per slot.
+    model_context: 65536
     reload_model: true
     # Per-engine reload command + labels. The reload command is re-templated by
     # Ansible, so its inner {{ model_key }}/{{ model_context }}/{{ parallel }}
@@ -61,7 +66,7 @@
     context_sweep_contexts: "4096 16384 32768 65536"
     repo_root: "{{ playbook_dir }}/.."
     host_suite_dir: /tmp/proxmox-bench
-    results_dest: "{{ playbook_dir }}/../rx-6700-xt/results/{{ runtime_label }}/parallel-{{ parallel }}"
+    results_dest: "{{ playbook_dir }}/../pro-v620/results/{{ runtime_label }}/parallel-{{ parallel }}"
     benchmarks:
       - "llm-bench-baseline"
       - "llm-bench-sweep concurrency --points 1 2 4 8 16 --requests 32"
@@ -182,8 +187,8 @@
     # MODEL_API_URL baked into CT 200 at provisioning, which the overlay preserves.
     # After a runtime swap (destroy + recreate CT 120) DHCP can hand out a new IP,
     # leaving that URL stale. Re-point it at CT 120's current IP every run so the
-    # batch always benchmarks the live endpoint. Port 1234 and MODEL_IDENTIFIER are
-    # unchanged (both engines serve qwen3.5-9b on 1234).
+    # batch always benchmarks the live endpoint. Port 1234 is fixed; the served id
+    # is qwen3.5-35b-a3b on the V620 (the bench-runner auto-detects it).
     - name: Discover the model container's current IP
       ansible.builtin.command:
         argv: [pct, exec, "{{ gpu_vmid }}", "--", hostname, -I]
@@ -311,14 +316,14 @@
     - name: Ensure the local runtime results dir exists
       delegate_to: localhost
       ansible.builtin.file:
-        path: "{{ playbook_dir }}/../rx-6700-xt/results/{{ runtime_label }}"
+        path: "{{ playbook_dir }}/../pro-v620/results/{{ runtime_label }}"
         state: directory
       when: context_sweep | bool
 
     - name: Extract the context sweep locally
       delegate_to: localhost
       ansible.builtin.command:
-        argv: [tar, -xzf, /tmp/proxmox-context-sweep.tgz, -C, "{{ playbook_dir }}/../rx-6700-xt/results/{{ runtime_label }}"]
+        argv: [tar, -xzf, /tmp/proxmox-context-sweep.tgz, -C, "{{ playbook_dir }}/../pro-v620/results/{{ runtime_label }}"]
       changed_when: true
       when: context_sweep | bool
 
