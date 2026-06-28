@@ -87,8 +87,8 @@ Both GPUs use Vulkan (mesa RADV) — Navi 22/gfx1031 on the 6700 XT, Navi 21/gfx
 V620 — the container installs `mesa-vulkan-drivers` and passes through `/dev/dri` (render node
 `renderD128`), plus a pinned model repo/file/SHA-256 in a privileged container. (The V620
 model is a single-file unsharded GGUF, so the download/verify path is unchanged; on 32 GB it
-defaults to ctx 65536 / `--parallel 4` (this MoE's KV cache is cheap, ~20 KB/token), tunable
-via `llamacpp-reload`.)
+defaults to ctx 131072 / `--parallel 4` (32k per slot, sized for ~4 concurrent agents; this
+MoE's KV cache is cheap, ~20 KB/token, ~23 GiB total), tunable via `llamacpp-reload`.)
 
 Engine differences that matter when extending the llama.cpp script:
 - It installs a **pinned prebuilt Vulkan `llama-server` release** (tag + tarball SHA-256 in

@@ -31,12 +31,15 @@ readonly MODEL_SHA256="1b0ac637dfa092bbba2793977db9485a40c4f8b42df5fe342f0076d61
 # you pin MODEL_IDENTIFIER / model_key in the benchmark tooling (ansible default
 # is still qwen3.5-9b), set it to this. See pro-v620/README.md.
 readonly MODEL_ALIAS="qwen3.5-35b-a3b"
-# 64k total context. This MoE's KV cache is cheap (~20 KB/token measured on the
-# V620: 32k→64k ctx added only ~0.6 GiB VRAM), so 64k costs little over the ~22 GB
-# weights and leaves comfortable headroom in 32 GB — good for agent histories.
-# Change without re-provisioning via `llamacpp-reload <context-length> <parallel>`
-# (e.g. `131072 1` for a single very-long-context agent request).
-readonly MODEL_CONTEXT_LENGTH="65536"
+# 128k total context = 32k per slot at --parallel 4, sized for ~4 concurrent
+# agents each up to 32k. This MoE's KV cache is cheap (~20 KB/token measured on
+# the V620), so 128k costs only ~2 GiB over the ~22 GB weights (~23 GiB total,
+# verified) and a larger --ctx-size does NOT slow shorter requests (attention is
+# over actual length, not the max). It fits up to the model's ~256k native limit
+# if needed, but bigger contexts DECODE slower (see pro-v620/README.md capacity
+# notes) — raise only if agents actually need >32k. Retune without re-provisioning
+# via `llamacpp-reload <context-length> <parallel>`.
+readonly MODEL_CONTEXT_LENGTH="131072"
 # -ngl 99 offloads every layer (including all MoE experts) to the GPU; the whole
 # ~22 GB model fits in the V620's 32 GB (the llama.cpp equivalent of LM Studio's
 # --gpu max).

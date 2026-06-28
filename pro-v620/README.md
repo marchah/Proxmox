@@ -43,7 +43,7 @@ This script is deliberately narrow:
 - Repository: `unsloth/Qwen3.5-35B-A3B-GGUF`
 - File: `Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf` (MoE, single file)
 - Identifier (`--alias`): `qwen3.5-35b-a3b`
-- Context length: `65536` (`--ctx-size`; see below — KV cache is cheap on this MoE)
+- Context length: `131072` (`--ctx-size`; 32k per slot at `--parallel 4` — KV cache is cheap on this MoE)
 - GPU offload: `--n-gpu-layers 99` (all layers, including MoE experts)
 - Parallel slots: `--parallel 4` (continuous batching, on by default)
 - Attention / batch: `--flash-attn on --batch-size 4096 --ubatch-size 1024` (tuned — see Benchmarks → Tuning)
@@ -90,14 +90,17 @@ and blocks until `/health` is ready):
 pct exec 120 -- llamacpp-reload <context-length> <parallel>
 ```
 
-The `65536` / `--parallel 4` default splits 64k context across 4
-continuous-batching slots (~16k each) — good for concurrent/benchmark serving.
-This MoE's KV cache is cheap (~20 KB/token measured: 32k→64k added only ~0.6 GiB
-VRAM), so the default is generous. For a single very-long-context **agent**
-session, give one slot the whole window:
+The `131072` / `--parallel 4` default splits 128k context across 4
+continuous-batching slots (**32k each**) — sized for ~4 concurrent agents at up to
+32k context. This MoE's KV cache is cheap (~20 KB/token measured), so 128k costs
+only ~2 GiB over the weights (~23 GiB total). A larger `--ctx-size` does not slow
+shorter requests, and it fits up to the model's **~256k native limit** — but
+larger contexts decode slower (see [Multi-agent capacity](#multi-agent-capacity-4--32k)),
+so raise it only if agents actually need >32k. Retune live:
 
 ```bash
-pct exec 120 -- llamacpp-reload 131072 1   # one slot, 128k context
+pct exec 120 -- llamacpp-reload 131072 1   # one slot, full 128k window
+pct exec 120 -- llamacpp-reload 196608 4   # 4 slots × 48k, if agents exceed 32k
 ```
 
 (If you ever need more context than VRAM allows, KV-cache quantization is the
@@ -155,12 +158,14 @@ cat /sys/class/drm/card0/device/mem_info_vram_used                  # ~22 GB whi
 ## Benchmarks
 
 Run the suite from the repo root with `make bench` (the defaults are now
-`RUNTIME=llamacpp`, `model_key=qwen3.5-35b-a3b`, `model_context=65536`, so no
+`RUNTIME=llamacpp`, `model_key=qwen3.5-35b-a3b`, `model_context=131072`, so no
 overrides are needed). Results land in `pro-v620/results/llamacpp/parallel-<n>/`.
 
-First run: `Qwen3.5-35B-A3B-UD-Q4_K_XL`, 64k context, `--parallel 4`, llama.cpp
-`b9835` (Vulkan), measured from CT 200 via `openai-direct` with distinct/cold
-prompts. **All SLOs passed.** VRAM 21.8 / 32 GiB (model + 64k KV).
+The throughput/prefill tables below were measured at 64k context (`--parallel 4`);
+the default is now 128k, but decode/throughput at a given *used* context length is
+unchanged by the larger ceiling. `Qwen3.5-35B-A3B-UD-Q4_K_XL`, llama.cpp `b9835`
+(Vulkan), measured from CT 200 via `openai-direct` with distinct/cold prompts.
+**All SLOs passed.**
 
 - **Single-stream baseline:** 83.1 tok/s, TTFT 0.27 s p95.
 
@@ -216,6 +221,26 @@ selected the serve defaults. Aggregate tok/s:
   ~5.0 s → ~5.5 s) — irrelevant for the concurrent/agent serving this card does.
 
 Net default: **~132 tok/s aggregate (+30% vs FA-off), 83 tok/s single-stream, ~0.13 s TTFT.**
+
+### Multi-agent capacity (4 × 32k)
+
+Tested 4 concurrent requests, each ~30k **cold** input + 512 output, at `131072/4`:
+**8/8 succeeded, 0 errors, 23.2 GiB VRAM** — four 32k contexts coexist with ~9 GiB
+to spare. Two performance realities:
+
+- **Decode slows with context length.** At ~30k context, ~6 tok/s **per agent**
+  (~23 tok/s aggregate) vs ~33 tok/s/agent at 512 tokens — attention over a large
+  KV cache, ×4 slots. The aggregate is a shared ceiling; more agents ⇒ proportionally
+  slower each.
+- **Cold prefill is the pain point.** Four simultaneous *fresh* 30k prompts take
+  **70–150 s to first token**. **Prefix caching** (automatic per slot) is essential:
+  on follow-up turns it re-prefills only the new tokens, turning that into seconds.
+
+Guidance: treat 32k as a **ceiling, not the operating point** — trim agent history
+(≈4–8k keeps decode ~20–30 tok/s/agent), cap output/reasoning length, and reuse a
+stable prefix per agent so the slot cache hits. Speculative decoding (`--model-draft`)
+does **not** help this profile: it targets single-stream decode, not prefill, and its
+benefit shrinks under concurrency and at large context.
 
 ### GPU thermals (Radeon Pro V620, passively cooled via the `gpu-fan-control` Pump Fan)
 
