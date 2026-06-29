@@ -26,7 +26,7 @@ Containers are allocated VMIDs by role:
 | 200+    | Test / temporary  |
 
 Current containers: CT `120` (the AI/LLM runtime — now on the Radeon Pro V620,
-provisioned by `pro-v620/create-lxc-llamacpp-qwen3.5-35b-a3b.sh`) and CT `200`
+provisioned by `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`) and CT `200`
 (`bench-runner`, disposable). Each creation script defaults its `VMID` to the
 matching range and accepts a `VMID=` override.
 
@@ -52,18 +52,18 @@ Creates a privileged Ubuntu LXC serving a high-parameter Qwen model on the
 **Radeon Pro V620** (Navi 21 / gfx1030, 32 GB) via **Vulkan**:
 
 - GPU: Radeon Pro V620 (32 GB — replaces the 12 GiB RX 6700 XT)
-- Model: `unsloth/Qwen3.5-35B-A3B-GGUF` / `Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf`
-  (MoE, 35B total / ~3B active — fast, fits 32 GB at Q4)
-- Engine: `create-lxc-llamacpp-qwen3.5-35b-a3b.sh` — llama.cpp's `llama-server`
+- Model: `unsloth/Qwen3.6-35B-A3B-GGUF` / `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf`
+  (MoE, 35B total / ~3B active — fast, fits 32 GB at Q5)
+- Engine: `create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
 
 Defaults to CT `120`, serves an OpenAI-compatible API on `0.0.0.0:1234` under the
-id `qwen3.5-35b-a3b`. Chosen for agent use (MoE keeps per-step latency low). See
-[pro-v620/README.md](pro-v620/README.md). Benchmarks on this card are TBD.
+id `qwen3.6-35b-a3b`. Chosen for agent use (MoE keeps per-step latency low). See
+[pro-v620/README.md](pro-v620/README.md) for benchmarks, the model bake-off, and tuning.
 
 Run directly on the Proxmox host without cloning the repo:
 
 ```bash
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/pro-v620/create-lxc-llamacpp-qwen3.5-35b-a3b.sh)"
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh)"
 ```
 
 ### RX 6700 XT LLM Runtime LXC (prior GPU)

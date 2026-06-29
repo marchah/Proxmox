@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # separate script because GPU runtime flags, context sizes, and settings vary.
 # The Radeon Pro V620 (Navi 21 / gfx1030, 32 GB) is driven via Vulkan (mesa
 # RADV). It replaces the RX 6700 XT; with ~2.7x the VRAM it serves a much larger
-# model. This serves Qwen3.5-35B-A3B (MoE: 35B total / ~3B active per token) via
+# model. This serves Qwen3.6-35B-A3B (MoE: 35B total / ~3B active per token) via
 # llama-server on an OpenAI-compatible API at 0.0.0.0:1234. There is no LM Studio
 # sibling for this card (see pro-v620/README.md); llama.cpp is the chosen engine.
 readonly GPU_NAME="Radeon Pro V620"
@@ -18,32 +18,34 @@ readonly LLAMACPP_RELEASE_TAG="b9835"
 readonly LLAMACPP_ASSET="llama-${LLAMACPP_RELEASE_TAG}-bin-ubuntu-vulkan-x64.tar.gz"
 readonly LLAMACPP_ASSET_URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMACPP_RELEASE_TAG}/${LLAMACPP_ASSET}"
 readonly LLAMACPP_SHA256="513debc0497ba6936ef037907d48bca5c2b250756cb7700b5111f1ed2a59323f"
-# Qwen3.5-35B-A3B is a Mixture-of-Experts model: 35B total params, ~3B active per
+# Qwen3.6-35B-A3B is a Mixture-of-Experts model: 35B total params, ~3B active per
 # token, so it runs far faster than a dense 27B/32B while keeping high capability
-# — the best capability-per-second on this card for an interactive agent.
-# UD-Q4_K_XL is unsloth's dynamic-quant build (~22.2 GB), a single unsharded file
-# that fits the V620's 32 GB with room for the KV cache.
-readonly MODEL_REPO="unsloth/Qwen3.5-35B-A3B-GGUF"
-readonly MODEL_FILE="Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf"
-readonly MODEL_SHA256="1b0ac637dfa092bbba2793977db9485a40c4f8b42df5fe342f0076d61b66ae83"
-# Served via llama-server --alias, so /v1/models reports this stable id instead
-# of the model file path. The bench-runner auto-detects it from /v1/models; if
-# you pin MODEL_IDENTIFIER / model_key in the benchmark tooling (ansible default
-# is still qwen3.5-9b), set it to this. See pro-v620/README.md.
-readonly MODEL_ALIAS="qwen3.5-35b-a3b"
+# — the best capability-per-second on this card for an interactive agent. It is
+# the newer-gen successor to Qwen3.5-35B-A3B (same shape/speed/VRAM, improved tool
+# calling; see the README bake-off). UD-Q5_K_XL is unsloth's dynamic-quant build
+# (~26.6 GB), chosen over Q4 for slightly better quality at ~5% lower speed; a
+# single unsharded file.
+readonly MODEL_REPO="unsloth/Qwen3.6-35B-A3B-GGUF"
+readonly MODEL_FILE="Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf"
+readonly MODEL_SHA256="25233af7642e3a91bd52cc4aeefdbd4a117479088e06cf1aea5b6bedb443c506"
+# Served via llama-server --alias, so /v1/models reports this stable id instead of
+# the model file path. The bench-runner auto-detects it from /v1/models; the
+# ansible/host benchmark tooling pins model_key to this. NOTE: this id is
+# client-facing — OpenAI requests must set "model" to it. See pro-v620/README.md.
+readonly MODEL_ALIAS="qwen3.6-35b-a3b"
 # 256k total context — the model's native maximum (262144), 64k per slot at
 # --parallel 4. This MoE's KV cache is cheap (~20 KB/token), so even 256k fits the
-# V620: ~25.7 GiB of 32 GiB (verified), ~6 GiB margin. A larger --ctx-size does
-# NOT slow shorter requests (attention is over actual length, not the max), so
-# this ceiling is "free" for normal traffic. Daytime ~4 agents share it (64k per
-# slot); for a single long-running (e.g. overnight) agent that needs the whole
-# 256k window, switch to one slot: `llamacpp-reload 262144 1`. Bigger contexts
-# DECODE slower, and a cold 256k prefill takes minutes (fine for an agent that
-# grows context incrementally with prefix caching) — see pro-v620/README.md.
+# V620 at Q5: ~29.8 GiB of 32 GiB (verified, incl. a 4-concurrent prefill stress)
+# — ~2.2 GiB margin, thin but holds. A larger --ctx-size does NOT slow shorter
+# requests (attention is over actual length, not the max), so this ceiling is
+# "free" — an occasional high-context agent just works, no reload needed. Daytime
+# ~4 agents share it (64k per slot); a single agent can use the whole 256k window
+# via `llamacpp-reload 262144 1`. Bigger contexts DECODE slower, and a cold 256k
+# prefill takes minutes (fine for incremental/prefix-cached growth) — see README.
 # Retune live via `llamacpp-reload <context-length> <parallel>`.
 readonly MODEL_CONTEXT_LENGTH="262144"
 # -ngl 99 offloads every layer (including all MoE experts) to the GPU; the whole
-# ~22 GB model fits in the V620's 32 GB (the llama.cpp equivalent of LM Studio's
+# ~26.6 GB model fits in the V620's 32 GB (the llama.cpp equivalent of LM Studio's
 # --gpu max).
 readonly MODEL_GPU_LAYERS="99"
 # 4 continuous-batching slots (llama-server --parallel). The MoE activates only
@@ -82,7 +84,7 @@ Create an Ubuntu LXC for llama.cpp (llama-server) on a Radeon Pro V620.
 Fixed runtime/model target:
   GPU:    Radeon Pro V620 (Navi 21 / gfx1030, 32 GB)
   Engine: llama.cpp llama-server (prebuilt Vulkan release)
-  Model:  unsloth/Qwen3.5-35B-A3B-GGUF / Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf (MoE)
+  Model:  unsloth/Qwen3.6-35B-A3B-GGUF / Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf (MoE)
   API:    0.0.0.0:1234 (OpenAI-compatible)
 
 Run this script on the Proxmox host as root.
@@ -93,9 +95,9 @@ slot). Only one container can serve the GPU at a time, so destroy any existing
 CT 120 first (pct stop 120 && pct destroy 120), or set VMID= to a free id.
 
 Useful overrides:
-  VMID=120 LXC_HOSTNAME=llamacpp ./create-lxc-llamacpp-qwen3.5-35b-a3b.sh
-  MODELS_SIZE_GB=200 MEMORY_MB=32768 CORES=8 ./create-lxc-llamacpp-qwen3.5-35b-a3b.sh
-  PASSWORD='temporary-root-password' ./create-lxc-llamacpp-qwen3.5-35b-a3b.sh
+  VMID=120 LXC_HOSTNAME=llamacpp ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
+  MODELS_SIZE_GB=200 MEMORY_MB=24576 CORES=8 ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
+  PASSWORD='temporary-root-password' ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
 
 After it is up, change context length / parallel slots without re-provisioning:
   pct exec 120 -- llamacpp-reload <context-length> <parallel>
@@ -329,11 +331,11 @@ EOF
 # trade for the concurrency/TTFT win in agent/serving use.)
 # --jinja makes llama-server use the model's own chat template, which is REQUIRED
 # for OpenAI-style tool/function calling to parse into the `tool_calls` field —
-# i.e. for agents. Verified across Qwen3.5 and Hermes (see README bake-off).
+# i.e. for agents. Verified across Qwen3.5/3.6 and Hermes (see README bake-off).
 # --reasoning-format none keeps the model's <think> tokens inline in the OpenAI
 # `content` stream (instead of siphoning them into `reasoning_content`), so an
 # OpenAI-compatible benchmark counts every generated token and measures TTFT at
-# the true first token. Qwen3.5 "medium" (incl. this MoE) has thinking ON by
+# the true first token. Qwen3.6 "medium" (incl. this MoE) has thinking ON by
 # default, so without this the `content` stream is empty and the benchmark would
 # flag every request as invalid_output. (An agent client that can't handle inline
 # reasoning should instead disable thinking via chat-template kwargs — see
@@ -399,7 +401,7 @@ chmod 755 /usr/local/bin/llamacpp-reload
 # 6. Long-running daemon (Type=simple), unlike LM Studio's oneshot + lms daemon.
 cat >/etc/systemd/system/llamacpp.service <<'SERVICE'
 [Unit]
-Description=llama.cpp llama-server (Qwen3.5-35B-A3B) on Radeon Pro V620
+Description=llama.cpp llama-server (Qwen3.6-35B-A3B) on Radeon Pro V620
 After=network-online.target
 Wants=network-online.target
 

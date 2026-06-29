@@ -30,7 +30,7 @@
     parallel: 4
     # Served model id (== llama-server --alias on CT 120). The bench-runner also
     # auto-detects it from /v1/models, but the reload/label/telemetry paths use it.
-    model_key: qwen3.5-35b-a3b
+    model_key: qwen3.6-35b-a3b
     # 64k total (matches the CT 120 default). This MoE's KV cache is cheap, so 64k
     # fits the V620 easily; at parallel 4 that is ~16k per slot.
     model_context: 65536
@@ -188,7 +188,7 @@
     # After a runtime swap (destroy + recreate CT 120) DHCP can hand out a new IP,
     # leaving that URL stale. Re-point it at CT 120's current IP every run so the
     # batch always benchmarks the live endpoint. Port 1234 is fixed; the served id
-    # is qwen3.5-35b-a3b on the V620 (the bench-runner auto-detects it).
+    # is qwen3.6-35b-a3b on the V620 (the bench-runner auto-detects it).
     - name: Discover the model container's current IP
       ansible.builtin.command:
         argv: [pct, exec, "{{ gpu_vmid }}", "--", hostname, -I]

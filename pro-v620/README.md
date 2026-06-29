@@ -8,29 +8,29 @@ With ~2.7× the VRAM of the 6700 XT (32 GB vs 12 GB), this card serves a much
 larger model. There is a single runtime script here (no LM Studio sibling —
 llama.cpp is the chosen engine, per the 6700 XT comparison):
 
-- `create-lxc-llamacpp-qwen3.5-35b-a3b.sh` — llama.cpp's `llama-server` (reload =
+- `create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server` (reload =
   restart, via the `llamacpp-reload` helper). Defaults to CT `120`, exposes an
   OpenAI-compatible API on `0.0.0.0:1234`, serves the model under the identifier
-  `qwen3.5-35b-a3b`.
+  `qwen3.6-35b-a3b`.
 
-## Model choice: Qwen3.5-35B-A3B (MoE)
+## Model choice: Qwen3.6-35B-A3B (MoE)
 
-`unsloth/Qwen3.5-35B-A3B-GGUF`, `Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf` (~22.2 GB, a
+`unsloth/Qwen3.6-35B-A3B-GGUF`, `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (~26.6 GB, a
 single unsharded file). This is a **Mixture-of-Experts** model: 35B total
 parameters but only **~3B active per token**, so it generates far faster than a
 dense 27B/32B at comparable quality — the best capability-per-second on this card.
 The intended consumer is an **agent** (tool-calling loops, where per-step latency
 compounds), which is exactly where the MoE's speed pays off.
 
-It fits 32 GB at Q4 (~22 GB weights) with ~10 GB left for the KV cache. The dense
+It fits 32 GB at Q5 (~26.6 GB weights) with ~5 GB left for the KV cache. The dense
 alternatives that also fit (`Qwen3.5-27B`, `Qwen3-32B`) are documented in the repo
 history if you want to trade speed for a dense model — each would be its own
 script, not a flag on this one (per the repo's "one GPU/model/engine per script"
 convention).
 
-## llama.cpp Qwen3.5-35B-A3B LXC
+## llama.cpp Qwen3.6-35B-A3B LXC
 
-`create-lxc-llamacpp-qwen3.5-35b-a3b.sh` creates a privileged Ubuntu LXC running
+`create-lxc-llamacpp-qwen3.6-35b-a3b.sh` creates a privileged Ubuntu LXC running
 **llama.cpp's `llama-server`** (a pinned prebuilt Vulkan release) with the V620
 passed through.
 
@@ -40,9 +40,9 @@ This script is deliberately narrow:
 - GPU runtime: Vulkan (mesa RADV)
 - Engine: llama.cpp `llama-server`, prebuilt Vulkan x64 release (pinned by tag +
   SHA-256 in the script — bump both from the [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases))
-- Repository: `unsloth/Qwen3.5-35B-A3B-GGUF`
-- File: `Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf` (MoE, single file)
-- Identifier (`--alias`): `qwen3.5-35b-a3b`
+- Repository: `unsloth/Qwen3.6-35B-A3B-GGUF`
+- File: `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, single file)
+- Identifier (`--alias`): `qwen3.6-35b-a3b`
 - Context length: `262144` (`--ctx-size`; the model's ~256k native max, 64k per slot at `--parallel 4` — KV cache is cheap on this MoE)
 - GPU offload: `--n-gpu-layers 99` (all layers, including MoE experts)
 - Parallel slots: `--parallel 4` (continuous batching, on by default)
@@ -54,15 +54,15 @@ This script is deliberately narrow:
 Run it on the Proxmox host as `root` (destroy any existing CT 120 first):
 
 ```bash
-./create-lxc-llamacpp-qwen3.5-35b-a3b.sh
+./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
 ```
 
 Useful Proxmox/container overrides:
 
 ```bash
-VMID=120 LXC_HOSTNAME=llamacpp ./create-lxc-llamacpp-qwen3.5-35b-a3b.sh
-MODELS_SIZE_GB=200 MEMORY_MB=24576 CORES=8 ./create-lxc-llamacpp-qwen3.5-35b-a3b.sh
-PASSWORD='temporary-root-password' ./create-lxc-llamacpp-qwen3.5-35b-a3b.sh
+VMID=120 LXC_HOSTNAME=llamacpp ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
+MODELS_SIZE_GB=200 MEMORY_MB=24576 CORES=8 ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
+PASSWORD='temporary-root-password' ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
 ```
 
 (The model is fully offloaded to VRAM, so the container RAM limit defaults to a
@@ -93,8 +93,9 @@ pct exec 120 -- llamacpp-reload <context-length> <parallel>
 
 The `262144` / `--parallel 4` default is the model's **~256k native maximum**,
 split across 4 continuous-batching slots (**64k each**). This MoE's KV cache is
-cheap (~20 KB/token), so even 256k fits the V620 at ~25.7 GiB of 32 (verified,
-~6 GiB margin). A larger `--ctx-size` does not slow shorter requests (attention is
+cheap (~20 KB/token), so even 256k fits the V620 at Q5 ~29.8 GiB of 32 (verified
+incl. a 4-concurrent stress), ~2.2 GiB margin — thin but holds. A larger
+`--ctx-size` does not slow shorter requests (attention is
 over actual length), so this ceiling is free for normal traffic — but *using*
 large contexts decodes slower (see [Multi-agent capacity](#multi-agent-capacity-4--32k)).
 
@@ -116,12 +117,12 @@ Check the service and endpoint:
 ```bash
 pct exec 120 -- systemctl status llamacpp.service
 pct exec 120 -- journalctl -u llamacpp.service -n 100 --no-pager   # shows the chosen Vulkan device
-curl http://<container-ip>:1234/v1/models                          # id == qwen3.5-35b-a3b
+curl http://<container-ip>:1234/v1/models                          # id == qwen3.6-35b-a3b
 ```
 
 ### Reasoning / thinking (important for agents)
 
-Qwen3.5 "medium" models (including this MoE) have **thinking ON by default**. The
+Qwen3.6 "medium" models (including this MoE) have **thinking ON by default**. The
 service runs with `--reasoning-format none`, which keeps the model's `<think>`
 block **inline** in the OpenAI `content` stream (rather than splitting it into
 `reasoning_content`). That is what the benchmark suite wants (it counts every
@@ -156,7 +157,7 @@ is visible to Vulkan and resident in VRAM:
 
 ```bash
 pct exec 120 -- vulkaninfo --summary                                # expect a V620 under the radv driver
-cat /sys/class/drm/card0/device/mem_info_vram_used                  # ~22 GB while serving a request
+cat /sys/class/drm/card0/device/mem_info_vram_used                  # ~30 GB while serving a request
 ```
 
 ### Why Vulkan and not ROCm/HIP?
@@ -188,12 +189,12 @@ container — cgroup char major 236 + a `lxc.mount.entry` — on top of `/dev/dr
 ## Benchmarks
 
 Run the suite from the repo root with `make bench` (the defaults are now
-`RUNTIME=llamacpp`, `model_key=qwen3.5-35b-a3b`, `model_context=262144`, so no
+`RUNTIME=llamacpp`, `model_key=qwen3.6-35b-a3b`, `model_context=262144`, so no
 overrides are needed). Results land in `pro-v620/results/llamacpp/parallel-<n>/`.
 
 The throughput/prefill tables below were measured at 64k context (`--parallel 4`);
 the default is now 128k, but decode/throughput at a given *used* context length is
-unchanged by the larger ceiling. `Qwen3.5-35B-A3B-UD-Q4_K_XL`, llama.cpp `b9835`
+unchanged by the larger ceiling. `Qwen3.6-35B-A3B-UD-Q5_K_XL`, llama.cpp `b9835`
 (Vulkan), measured from CT 200 via `openai-direct` with distinct/cold prompts.
 **All SLOs passed.**
 
@@ -279,7 +280,7 @@ incrementally (each turn prefix-cached, only new tokens prefilled), not repeated
 cold 256k loads. Switch with `llamacpp-reload 262144 1`, and back to `262144 4`
 for daytime concurrency.
 
-### Model bake-off (Q4 vs Q5 vs Hermes 4.3 36B)
+### Model bake-off — round 1: Qwen3.5 Q4 vs Q5 vs Hermes 4.3 36B
 
 A/B at a matched config (ctx 32k, `--parallel 4`, flash-attn on, `--jinja`) with a
 small tool-calling eval (tool selection among several, argument + unit extraction,
@@ -300,14 +301,33 @@ parallel calls, and abstaining when no tool fits):
 - **VRAM / context: the MoE wins.** Hermes is already 29.8 GiB at *32k*, so it can't
   reach the long-context modes the MoE's cheap KV enables.
 - **Q4 vs Q5:** Q5 costs ~4% speed + ~4 GiB VRAM for lower quant error with identical
-  tool behaviour; **Q4 stays the default** (more headroom for the 256k mode).
+  tool behaviour.
 
-**Conclusion: Qwen3.5-35B-A3B Q4 remains the pick** — fastest, most headroom, ties on
-tool competence. The Q5 and Hermes GGUFs are kept under `/models/hf` for ad-hoc use
-(`llamacpp-reload` doesn't switch model files — edit `MODEL_PATH` in `/etc/llamacpp.env`
-and restart, or run a manual `llama-server`). *(These tok/s are light-prompt/decode-heavy
-— use them to compare models, not as capacity figures; the cold-prompt numbers above
-are the realistic capacity.)*
+Within the 3.5 generation Q4 was the pick (fastest, most headroom). **Round 2 below
+superseded this** — Qwen3.6 is the newer generation, so the V620 now runs
+**Qwen3.6-35B-A3B Q5** by default. The 3.5 Q4/Q5 and Hermes GGUFs are kept under
+`/models/hf` for ad-hoc use (to switch, edit `MODEL_PATH` in `/etc/llamacpp.env` and
+restart). *(These tok/s are light-prompt/decode-heavy — compare models with them, not
+as capacity figures; the cold-prompt numbers above are the realistic capacity.)*
+
+### Model bake-off — round 2: Qwen3.5 vs Qwen3.6 (chosen default)
+
+Same harness. Qwen3.6 is the newer-gen successor (same MoE shape; improved tool
+calling, coding, vision):
+
+| Model | Quant | VRAM (32k) | Single-stream | Concurrency-4 agg | Tool-calling |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Qwen3.5-35B-A3B | Q4_K_XL | 21.2 GiB | 83.2 tok/s | 193.4 tok/s | 8/8 |
+| Qwen3.6-35B-A3B | Q4_K_XL | 21.4 GiB | 82.8 tok/s | **195.7 tok/s** | 8/8 |
+| **Qwen3.6-35B-A3B (default)** | Q5_K_XL | 25.3 GiB | 79.1 tok/s | 185.0 tok/s | 8/8 |
+
+- **3.6 ≈ 3.5 on speed/VRAM** — a free generational upgrade.
+- **Tool calling: all 8/8** once given enough tokens. Note 3.6 reasons *more* before a
+  tool call (~600–960 `<think>` tokens here), so a tight `max_tokens` can truncate the
+  call — give headroom, or disable thinking for instant (~55–80 tok) clean calls.
+- **Q5 chosen as the default** for slightly better quality (~5% slower). At the 262144
+  ceiling Q5 sits at **~29.8 GiB / 32 (verified incl. a 4-concurrent prefill stress),
+  ~2.2 GiB margin** — thin but holds, keeping the 256k window always available.
 
 ### GPU thermals (Radeon Pro V620, passively cooled via the `gpu-fan-control` Pump Fan)
 
@@ -346,4 +366,4 @@ Sampled on the host every 12 s across the whole batch:
 - Radeon Pro V620 visible on the Proxmox host as `/dev/dri` (with a `renderD128`
   render node)
 - Network access from the LXC to download the llama.cpp release and the Hugging
-  Face model (~22 GB)
+  Face model (~27 GB)

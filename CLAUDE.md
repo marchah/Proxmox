@@ -13,10 +13,10 @@ root**. macOS is only the authoring/editing environment; the scripts run remotel
 Two containers form the system:
 
 - **CT 120** (`pro-v620/`): a *privileged* Ubuntu LXC — the **LLM runtime** — serving
-  `Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf` (MoE, 35B total / ~3B active) on a **Radeon Pro V620**
+  `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, 35B total / ~3B active) on a **Radeon Pro V620**
   (Navi 21 / gfx1030, 32 GB) via Vulkan, exposing an OpenAI-compatible API at `0.0.0.0:1234`
-  under the id `qwen3.5-35b-a3b`:
-  - `pro-v620/create-lxc-llamacpp-qwen3.5-35b-a3b.sh` — llama.cpp's `llama-server`
+  under the id `qwen3.6-35b-a3b`:
+  - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
     (hostname `llamacpp`). This is the current GPU/model.
   - **Prior GPU (`rx-6700-xt/`, kept for reference):** the V620 replaced a Radeon RX 6700 XT
     (12 GiB) that served `Qwen3.5-9B-Q4_K_M.gguf` (id `qwen3.5-9b`) via two interchangeable
@@ -36,7 +36,7 @@ All run on the Proxmox host as root.
 
 ```bash
 # Provision the GPU LLM-runtime container (CT 120) — current GPU: Radeon Pro V620
-./pro-v620/create-lxc-llamacpp-qwen3.5-35b-a3b.sh # llama.cpp (llama-server), Qwen3.5-35B-A3B MoE
+./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
 # Prior GPU (RX 6700 XT) — kept for reference; pick ONE engine (mutually exclusive)
 ./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
 ./rx-6700-xt/create-lxc-llamacpp-qwen3.5-9b.sh    # llama.cpp (llama-server)
@@ -81,14 +81,14 @@ folder owns its own model/runtime assumptions (GPU runtime flags, context size, 
 A different GPU, model, *or inference engine* should get a *new* script, not a parameterized
 mega-launcher — the RX 6700 XT has two sibling scripts (`...-lmstudio-...` and
 `...-llamacpp-...`) serving the same model on the same GPU via Vulkan, and the V620 got a
-brand-new folder/script (`pro-v620/create-lxc-llamacpp-qwen3.5-35b-a3b.sh`) for its larger
+brand-new folder/script (`pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`) for its larger
 32 GB / MoE model rather than a flag on the 6700 XT script.
 Both GPUs use Vulkan (mesa RADV) — Navi 22/gfx1031 on the 6700 XT, Navi 21/gfx1030 on the
 V620 — the container installs `mesa-vulkan-drivers` and passes through `/dev/dri` (render node
 `renderD128`), plus a pinned model repo/file/SHA-256 in a privileged container. (The V620
 model is a single-file unsharded GGUF, so the download/verify path is unchanged; on 32 GB it
 defaults to ctx 262144 / `--parallel 4` (the model's ~256k native max, 64k per slot; this
-MoE's KV cache is cheap, ~20 KB/token, ~25.7 GiB total). A single agent needing the whole
+MoE's KV cache is cheap, ~20 KB/token, ~29.8 GiB total at Q5). A single agent needing the whole
 256k window uses `llamacpp-reload 262144 1`; tunable via `llamacpp-reload`.)
 
 Engine differences that matter when extending the llama.cpp script:
@@ -103,7 +103,7 @@ Engine differences that matter when extending the llama.cpp script:
   `/usr/local/bin/llamacpp-serve`.
 - `llama-server --alias <id>` makes `/v1/models` report a stable id (else it reports the
   model file path); that id is what the bench-runner records as `MODEL_IDENTIFIER` (the V620
-  serves `qwen3.5-35b-a3b`, the 6700 XT served `qwen3.5-9b`). The bench-runner auto-detects
+  serves `qwen3.6-35b-a3b`, the 6700 XT served `qwen3.5-9b`). The bench-runner auto-detects
   it from `/v1/models`, but `ansible/benchmark.yml` and `host/run-context-sweep.sh` still
   default `model_key`/`MODEL_KEY` to `qwen3.5-9b` — override to the served id when benchmarking
   the V620.
