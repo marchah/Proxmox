@@ -3,9 +3,12 @@ Description=GPU undervolt (Radeon Pro V620 GFX voltage offset via amdgpu OverDri
 Documentation=https://github.com/Marchah/Proxmox/tree/main/pro-v620/undervolt
 # Needs amdgpu bound with OverDrive enabled (so pp_od_clk_voltage exists). The
 # daemon waits up to WAIT_SECS for the node to appear, so loose ordering is fine.
+# Deliberately NO ConditionPathExistsGlob: at boot the card may not be bound yet
+# when systemd evaluates the condition, and a failed condition SKIPS the unit
+# silently (not "failed") — which would defeat the daemon's own boot polling. Let
+# the script wait up to WAIT_SECS and fail loudly (unit enters "failed") instead.
 Wants=systemd-modules-load.service
 After=systemd-modules-load.service
-ConditionPathExistsGlob=/sys/class/drm/card*/device
 
 [Service]
 Type=oneshot

@@ -94,16 +94,25 @@ validate_offset() {  # $1 = mV
 # `auto`; the readback below confirms the commit took before we restore.)
 apply_offset() {  # $1 = card dev, $2 = mV
   local dev="$1" mv="$2" od="$1/pp_od_clk_voltage" plf="$1/power_dpm_force_performance_level"
-  local prev_level="" got="" rc=0 err=""
+  local prev_level="" got="" rc=0 err="" use_manual="" restored=""
 
   # Guard against an empty/invalid dev: with dev="" the paths above collapse to
   # root-relative (/pp_od_clk_voltage), so a stray write could land on the host
   # filesystem. Never write unless the real OverDrive node is present.
   [ -n "$dev" ] && [ -e "$od" ] || die "apply_offset: no OverDrive node at '$od' — refusing to write"
 
+  # Documented OverDrive edit protocol: select `manual`, write+commit, then restore
+  # the prior level. Only enter manual if we can FIRST read a level to put back —
+  # switching with nothing to restore would leave the card silently pinned in
+  # `manual`. (When the node isn't writable we skip the dance and apply in the
+  # active level, which this card already tolerates.)
   if [ -w "$plf" ]; then
-    prev_level="$(cat "$plf" 2>/dev/null)" || prev_level=""
+    prev_level="$(cat "$plf" 2>/dev/null)" \
+      || die "cannot read performance level ($plf) — refusing to switch to manual with nothing to restore"
+    [ -n "$prev_level" ] \
+      || die "performance level ($plf) read back empty — refusing to switch to manual"
     echo manual > "$plf" 2>/dev/null || die "failed selecting 'manual' performance level ($plf)"
+    use_manual=1
   fi
 
   if ! echo "vo $mv" > "$od" 2>/dev/null; then
@@ -115,13 +124,23 @@ apply_offset() {  # $1 = card dev, $2 = mV
     [ "$got" = "${mv}mV" ] || { err="offset readback mismatch: wanted ${mv}mV, got '${got:-<none>}'"; rc=1; }
   fi
 
-  # Restore the prior performance level (best-effort) regardless of success above.
-  if [ -n "$prev_level" ]; then
-    echo "$prev_level" > "$plf" 2>/dev/null || warn "could not restore performance level to '$prev_level' ($plf)"
+  # Restore the performance level — REQUIRED, and done even when the offset write
+  # failed (a bare die mid-sequence would leave the card pinned in `manual`). Fall
+  # back to `auto` if the exact prior level won't take; a restore that STILL fails
+  # is fatal, so systemd never reports success on a card left stuck in `manual`.
+  if [ -n "$use_manual" ]; then
+    if echo "$prev_level" > "$plf" 2>/dev/null; then
+      restored="$prev_level"
+    elif echo auto > "$plf" 2>/dev/null; then
+      warn "could not restore performance level to '$prev_level' ($plf) — fell back to 'auto'"
+      restored="auto"
+    else
+      die "FAILED to restore performance level ($plf) — card may be stuck in 'manual'; investigate"
+    fi
   fi
 
   (( rc == 0 )) || die "$err"
-  log "GFX voltage offset = ${got}${prev_level:+ (perf level restored to ${prev_level})}"
+  log "GFX voltage offset = ${got}${restored:+ (perf level restored to ${restored})}"
 }
 
 # Wait for the V620's OverDrive node to appear (amdgpu can bind a few seconds into
