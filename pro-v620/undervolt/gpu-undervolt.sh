@@ -91,10 +91,14 @@ validate_offset() {  # $1 = mV
 # verify the readback, then RESTORE the prior performance level. The restore runs
 # even when a write fails — a bare `die` mid-sequence would otherwise leave the
 # card pinned in `manual`. (The committed offset persists once the level returns to
-# `auto`; the readback below confirms the commit took before we restore.)
+# `auto`; the readback below confirms the commit took before we restore.) If the
+# apply fails AFTER the offset is committed, it is rolled back to 0 (stock) so a
+# failed run never leaves the card modified, no matter how it was invoked — the
+# in-script counterpart to the unit's ExecStopPost=--reset (which only fires under
+# systemd, not for a manual `gpu-undervolt apply`).
 apply_offset() {  # $1 = card dev, $2 = mV
   local dev="$1" mv="$2" od="$1/pp_od_clk_voltage" plf="$1/power_dpm_force_performance_level"
-  local prev_level="" got="" rc=0 err="" use_manual="" restored=""
+  local prev_level="" got="" rc=0 err="" use_manual="" restored="" committed=""
 
   # Guard against an empty/invalid dev: with dev="" the paths above collapse to
   # root-relative (/pp_od_clk_voltage), so a stray write could land on the host
@@ -120,14 +124,15 @@ apply_offset() {  # $1 = card dev, $2 = mV
   elif ! echo "c" > "$od" 2>/dev/null; then
     err="failed committing offset to $od"; rc=1
   else
+    committed=1
     got="$(read_offset "$dev")"
     [ "$got" = "${mv}mV" ] || { err="offset readback mismatch: wanted ${mv}mV, got '${got:-<none>}'"; rc=1; }
   fi
 
   # Restore the performance level — REQUIRED, and done even when the offset write
-  # failed (a bare die mid-sequence would leave the card pinned in `manual`). Fall
-  # back to `auto` if the exact prior level won't take; a restore that STILL fails
-  # is fatal, so systemd never reports success on a card left stuck in `manual`.
+  # failed (a bare die mid-sequence would leave the card pinned in `manual`). Try
+  # the prior level, then `auto`; if BOTH fail, record it as a failure (rc=1) so we
+  # roll back below and die — never report success on a card stuck in `manual`.
   if [ -n "$use_manual" ]; then
     if echo "$prev_level" > "$plf" 2>/dev/null; then
       restored="$prev_level"
@@ -135,7 +140,23 @@ apply_offset() {  # $1 = card dev, $2 = mV
       warn "could not restore performance level to '$prev_level' ($plf) — fell back to 'auto'"
       restored="auto"
     else
-      die "FAILED to restore performance level ($plf) — card may be stuck in 'manual'; investigate"
+      (( rc == 0 )) && err="failed to restore performance level ($plf) — card may be stuck in 'manual'"
+      rc=1
+    fi
+  fi
+
+  # Self-rollback: a failed apply must not leave the card undervolted. If we
+  # committed an offset and the apply then failed (readback mismatch OR a failed
+  # perf-level restore), undo it to stock here — covering a manual run, not just the
+  # systemd ExecStopPost backstop. Skipped when applying 0 (nothing to undo). The
+  # write works in whatever level we ended in (auto after a normal restore, else the
+  # manual we couldn't leave).
+  if (( rc != 0 )) && [ -n "$committed" ] && (( mv != 0 )); then
+    if echo "vo 0" > "$od" 2>/dev/null && echo "c" > "$od" 2>/dev/null \
+       && [ "$(read_offset "$dev")" = "0mV" ]; then
+      log "rolled back offset to 0mV after a failed apply"
+    else
+      warn "rollback to 0mV may have failed — verify $od"
     fi
   fi
 
