@@ -163,8 +163,9 @@ cat /sys/class/drm/card0/device/mem_info_vram_used                  # ~30 GB whi
 
 ### Why Vulkan and not ROCm/HIP?
 
-ROCm was tested (the llama.cpp `b9835` ROCm-7.2 prebuilt) and **does not work on this
-host**. The runtime installed cleanly and the GPU enumerated correctly
+ROCm was tested (the llama.cpp `b9835` ROCm-7.2 prebuilt) and **does not work inside an
+LXC on this host** (it *does* work in a passthrough VM — see below). The runtime
+installed cleanly and the GPU enumerated correctly
 (`llama-server --list-devices` → `ROCm0: AMD Radeon Pro V620`; KFD reports
 `gfx_target_version 100300` = gfx1030), but **model load aborts** on the first
 host→VRAM copy:
@@ -180,12 +181,68 @@ the host's **in-kernel amdgpu 3.64.0 (Proxmox `7.0.12-1-pve`)** — the device
 enumerates via topology, but the VRAM memory ABI doesn't match, so every `hipMemcpy`
 faults.
 
-Making ROCm work would require host-level driver changes (install `amdgpu-dkms`
-matching ROCm 7.2, or use a ROCm version matching the in-kernel amdgpu) — risky on the
-hypervisor, and **low payoff**: RDNA 2 has no matrix cores (no WMMA), so even a working
-ROCm wouldn't meaningfully beat the tuned Vulkan path. **Vulkan (RADV) is the supported
-backend here.** (For a future retry: ROCm also needs `/dev/kfd` passed into the
-container — cgroup char major 236 + a `lxc.mount.entry` — on top of `/dev/dri`.)
+The LXC blocker is the *shared host kernel*: an LXC can't run a different amdgpu than
+the host's, so the userspace/kernel ABIs can't be matched. RDNA 2 also has no matrix
+cores (no WMMA), so even a working ROCm wouldn't be expected to beat the tuned Vulkan
+path — a proof-of-concept confirmed exactly that.
+
+#### ROCm in a passthrough VM (PoC, 2026-06-29) — works, but slower than Vulkan
+
+A VM with the V620 passed through (`vfio-pci` → `qm set <id> --hostpci0 0000:2d:00.0,pcie=1`,
+q35 + OVMF) runs its **own** kernel, so a matched `amdgpu-dkms` + ROCm stack can be
+installed and the `hipMemcpy` fault disappears. Verified end-to-end: the host→device→host
+roundtrip that aborts in the LXC returns `OK`, `rocminfo` shows `gfx1030` with a ~30 GiB
+pool, and `llama-server` (ROCm build) serves the model.
+
+**Record the exact versions** — a newer ROCm or a newer llama.cpp ROCm backend may close
+the gap, so re-run the A/B before assuming Vulkan still wins:
+
+| Component | Version (working VM) |
+| --- | --- |
+| Host | Proxmox VE 9.2.3, kernel `7.0.12-1-pve`, in-kernel amdgpu uAPI `3.64.0` |
+| Guest OS | Ubuntu 24.04 (noble), kernel `6.8.0-124-generic` |
+| amdgpu-dkms | `6.16.13` (via `amdgpu-install_7.2.70200-1`, `--usecase=rocm`) |
+| ROCm | `7.2` (`repo.radeon.com/amdgpu-install/7.2/ubuntu/noble`) |
+| llama.cpp | `b9835` — `llama-b9835-bin-ubuntu-rocm-7.2-x64` prebuilt |
+| GPU | Radeon Pro V620, Navi 21 / gfx1030 |
+
+A/B vs Vulkan at the **same** context (65536) and llama.cpp build (`b9835`), measured
+from CT 200 via `openai-direct`:
+
+| metric | Vulkan (RADV, LXC) | ROCm (VM) |
+| --- | --- | --- |
+| p1 per-req tok/s | 78.6 | 67.8 (**−14 %**) |
+| p1 TTFT p95 (s) | 0.28 | 0.19 (faster) |
+| p4 aggregate tok/s | 145.5 | 134.9 (**−7 %**) |
+| p4 per-req median tok/s | 38.0 | 34.4 |
+| p4 TTFT p95 (s) | 0.59 | 0.79 (slower) |
+
+ROCm decodes ~7–14 % slower (only single-stream prefill/TTFT was faster); on RDNA 2 the
+tuned RADV path wins. The VM also costs more to operate: the card is **exclusive** to the
+VM (`vfio-pci` claims it, so the LXC can't use it at the same time), guest RAM is pinned
+(no lxcfs sharing, ballooning off), there is no host-side fan control while the card is
+passed through, and a cold load takes ~7–9 min (slow VM disk read of the 25 GB GGUF +
+first-run ROCm kernel JIT).
+
+**Conclusion: Vulkan (RADV) is the supported backend here.** The VM/ROCm path is proven
+and reproducible if ever needed (a ROCm-only feature, or a future ROCm/llama.cpp release
+that closes the gap).
+
+Reproduction gotchas (if retried in a VM):
+- A minimal Ubuntu **cloud image lacks the DRM stack**, so `amdgpu-dkms` won't load
+  (`Unknown symbol drm_dp_mst_*`). Install `linux-modules-extra-$(uname -r)` (provides
+  `drm_display_helper`) **before** `amdgpu-install`.
+- Create the EFI disk with `pre-enrolled-keys=0` (Secure Boot off) so the unsigned
+  amdgpu-dkms module loads.
+- Serve with `--jinja --reasoning-format none` (as the LXC does) or this thinking model
+  emits into `reasoning_content`, leaving `content` empty (benchmarks report `invalid_output`).
+- Fully reversible with **no persistent host change and no reboot**: stop `gpu-fan-control`
+  + the LXC, runtime-rebind the card to `vfio-pci`, run the VM, then `qm destroy` it and
+  rebind `amdgpu` (`reset_method=bus` resets the card cleanly). A host reboot is the
+  guaranteed fallback (CT 120 is `onboot=1`).
+- For a future *LXC* retry instead, ROCm also needs `/dev/kfd` passed in (cgroup char
+  major 236 + an `lxc.mount.entry`) on top of `/dev/dri` — but the shared-kernel ABI
+  mismatch is the real blocker, which is why the VM is the path that works.
 
 ## Benchmarks
 
