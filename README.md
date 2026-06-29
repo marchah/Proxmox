@@ -4,7 +4,9 @@ Utilities for creating and operating local Proxmox LXCs and VMs.
 
 ## Layout
 
-- `rx-6700-xt/`: scripts and notes for the Radeon RX 6700 XT.
+- `pro-v620/`: scripts and notes for the **Radeon Pro V620** (current GPU).
+- `rx-6700-xt/`: scripts and notes for the Radeon RX 6700 XT (prior GPU — the
+  V620 replaced it; kept for reference).
 - `bench-runner/`: disposable LXC for OpenAI-compatible LLM benchmarks.
 
 Each GPU folder should own its own model/runtime assumptions. LLM containers tend
@@ -23,8 +25,8 @@ Containers are allocated VMIDs by role:
 | 140-159 | Databases         |
 | 200+    | Test / temporary  |
 
-Current containers: CT `120` (the AI/LLM runtime — provisioned by one of two
-interchangeable engine scripts, LM Studio or llama.cpp) and CT `200`
+Current containers: CT `120` (the AI/LLM runtime — now on the Radeon Pro V620,
+provisioned by `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`) and CT `200`
 (`bench-runner`, disposable). Each creation script defaults its `VMID` to the
 matching range and accepts a `VMID=` override.
 
@@ -44,7 +46,29 @@ Run it directly on the Proxmox host without cloning the repo:
 bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/bench-runner/create-lxc-bench-runner.sh)"
 ```
 
-### RX 6700 XT LLM Runtime LXC
+### Pro V620 LLM Runtime LXC (current)
+
+Creates a privileged Ubuntu LXC serving a high-parameter Qwen model on the
+**Radeon Pro V620** (Navi 21 / gfx1030, 32 GB) via **Vulkan**:
+
+- GPU: Radeon Pro V620 (32 GB — replaces the 12 GiB RX 6700 XT)
+- Model: `unsloth/Qwen3.6-35B-A3B-GGUF` / `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf`
+  (MoE, 35B total / ~3B active — fast, fits 32 GB at Q5)
+- Engine: `create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
+
+Defaults to CT `120`, serves an OpenAI-compatible API on `0.0.0.0:1234` under the
+id `qwen3.6-35b-a3b`. Chosen for agent use (MoE keeps per-step latency low). See
+[pro-v620/README.md](pro-v620/README.md) for benchmarks, the model bake-off, and tuning.
+
+Run directly on the Proxmox host without cloning the repo:
+
+```bash
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh)"
+```
+
+### RX 6700 XT LLM Runtime LXC (prior GPU)
+
+> The V620 above replaced this card. These scripts are kept for reference.
 
 Creates a privileged Ubuntu LXC serving the same model on the RX 6700 XT via
 **Vulkan**, with a choice of inference engine:

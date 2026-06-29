@@ -1,16 +1,15 @@
 # Ansible: one-command benchmark batch
 
 Drives the LLM-runtime benchmark batch on the Proxmox host from this machine.
-Works for either inference engine on CT 120 — `RUNTIME=lmstudio` (the default) or
-`RUNTIME=llamacpp`, which selects the reload command, results label, and telemetry
-patterns. It:
+CT 120 runs llama.cpp (`llama-server`); the playbook selects the reload command,
+results label, and telemetry patterns for it. It:
 
 1. pushes the local `bench-runner/` suite to the host (latest, incl. uncommitted),
 2. provisions CT 200 if it is missing (idempotent),
 3. injects `HF_TOKEN` into the container's `/etc/bench-runner.env`,
 4. (re)loads the model at the chosen `--parallel`,
 5. runs the batch (baseline, concurrency sweep, input-length sweep, soak),
-6. fetches the new result folders into `rx-6700-xt/results/<runtime>/parallel-<n>/`.
+6. fetches the new result folders into `pro-v620/results/llamacpp/parallel-<n>/`.
 
 The containers have no SSH of their own, so the playbook connects to the Proxmox
 host over SSH and acts on the LXCs via `pct`. This is the "light" version — it
@@ -40,7 +39,6 @@ make check           # syntax-check the playbook
 make smoke           # plumbing test (push + reload, no benchmarks)
 make bench           # full batch, --parallel 4 (the operational default)
 make bench PARALLEL=1 # single-slot run
-make bench RUNTIME=llamacpp   # benchmark a llama.cpp CT 120 (default is lmstudio)
 make context-sweep   # context-length sweep on top of the batch
 ```
 
@@ -54,14 +52,14 @@ ansible-playbook ansible/benchmark.yml -e @ansible/secrets.yml
 ansible-playbook ansible/benchmark.yml -e @ansible/secrets.yml -e parallel=1
 ```
 
-Useful extra vars: `runtime` (`lmstudio`|`llamacpp`), `parallel`,
-`reload_model=false` (skip the model reload), `runtime_label=<name>` (force a
-separate results folder), or override the `benchmarks` list.
+Useful extra vars: `parallel`, `reload_model=false` (skip the model reload),
+`runtime_label=<name>` (force a separate results folder), or override the
+`benchmarks` list.
 
 ### Optional: context-length sweep
 
 Host-orchestrated — reloads the model at each context length and benches it through
-the host-telemetry sidecar. Results land in `rx-6700-xt/results/<runtime>/context-sweep/`.
+the host-telemetry sidecar. Results land in `pro-v620/results/llamacpp/context-sweep/`.
 
 ```bash
 # add the sweep on top of the standard batch:
@@ -73,17 +71,20 @@ ansible-playbook -i ansible/inventory.ini ansible/benchmark.yml -e @ansible/secr
   -e context_sweep=true -e '{"benchmarks": []}'
 ```
 
-The sweep leaves the model at its last context, so the playbook reloads it back to the
-configured context/`--parallel` afterward (unless `reload_model=false`).
+The sweep walks the model through small per-context reloads, so `run-context-sweep.sh`
+restores CT 120 to the configured context/`--parallel` via an EXIT trap when it finishes —
+even if it errors or is interrupted. A failed sweep no longer aborts the play (results are
+still fetched); the failure is reported at the end.
 
 ## Notes
 
 - It pushes your **local** checkout — commit/push to the branch when the results
   look good (not before each run).
-- Results land in the gitignored `rx-6700-xt/results/<runtime>/parallel-<n>/`; raw
+- Results land in the gitignored `pro-v620/results/llamacpp/parallel-<n>/`; raw
   run data is not committed.
 - Provisioning is skipped if CT 200 already exists; the model reload and the batch
   run every invocation.
 - The batch auto-retargets CT 120's current IP before running, so a recreated or
-  renumbered model container (e.g. after an `lmstudio`→`llamacpp` swap that picks up
-  a new DHCP lease) is benchmarked correctly without hand-editing `local-model.env`.
+  renumbered model container (e.g. after recreating CT 120 or a model swap that
+  picks up a new DHCP lease) is benchmarked correctly without hand-editing
+  `local-model.env`.

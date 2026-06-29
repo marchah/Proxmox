@@ -12,13 +12,17 @@ root**. macOS is only the authoring/editing environment; the scripts run remotel
 
 Two containers form the system:
 
-- **CT 120** (`rx-6700-xt/`): a *privileged* Ubuntu LXC — the **LLM runtime** — serving
-  `Qwen3.5-9B-Q4_K_M.gguf` on a Radeon RX 6700 XT via Vulkan, exposing an OpenAI-compatible
-  API at `0.0.0.0:1234`. Two **interchangeable engine scripts** target this slot; both
-  default to VMID 120 and serve the model under the id `qwen3.5-9b`, so they are mutually
-  exclusive — run one at a time (only one can use the GPU):
-  - `create-lxc-lmstudio-qwen3.5-9b.sh` — LM Studio's `lms` CLI (hostname `lmstudio`).
-  - `create-lxc-llamacpp-qwen3.5-9b.sh` — llama.cpp's `llama-server` (hostname `llamacpp`).
+- **CT 120** (`pro-v620/`): a *privileged* Ubuntu LXC — the **LLM runtime** — serving
+  `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, 35B total / ~3B active) on a **Radeon Pro V620**
+  (Navi 21 / gfx1030, 32 GB) via Vulkan, exposing an OpenAI-compatible API at `0.0.0.0:1234`
+  under the id `qwen3.6-35b-a3b`:
+  - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
+    (hostname `llamacpp`). This is the current GPU/model.
+  - **Prior GPU (`rx-6700-xt/`, kept for reference):** the V620 replaced a Radeon RX 6700 XT
+    (12 GiB) that served `Qwen3.5-9B-Q4_K_M.gguf` (id `qwen3.5-9b`) via two interchangeable
+    engine scripts — `create-lxc-lmstudio-qwen3.5-9b.sh` (LM Studio `lms`) and
+    `create-lxc-llamacpp-qwen3.5-9b.sh` (llama.cpp). The README found llama.cpp better on
+    that card, which is why the V620 ships only the llama.cpp script.
 - **CT 200 `bench-runner`** (`bench-runner/`): an *unprivileged* Debian LXC that benchmarks
   that endpoint. It auto-discovers CT 120's IP at provisioning time. It lives in the
   `200+` test/temporary range because it is disposable — destroy it when done. The suite is
@@ -31,7 +35,9 @@ VMIDs `120`/`200` and hostnames are defaults overridable via env vars (`VMID=`, 
 All run on the Proxmox host as root.
 
 ```bash
-# Provision the GPU LLM-runtime container (CT 120) — pick ONE engine (mutually exclusive)
+# Provision the GPU LLM-runtime container (CT 120) — current GPU: Radeon Pro V620
+./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
+# Prior GPU (RX 6700 XT) — kept for reference; pick ONE engine (mutually exclusive)
 ./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
 ./rx-6700-xt/create-lxc-llamacpp-qwen3.5-9b.sh    # llama.cpp (llama-server)
 
@@ -73,11 +79,17 @@ sub-scripts into the container via `pct exec ... bash -s`. Match this idiom when
 **GPU/model/engine scripts are intentionally narrow, not generic.** Per the README, each GPU
 folder owns its own model/runtime assumptions (GPU runtime flags, context size, VRAM sizing).
 A different GPU, model, *or inference engine* should get a *new* script, not a parameterized
-mega-launcher — the RX 6700 XT already has two sibling scripts (`...-lmstudio-...` and
-`...-llamacpp-...`) serving the same model on the same GPU via Vulkan.
-For the RX 6700 XT this means Vulkan (mesa RADV) — the container installs `mesa-vulkan-drivers`
-and passes through `/dev/dri` (render node `renderD128`) — plus a pinned model repo/file/SHA-256
-in a privileged container.
+mega-launcher — the RX 6700 XT has two sibling scripts (`...-lmstudio-...` and
+`...-llamacpp-...`) serving the same model on the same GPU via Vulkan, and the V620 got a
+brand-new folder/script (`pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`) for its larger
+32 GB / MoE model rather than a flag on the 6700 XT script.
+Both GPUs use Vulkan (mesa RADV) — Navi 22/gfx1031 on the 6700 XT, Navi 21/gfx1030 on the
+V620 — the container installs `mesa-vulkan-drivers` and passes through `/dev/dri` (render node
+`renderD128`), plus a pinned model repo/file/SHA-256 in a privileged container. (The V620
+model is a single-file unsharded GGUF, so the download/verify path is unchanged; on 32 GB it
+defaults to ctx 262144 / `--parallel 4` (the model's ~256k native max, 64k per slot; this
+MoE's KV cache is cheap, ~20 KB/token, ~29.8 GiB total at Q5). A single agent needing the whole
+256k window uses `llamacpp-reload 262144 1`; tunable via `llamacpp-reload`.)
 
 Engine differences that matter when extending the llama.cpp script:
 - It installs a **pinned prebuilt Vulkan `llama-server` release** (tag + tarball SHA-256 in
@@ -89,8 +101,12 @@ Engine differences that matter when extending the llama.cpp script:
   flags**, so its container ships a `llamacpp-reload <ctx> <parallel>` helper (rewrites
   `/etc/llamacpp.env` + `systemctl restart`) and a `Type=simple` service running
   `/usr/local/bin/llamacpp-serve`.
-- `llama-server --alias qwen3.5-9b` makes `/v1/models` report a stable id (else it reports the
-  model file path); that id is what the bench-runner records as `MODEL_IDENTIFIER`.
+- `llama-server --alias <id>` makes `/v1/models` report a stable id (else it reports the
+  model file path); that id is what the bench-runner records as `MODEL_IDENTIFIER` (the V620
+  serves `qwen3.6-35b-a3b`, the 6700 XT served `qwen3.5-9b`). The bench-runner auto-detects
+  it from `/v1/models` at provision time; `ansible/benchmark.yml` and `host/run-context-sweep.sh`
+  default `model_key`/`MODEL_KEY` to `qwen3.6-35b-a3b`, and the ansible run re-points an existing
+  CT 200's `MODEL_IDENTIFIER` to it each run (so a model swap can't leave preflight stale).
 
 ### Dual-mode install (critical gotcha)
 
@@ -112,7 +128,7 @@ or the standalone install path will silently ship an incomplete suite.
 
 1. **Layered config** (process env wins, because every file default uses `: "${VAR:=...}"`
    — including `MODEL_API_URL`/`MODEL_IDENTIFIER`, so a per-run override actually takes
-   effect): `config/local-model.env` (written at provisioning: the LM Studio
+   effect): `config/local-model.env` (written at provisioning: the model's
    `MODEL_API_URL`, the discovered `MODEL_IDENTIFIER`, `RUN_*` toggles) → the profile file
    named by `BENCHMARK_PROFILE` (`config/benchmark-profiles/<name>.env`) → process env.
 2. **Preflight** (unless `BENCHMARK_PREFLIGHT=false`): GETs `<MODEL_API_URL>/models` and
@@ -129,12 +145,13 @@ or the standalone install path will silently ship an incomplete suite.
 `system-sampler.py` still reads the host's `/sys/class/drm` + hwmon, so it *does* capture
 GPU utilization, VRAM, core clocks, and amdgpu/CPU temps (a baseline run recorded 99% GPU
 util, 7.24 GiB VRAM, 103 °C junction) — and the GPU/temperature SLO checks in `default.json`
-run from here. Caveat: the amdgpu counters are only meaningful under active load — LM Studio
-frees VRAM when idle (so `mem_info_vram_used` reads ~0 between requests; don't read it idle
-and conclude "CPU" — judge that by throughput), and `gpu_busy_percent` can return `EBUSY`.
+run from here. Caveat: `gpu_busy_percent` is only meaningful under active load and can return
+`EBUSY`, so judge GPU-vs-CPU by throughput, not an idle sample. (llama.cpp holds the model in
+VRAM, so `mem_info_vram_used` stays high even idle — the pre-allocated weights + KV — unlike
+engines that free VRAM between requests.)
 Trust the per-run telemetry peaks. `evaluate-slos.py` still skips any check whose data is
 genuinely absent. **CPU/RAM/process metrics from the in-LXC sampler are lxcfs-virtualized to
-CT 200 — they describe the benchmark *client*, not LM Studio.** To judge whether the model
+CT 200 — they describe the benchmark *client*, not the model server (llama.cpp on CT 120).** To judge whether the model
 server itself was CPU/RAM-bound, the Ansible batch wraps each run with
 `host/run-with-target-telemetry.sh`, which samples CT 120 from the host and merges a
 `target-telemetry.jsonl` into each `/results/<run-id>/`. Don't cite the in-LXC CPU/RAM numbers
@@ -170,17 +187,16 @@ set `BENCHMARK_PROFILE`/`BENCHMARK_RUN_ID`, and exec the suite. They are generat
   since the in-LXC sampler already records GPU telemetry; keep it only for sampling around a
   non-benchmark command. `run-with-target-telemetry.sh` is the non-redundant counterpart: it
   pushes `system-sampler.py` into the *model* container (CT 120) and runs it there during a
-  bench, so CPU/RAM/process metrics reflect LM Studio (not the bench-runner client); the
-  Ansible batch wraps every run with it and merges `target-telemetry.jsonl` into the result.
-  `run-context-sweep.sh` reloads LM Studio at each context length and
-  correlates VRAM with TTFT/latency/throughput — still useful, because the per-context reload
-  is the part the in-LXC suite can't do. **The model-reload paths are engine-aware via a
-  `runtime` selector (`lmstudio` | `llamacpp`):** `ansible/benchmark.yml` carries a `runtimes`
-  map (per-engine `reload_cmd` + `target_process_patterns` + results `label`) and
-  `host/run-context-sweep.sh` dispatches `reload_model` on `RUNTIME`. lmstudio reloads via the
-  `lms` CLI; llamacpp via the container's `llamacpp-reload <ctx> <parallel>` (restart, blocks
-  until `/health` is ready). Drive it with `make bench RUNTIME=llamacpp` /
-  `make context-sweep RUNTIME=llamacpp` (default `lmstudio`).
+  bench, so CPU/RAM/process metrics reflect the model server, llama.cpp (not the bench-runner
+  client); the Ansible batch wraps every run with it and merges `target-telemetry.jsonl` into
+  the result. `run-context-sweep.sh` reloads the model at each context length and correlates
+  VRAM with TTFT/latency/throughput — still useful, because the per-context reload is the part
+  the in-LXC suite can't do. The model-reload path is **llamacpp-only**: `ansible/benchmark.yml`'s
+  `runtimes` map carries the `llamacpp` entry (`reload_cmd` + `target_process_patterns` + results
+  `label`) and `host/run-context-sweep.sh` calls the container's `llamacpp-reload <ctx> <parallel>`
+  (restart, blocks until `/health` is ready). Drive it with `make bench` / `make context-sweep`.
+  (The prior RX 6700 XT also had an `lmstudio` runtime; it was removed with that card — the
+  `rx-6700-xt/` scripts keep it for reference.)
 
 ### Results & data model
 
@@ -202,15 +218,16 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
 - **VMID allocation** (homelab-wide scheme — pick a new script's default `VMID` from the
   matching range):
   - `100-119` — infra / services
-  - `120-139` — AI/LLM containers (CT 120 LLM runtime: `lmstudio` or `llamacpp`)
+  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp` on the V620; the
+    prior 6700 XT also offered an `lmstudio` variant)
   - `140-159` — databases
   - `200+` — test / temporary (CT 200 `bench-runner` — disposable benchmark LXC)
 - Keep downloaded model weights and generated results out of git (already covered by
   `.gitignore`: `models/`, `results/`, `artifacts/`, `bench-results*.tgz`, `.env*`).
 - Container model storage (`/models`) uses `backup=0` — weights are large and
   re-downloadable; back up container config / service files / small state separately.
-- The RX 6700 XT is driven via **Vulkan** (mesa RADV): the container installs the Vulkan
-  userspace (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and passes through `/dev/dri`
-  (render node `renderD128`). The engine offloads all layers to the GPU (LM Studio
-  `--gpu max`, llama.cpp `-ngl 99`); verify with `vulkaninfo` and a non-trivial
-  `mem_info_vram_used`.
+- Both AMD GPUs are driven via **Vulkan** (mesa RADV) — the V620 (Navi 21/gfx1030) and the
+  prior RX 6700 XT (Navi 22/gfx1031): the container installs the Vulkan userspace
+  (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and passes through `/dev/dri` (render node
+  `renderD128`). The engine offloads all layers to the GPU (LM Studio `--gpu max`, llama.cpp
+  `-ngl 99`); verify with `vulkaninfo` and a non-trivial `mem_info_vram_used`.

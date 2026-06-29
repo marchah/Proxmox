@@ -241,13 +241,11 @@ The Ansible batch (`make bench`) wraps every benchmark with this automatically.
 
 Context-length / VRAM sweep — reload the model at each context length and
 measure VRAM, TTFT, latency, and throughput per step (context/KV cache is
-usually the dominant VRAM bottleneck). Engine-aware via `RUNTIME` (`lmstudio`
-reloads via the `lms` CLI; `llamacpp` via the container's `llamacpp-reload`
-helper):
+usually the dominant VRAM bottleneck). CT 120 runs llama.cpp, so it reloads via
+the container's `llamacpp-reload` helper:
 
 ```bash
-CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh                 # lmstudio
-RUNTIME=llamacpp CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh # llama.cpp
+CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh
 ```
 
 It writes `context-sweep.md` correlating context length with peak VRAM and GPU

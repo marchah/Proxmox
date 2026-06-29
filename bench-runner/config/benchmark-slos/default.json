@@ -1,5 +1,5 @@
 {
-  "description": "Default homelab SLOs for interactive local inference. Tune after the first real baseline.",
+  "description": "Default homelab SLOs for interactive local inference. Tune after the first real baseline. gpu_memory_used_ratio is warn-only (no fail threshold): the V620 runs Qwen3.6-Q5 at 256k context intentionally near-full (~99% VRAM), so a high ratio is expected, not a run failure.",
   "benchmarks": {
     "openai-direct": {
       "error_count_max": 0,
@@ -40,7 +40,6 @@
       }
     },
     "min_memory_available_gib_warn": 2,
-    "gpu_memory_used_ratio_warn": 0.9,
-    "gpu_memory_used_ratio_fail": 0.98
+    "gpu_memory_used_ratio_warn": 0.9
   }
 }

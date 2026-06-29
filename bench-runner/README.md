@@ -111,16 +111,13 @@ Each writes `curve.md`/`curve.json`; the concurrency sweep flags the saturation 
 
 The suite already records GPU util/VRAM/clocks/temps from inside the LXC (see
 Metrics Scope below), so the context sweep is the main host-side tool — it reloads
-the model at each context length, which the in-LXC suite can't do. The sweep and
-the Ansible batch are **engine-aware** via `RUNTIME` (`lmstudio` | `llamacpp`):
-lmstudio reloads via the `lms` CLI, llamacpp via the container's `llamacpp-reload`
-helper (restart, waits for `/health`).
+the model at each context length, which the in-LXC suite can't do. CT 120 runs
+llama.cpp, so it reloads via the container's `llamacpp-reload` helper (restart,
+waits for `/health`).
 
 ```bash
 # Sweep context length and correlate VRAM with TTFT/latency/throughput
-CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh                 # lmstudio (default)
-RUNTIME=llamacpp CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh # llama.cpp
-
+CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh                 # on CT 120 (llama.cpp)
 # Optional (redundant with the suite's own telemetry): sample a container's GPU
 # around any command — handy for non-benchmark commands
 ./host/run-with-host-telemetry.sh pct exec 200 -- bash -lc 'llm-bench-baseline'
@@ -136,9 +133,11 @@ GPU telemetry — utilization, VRAM, core clocks, and temperatures — because
 this unprivileged LXC. A baseline run captured 99% GPU util, 7.24 GiB VRAM, and a
 103 °C junction temperature, and the GPU/temperature SLO checks ran.
 
-Caveat: the amdgpu counters are only meaningful **under load**. LM Studio frees
-VRAM when idle, so `mem_info_vram_used` reads near-zero between requests — don't
-read it at idle and conclude the model is on CPU (judge that by throughput);
+Caveat: the amdgpu counters are only meaningful **under load**. Some engines (e.g.
+LM Studio) free VRAM when idle, so `mem_info_vram_used` can read near-zero between
+requests — don't read it at idle and conclude the model is on CPU (judge that by
+throughput). A resident `llama-server` (as on the V620) keeps VRAM allocated, so
+its idle reading stays high;
 `gpu_busy_percent` can also return `EBUSY`. Trust the per-run telemetry peaks.
 
 Before each run, the suite preflights the endpoint and aborts with a clear error

@@ -5,7 +5,7 @@
 PLAYBOOK := ansible/benchmark.yml
 SECRETS  := ansible/secrets.yml
 PARALLEL ?= 4
-RUNTIME  ?= lmstudio
+RUNTIME  ?= llamacpp
 
 .DEFAULT_GOAL := help
 .PHONY: help ping check smoke bench context-sweep
@@ -20,11 +20,11 @@ ping: ## Test SSH connectivity to the Proxmox host
 check: ## Syntax-check the playbook
 	ansible-playbook $(PLAYBOOK) --syntax-check
 
-smoke: ## Plumbing test: push suite + reload model, run NO benchmarks (RUNTIME/PARALLEL overridable)
+smoke: ## Plumbing test: push suite + reload model, run NO benchmarks (PARALLEL overridable)
 	ansible-playbook $(PLAYBOOK) -e parallel=$(PARALLEL) -e runtime=$(RUNTIME) -e '{"benchmarks": []}'
 
-bench: ## Run the full batch (PARALLEL=4 default; RUNTIME=lmstudio|llamacpp; e.g. make bench RUNTIME=llamacpp)
+bench: ## Run the full batch (PARALLEL=4 default; llama.cpp engine on CT 120)
 	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) -e parallel=$(PARALLEL) -e runtime=$(RUNTIME)
 
-context-sweep: ## Run the context-length sweep on top of the batch (PARALLEL/RUNTIME overridable)
+context-sweep: ## Run the context-length sweep on top of the batch (PARALLEL overridable)
 	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) -e parallel=$(PARALLEL) -e runtime=$(RUNTIME) -e context_sweep=true
