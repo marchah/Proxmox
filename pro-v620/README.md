@@ -417,6 +417,41 @@ Sampled on the host every 12 s across the whole batch:
 > at high context before trusting long prompts** (an input-length sweep with
 > distinct/uncached prompts is the quickest check).
 
+### Power limiting — not possible; undervolt instead (`undervolt/`)
+
+The V620's board power is **firmware-locked at 250 W**: `power1_cap` reports
+`min == max == default == 250000000` µW and any other write is rejected
+(`amdgpu: New power limit (220) is out of range [250,250]`). Enabling AMD
+OverDrive (`amdgpu.ppfeaturemask` bit `0x4000`) does **not** unlock the cap, and
+the OverDrive table exposes **no clock-ceiling knob** either (`OD_RANGE` is empty
+— no `OD_SCLK`/`OD_MCLK`). The DPM table only offers 500 or 2570 MHz (nothing
+between), so clock-step masking is useless too. **A sub-250 W cap is not
+achievable in software on this card.**
+
+The one working lever is a **GFX voltage offset** (`OD_VDDGFX_OFFSET`, exposed
+once OverDrive is on). A negative offset lowers voltage at the same clocks. A/B
+across the full benchmark batch (`make bench PARALLEL=4`, with host-side power
+sampling since the in-LXC suite cannot read AMD watts), **0 mV vs −100 mV**:
+
+| Under load | 0 mV | −100 mV | Δ |
+| --- | ---: | ---: | ---: |
+| Avg board power | 196 W | 160 W | **−18%** |
+| Peak power | 252 W | 247 W | −5 W |
+| Junction avg | 71 °C | 64 °C | **−7 °C** |
+| Junction peak | 83 °C | 75 °C | **−8 °C** |
+| Core clock (avg) | 2300 MHz | 2304 MHz | ≈ same |
+
+Throughput was unchanged in the decode / single-user / soak regime (±0.3%) and
+**+0.6–1.1%** in the cap-saturated concurrency sweep (peak 122.7 → 123.7 tok/s).
+−100 mV was fully stable (16-way concurrency, 32k-token prefills, soak — zero GPU
+faults). Decode draws only ~96–128 W single-stream (well under the cap), so it is
+*not* power-limited — that is why undervolting cuts power there instead of raising
+clocks. Net: **~8 °C cooler peaks and ~18% less power, for free.**
+
+Made persistent by the [`undervolt/`](undervolt/) service (enables OverDrive via
+`/etc/modprobe.d` + applies the offset at boot). See
+[`undervolt/README.md`](undervolt/README.md).
+
 ## Requirements
 
 - Proxmox host with `pct` and `pveam`

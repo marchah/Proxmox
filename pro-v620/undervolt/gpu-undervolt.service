@@ -1,0 +1,21 @@
+[Unit]
+Description=GPU undervolt (Radeon Pro V620 GFX voltage offset via amdgpu OverDrive)
+Documentation=https://github.com/Marchah/Proxmox/tree/main/pro-v620/undervolt
+# Needs amdgpu bound with OverDrive enabled (so pp_od_clk_voltage exists). The
+# daemon waits up to WAIT_SECS for the node to appear, so loose ordering is fine.
+Wants=systemd-modules-load.service
+After=systemd-modules-load.service
+ConditionPathExistsGlob=/sys/class/drm/card*/device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/gpu-undervolt.env
+ExecStart=/usr/local/sbin/gpu-undervolt apply
+# Return the card to stock voltage (0 mV) on stop/disable.
+ExecStop=/usr/local/sbin/gpu-undervolt --reset
+# Covers the boot race where amdgpu binds a few seconds late (daemon polls).
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target
