@@ -158,6 +158,32 @@ pct exec 120 -- vulkaninfo --summary                                # expect a V
 cat /sys/class/drm/card0/device/mem_info_vram_used                  # ~22 GB while serving a request
 ```
 
+### Why Vulkan and not ROCm/HIP?
+
+ROCm was tested (the llama.cpp `b9835` ROCm-7.2 prebuilt) and **does not work on this
+host**. The runtime installed cleanly and the GPU enumerated correctly
+(`llama-server --list-devices` → `ROCm0: AMD Radeon Pro V620`; KFD reports
+`gfx_target_version 100300` = gfx1030), but **model load aborts** on the first
+host→VRAM copy:
+
+```
+ROCm error: an illegal memory access was encountered
+  in function ggml_backend_cuda_buffer_set_tensor … hipMemcpyAsync(… hipMemcpyHostToDevice)
+```
+
+It failed identically with `HSA_OVERRIDE_GFX_VERSION=10.3.0`, `GGML_CUDA_NO_PINNED=1`,
+and `--no-mmap`. Root cause: a mismatch between **ROCm 7.2's HIP/HSA userspace** and
+the host's **in-kernel amdgpu 3.64.0 (Proxmox `7.0.12-1-pve`)** — the device
+enumerates via topology, but the VRAM memory ABI doesn't match, so every `hipMemcpy`
+faults.
+
+Making ROCm work would require host-level driver changes (install `amdgpu-dkms`
+matching ROCm 7.2, or use a ROCm version matching the in-kernel amdgpu) — risky on the
+hypervisor, and **low payoff**: RDNA 2 has no matrix cores (no WMMA), so even a working
+ROCm wouldn't meaningfully beat the tuned Vulkan path. **Vulkan (RADV) is the supported
+backend here.** (For a future retry: ROCm also needs `/dev/kfd` passed into the
+container — cgroup char major 236 + a `lxc.mount.entry` — on top of `/dev/dri`.)
+
 ## Benchmarks
 
 Run the suite from the repo root with `make bench` (the defaults are now
