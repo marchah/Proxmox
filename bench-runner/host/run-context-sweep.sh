@@ -8,7 +8,7 @@ set -Eeuo pipefail
 # utilization, TTFT, latency, and throughput per context. Context length (KV
 # cache) is usually the dominant VRAM/serving bottleneck, so this maps it.
 #
-# Works for both LLM runtime engines, selected by RUNTIME (default lmstudio):
+# Works for both LLM runtime engines, selected by RUNTIME (default llamacpp):
 #   lmstudio — reload via the `lms` CLI (unload/load at the new context).
 #   llamacpp — reload via the container's `llamacpp-reload` helper (restart).
 

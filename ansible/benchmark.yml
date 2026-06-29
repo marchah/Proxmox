@@ -1,6 +1,6 @@
 ---
 # One-command LLM runtime benchmark batch, driven from this machine.
-# Engine selected by `runtime` (lmstudio | llamacpp); see the `runtimes` map below.
+# Engine: llamacpp (see the `runtimes` map below; the prior lmstudio path was removed with the RX 6700 XT).
 #
 #   ansible-playbook -i ansible/inventory.ini ansible/benchmark.yml \
 #     -e @ansible/secrets.yml -e parallel=4
@@ -19,10 +19,10 @@
   vars:
     bench_vmid: 200
     gpu_vmid: 120
-    # Which inference engine CT 120 is running. Selects the reload command,
-    # results label, and target telemetry process patterns from `runtimes`
-    # below. The V620 (current GPU) runs llamacpp; override with -e runtime=lmstudio
-    # only for the prior RX 6700 XT setup.
+    # Which inference engine CT 120 is running. Selects the reload command, results
+    # label, and target telemetry process patterns from `runtimes` below. The V620
+    # runs llamacpp — the only supported engine here; the prior RX 6700 XT's lmstudio
+    # path was removed when that card was decommissioned.
     runtime: llamacpp
     # Default to 4 slots = the operational CT 120 default, so a plain `make bench`
     # never downgrades the running model. Override with -e parallel=1 for a
@@ -31,24 +31,15 @@
     # Served model id (== llama-server --alias on CT 120). The bench-runner also
     # auto-detects it from /v1/models, but the reload/label/telemetry paths use it.
     model_key: qwen3.6-35b-a3b
-    # 64k total (matches the CT 120 default). This MoE's KV cache is cheap, so 64k
-    # fits the V620 easily; at parallel 4 that is ~16k per slot.
-    model_context: 65536
+    # 256k total — MUST match the CT 120 default. Reloads and the post-batch restore
+    # use this value, so a smaller number here silently downgrades production context
+    # on every `make bench`. At parallel 4 that is 64k per slot.
+    model_context: 262144
     reload_model: true
     # Per-engine reload command + labels. The reload command is re-templated by
     # Ansible, so its inner {{ model_key }}/{{ model_context }}/{{ parallel }}
     # resolve at run time.
     runtimes:
-      lmstudio:
-        label: lmstudio
-        target_process_patterns: "lms,LM Studio,python"
-        # Reload as the service user (not root) so reloads don't leave root-owned
-        # state in /home/lmstudio.
-        reload_cmd: >-
-          S='sudo -u lmstudio env HOME=/home/lmstudio /home/lmstudio/.lmstudio/bin/lms';
-          $S unload --all >/dev/null 2>&1 || true;
-          $S load {{ model_key }} --gpu max --context-length {{ model_context }} --parallel {{ parallel }} --yes
-        version_cmd: "sudo -u lmstudio env HOME=/home/lmstudio /home/lmstudio/.lmstudio/bin/lms --version 2>&1"
       llamacpp:
         label: llamacpp
         target_process_patterns: "llama-server,python"
@@ -183,12 +174,12 @@
       no_log: true
       when: hf_token | default('') | length > 0
 
-    # The reload path reaches CT 120 by VMID, but the benchmark reaches it by the
-    # MODEL_API_URL baked into CT 200 at provisioning, which the overlay preserves.
-    # After a runtime swap (destroy + recreate CT 120) DHCP can hand out a new IP,
-    # leaving that URL stale. Re-point it at CT 120's current IP every run so the
-    # batch always benchmarks the live endpoint. Port 1234 is fixed; the served id
-    # is qwen3.6-35b-a3b on the V620 (the bench-runner auto-detects it).
+    # CT 200 reaches CT 120 via the MODEL_API_URL + MODEL_IDENTIFIER baked into its
+    # env at provisioning (the overlay preserves them). Both are auto-detected ONLY
+    # at provision time, so they go stale later: DHCP can hand CT 120 a new IP, and a
+    # model swap changes the served id. Re-point BOTH every run — URL -> current
+    # IP:1234, MODEL_IDENTIFIER -> model_key — so the batch targets the live endpoint
+    # and preflight matches the served model (else an existing CT 200 fails preflight).
     - name: Discover the model container's current IP
       ansible.builtin.command:
         argv: [pct, exec, "{{ gpu_vmid }}", "--", hostname, -I]
@@ -206,7 +197,9 @@
           - bash
           - -lc
           - >-
-            sed -i -E 's#(MODEL_API_URL:=)http://[^"/]+/v1#\1http://{{ gpu_ip.stdout.split()[0] }}:1234/v1#'
+            sed -i -E
+            -e 's#(MODEL_API_URL:=)http://[^"/]+/v1#\1http://{{ gpu_ip.stdout.split()[0] }}:1234/v1#'
+            -e 's#(MODEL_IDENTIFIER:=)[^}"]*#\1{{ model_key }}#'
             /etc/bench-runner.env /opt/bench-runner/config/local-model.env
       changed_when: true
       when: gpu_ip.stdout | default('') | trim | length > 0

@@ -93,8 +93,9 @@ pct exec 120 -- llamacpp-reload <context-length> <parallel>
 
 The `262144` / `--parallel 4` default is the model's **~256k native maximum**,
 split across 4 continuous-batching slots (**64k each**). This MoE's KV cache is
-cheap (~20 KB/token), so even 256k fits the V620 at Q5 ~29.8 GiB of 32 (verified
-incl. a 4-concurrent stress), ~2.2 GiB margin — thin but holds. A larger
+cheap (~20 KB/token), so even 256k fits the V620 at Q5 ~29.8 GiB used of ~30 GiB
+usable (the card exposes 30704 MiB, not a full 32) — only ~0.2 GiB real margin,
+stress-verified (a 4-concurrent prefill held) but with no safety buffer. A larger
 `--ctx-size` does not slow shorter requests (attention is
 over actual length), so this ceiling is free for normal traffic — but *using*
 large contexts decodes slower (see [Multi-agent capacity](#multi-agent-capacity-4--32k)).
@@ -193,7 +194,7 @@ Run the suite from the repo root with `make bench` (the defaults are now
 overrides are needed). Results land in `pro-v620/results/llamacpp/parallel-<n>/`.
 
 The throughput/prefill tables below were measured at 64k context (`--parallel 4`);
-the default is now 128k, but decode/throughput at a given *used* context length is
+the default is now 256k, but decode/throughput at a given *used* context length is
 unchanged by the larger ceiling. `Qwen3.6-35B-A3B-UD-Q5_K_XL`, llama.cpp `b9835`
 (Vulkan), measured from CT 200 via `openai-direct` with distinct/cold prompts.
 **All SLOs passed.**
@@ -326,8 +327,8 @@ calling, coding, vision):
   tool call (~600–960 `<think>` tokens here), so a tight `max_tokens` can truncate the
   call — give headroom, or disable thinking for instant (~55–80 tok) clean calls.
 - **Q5 chosen as the default** for slightly better quality (~5% slower). At the 262144
-  ceiling Q5 sits at **~29.8 GiB / 32 (verified incl. a 4-concurrent prefill stress),
-  ~2.2 GiB margin** — thin but holds, keeping the 256k window always available.
+  ceiling Q5 sits at **~29.8 GiB of ~30 GiB usable (30704 MiB) — only ~0.2 GiB real
+  margin** (stress-verified, no safety buffer), keeping the 256k window always available.
 
 ### GPU thermals (Radeon Pro V620, passively cooled via the `gpu-fan-control` Pump Fan)
 

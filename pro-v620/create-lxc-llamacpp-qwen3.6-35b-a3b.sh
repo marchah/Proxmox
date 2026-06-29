@@ -28,6 +28,11 @@ readonly LLAMACPP_SHA256="513debc0497ba6936ef037907d48bca5c2b250756cb7700b5111f1
 readonly MODEL_REPO="unsloth/Qwen3.6-35B-A3B-GGUF"
 readonly MODEL_FILE="Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf"
 readonly MODEL_SHA256="25233af7642e3a91bd52cc4aeefdbd4a117479088e06cf1aea5b6bedb443c506"
+# Pin the HF repo revision so a publisher update to `main` can't change the file
+# under us (the SHA-256 check would then fail and abort a fresh install). Bump
+# alongside MODEL_FILE/MODEL_SHA256, from
+# https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/commits/main
+readonly MODEL_REVISION="a483e9e6cbd595906af30beda3187c2663a1118c"
 # Served via llama-server --alias, so /v1/models reports this stable id instead of
 # the model file path. The bench-runner auto-detects it from /v1/models; the
 # ansible/host benchmark tooling pins model_key to this. NOTE: this id is
@@ -35,8 +40,10 @@ readonly MODEL_SHA256="25233af7642e3a91bd52cc4aeefdbd4a117479088e06cf1aea5b6bedb
 readonly MODEL_ALIAS="qwen3.6-35b-a3b"
 # 256k total context — the model's native maximum (262144), 64k per slot at
 # --parallel 4. This MoE's KV cache is cheap (~20 KB/token), so even 256k fits the
-# V620 at Q5: ~29.8 GiB of 32 GiB (verified, incl. a 4-concurrent prefill stress)
-# — ~2.2 GiB margin, thin but holds. A larger --ctx-size does NOT slow shorter
+# V620 at Q5: ~29.8 GiB used of ~30 GiB usable (the card exposes 30704 MiB, not a
+# full 32) — only ~0.2 GiB real margin. Stress-verified (a 4-concurrent prefill
+# held), but NO safety buffer: a heavier transient could OOM. If that bites, drop
+# --ctx-size, switch to Q4, or quantize the KV cache. A larger --ctx-size does NOT slow shorter
 # requests (attention is over actual length, not the max), so this ceiling is
 # "free" — an occasional high-context agent just works, no reload needed. Daytime
 # ~4 agents share it (64k per slot); a single agent can use the whole 256k window
@@ -260,7 +267,8 @@ install_llamacpp_stack() {
     "${MODEL_CONTEXT_LENGTH}" \
     "${MODEL_PARALLEL}" \
     "${MODEL_SERVER_BIND}" \
-    "${MODEL_SERVER_PORT}" <<'CONTAINER_SCRIPT'
+    "${MODEL_SERVER_PORT}" \
+    "${MODEL_REVISION}" <<'CONTAINER_SCRIPT'
 set -Eeuo pipefail
 
 LLAMACPP_RELEASE_TAG="$1"
@@ -275,6 +283,7 @@ MODEL_CONTEXT_LENGTH="$9"
 MODEL_PARALLEL="${10}"
 MODEL_SERVER_BIND="${11}"
 MODEL_SERVER_PORT="${12}"
+MODEL_REVISION="${13}"
 
 LLAMACPP_BASE=/opt/llamacpp
 LLAMACPP_DIR="${LLAMACPP_BASE}/llama-${LLAMACPP_RELEASE_TAG}"
@@ -301,7 +310,7 @@ if [[ ! -x /home/llamacpp/.venv/bin/hf ]]; then
 fi
 if [[ ! -f "${MODEL_PATH}" ]]; then
   sudo -u llamacpp /home/llamacpp/.venv/bin/hf download "${MODEL_REPO}" "${MODEL_FILE}" \
-    --local-dir /models/hf
+    --revision "${MODEL_REVISION}" --local-dir /models/hf
 fi
 printf '%s  %s\n' "${MODEL_SHA256}" "${MODEL_PATH}" | sha256sum --check -
 
@@ -470,6 +479,11 @@ main() {
   configure_gpu_passthrough
   add_models_mount
   start_container
+  if [[ ${START_AFTER_CREATE} != 1 ]]; then
+    log "Container ${VMID} created but not started (START_AFTER_CREATE=0); model not installed."
+    log "Start it and re-run with START_AFTER_CREATE=1 to install ${MODEL_FILE}."
+    return 0
+  fi
   wait_for_container
   install_llamacpp_stack
   print_summary

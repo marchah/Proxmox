@@ -104,9 +104,9 @@ Engine differences that matter when extending the llama.cpp script:
 - `llama-server --alias <id>` makes `/v1/models` report a stable id (else it reports the
   model file path); that id is what the bench-runner records as `MODEL_IDENTIFIER` (the V620
   serves `qwen3.6-35b-a3b`, the 6700 XT served `qwen3.5-9b`). The bench-runner auto-detects
-  it from `/v1/models`, but `ansible/benchmark.yml` and `host/run-context-sweep.sh` still
-  default `model_key`/`MODEL_KEY` to `qwen3.5-9b` — override to the served id when benchmarking
-  the V620.
+  it from `/v1/models` at provision time; `ansible/benchmark.yml` and `host/run-context-sweep.sh`
+  default `model_key`/`MODEL_KEY` to `qwen3.6-35b-a3b`, and the ansible run re-points an existing
+  CT 200's `MODEL_IDENTIFIER` to it each run (so a model swap can't leave preflight stale).
 
 ### Dual-mode install (critical gotcha)
 
