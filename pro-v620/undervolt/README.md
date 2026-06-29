@@ -91,7 +91,7 @@ only, on top of amdgpu's vendor default `0xfff7bfff`).
 | ---------------------- | ----------------------------------------- | ------- |
 | `gpu-undervolt.sh`     | `/usr/local/sbin/gpu-undervolt`           | Applies (`apply`) / resets (`--reset`) the offset; waits for the OverDrive node at boot |
 | `gpu-undervolt.env`    | `/etc/gpu-undervolt.env`                  | `OFFSET_MV` (default `-100`) and knobs |
-| `gpu-undervolt.service`| `/etc/systemd/system/gpu-undervolt.service` | oneshot (`RemainAfterExit`): applies at boot, resets to 0 mV on stop |
+| `gpu-undervolt.service`| `/etc/systemd/system/gpu-undervolt.service` | oneshot (`RemainAfterExit`): applies at boot, resets to 0 mV on stop **or a failed start** (`ExecStopPost`) |
 | `install.sh`           | —                                         | Idempotent installer (also writes the OverDrive modprobe.d option) |
 | (installer writes)     | `/etc/modprobe.d/amdgpu-overdrive.conf`   | Enables OverDrive at amdgpu load |
 

@@ -15,8 +15,13 @@ Type=oneshot
 RemainAfterExit=yes
 EnvironmentFile=-/etc/gpu-undervolt.env
 ExecStart=/usr/local/sbin/gpu-undervolt apply
-# Return the card to stock voltage (0 mV) on stop/disable.
-ExecStop=/usr/local/sbin/gpu-undervolt --reset
+# Return the card to stock voltage (0 mV) on stop/disable AND on a FAILED start.
+# ExecStopPost (not ExecStop) is deliberate: systemd does NOT run ExecStop when
+# ExecStart fails, but it DOES run ExecStopPost in both cases. So if `apply` dies
+# after committing the offset (e.g. a readback mismatch or a failed perf-level
+# restore), the card is still reset instead of being left undervolted under a
+# "failed" unit. It also runs on a normal stop, so this fully replaces ExecStop.
+ExecStopPost=/usr/local/sbin/gpu-undervolt --reset
 # Covers the boot race where amdgpu binds a few seconds late (daemon polls).
 TimeoutStartSec=90
 
