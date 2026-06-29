@@ -236,10 +236,15 @@ Reproduction gotchas (if retried in a VM):
   amdgpu-dkms module loads.
 - Serve with `--jinja --reasoning-format none` (as the LXC does) or this thinking model
   emits into `reasoning_content`, leaving `content` empty (benchmarks report `invalid_output`).
-- Fully reversible with **no persistent host change and no reboot**: stop `gpu-fan-control`
-  + the LXC, runtime-rebind the card to `vfio-pci`, run the VM, then `qm destroy` it and
-  rebind `amdgpu` (`reset_method=bus` resets the card cleanly). A host reboot is the
-  guaranteed fallback (CT 120 is `onboot=1`).
+- Fully reversible with **no persistent host change and no reboot**: stop `gpu-fan-control`,
+  `gpu-undervolt`, and the LXC; runtime-rebind the card to `vfio-pci`; run the VM; then
+  `qm destroy` it and rebind `amdgpu` (`reset_method=bus` resets the card cleanly). A host
+  reboot is the guaranteed fallback (CT 120 is `onboot=1`; `gpu-undervolt` re-applies at boot).
+- **Re-apply the undervolt after rebinding `amdgpu`.** The rebind resets the card's OverDrive
+  state, but `gpu-undervolt` is a `RemainAfterExit` oneshot — it still reads "active" while
+  the hardware has silently reverted to stock voltage, so it will **not** re-apply on its own.
+  Once `amdgpu` is back: `systemctl restart gpu-undervolt` and verify with
+  `cat /sys/class/drm/card*/device/pp_od_clk_voltage` (expect the configured `OD_VDDGFX_OFFSET`).
 - For a future *LXC* retry instead, ROCm also needs `/dev/kfd` passed in (cgroup char
   major 236 + an `lxc.mount.entry`) on top of `/dev/dri` — but the shared-kernel ABI
   mismatch is the real blocker, which is why the VM is the path that works.
@@ -416,6 +421,41 @@ Sampled on the host every 12 s across the whole batch:
 > release is newer. The bug may not apply here — **verify cold-prefill correctness
 > at high context before trusting long prompts** (an input-length sweep with
 > distinct/uncached prompts is the quickest check).
+
+### Power limiting — not possible; undervolt instead (`undervolt/`)
+
+The V620's board power is **firmware-locked at 250 W**: `power1_cap` reports
+`min == max == default == 250000000` µW and any other write is rejected
+(`amdgpu: New power limit (220) is out of range [250,250]`). Enabling AMD
+OverDrive (`amdgpu.ppfeaturemask` bit `0x4000`) does **not** unlock the cap, and
+the OverDrive table exposes **no clock-ceiling knob** either (`OD_RANGE` is empty
+— no `OD_SCLK`/`OD_MCLK`). The DPM table only offers 500 or 2570 MHz (nothing
+between), so clock-step masking is useless too. **A sub-250 W cap is not
+achievable in software on this card.**
+
+The one working lever is a **GFX voltage offset** (`OD_VDDGFX_OFFSET`, exposed
+once OverDrive is on). A negative offset lowers voltage at the same clocks. A/B
+across the full benchmark batch (`make bench PARALLEL=4`, with host-side power
+sampling since the in-LXC suite cannot read AMD watts), **0 mV vs −100 mV**:
+
+| Under load | 0 mV | −100 mV | Δ |
+| --- | ---: | ---: | ---: |
+| Avg board power | 196 W | 160 W | **−18%** |
+| Peak power | 252 W | 247 W | −5 W |
+| Junction avg | 71 °C | 64 °C | **−7 °C** |
+| Junction peak | 83 °C | 75 °C | **−8 °C** |
+| Core clock (avg) | 2300 MHz | 2304 MHz | ≈ same |
+
+Throughput was unchanged in the decode / single-user / soak regime (±0.3%) and
+**+0.6–1.1%** in the cap-saturated concurrency sweep (peak 122.7 → 123.7 tok/s).
+−100 mV was fully stable (16-way concurrency, 32k-token prefills, soak — zero GPU
+faults). Decode draws only ~96–128 W single-stream (well under the cap), so it is
+*not* power-limited — that is why undervolting cuts power there instead of raising
+clocks. Net: **~8 °C cooler peaks and ~18% less power, for free.**
+
+Made persistent by the [`undervolt/`](undervolt/) service (enables OverDrive via
+`/etc/modprobe.d` + applies the offset at boot). See
+[`undervolt/README.md`](undervolt/README.md).
 
 ## Requirements
 

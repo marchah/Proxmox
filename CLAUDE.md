@@ -231,3 +231,11 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and passes through `/dev/dri` (render node
   `renderD128`). The engine offloads all layers to the GPU (LM Studio `--gpu max`, llama.cpp
   `-ngl 99`); verify with `vulkaninfo` and a non-trivial `mem_info_vram_used`.
+- **V620 host-side GPU services live under `pro-v620/` and run on the Proxmox host (NOT in the
+  LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`: `pro-v620/fan-control/`
+  drives the passively-cooled card's blower off GPU temp (out-of-tree `nct6687`, PUMP_FAN1=pwm2),
+  and `pro-v620/undervolt/` applies a persistent GFX **voltage offset**. The V620's board power
+  is **firmware-locked at 250 W** (`power1_cap` write of any other value → `-EINVAL`) and
+  OverDrive exposes no clock-ceiling knob, so an undervolt is the only power/thermal lever
+  (−100 mV ≈ −18 % power / −8 °C peak junction at flat throughput). The undervolt installer also
+  enables OverDrive via `/etc/modprobe.d/amdgpu-overdrive.conf` (needs a reboot to take effect).
