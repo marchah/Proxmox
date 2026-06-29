@@ -236,10 +236,15 @@ Reproduction gotchas (if retried in a VM):
   amdgpu-dkms module loads.
 - Serve with `--jinja --reasoning-format none` (as the LXC does) or this thinking model
   emits into `reasoning_content`, leaving `content` empty (benchmarks report `invalid_output`).
-- Fully reversible with **no persistent host change and no reboot**: stop `gpu-fan-control`
-  + the LXC, runtime-rebind the card to `vfio-pci`, run the VM, then `qm destroy` it and
-  rebind `amdgpu` (`reset_method=bus` resets the card cleanly). A host reboot is the
-  guaranteed fallback (CT 120 is `onboot=1`).
+- Fully reversible with **no persistent host change and no reboot**: stop `gpu-fan-control`,
+  `gpu-undervolt`, and the LXC; runtime-rebind the card to `vfio-pci`; run the VM; then
+  `qm destroy` it and rebind `amdgpu` (`reset_method=bus` resets the card cleanly). A host
+  reboot is the guaranteed fallback (CT 120 is `onboot=1`; `gpu-undervolt` re-applies at boot).
+- **Re-apply the undervolt after rebinding `amdgpu`.** The rebind resets the card's OverDrive
+  state, but `gpu-undervolt` is a `RemainAfterExit` oneshot — it still reads "active" while
+  the hardware has silently reverted to stock voltage, so it will **not** re-apply on its own.
+  Once `amdgpu` is back: `systemctl restart gpu-undervolt` and verify with
+  `cat /sys/class/drm/card*/device/pp_od_clk_voltage` (expect the configured `OD_VDDGFX_OFFSET`).
 - For a future *LXC* retry instead, ROCm also needs `/dev/kfd` passed in (cgroup char
   major 236 + an `lxc.mount.entry`) on top of `/dev/dri` — but the shared-kernel ABI
   mismatch is the real blocker, which is why the VM is the path that works.

@@ -46,18 +46,23 @@ enable_overdrive_persistently() {
   local want="options amdgpu ppfeaturemask=${PPFEATUREMASK}"
   if [ -f "$MODPROBE_PATH" ] && grep -qxF "$want" "$MODPROBE_PATH"; then
     log "OverDrive modprobe option already set ($MODPROBE_PATH)"
-    return
+  else
+    log "enabling amdgpu OverDrive via $MODPROBE_PATH (ppfeaturemask=${PPFEATUREMASK})"
+    {
+      printf '# Enable amdgpu OverDrive (feature bit 0x4000) so OD_VDDGFX_OFFSET is\n'
+      printf '# writable. Managed by pro-v620/undervolt/install.sh. A reboot is\n'
+      printf '# required for amdgpu to re-read this at load.\n'
+      printf '%s\n' "$want"
+    } > "$MODPROBE_PATH"
   fi
-  log "enabling amdgpu OverDrive via $MODPROBE_PATH (ppfeaturemask=${PPFEATUREMASK})"
-  {
-    printf '# Enable amdgpu OverDrive (feature bit 0x4000) so OD_VDDGFX_OFFSET is\n'
-    printf '# writable. Managed by pro-v620/undervolt/install.sh. A reboot is\n'
-    printf '# required for amdgpu to re-read this at load.\n'
-    printf '%s\n' "$want"
-  } > "$MODPROBE_PATH"
-  log "rebuilding initramfs so the option applies at early amdgpu load"
+  # Always (re)build the initramfs, even when the modprobe file was already correct:
+  # the option only enables OverDrive once it is baked into the initramfs, and the
+  # "already set" branch above would otherwise let a PRIOR failed rebuild go
+  # unrepaired forever. Treat a failure as FATAL — a silent warning here means
+  # OverDrive silently never enables and the undervolt never applies.
+  log "rebuilding initramfs so the OverDrive option applies at early amdgpu load"
   update-initramfs -u -k all >/dev/null 2>&1 || update-initramfs -u \
-    || warn "update-initramfs failed — verify manually before relying on persistence"
+    || die "update-initramfs failed — OverDrive won't persist across reboot. Fix the initramfs tooling (e.g. run 'update-initramfs -u' by hand to see the error), then re-run install.sh"
 }
 
 install_service() {

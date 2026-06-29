@@ -27,25 +27,50 @@ set -uo pipefail
 
 # ---- config (override via /etc/gpu-undervolt.env) ---------------------------
 OFFSET_MV="${OFFSET_MV:--100}"          # GFX voltage offset in mV (negative = undervolt)
-GPU_HWMON_NAME="${GPU_HWMON_NAME:-amdgpu}"
+# Tested-safe bounds for OFFSET_MV. -100..0 is the range A/B-validated stable on
+# this card (see README); a positive value would OVERvolt and a too-negative one
+# risks GPU resets. Widen only with your own stability data.
+OFFSET_MIN_MV="${OFFSET_MIN_MV:--100}"
+OFFSET_MAX_MV="${OFFSET_MAX_MV:-0}"
+# Select the V620 by PCI vendor:device so a SECOND amdgpu GPU can't get the offset.
+GPU_PCI_ID="${GPU_PCI_ID:-1002:73a1}"   # Radeon Pro V620 (Navi 21 / gfx1030)
+# Optional exact PCI address (e.g. 0000:2d:00.0) to disambiguate identical cards.
+GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-}"
 WAIT_SECS="${WAIT_SECS:-30}"            # max wait for pp_od_clk_voltage at boot
 
 # ---------------------------------------------------------------------------
-log() { printf 'gpu-undervolt: %s\n' "$*"; }
-die() { printf 'gpu-undervolt: ERROR: %s\n' "$*" >&2; exit 1; }
+log()  { printf 'gpu-undervolt: %s\n' "$*"; }
+warn() { printf 'gpu-undervolt: WARN: %s\n' "$*" >&2; }
+die()  { printf 'gpu-undervolt: ERROR: %s\n' "$*" >&2; exit 1; }
 
 require_root() { [ "$(id -u)" -eq 0 ] || die "must run as root (on the Proxmox host)"; }
 
-# Resolve the amdgpu card device dir (the one holding pp_od_clk_voltage). The
-# cardN number is not stable across boots, so match the driver, not the index.
-resolve_card_dev() {  # echoes /sys/class/drm/cardN/device or returns 1
-  local dev drv
+# Resolve the V620's card device dir (the one holding pp_od_clk_voltage). Match by
+# PCI vendor:device — and, if set, an exact PCI address — NOT by card index (cardN
+# is unstable across boots) and NOT by "first amdgpu GPU" (a second AMD card must
+# never receive the V620's offset).
+#   stdout = matching dir, exit 0 : exactly one match
+#   exit 1                        : no match yet (retryable while amdgpu binds)
+#   stdout = match list, exit 2   : multiple matches (fatal; set GPU_PCI_ADDRESS)
+resolve_card_dev() {
+  local dev vid did pci
+  local -a matches=()
   for dev in /sys/class/drm/card*/device; do
     [ -e "$dev/pp_od_clk_voltage" ] || continue
-    drv="$(basename "$(readlink -f "$dev/driver" 2>/dev/null)" 2>/dev/null)"
-    [ "$drv" = "amdgpu" ] && { echo "$dev"; return 0; }
+    vid="$(cat "$dev/vendor" 2>/dev/null)" || continue   # e.g. 0x1002
+    did="$(cat "$dev/device" 2>/dev/null)" || continue   # e.g. 0x73a1
+    [ "${vid#0x}:${did#0x}" = "$GPU_PCI_ID" ] || continue
+    if [ -n "$GPU_PCI_ADDRESS" ]; then
+      pci="$(basename "$(readlink -f "$dev" 2>/dev/null)" 2>/dev/null)"
+      [ "$pci" = "$GPU_PCI_ADDRESS" ] || continue
+    fi
+    matches+=("$dev")
   done
-  return 1
+  case "${#matches[@]}" in
+    1) printf '%s\n' "${matches[0]}"; return 0 ;;
+    0) return 1 ;;
+    *) printf '%s\n' "${matches[*]}"; return 2 ;;
+  esac
 }
 
 # Read the currently-applied GFX voltage offset (e.g. "-100mV") from the OD node.
@@ -53,38 +78,78 @@ read_offset() {  # $1 = card dev ; echoes "<n>mV" or empty
   awk 'f{print $1; exit} /OD_VDDGFX_OFFSET/{f=1}' "$1/pp_od_clk_voltage" 2>/dev/null
 }
 
-# Apply (and commit) a GFX voltage offset, then confirm it took effect.
-apply_offset() {  # $1 = card dev, $2 = mV
-  local od="$1/pp_od_clk_voltage" mv="$2" got
-  echo "vo $mv" > "$od" 2>/dev/null || die "failed writing 'vo $mv' to $od (OverDrive enabled?)"
-  echo "c"      > "$od" 2>/dev/null || die "failed committing offset to $od"
-  got="$(read_offset "$1")"
-  [ "$got" = "${mv}mV" ] || die "offset readback mismatch: wanted ${mv}mV, got '${got:-<none>}'"
-  log "GFX voltage offset = ${got}"
+# Reject an out-of-range / non-integer offset BEFORE touching hardware.
+validate_offset() {  # $1 = mV
+  local mv="$1"
+  [[ "$mv" =~ ^-?[0-9]+$ ]] || die "OFFSET_MV must be an integer in mV, got '$mv'"
+  (( mv >= OFFSET_MIN_MV && mv <= OFFSET_MAX_MV )) \
+    || die "OFFSET_MV=${mv} is outside the tested-safe range [${OFFSET_MIN_MV},${OFFSET_MAX_MV}] mV — override OFFSET_MIN_MV/OFFSET_MAX_MV only with your own stability data"
 }
 
-# Wait for the OverDrive node to appear (amdgpu can bind a few seconds into boot).
+# Apply (and commit) a GFX voltage offset following the documented OverDrive
+# protocol: select the `manual` performance level, write + commit the offset,
+# verify the readback, then RESTORE the prior performance level. The restore runs
+# even when a write fails — a bare `die` mid-sequence would otherwise leave the
+# card pinned in `manual`. (The committed offset persists once the level returns to
+# `auto`; the readback below confirms the commit took before we restore.)
+apply_offset() {  # $1 = card dev, $2 = mV
+  local dev="$1" mv="$2" od="$1/pp_od_clk_voltage" plf="$1/power_dpm_force_performance_level"
+  local prev_level="" got="" rc=0 err=""
+
+  if [ -w "$plf" ]; then
+    prev_level="$(cat "$plf" 2>/dev/null)" || prev_level=""
+    echo manual > "$plf" 2>/dev/null || die "failed selecting 'manual' performance level ($plf)"
+  fi
+
+  if ! echo "vo $mv" > "$od" 2>/dev/null; then
+    err="failed writing 'vo $mv' to $od (OverDrive enabled?)"; rc=1
+  elif ! echo "c" > "$od" 2>/dev/null; then
+    err="failed committing offset to $od"; rc=1
+  else
+    got="$(read_offset "$dev")"
+    [ "$got" = "${mv}mV" ] || { err="offset readback mismatch: wanted ${mv}mV, got '${got:-<none>}'"; rc=1; }
+  fi
+
+  # Restore the prior performance level (best-effort) regardless of success above.
+  if [ -n "$prev_level" ]; then
+    echo "$prev_level" > "$plf" 2>/dev/null || warn "could not restore performance level to '$prev_level' ($plf)"
+  fi
+
+  (( rc == 0 )) || die "$err"
+  log "GFX voltage offset = ${got}${prev_level:+ (perf level restored to ${prev_level})}"
+}
+
+# Wait for the V620's OverDrive node to appear (amdgpu can bind a few seconds into
+# boot). A multiple-match (exit 2) is fatal immediately — retrying won't help.
 wait_for_card() {  # echoes card dev or dies
-  local dev waited=0
-  while ! dev="$(resolve_card_dev)"; do
-    (( waited >= WAIT_SECS )) && die "no amdgpu card exposing pp_od_clk_voltage after ${WAIT_SECS}s — OverDrive not enabled? Check: cat /sys/module/amdgpu/parameters/ppfeaturemask (needs bit 0x4000); reboot after install.sh writes /etc/modprobe.d/amdgpu-overdrive.conf"
+  local dev rc waited=0
+  while :; do
+    dev="$(resolve_card_dev)"; rc=$?
+    (( rc == 0 )) && { echo "$dev"; return 0; }
+    (( rc == 2 )) && die "multiple GPUs match ${GPU_PCI_ID}${GPU_PCI_ADDRESS:+ @ ${GPU_PCI_ADDRESS}} ($dev) — set GPU_PCI_ADDRESS in /etc/gpu-undervolt.env to pick one"
+    (( waited >= WAIT_SECS )) && die "no GPU matching ${GPU_PCI_ID}${GPU_PCI_ADDRESS:+ @ ${GPU_PCI_ADDRESS}} exposing pp_od_clk_voltage after ${WAIT_SECS}s — OverDrive not enabled? Check: cat /sys/module/amdgpu/parameters/ppfeaturemask (needs bit 0x4000); reboot after install.sh writes /etc/modprobe.d/amdgpu-overdrive.conf"
     sleep 2; waited=$(( waited + 2 ))
   done
-  echo "$dev"
 }
 
 main() {
   require_root
-  local mode="${1:-apply}" dev
+  local mode="${1:-apply}" dev rc
   case "$mode" in
     apply)
+      validate_offset "$OFFSET_MV"
       dev="$(wait_for_card)"
       apply_offset "$dev" "$OFFSET_MV"
       ;;
     --reset)
-      # Best-effort return to stock voltage (used on service stop). If the OD
-      # node is gone (amdgpu unloaded), there is nothing to reset.
-      if dev="$(resolve_card_dev)"; then apply_offset "$dev" 0; else log "no OverDrive node present; nothing to reset"; fi
+      # Best-effort return to stock voltage (used on service stop). If the OD node
+      # is gone (amdgpu unloaded), there is nothing to reset.
+      dev="$(resolve_card_dev)"; rc=$?
+      case "$rc" in
+        0) apply_offset "$dev" 0 ;;
+        1) log "no matching OverDrive node present; nothing to reset" ;;
+        2) die "multiple GPUs match ${GPU_PCI_ID}${GPU_PCI_ADDRESS:+ @ ${GPU_PCI_ADDRESS}} ($dev) — set GPU_PCI_ADDRESS in /etc/gpu-undervolt.env to pick one" ;;
+      esac
       ;;
     *) die "usage: gpu-undervolt [apply|--reset]" ;;
   esac
