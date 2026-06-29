@@ -299,7 +299,7 @@ fi
 ln -sfn "${LLAMACPP_DIR}" "${LLAMACPP_BASE}/current"
 
 # 2. Download + verify the GGUF as the service user (owns /models/hf). The
-# UD-Q4_K_XL build is a single unsharded file, so a one-file download + checksum
+# UD-Q5_K_XL build is a single unsharded file, so a one-file download + checksum
 # is enough (no shard handling needed).
 if [[ ! -x /home/llamacpp/.venv/bin/hf ]]; then
   sudo -u llamacpp python3 -m venv /home/llamacpp/.venv

@@ -66,14 +66,17 @@ reload_model() {
 
 # Restore CT 120 to the operational default context/parallel. Registered as an EXIT
 # trap so the sweep never leaves the model at its last (small) sweep context — on
-# success, error, or interrupt. Captures and re-raises the original exit code so a
-# failed sweep is still reported as failed (a failed restore only warns).
+# success, error, or interrupt. Re-raises the original exit code so a failed sweep
+# stays failed; and if the restore itself fails, forces a nonzero exit (CT 120 is
+# left at the wrong context) so a passing sweep can't mask a botched restore.
 restore_ct120() {
   local rc=$?
   trap - EXIT INT TERM
   log "Restoring CT ${GPU_VMID} to context ${RESTORE_CONTEXT} / ${RESTORE_PARALLEL} slots"
-  pct exec "${GPU_VMID}" -- /usr/local/bin/llamacpp-reload "${RESTORE_CONTEXT}" "${RESTORE_PARALLEL}" \
-    || log "WARNING: failed to restore CT ${GPU_VMID}; reload it manually (llamacpp-reload ${RESTORE_CONTEXT} ${RESTORE_PARALLEL})"
+  if ! pct exec "${GPU_VMID}" -- /usr/local/bin/llamacpp-reload "${RESTORE_CONTEXT}" "${RESTORE_PARALLEL}"; then
+    log "WARNING: failed to restore CT ${GPU_VMID}; reload it manually (llamacpp-reload ${RESTORE_CONTEXT} ${RESTORE_PARALLEL})"
+    [[ ${rc} -eq 0 ]] && rc=1
+  fi
   exit "${rc}"
 }
 
