@@ -137,8 +137,13 @@ main() {
   [[ -n ${gpu_ip} ]] || die "could not determine CT ${GPU_VMID} IP address"
 
   # Always restore CT 120 to the operational default on exit (success, error, or
-  # interrupt); the sweep otherwise leaves it at the last small context.
-  trap restore_ct120 EXIT INT TERM
+  # interrupt); the sweep otherwise leaves it at the last small context. The EXIT
+  # trap is the single restore path; INT/TERM just translate to the conventional
+  # nonzero code and fall through to it — registering restore_ct120 on the signals
+  # directly would run it with $?==0 and exit 0, masking an interrupt as success.
+  trap restore_ct120 EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   mkdir -p "${OUT_DIR}"
   # Unique per-sweep stamp so re-running never reuses a /results/ctx-<n> id
