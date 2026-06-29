@@ -96,6 +96,11 @@ apply_offset() {  # $1 = card dev, $2 = mV
   local dev="$1" mv="$2" od="$1/pp_od_clk_voltage" plf="$1/power_dpm_force_performance_level"
   local prev_level="" got="" rc=0 err=""
 
+  # Guard against an empty/invalid dev: with dev="" the paths above collapse to
+  # root-relative (/pp_od_clk_voltage), so a stray write could land on the host
+  # filesystem. Never write unless the real OverDrive node is present.
+  [ -n "$dev" ] && [ -e "$od" ] || die "apply_offset: no OverDrive node at '$od' — refusing to write"
+
   if [ -w "$plf" ]; then
     prev_level="$(cat "$plf" 2>/dev/null)" || prev_level=""
     echo manual > "$plf" 2>/dev/null || die "failed selecting 'manual' performance level ($plf)"
@@ -120,13 +125,19 @@ apply_offset() {  # $1 = card dev, $2 = mV
 }
 
 # Wait for the V620's OverDrive node to appear (amdgpu can bind a few seconds into
-# boot). A multiple-match (exit 2) is fatal immediately — retrying won't help.
-wait_for_card() {  # echoes card dev or dies
-  local dev rc waited=0
+# boot) and set CARD_DEV. A multiple-match (exit 2) is fatal immediately — retrying
+# won't help. MUST be called directly, never via `dev="$(wait_for_card)"`: this
+# function dies on failure, and a die() inside a command substitution would only
+# kill the subshell — without `set -e`, main would then barrel on with an empty dev
+# and apply_offset would write to a root-relative path. resolve_card_dev returns
+# status codes (never dies) for exactly that reason, so it IS safe in `$(...)`.
+CARD_DEV=""
+wait_for_card() {  # sets CARD_DEV or dies
+  local rc waited=0
   while :; do
-    dev="$(resolve_card_dev)"; rc=$?
-    (( rc == 0 )) && { echo "$dev"; return 0; }
-    (( rc == 2 )) && die "multiple GPUs match ${GPU_PCI_ID}${GPU_PCI_ADDRESS:+ @ ${GPU_PCI_ADDRESS}} ($dev) — set GPU_PCI_ADDRESS in /etc/gpu-undervolt.env to pick one"
+    CARD_DEV="$(resolve_card_dev)"; rc=$?
+    (( rc == 0 )) && return 0
+    (( rc == 2 )) && die "multiple GPUs match ${GPU_PCI_ID}${GPU_PCI_ADDRESS:+ @ ${GPU_PCI_ADDRESS}} ($CARD_DEV) — set GPU_PCI_ADDRESS in /etc/gpu-undervolt.env to pick one"
     (( waited >= WAIT_SECS )) && die "no GPU matching ${GPU_PCI_ID}${GPU_PCI_ADDRESS:+ @ ${GPU_PCI_ADDRESS}} exposing pp_od_clk_voltage after ${WAIT_SECS}s — OverDrive not enabled? Check: cat /sys/module/amdgpu/parameters/ppfeaturemask (needs bit 0x4000); reboot after install.sh writes /etc/modprobe.d/amdgpu-overdrive.conf"
     sleep 2; waited=$(( waited + 2 ))
   done
@@ -138,8 +149,8 @@ main() {
   case "$mode" in
     apply)
       validate_offset "$OFFSET_MV"
-      dev="$(wait_for_card)"
-      apply_offset "$dev" "$OFFSET_MV"
+      wait_for_card                       # sets CARD_DEV or dies (called directly so die aborts)
+      apply_offset "$CARD_DEV" "$OFFSET_MV"
       ;;
     --reset)
       # Best-effort return to stock voltage (used on service stop). If the OD node
