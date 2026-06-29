@@ -18,8 +18,8 @@
 # Without it `pp_od_clk_voltage` does not exist and `apply` exits non-zero.
 #
 # Run as root on the Proxmox host. Driven as a systemd oneshot
-# (RemainAfterExit): `apply` sets the offset at boot; `--reset` (ExecStop)
-# returns the card to stock voltage (0 mV).
+# (RemainAfterExit): `apply` sets the offset at boot; `--reset` (ExecStopPost)
+# returns the card to stock voltage (0 mV) on stop or a failed start.
 #
 # Intentionally NOT `set -e`: a transient sysfs read returning nonzero must be
 # handled explicitly, not abort the script. Failures `die` with a clear message.
