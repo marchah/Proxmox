@@ -128,7 +128,7 @@ or the standalone install path will silently ship an incomplete suite.
 
 1. **Layered config** (process env wins, because every file default uses `: "${VAR:=...}"`
    — including `MODEL_API_URL`/`MODEL_IDENTIFIER`, so a per-run override actually takes
-   effect): `config/local-model.env` (written at provisioning: the LM Studio
+   effect): `config/local-model.env` (written at provisioning: the model's
    `MODEL_API_URL`, the discovered `MODEL_IDENTIFIER`, `RUN_*` toggles) → the profile file
    named by `BENCHMARK_PROFILE` (`config/benchmark-profiles/<name>.env`) → process env.
 2. **Preflight** (unless `BENCHMARK_PREFLIGHT=false`): GETs `<MODEL_API_URL>/models` and
@@ -145,12 +145,13 @@ or the standalone install path will silently ship an incomplete suite.
 `system-sampler.py` still reads the host's `/sys/class/drm` + hwmon, so it *does* capture
 GPU utilization, VRAM, core clocks, and amdgpu/CPU temps (a baseline run recorded 99% GPU
 util, 7.24 GiB VRAM, 103 °C junction) — and the GPU/temperature SLO checks in `default.json`
-run from here. Caveat: the amdgpu counters are only meaningful under active load — LM Studio
-frees VRAM when idle (so `mem_info_vram_used` reads ~0 between requests; don't read it idle
-and conclude "CPU" — judge that by throughput), and `gpu_busy_percent` can return `EBUSY`.
+run from here. Caveat: `gpu_busy_percent` is only meaningful under active load and can return
+`EBUSY`, so judge GPU-vs-CPU by throughput, not an idle sample. (llama.cpp holds the model in
+VRAM, so `mem_info_vram_used` stays high even idle — the pre-allocated weights + KV — unlike
+engines that free VRAM between requests.)
 Trust the per-run telemetry peaks. `evaluate-slos.py` still skips any check whose data is
 genuinely absent. **CPU/RAM/process metrics from the in-LXC sampler are lxcfs-virtualized to
-CT 200 — they describe the benchmark *client*, not LM Studio.** To judge whether the model
+CT 200 — they describe the benchmark *client*, not the model server (llama.cpp on CT 120).** To judge whether the model
 server itself was CPU/RAM-bound, the Ansible batch wraps each run with
 `host/run-with-target-telemetry.sh`, which samples CT 120 from the host and merges a
 `target-telemetry.jsonl` into each `/results/<run-id>/`. Don't cite the in-LXC CPU/RAM numbers
@@ -186,17 +187,16 @@ set `BENCHMARK_PROFILE`/`BENCHMARK_RUN_ID`, and exec the suite. They are generat
   since the in-LXC sampler already records GPU telemetry; keep it only for sampling around a
   non-benchmark command. `run-with-target-telemetry.sh` is the non-redundant counterpart: it
   pushes `system-sampler.py` into the *model* container (CT 120) and runs it there during a
-  bench, so CPU/RAM/process metrics reflect LM Studio (not the bench-runner client); the
-  Ansible batch wraps every run with it and merges `target-telemetry.jsonl` into the result.
-  `run-context-sweep.sh` reloads LM Studio at each context length and
-  correlates VRAM with TTFT/latency/throughput — still useful, because the per-context reload
-  is the part the in-LXC suite can't do. **The model-reload paths are engine-aware via a
-  `runtime` selector (`lmstudio` | `llamacpp`):** `ansible/benchmark.yml` carries a `runtimes`
-  map (per-engine `reload_cmd` + `target_process_patterns` + results `label`) and
-  `host/run-context-sweep.sh` dispatches `reload_model` on `RUNTIME`. lmstudio reloads via the
-  `lms` CLI; llamacpp via the container's `llamacpp-reload <ctx> <parallel>` (restart, blocks
-  until `/health` is ready). Drive it with `make bench RUNTIME=llamacpp` /
-  `make context-sweep RUNTIME=llamacpp` (default `lmstudio`).
+  bench, so CPU/RAM/process metrics reflect the model server, llama.cpp (not the bench-runner
+  client); the Ansible batch wraps every run with it and merges `target-telemetry.jsonl` into
+  the result. `run-context-sweep.sh` reloads the model at each context length and correlates
+  VRAM with TTFT/latency/throughput — still useful, because the per-context reload is the part
+  the in-LXC suite can't do. The model-reload path is **llamacpp-only**: `ansible/benchmark.yml`'s
+  `runtimes` map carries the `llamacpp` entry (`reload_cmd` + `target_process_patterns` + results
+  `label`) and `host/run-context-sweep.sh` calls the container's `llamacpp-reload <ctx> <parallel>`
+  (restart, blocks until `/health` is ready). Drive it with `make bench` / `make context-sweep`.
+  (The prior RX 6700 XT also had an `lmstudio` runtime; it was removed with that card — the
+  `rx-6700-xt/` scripts keep it for reference.)
 
 ### Results & data model
 

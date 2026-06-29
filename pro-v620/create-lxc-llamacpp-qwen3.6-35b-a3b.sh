@@ -82,7 +82,6 @@ BRIDGE="${BRIDGE:-vmbr0}"
 IP_CONFIG="${IP_CONFIG:-dhcp}"
 PASSWORD="${PASSWORD:-}"
 START_ON_BOOT="${START_ON_BOOT:-1}"
-START_AFTER_CREATE="${START_AFTER_CREATE:-1}"
 
 usage() {
   cat <<'USAGE'
@@ -220,10 +219,8 @@ add_models_mount() {
 }
 
 start_container() {
-  if [[ ${START_AFTER_CREATE} == 1 ]]; then
-    log "Starting LXC ${VMID}"
-    pct start "${VMID}"
-  fi
+  log "Starting LXC ${VMID}"
+  pct start "${VMID}"
 }
 
 wait_for_container() {
@@ -479,11 +476,6 @@ main() {
   configure_gpu_passthrough
   add_models_mount
   start_container
-  if [[ ${START_AFTER_CREATE} != 1 ]]; then
-    log "Container ${VMID} created but not started (START_AFTER_CREATE=0); model not installed."
-    log "Start it and re-run with START_AFTER_CREATE=1 to install ${MODEL_FILE}."
-    return 0
-  fi
   wait_for_container
   install_llamacpp_stack
   print_summary
