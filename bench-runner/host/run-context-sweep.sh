@@ -18,6 +18,11 @@ GPU_VMID="${GPU_VMID:-120}"
 BENCH_VMID="${BENCH_VMID:-200}"
 MODEL_KEY="${MODEL_KEY:-qwen3.6-35b-a3b}"
 MODEL_PARALLEL="${MODEL_PARALLEL:-1}"
+# Operational default to restore CT 120 to when the sweep is done. The sweep walks
+# CT 120 through small per-point contexts; an EXIT trap reloads it back to this so a
+# direct run (or an aborted/interrupted one) never leaves the model at a tiny context.
+RESTORE_CONTEXT="${RESTORE_CONTEXT:-262144}"
+RESTORE_PARALLEL="${RESTORE_PARALLEL:-4}"
 CONTEXTS="${CONTEXTS:-4096 16384 32768 65536}"
 BENCHMARK_REQUESTS="${BENCHMARK_REQUESTS:-5}"
 RELOAD_SETTLE_SECONDS="${RELOAD_SETTLE_SECONDS:-8}"
@@ -35,6 +40,8 @@ Env overrides:
   GPU_VMID=120 BENCH_VMID=200   Container ids.
   MODEL_KEY=qwen3.6-35b-a3b     Model identifier (results label).
   MODEL_PARALLEL=1              Parallel slots used at each reload.
+  RESTORE_CONTEXT=262144        Context to restore CT 120 to when the sweep ends.
+  RESTORE_PARALLEL=4            Parallel slots to restore CT 120 to when the sweep ends.
   CONTEXTS="4096 16384 32768 65536"
   BENCHMARK_REQUESTS=5          Requests per context point.
   OUT_DIR=./context-sweep       Output directory.
@@ -55,6 +62,19 @@ require_command() { command -v "$1" >/dev/null 2>&1 || die "missing required com
 reload_model() {
   local context="$1"
   pct exec "${GPU_VMID}" -- /usr/local/bin/llamacpp-reload "${context}" "${MODEL_PARALLEL}"
+}
+
+# Restore CT 120 to the operational default context/parallel. Registered as an EXIT
+# trap so the sweep never leaves the model at its last (small) sweep context — on
+# success, error, or interrupt. Captures and re-raises the original exit code so a
+# failed sweep is still reported as failed (a failed restore only warns).
+restore_ct120() {
+  local rc=$?
+  trap - EXIT INT TERM
+  log "Restoring CT ${GPU_VMID} to context ${RESTORE_CONTEXT} / ${RESTORE_PARALLEL} slots"
+  pct exec "${GPU_VMID}" -- /usr/local/bin/llamacpp-reload "${RESTORE_CONTEXT}" "${RESTORE_PARALLEL}" \
+    || log "WARNING: failed to restore CT ${GPU_VMID}; reload it manually (llamacpp-reload ${RESTORE_CONTEXT} ${RESTORE_PARALLEL})"
+  exit "${rc}"
 }
 
 format_row() {
@@ -106,6 +126,17 @@ main() {
   pct status "${GPU_VMID}" >/dev/null 2>&1 || die "GPU container ${GPU_VMID} not found"
   pct status "${BENCH_VMID}" >/dev/null 2>&1 || die "bench container ${BENCH_VMID} not found"
 
+  # CT 120's current IP, so each bench points CT 200 at the live endpoint per-run.
+  # This overrides any stale MODEL_API_URL/MODEL_IDENTIFIER baked into CT 200 (e.g.
+  # left over from an earlier model), so preflight matches what's actually served.
+  local gpu_ip
+  gpu_ip="$(pct exec "${GPU_VMID}" -- hostname -I | awk '{print $1}')"
+  [[ -n ${gpu_ip} ]] || die "could not determine CT ${GPU_VMID} IP address"
+
+  # Always restore CT 120 to the operational default on exit (success, error, or
+  # interrupt); the sweep otherwise leaves it at the last small context.
+  trap restore_ct120 EXIT INT TERM
+
   mkdir -p "${OUT_DIR}"
   # Unique per-sweep stamp so re-running never reuses a /results/ctx-<n> id
   # (which would mix stale artifacts from a prior sweep).
@@ -135,19 +166,34 @@ main() {
     sleep "${RELOAD_SETTLE_SECONDS}"
 
     log "Benchmarking context ${context} with GPU host telemetry"
+    # Override MODEL_API_URL/MODEL_IDENTIFIER per-run so a standalone sweep targets
+    # CT 120's live endpoint even if CT 200's baked-in config is stale (process env
+    # wins over the suite's `: "${VAR:=...}"` defaults). No BENCHMARK_RUN_ID: the
+    # llm-bench-* wrappers force their own timestamped id, so we detect the folder
+    # they actually create (below) instead of passing a name they would ignore.
+    local bench_ok=1
     if ! GPU_VMID="${GPU_VMID}" OUT_DIR="${point_dir}/host" TELEMETRY_INTERVAL=1 \
       "${SCRIPT_DIR}/run-with-host-telemetry.sh" \
       pct exec "${BENCH_VMID}" -- bash -lc \
-        "BENCHMARK_RUN_ID='${run_id}' RUN_LLAMA_BENCHY=false BENCHMARK_REQUESTS='${BENCHMARK_REQUESTS}' BENCHMARK_DESCRIPTION='Context sweep ${context}' llm-bench-baseline"; then
+        "MODEL_API_URL='http://${gpu_ip}:1234/v1' MODEL_IDENTIFIER='${MODEL_KEY}' RUN_LLAMA_BENCHY=false BENCHMARK_REQUESTS='${BENCHMARK_REQUESTS}' BENCHMARK_DESCRIPTION='Context sweep ${context}' llm-bench-baseline"; then
       log "benchmark for context ${context} returned non-zero"
       sweep_status=1
+      bench_ok=0
     fi
 
-    if ! pct pull "${BENCH_VMID}" \
-      "/results/${run_id}/openai-direct/openai-direct-summary.json" \
-      "${point_dir}/openai-direct-summary.json" 2>/dev/null; then
-      log "no summary retrieved for context ${context}"
-      sweep_status=1
+    # Pull from the newest /results entry the run just created (the wrapper's forced
+    # id is unpredictable). Only when the bench succeeded, so a failed point never
+    # pulls a previous run's summary and reports it as this context's result.
+    if [[ ${bench_ok} -eq 1 ]]; then
+      local actual_run
+      actual_run="$(pct exec "${BENCH_VMID}" -- bash -lc 'ls -1dt /results/*/ 2>/dev/null | head -1')"
+      actual_run="${actual_run%/}"
+      if [[ -z ${actual_run} ]] || ! pct pull "${BENCH_VMID}" \
+        "${actual_run}/openai-direct/openai-direct-summary.json" \
+        "${point_dir}/openai-direct-summary.json" 2>/dev/null; then
+        log "no summary retrieved for context ${context}"
+        sweep_status=1
+      fi
     fi
 
     format_row "${context}" \

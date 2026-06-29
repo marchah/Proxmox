@@ -71,8 +71,10 @@ ansible-playbook -i ansible/inventory.ini ansible/benchmark.yml -e @ansible/secr
   -e context_sweep=true -e '{"benchmarks": []}'
 ```
 
-The sweep leaves the model at its last context, so the playbook reloads it back to the
-configured context/`--parallel` afterward (unless `reload_model=false`).
+The sweep walks the model through small per-context reloads, so `run-context-sweep.sh`
+restores CT 120 to the configured context/`--parallel` via an EXIT trap when it finishes —
+even if it errors or is interrupted. A failed sweep no longer aborts the play (results are
+still fetched); the failure is reported at the end.
 
 ## Notes
 

@@ -8,7 +8,7 @@
 # It pushes the LOCAL bench-runner suite to the Proxmox host (so runs use your
 # latest, even uncommitted code), provisions CT 200 if it is missing, injects
 # HF_TOKEN, (re)loads the model at the requested --parallel, runs the batch, and
-# fetches the result folders back into rx-6700-xt/results/<runtime>/parallel-<n>/.
+# fetches the result folders back into pro-v620/results/<runtime>/parallel-<n>/.
 #
 # The containers have no SSH of their own, so tasks act on them via `pct` on the
 # Proxmox host (this is the "light" orchestrator around the existing bash scripts).
@@ -281,6 +281,10 @@
       when: new_runs | length > 0
 
     # --- Optional: host-orchestrated context-length sweep -------------------
+    # failed_when:false so a nonzero sweep does not abort the play — the archive /
+    # fetch / extract tasks below still run, and the sweep's own EXIT trap has
+    # already restored CT 120 to RESTORE_CONTEXT/RESTORE_PARALLEL. The failure is
+    # surfaced loudly at the end via context_sweep_run.rc.
     - name: Run the context-length sweep (optional)
       ansible.builtin.command: "bash {{ host_suite_dir }}/host/run-context-sweep.sh"
       args:
@@ -288,11 +292,14 @@
       environment:
         GPU_VMID: "{{ gpu_vmid }}"
         BENCH_VMID: "{{ bench_vmid }}"
-        RUNTIME: "{{ runtime }}"
         MODEL_KEY: "{{ model_key }}"
         MODEL_PARALLEL: "{{ parallel }}"
+        RESTORE_CONTEXT: "{{ model_context }}"
+        RESTORE_PARALLEL: "{{ parallel }}"
         CONTEXTS: "{{ context_sweep_contexts }}"
         OUT_DIR: "{{ host_suite_dir }}/context-sweep"
+      register: context_sweep_run
+      failed_when: false
       when: context_sweep | bool
 
     - name: Archive the context-sweep output
@@ -320,11 +327,9 @@
       changed_when: true
       when: context_sweep | bool
 
-    - name: Restore the model to the configured context/parallel after the sweep
-      ansible.builtin.command:
-        argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_reload_cmd }}"]
-      changed_when: true
-      when: context_sweep | bool and reload_model | bool
+    # No explicit post-sweep restore task: run-context-sweep.sh restores CT 120 via
+    # an EXIT trap (RESTORE_CONTEXT/RESTORE_PARALLEL above), so it is put back even
+    # if the sweep errors or is interrupted — the single source of truth for restore.
 
     - name: Summary
       ansible.builtin.debug:
@@ -339,9 +344,11 @@
       vars:
         failed_benchmarks: "{{ (batch_item_results | default([])) | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
         restore_failed: "{{ post_batch_restore is defined and (post_batch_restore.rc | default(0)) != 0 }}"
+        sweep_failed: "{{ context_sweep_run is defined and (context_sweep_run.rc | default(0)) != 0 }}"
       ansible.builtin.fail:
         msg: >-
           Run had failures (results still fetched) —
           failed benchmark(s): {{ failed_benchmarks | join('; ') if failed_benchmarks else 'none' }};
-          post-batch model restore failed: {{ restore_failed }}{{ ' (reload CT ' ~ gpu_vmid ~ ' manually)' if restore_failed else '' }}.
-      when: (failed_benchmarks | length > 0) or restore_failed
+          post-batch model restore failed: {{ restore_failed }}{{ ' (reload CT ' ~ gpu_vmid ~ ' manually)' if restore_failed else '' }};
+          context sweep failed: {{ sweep_failed }}.
+      when: (failed_benchmarks | length > 0) or restore_failed or sweep_failed
