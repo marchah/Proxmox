@@ -47,6 +47,7 @@ This script is deliberately narrow:
 - GPU offload: `--n-gpu-layers 99` (all layers, including MoE experts)
 - Parallel slots: `--parallel 4` (continuous batching, on by default)
 - Attention / batch: `--flash-attn on --batch-size 4096 --ubatch-size 1024` (tuned — see Benchmarks → Tuning)
+- Tool calling: `--jinja` — uses the model's chat template so OpenAI `tool_calls` parse correctly (**required for agents**; without it llama-server won't emit tool calls)
 - API bind: `0.0.0.0:1234`
 - Model storage: `/models`
 
@@ -277,6 +278,36 @@ minutes, so this suits a single long-running agent that grows its context
 incrementally (each turn prefix-cached, only new tokens prefilled), not repeated
 cold 256k loads. Switch with `llamacpp-reload 262144 1`, and back to `262144 4`
 for daytime concurrency.
+
+### Model bake-off (Q4 vs Q5 vs Hermes 4.3 36B)
+
+A/B at a matched config (ctx 32k, `--parallel 4`, flash-attn on, `--jinja`) with a
+small tool-calling eval (tool selection among several, argument + unit extraction,
+parallel calls, and abstaining when no tool fits):
+
+| Model | Quant | VRAM | Single-stream | Concurrency-4 agg | Tool-calling |
+| --- | --- | ---: | ---: | ---: | ---: |
+| **Qwen3.5-35B-A3B** (current) | Q4_K_XL | 21.2 GiB | **83 tok/s** | **193 tok/s** | 8/8 |
+| Qwen3.5-35B-A3B | Q5_K_XL | 25.1 GiB | 80 tok/s | 186 tok/s | 8/8 |
+| Hermes 4.3 36B (dense, Seed-OSS) | Q5_K_M | 29.8 GiB | 16 tok/s | 54 tok/s | 8/8 |
+
+- **Tool calling: all three tie 8/8** — each selects the right tool, extracts args
+  (incl. "5 minutes" → 300 s), does parallel calls, and abstains when no tool fits.
+  The eval confirms competence but is too easy to *rank* the top; separating them
+  would need a harder multi-turn / ambiguous / arg-repair set.
+- **Speed: the MoE wins ~5×.** Hermes is dense 36B (all params/token) vs the MoE's
+  ~3B active — decisive for concurrent agents.
+- **VRAM / context: the MoE wins.** Hermes is already 29.8 GiB at *32k*, so it can't
+  reach the long-context modes the MoE's cheap KV enables.
+- **Q4 vs Q5:** Q5 costs ~4% speed + ~4 GiB VRAM for lower quant error with identical
+  tool behaviour; **Q4 stays the default** (more headroom for the 256k mode).
+
+**Conclusion: Qwen3.5-35B-A3B Q4 remains the pick** — fastest, most headroom, ties on
+tool competence. The Q5 and Hermes GGUFs are kept under `/models/hf` for ad-hoc use
+(`llamacpp-reload` doesn't switch model files — edit `MODEL_PATH` in `/etc/llamacpp.env`
+and restart, or run a manual `llama-server`). *(These tok/s are light-prompt/decode-heavy
+— use them to compare models, not as capacity figures; the cold-prompt numbers above
+are the realistic capacity.)*
 
 ### GPU thermals (Radeon Pro V620, passively cooled via the `gpu-fan-control` Pump Fan)
 

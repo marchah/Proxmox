@@ -327,6 +327,9 @@ EOF
 # the last ~3%. FA's default 'auto' already enabled it here, but pinning 'on' is
 # deterministic. (On a single >8k cold prefill FA is marginally slower — a fine
 # trade for the concurrency/TTFT win in agent/serving use.)
+# --jinja makes llama-server use the model's own chat template, which is REQUIRED
+# for OpenAI-style tool/function calling to parse into the `tool_calls` field —
+# i.e. for agents. Verified across Qwen3.5 and Hermes (see README bake-off).
 # --reasoning-format none keeps the model's <think> tokens inline in the OpenAI
 # `content` stream (instead of siphoning them into `reasoning_content`), so an
 # OpenAI-compatible benchmark counts every generated token and measures TTFT at
@@ -352,6 +355,7 @@ exec "${LLAMACPP_DIR}/llama-server" \
   --flash-attn on \
   --batch-size 4096 \
   --ubatch-size 1024 \
+  --jinja \
   --reasoning-format none \
   --alias "${MODEL_ALIAS}"
 EOS
