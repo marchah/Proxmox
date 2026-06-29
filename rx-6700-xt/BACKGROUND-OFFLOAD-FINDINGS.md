@@ -7,7 +7,9 @@
 
 Reuse the retired **RX 6700 XT (12 GiB, Navi 22 / gfx1031)** as a *dedicated, second* GPU for
 **background / non-interactive** LLM tasks — running models **larger than its 12 GiB VRAM**, with
-hours-per-answer being acceptable, fully isolated from the interactive agent on the V620 (CT 120).
+hours-per-answer being acceptable, fully isolated from the production LLM runtime on the V620
+(CT 120 — the `llama-server` model backend, *not* the Hermes agent, which runs in its own
+container and consumes CT 120's API).
 The card would go in a **PCIe 3.0** slot and is **not yet physically installed**.
 
 The trigger was [AirLLM](https://github.com/lyogavin/airllm) ("70B on a 4 GB GPU"). The conclusion
