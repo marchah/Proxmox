@@ -81,7 +81,8 @@ Or pre-wire Telegram at provision time: `TELEGRAM_BOT_TOKEN=123:abc ./create-lxc
 | `TARGET_BASE_URL` | _(discovered)_ | override the model endpoint directly |
 | `MODEL_IDENTIFIER` | `qwen3.6-35b-a3b` | served model id (CT 120's `--alias`) |
 | `MODEL_CONTEXT_LENGTH` | `65536` | per-request context written into config.yaml |
-| `HERMES_VERSION` | `latest` | `latest` = main HEAD; a git tag (e.g. `v0.17.0`) pins a release |
+| `HERMES_VERSION` | `v2026.6.19` | pinned git tag (installer fetched from the tag + SHA-256 verified); `latest` = main HEAD, **unverified** |
+| `HERMES_INSTALLER_SHA256` | _(pinned)_ | expected SHA-256 of the tag's `scripts/install.sh`; bump together with the tag |
 | `API_SERVER_KEY` | _(generated)_ | bearer key for the API server |
 | `API_SERVER_PORT` | `8642` | API server port |
 | `INSTALL_BROWSER` | `1` | `0` skips Playwright Chromium (leaner container) |
@@ -89,9 +90,17 @@ Or pre-wire Telegram at provision time: `TELEGRAM_BOT_TOKEN=123:abc ./create-lxc
 
 ## Notes
 
-- **Tracking `latest`** (the installer runs `main` HEAD) is a deliberate deviation from this
-  repo's "pin a tarball + verify SHA-256" idiom — the upstream `install.sh` URL can't be
-  SHA-pinned. Set `HERMES_VERSION=<git-tag>` for a reproducible, pinned install.
+- **Pinned by default.** The provisioner fetches `scripts/install.sh` from the pinned git
+  tag's raw URL (`HERMES_VERSION`, default `v2026.6.19`), verifies its SHA-256 against
+  `HERMES_INSTALLER_SHA256`, then runs it with `--branch <tag>` so the checked-out code
+  matches the verified installer — the repo's "pin a tag + verify SHA-256" idiom, so a
+  mutated upstream installer can't run as root. Bump both from the
+  [releases page](https://github.com/NousResearch/hermes-agent/releases) using the **git
+  tag** (e.g. `v2026.6.19`), **not** the `v0.17.0` marketing title (it is not a valid git
+  ref); recompute the checksum with
+  `curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/<tag>/scripts/install.sh | sha256sum`.
+  `HERMES_VERSION=latest` opts out: it streams the mutable upstream installer (main HEAD),
+  **unverified** — for testing only.
 - **CT 120 IP drift:** the discovered `base_url` is written once. Give CT 120 a DHCP
   reservation so its IP is stable; if it does move, edit `model.base_url` in
   `/root/.hermes/config.yaml` and `systemctl restart hermes`.
@@ -102,6 +111,6 @@ Or pre-wire Telegram at provision time: `TELEGRAM_BOT_TOKEN=123:abc ./create-lxc
   them. `nesting=1` is set on the container as well. Smoke-test from the host:
   `pct exec 121 -- bash -lc 'cd /usr/local/lib/hermes-agent && node_modules/.bin/agent-browser open https://example.com'`.
 - **No download file-list to maintain.** Unlike the bench-runner, this script ships zero
-  repo-local files into the container — the installer is fetched upstream and
-  `config.yaml`/`.env`/the unit are generated inline — so there is nothing to keep in sync
-  for the standalone `wget | bash` path.
+  repo-local files into the container — the installer is fetched from the pinned upstream
+  tag (and SHA-256-verified) and `config.yaml`/`.env`/the unit are generated inline — so
+  there is nothing to keep in sync for the standalone `wget | bash` path.

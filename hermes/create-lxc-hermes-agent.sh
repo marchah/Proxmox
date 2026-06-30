@@ -45,11 +45,20 @@ MODEL_IDENTIFIER="${MODEL_IDENTIFIER:-qwen3.6-35b-a3b}"
 # draw from CT 120's 4 slots; on CT 120, `llamacpp-reload <ctx> <parallel>` is the lever.
 MODEL_CONTEXT_LENGTH="${MODEL_CONTEXT_LENGTH:-65536}"
 
-# --- Hermes version ---
-# "latest" installs main HEAD (no --branch). Set to a git tag (e.g. v0.17.0) to pin a
-# release for reproducibility. Tracking latest is a deliberate deviation from this repo's
-# "pin a tarball + verify SHA-256" idiom — the upstream install.sh URL can't be SHA-pinned.
-HERMES_VERSION="${HERMES_VERSION:-latest}"
+# --- Hermes version (pinned + checksum-verified by default) ---
+# The install is pinned to an immutable git tag: the container fetches scripts/install.sh
+# from that tag's raw URL, verifies its SHA-256 against HERMES_INSTALLER_SHA256, then runs
+# it with `--branch <tag>` so the checked-out code matches the verified installer. This
+# follows the repo's "pin a tag + verify SHA-256" idiom and stops a mutated upstream
+# installer from running as root. Bump BOTH together from
+# https://github.com/NousResearch/hermes-agent/releases — use the GIT TAG (e.g. v2026.6.19),
+# NOT the "v0.17.0" marketing title shown on the release page (that is not a valid git ref).
+# Recompute the checksum after bumping the tag:
+#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/<tag>/scripts/install.sh | sha256sum
+# Set HERMES_VERSION=latest to instead stream the mutable upstream installer (tracks main
+# HEAD) — UNVERIFIED: no checksum, no pin. For testing only.
+HERMES_VERSION="${HERMES_VERSION:-v2026.6.19}"
+HERMES_INSTALLER_SHA256="${HERMES_INSTALLER_SHA256:-dbd9d555ed4ac67bd1fc71ba6a39b410cf2af0ebcfd8f4889e086af78c9ddcaa}"
 
 # --- Hermes OpenAI-compatible API server ---
 # The API server gives FULL access to Hermes's toolset, INCLUDING terminal commands, so a
@@ -79,7 +88,8 @@ Useful overrides:
   TARGET_LXC_VMID=120 ./create-lxc-hermes-agent.sh
   TARGET_BASE_URL=http://192.168.1.50:1234/v1 ./create-lxc-hermes-agent.sh
   MODEL_IDENTIFIER=qwen3.6-35b-a3b ./create-lxc-hermes-agent.sh
-  HERMES_VERSION=v0.17.0 ./create-lxc-hermes-agent.sh   # pin a release instead of latest
+  HERMES_VERSION=v2026.6.19 ./create-lxc-hermes-agent.sh  # pin a different release (GIT TAG, not the v0.x.y title)
+  HERMES_VERSION=latest ./create-lxc-hermes-agent.sh      # track main HEAD, UNVERIFIED (no checksum/pin)
   INSTALL_BROWSER=0 ./create-lxc-hermes-agent.sh        # skip Playwright Chromium (leaner)
   API_SERVER_KEY=my-secret ./create-lxc-hermes-agent.sh # else auto-generated and printed
   TELEGRAM_BOT_TOKEN=123:abc ./create-lxc-hermes-agent.sh
@@ -240,28 +250,51 @@ wait_for_container() {
 install_and_configure() {
   log "Installing Hermes Agent (${HERMES_VERSION}) and configuring the service"
 
-  # The bot token is the one secret here; pass it on stdin (not as a positional arg, which
-  # would show in the host's `ps` during provisioning). Everything else is non-secret and
-  # passed as positional args, bench-runner style.
-  pct exec "${VMID}" -- env HERMES_TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
-    bash -s -- \
+  # The two secrets here (the API-server bearer key and the optional Telegram bot token)
+  # must NOT travel through argv or the environment: both are visible in `ps` / `/proc` on
+  # the host (the `pct exec` line) and inside the container. Push them as a mode-600 file
+  # that the container sources and then deletes; the host copy is removed as soon as it is
+  # pushed. Everything else below is non-secret and stays as positional args.
+  local secrets_file
+  secrets_file="$(mktemp)" || return 1
+  chmod 600 "${secrets_file}"
+  {
+    printf 'API_SERVER_KEY=%s\n' "${API_SERVER_KEY}"
+    printf 'TELEGRAM_BOT_TOKEN=%s\n' "${TELEGRAM_BOT_TOKEN}"
+  } >"${secrets_file}"
+
+  if ! pct push "${VMID}" "${secrets_file}" /root/.hermes-provision-secrets.env --perms 0600; then
+    rm -f "${secrets_file}"
+    return 1
+  fi
+  rm -f "${secrets_file}"   # host copy no longer needed; the container has its own
+
+  pct exec "${VMID}" -- bash -s -- \
     "${HERMES_VERSION}" \
+    "${HERMES_INSTALLER_SHA256}" \
     "${INSTALL_BROWSER}" \
     "${TARGET_BASE_URL}" \
     "${MODEL_IDENTIFIER}" \
     "${MODEL_CONTEXT_LENGTH}" \
-    "${API_SERVER_KEY}" \
     "${API_SERVER_PORT}" <<'CONTAINER_SCRIPT'
 set -Eeuo pipefail
 
 HERMES_VERSION="$1"
-INSTALL_BROWSER="$2"
-TARGET_BASE_URL="$3"
-MODEL_IDENTIFIER="$4"
-MODEL_CONTEXT_LENGTH="$5"
-API_SERVER_KEY="$6"
+HERMES_INSTALLER_SHA256="$2"
+INSTALL_BROWSER="$3"
+TARGET_BASE_URL="$4"
+MODEL_IDENTIFIER="$5"
+MODEL_CONTEXT_LENGTH="$6"
 API_SERVER_PORT="$7"
-TELEGRAM_BOT_TOKEN="${HERMES_TELEGRAM_BOT_TOKEN:-}"
+
+# Secrets were pushed as a mode-600 file (kept out of argv/env so they never appear in
+# `ps`). Source it, then delete it before doing anything else.
+SECRETS_FILE=/root/.hermes-provision-secrets.env
+# shellcheck source=/dev/null
+. "${SECRETS_FILE}"
+rm -f "${SECRETS_FILE}"
+API_SERVER_KEY="${API_SERVER_KEY:-}"
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 
 export HERMES_HOME=/root/.hermes
 
@@ -278,8 +311,32 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y ca-certificates curl git build-essential python3
 
-# 2. Install Hermes. --non-interactive is mandatory (no TTY under `pct exec`); --skip-setup
-# skips the config wizard because we write config.yaml/.env ourselves below.
+# 2. Install Hermes — pinned + checksum-verified by default. Fetch scripts/install.sh from
+# the pinned git tag's raw URL (immutable), verify its SHA-256, then run it with
+# `--branch <tag>` so the checked-out code matches the verified installer. This stops a
+# mutated upstream installer from running as root. HERMES_VERSION=latest opts out: it
+# streams the mutable upstream installer (no checksum, no pin) — for testing only.
+installer="$(mktemp)"
+if [[ "${HERMES_VERSION}" == "latest" ]]; then
+  printf 'warning: HERMES_VERSION=latest — installing UNPINNED main HEAD with NO checksum verification\n' >&2
+  curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o "${installer}"
+else
+  curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_VERSION}/scripts/install.sh" -o "${installer}"
+  if [[ -z "${HERMES_INSTALLER_SHA256}" ]]; then
+    printf 'error: HERMES_INSTALLER_SHA256 is empty; refusing to run an unverified pinned installer\n' >&2
+    exit 1
+  fi
+  if ! printf '%s  %s\n' "${HERMES_INSTALLER_SHA256}" "${installer}" | sha256sum -c - >/dev/null 2>&1; then
+    printf 'error: installer SHA-256 mismatch for tag %s\n' "${HERMES_VERSION}" >&2
+    printf '  expected: %s\n' "${HERMES_INSTALLER_SHA256}" >&2
+    printf '  actual:   %s\n' "$(sha256sum "${installer}" | awk '{print $1}')" >&2
+    exit 1
+  fi
+fi
+
+# --non-interactive is mandatory (no TTY under `pct exec`); --skip-setup skips the config
+# wizard because we write config.yaml/.env ourselves below. --branch <tag> pins the
+# checkout (git clone --branch accepts tags and detaches HEAD at the tagged commit).
 install_args=(--non-interactive --skip-setup)
 if [[ "${HERMES_VERSION}" != "latest" ]]; then
   install_args+=(--branch "${HERMES_VERSION}")
@@ -287,7 +344,8 @@ fi
 if [[ "${INSTALL_BROWSER}" != "1" ]]; then
   install_args+=(--skip-browser)
 fi
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- "${install_args[@]}"
+bash "${installer}" "${install_args[@]}"
+rm -f "${installer}"
 
 command -v hermes >/dev/null 2>&1 || [[ -x /usr/local/bin/hermes ]] \
   || { printf 'error: hermes CLI not found after install\n' >&2; exit 1; }
@@ -353,8 +411,8 @@ systemctl enable --now hermes.service
 
 # 6. Confirm the API server comes up rather than silently reporting success over a dead
 # service. /v1/models requires the bearer key even on loopback. A heavy first boot can be
-# slow, so on timeout this WARNS (the container + service are installed either way) rather
-# than aborting the provision — check `journalctl -u hermes` if it does not answer.
+# slow, so we poll for ~120s. On timeout we dump the service status + recent journal and
+# exit NONZERO so the host aborts (it must not print "Done" over a dead service).
 for _ in $(seq 1 60); do
   if curl -fsS -H "Authorization: Bearer ${API_SERVER_KEY}" \
       "http://127.0.0.1:${API_SERVER_PORT}/v1/models" >/dev/null 2>&1; then
@@ -363,7 +421,11 @@ for _ in $(seq 1 60); do
   fi
   sleep 2
 done
-printf 'warning: hermes API server did not answer /v1/models within ~120s; check `journalctl -u hermes`\n' >&2
+
+printf 'error: hermes API server did not answer /v1/models within ~120s\n' >&2
+systemctl status hermes.service --no-pager --full >&2 || true
+journalctl -u hermes.service --no-pager -n 80 >&2 || true
+exit 1
 CONTAINER_SCRIPT
 }
 
@@ -404,7 +466,15 @@ main() {
   create_container
   start_container
   wait_for_container
-  install_and_configure
+  if ! install_and_configure; then
+    printf '\n' >&2
+    log "Hermes provisioning FAILED: the API server never came up on CT ${VMID}."
+    printf 'The container exists but hermes.service is not healthy. Inspect it with:\n' >&2
+    printf '  pct exec %s -- systemctl status hermes\n' "${VMID}" >&2
+    printf '  pct exec %s -- journalctl -u hermes -n 100 --no-pager\n' "${VMID}" >&2
+    printf 'API bearer key (save it; only shown here): %s\n' "${API_SERVER_KEY}" >&2
+    exit 1
+  fi
   print_summary
 }
 
