@@ -31,7 +31,6 @@ BRIDGE="${BRIDGE:-vmbr0}"
 IP_CONFIG="${IP_CONFIG:-dhcp}"
 PASSWORD="${PASSWORD:-}"
 START_ON_BOOT="${START_ON_BOOT:-1}"
-START_AFTER_CREATE="${START_AFTER_CREATE:-1}"
 
 # --- Target LLM runtime (CT 120) ---
 TARGET_LXC_VMID="${TARGET_LXC_VMID:-120}"
@@ -69,10 +68,10 @@ API_SERVER_PORT="${API_SERVER_PORT:-8642}"
 # --- Browser automation (Playwright Chromium) ---
 INSTALL_BROWSER="${INSTALL_BROWSER:-1}"         # 1 → installer runs `playwright install --with-deps chromium`
 
-# --- Optional messaging gateway token ---
-# Empty (default) → the gateway starts with no platforms; configure them post-provision
-# with `pct exec <vmid> -- hermes gateway setup`. Supply a token to wire Telegram at boot.
-TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+# --- Messaging gateway platforms ---
+# Not pre-wired here: the gateway starts with no platforms. Add Telegram/Discord/Slack/…
+# after provisioning with `pct exec <vmid> -- hermes gateway setup`, which also walks you
+# through the per-platform user allowlist (without one, Hermes denies all incoming users).
 
 usage() {
   cat <<'USAGE'
@@ -92,9 +91,8 @@ Useful overrides:
   HERMES_VERSION=latest ./create-lxc-hermes-agent.sh      # track main HEAD, UNVERIFIED (no checksum/pin)
   INSTALL_BROWSER=0 ./create-lxc-hermes-agent.sh        # skip Playwright Chromium (leaner)
   API_SERVER_KEY=my-secret ./create-lxc-hermes-agent.sh # else auto-generated and printed
-  TELEGRAM_BOT_TOKEN=123:abc ./create-lxc-hermes-agent.sh
 
-After it is up, add/adjust messaging platforms without re-provisioning:
+After it is up, add messaging platforms (Telegram/Discord/Slack/…) without re-provisioning:
   pct exec 121 -- hermes gateway setup
 USAGE
 }
@@ -229,10 +227,8 @@ create_container() {
 }
 
 start_container() {
-  if [[ ${START_AFTER_CREATE} == 1 ]]; then
-    log "Starting LXC ${VMID}"
-    pct start "${VMID}"
-  fi
+  log "Starting LXC ${VMID}"
+  pct start "${VMID}"
 }
 
 wait_for_container() {
@@ -250,25 +246,23 @@ wait_for_container() {
 install_and_configure() {
   log "Installing Hermes Agent (${HERMES_VERSION}) and configuring the service"
 
-  # The two secrets here (the API-server bearer key and the optional Telegram bot token)
-  # must NOT travel through argv or the environment: both are visible in `ps` / `/proc` on
-  # the host (the `pct exec` line) and inside the container. Push them as a mode-600 file
-  # that the container sources and then deletes; the host copy is removed as soon as it is
-  # pushed. Everything else below is non-secret and stays as positional args.
-  local secrets_file
-  secrets_file="$(mktemp)" || return 1
-  chmod 600 "${secrets_file}"
-  {
-    printf 'API_SERVER_KEY=%s\n' "${API_SERVER_KEY}"
-    printf 'TELEGRAM_BOT_TOKEN=%s\n' "${TELEGRAM_BOT_TOKEN}"
-  } >"${secrets_file}"
+  # The API-server bearer key is the only secret and must NOT travel through argv or the
+  # environment (both are visible in `ps` / `/proc` on the host and in the container). Push
+  # it as a mode-600 raw-value file; the container reads it with `$(cat)` — NOT `source`, so
+  # the value is never interpreted as shell — and then deletes it. The host copy is removed
+  # as soon as it is pushed. Everything else below is non-secret and stays as positional args.
+  local secret_file
+  secret_file="$(mktemp)" || return 1
+  chmod 600 "${secret_file}"
+  printf '%s' "${API_SERVER_KEY}" >"${secret_file}"
 
-  if ! pct push "${VMID}" "${secrets_file}" /root/.hermes-provision-secrets.env --perms 0600; then
-    rm -f "${secrets_file}"
+  if ! pct push "${VMID}" "${secret_file}" /root/.hermes-provision-secret --perms 0600; then
+    rm -f "${secret_file}"
     return 1
   fi
-  rm -f "${secrets_file}"   # host copy no longer needed; the container has its own
+  rm -f "${secret_file}"   # host copy no longer needed; the container has its own
 
+  local rc=0
   pct exec "${VMID}" -- bash -s -- \
     "${HERMES_VERSION}" \
     "${HERMES_INSTALLER_SHA256}" \
@@ -287,14 +281,12 @@ MODEL_IDENTIFIER="$5"
 MODEL_CONTEXT_LENGTH="$6"
 API_SERVER_PORT="$7"
 
-# Secrets were pushed as a mode-600 file (kept out of argv/env so they never appear in
-# `ps`). Source it, then delete it before doing anything else.
-SECRETS_FILE=/root/.hermes-provision-secrets.env
-# shellcheck source=/dev/null
-. "${SECRETS_FILE}"
-rm -f "${SECRETS_FILE}"
-API_SERVER_KEY="${API_SERVER_KEY:-}"
-TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+# The API key was pushed as a mode-600 raw-value file (kept out of argv/env so it never
+# appears in `ps`). Read it with command substitution — NOT `source` — so its contents are
+# never interpreted as shell, then delete it before doing anything else.
+SECRET_FILE=/root/.hermes-provision-secret
+API_SERVER_KEY="$(cat "${SECRET_FILE}")"
+rm -f "${SECRET_FILE}"
 
 export HERMES_HOME=/root/.hermes
 
@@ -365,15 +357,6 @@ terminal:
   backend: local
 YAML
 
-if [[ -n "${TELEGRAM_BOT_TOKEN}" ]]; then
-  cat >>"${HERMES_HOME}/config.yaml" <<'YAML'
-gateway:
-  platforms:
-    telegram:
-      enabled: true
-YAML
-fi
-
 # 4. Secrets + API-server enablement live in .env (root-only). The bearer key is required
 # even on loopback because the API exposes terminal access.
 {
@@ -381,9 +364,6 @@ fi
   printf 'API_SERVER_KEY=%s\n' "${API_SERVER_KEY}"
   printf 'API_SERVER_HOST=0.0.0.0\n'
   printf 'API_SERVER_PORT=%s\n' "${API_SERVER_PORT}"
-  if [[ -n "${TELEGRAM_BOT_TOKEN}" ]]; then
-    printf 'TELEGRAM_BOT_TOKEN=%s\n' "${TELEGRAM_BOT_TOKEN}"
-  fi
 } >"${HERMES_HOME}/.env"
 chmod 600 "${HERMES_HOME}/.env"
 
@@ -427,6 +407,13 @@ systemctl status hermes.service --no-pager --full >&2 || true
 journalctl -u hermes.service --no-pager -n 80 >&2 || true
 exit 1
 CONTAINER_SCRIPT
+  rc=$?
+
+  # Best-effort: ensure the pushed secret file is gone even if the inner script failed
+  # before it could delete itself (e.g. a transfer/startup error). Runs regardless of rc.
+  pct exec "${VMID}" -- rm -f /root/.hermes-provision-secret >/dev/null 2>&1 || true
+
+  return "${rc}"
 }
 
 print_summary() {

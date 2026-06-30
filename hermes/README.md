@@ -69,7 +69,9 @@ pct exec 121 -- hermes gateway setup        # interactive: add Telegram/Discord/
 pct exec 121 -- systemctl restart hermes
 ```
 
-Or pre-wire Telegram at provision time: `TELEGRAM_BOT_TOKEN=123:abc ./create-lxc-hermes-agent.sh`.
+Platforms are **not** pre-wired by the provisioner — the gateway starts with none. Add them
+here; `hermes gateway setup` walks you through both the bot token **and** the per-platform
+user allowlist (without an allowlist Hermes denies all incoming users).
 
 ## Override env vars
 
@@ -86,7 +88,6 @@ Or pre-wire Telegram at provision time: `TELEGRAM_BOT_TOKEN=123:abc ./create-lxc
 | `API_SERVER_KEY` | _(generated)_ | bearer key for the API server |
 | `API_SERVER_PORT` | `8642` | API server port |
 | `INSTALL_BROWSER` | `1` | `0` skips Playwright Chromium (leaner container) |
-| `TELEGRAM_BOT_TOKEN` | _(empty)_ | wire Telegram at provision time |
 
 ## Notes
 
