@@ -10,7 +10,7 @@ suite to run — the "product" is the scripts themselves, executed **on the Prox
 root**. macOS is only the authoring/editing environment; the scripts run remotely against
 `pct`/`pveam`.
 
-Two containers form the system:
+Three containers form the system:
 
 - **CT 120** (`pro-v620/`): a *privileged* Ubuntu LXC — the **LLM runtime** — serving
   `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, 35B total / ~3B active) on a **Radeon Pro V620**
@@ -23,12 +23,19 @@ Two containers form the system:
     engine scripts — `create-lxc-lmstudio-qwen3.5-9b.sh` (LM Studio `lms`) and
     `create-lxc-llamacpp-qwen3.5-9b.sh` (llama.cpp). The README found llama.cpp better on
     that card, which is why the V620 ships only the llama.cpp script.
+- **CT 121 `hermes`** (`hermes/`): an *unprivileged* Debian LXC running NousResearch's
+  **Hermes Agent** — the homelab's agent (NOT a model server; it *consumes* CT 120's API,
+  see the `ct120-vs-hermes` memory). It auto-discovers CT 120's IP, points Hermes at it via a
+  `provider: custom` OpenAI endpoint (no Nous Portal login), and runs a single
+  `hermes gateway run` service = messaging gateway + Hermes's own OpenAI-compatible API server
+  on `0.0.0.0:8642`. Persistent (`120-139` AI range, starts on boot); full Playwright browser
+  tools; installs + runs as root inside the unprivileged LXC. `hermes/create-lxc-hermes-agent.sh`.
 - **CT 200 `bench-runner`** (`bench-runner/`): an *unprivileged* Debian LXC that benchmarks
   that endpoint. It auto-discovers CT 120's IP at provisioning time. It lives in the
   `200+` test/temporary range because it is disposable — destroy it when done. The suite is
   engine-neutral (it speaks OpenAI `/v1`), so it benchmarks either engine unchanged.
 
-VMIDs `120`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
+VMIDs `120`/`121`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
 
 ## Common commands
 
@@ -219,7 +226,8 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   matching range):
   - `100-119` — infra / services
   - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp` on the V620; the
-    prior 6700 XT also offered an `lmstudio` variant)
+    prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the Hermes Agent that
+    consumes CT 120's API)
   - `140-159` — databases
   - `200+` — test / temporary (CT 200 `bench-runner` — disposable benchmark LXC)
 - Keep downloaded model weights and generated results out of git (already covered by

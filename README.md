@@ -8,6 +8,8 @@ Utilities for creating and operating local Proxmox LXCs and VMs.
 - `rx-6700-xt/`: scripts and notes for the Radeon RX 6700 XT (prior GPU — the
   V620 replaced it; kept for reference).
 - `bench-runner/`: disposable LXC for OpenAI-compatible LLM benchmarks.
+- `hermes/`: persistent LXC running NousResearch's Hermes Agent (the agent that
+  consumes the LLM runtime's API).
 
 Each GPU folder should own its own model/runtime assumptions. LLM containers tend
 to need GPU-specific environment variables, memory sizing, context settings, and
@@ -26,7 +28,8 @@ Containers are allocated VMIDs by role:
 | 200+    | Test / temporary  |
 
 Current containers: CT `120` (the AI/LLM runtime — now on the Radeon Pro V620,
-provisioned by `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`) and CT `200`
+provisioned by `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`), CT `121`
+(`hermes`, the Hermes Agent that consumes CT 120's API) and CT `200`
 (`bench-runner`, disposable). Each creation script defaults its `VMID` to the
 matching range and accepts a `VMID=` override.
 
@@ -64,6 +67,21 @@ Run directly on the Proxmox host without cloning the repo:
 
 ```bash
 bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh)"
+```
+
+### Hermes Agent LXC
+
+Creates a persistent **unprivileged Debian LXC** running [NousResearch's Hermes
+Agent](https://hermes-agent.nousresearch.com/) — the homelab's agent, pointed at the CT 120
+runtime's OpenAI-compatible API (no Nous Portal login). A single `hermes gateway run` service
+serves both the messaging gateway and Hermes's own OpenAI-compatible API server on
+`0.0.0.0:8642`. Defaults to CT `121`, full browser tools, starts on boot. See
+[hermes/README.md](hermes/README.md).
+
+Run directly on the Proxmox host without cloning the repo:
+
+```bash
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/hermes/create-lxc-hermes-agent.sh)"
 ```
 
 ### RX 6700 XT LLM Runtime LXC (prior GPU)
