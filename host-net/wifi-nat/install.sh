@@ -50,6 +50,10 @@ readonly PRIOR_IPF="${PRIOR_DIR}/ip_forward"
 readonly PRIOR_DNS_PRE="${PRIOR_DIR}/dnsmasq-preinstalled"
 readonly PRIOR_DNS_EN="${PRIOR_DIR}/dnsmasq-enabled"
 readonly PRIOR_DNS_ACT="${PRIOR_DIR}/dnsmasq-active"
+# $ROLLBACK_BIN is the teardown script itself, so it can't live in the manifest
+# (the teardown would delete itself mid-run) — track it separately here.
+readonly ROLLBACK_BIN_STATE="${PRIOR_DIR}/rollback-bin-state"
+readonly ROLLBACK_BIN_ORIG="${PRIOR_DIR}/rollback-bin.orig"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
@@ -71,6 +75,13 @@ record_prior() {
     systemctl is-active  dnsmasq 2>/dev/null > "$PRIOR_DNS_ACT" || true
   else
     printf 'no\n' > "$PRIOR_DNS_PRE"
+  fi
+  # Capture whether the rollback-bin path pre-existed (before we render over it).
+  if [ -e "$ROLLBACK_BIN" ]; then
+    cp -a "$ROLLBACK_BIN" "$ROLLBACK_BIN_ORIG"
+    printf 'existed\n' > "$ROLLBACK_BIN_STATE"
+  else
+    printf 'created\n' > "$ROLLBACK_BIN_STATE"
   fi
   : > "$MANIFEST"
   touch "$SENTINEL"
@@ -289,8 +300,11 @@ render_teardown() {
 #!/usr/bin/env bash
 # Restore the pre-cutover network AND make sure the WiFi/NAT stack does not return
 # on reboot. Order matters: restore files + interfaces first, then bring a prior
-# dnsmasq back (it may bind the ethernet address, which must exist by then).
+# dnsmasq back (it may bind the ethernet address, which must exist by then). Tracks
+# failures and VERIFIES the restore, exiting nonzero if anything critical failed —
+# so --revert can refuse to clear recovery state on a botched teardown.
 set -uo pipefail
+fail=0
 
 # 1. Disable (not merely stop) the cutover units so nothing returns on reboot.
 systemctl disable --now wifinat dnsmasq dhclient@${WAN_IF} wpa_supplicant@${WAN_IF} 2>/dev/null || true
@@ -298,22 +312,29 @@ systemctl disable --now wifinat dnsmasq dhclient@${WAN_IF} wpa_supplicant@${WAN_
 
 # 2. Restore the ethernet interfaces config from the backup.
 BK="\$(cat ${BACKUP_PTR} 2>/dev/null || true)"
-if [ -n "\$BK" ] && [ -f "\$BK" ]; then cp -a "\$BK" ${INTERFACES}; fi
+if [ -n "\$BK" ] && [ -f "\$BK" ]; then
+  cp -a "\$BK" ${INTERFACES} || { echo "teardown: failed to copy \$BK -> ${INTERFACES}" >&2; fail=1; }
+else
+  echo "teardown: no interfaces backup (${BACKUP_PTR}) — cannot restore ${INTERFACES}" >&2; fail=1
+fi
 
 # 3. Restore every managed file: put back originals we overwrote, remove only files
-#    we created. This also removes our dnsmasq/nft/unit/sysctl drop-ins.
+#    we created (the manifest, not an unconditional rm, decides — so a pre-existing
+#    file we stashed as 'existed' is NOT deleted here). Removes our drop-ins.
 if [ -f "${MANIFEST}" ]; then
   while read -r st f; do
     [ -n "\$f" ] || continue
     if [ "\$st" = existed ]; then
       key="\$(printf '%s' "\$f" | tr '/' '_')"
-      [ -e "${STASH_DIR}/\$key" ] && cp -a "${STASH_DIR}/\$key" "\$f"
+      [ -e "${STASH_DIR}/\$key" ] && { cp -a "${STASH_DIR}/\$key" "\$f" || { echo "teardown: failed to restore \$f" >&2; fail=1; }; }
     elif [ "\$st" = created ]; then
       rm -f "\$f"
     fi
   done < "${MANIFEST}"
+else
+  # No manifest: best-effort remove only the wifinat-EXCLUSIVE files we know are ours.
+  rm -f ${SYSCTL_FILE} ${DNSMASQ_CONF} ${NFT_FILE} ${WIFINAT_UNIT}
 fi
-rm -f ${SYSCTL_FILE}   # belt-and-braces if the manifest is missing
 
 # 4. Restore forwarding to its pre-cutover value.
 pf="\$(cat ${PRIOR_IPF} 2>/dev/null || echo 0)"
@@ -321,15 +342,31 @@ sysctl -w net.ipv4.ip_forward="\$pf" >/dev/null 2>&1 || true
 
 # 5. Reload units + interfaces BEFORE restoring dnsmasq.
 systemctl daemon-reload 2>/dev/null || true
-ifreload -a || true
+ifreload -a || { echo "teardown: ifreload -a failed" >&2; fail=1; }
 
 # 6. Restore a PRE-EXISTING dnsmasq to its prior state (files were put back in #3).
 if [ "\$(cat ${PRIOR_DNS_PRE} 2>/dev/null || echo no)" = yes ]; then
-  if [ "\$(cat ${PRIOR_DNS_EN} 2>/dev/null || true)" = enabled ]; then systemctl enable dnsmasq >/dev/null 2>&1 || true; fi
-  if [ "\$(cat ${PRIOR_DNS_ACT} 2>/dev/null || true)" = active ]; then systemctl start dnsmasq >/dev/null 2>&1 || true; fi
+  if [ "\$(cat ${PRIOR_DNS_EN} 2>/dev/null || true)" = enabled ]; then systemctl enable dnsmasq >/dev/null 2>&1 || { echo "teardown: failed to re-enable prior dnsmasq" >&2; fail=1; }; fi
+  if [ "\$(cat ${PRIOR_DNS_ACT} 2>/dev/null || true)" = active ]; then
+    systemctl start dnsmasq >/dev/null 2>&1 || true
+    systemctl is-active --quiet dnsmasq || { echo "teardown: prior dnsmasq did not come back active" >&2; fail=1; }
+  fi
 fi
 
-logger -t wifi-nat "teardown executed (restored \${BK:-<none>}, ip_forward=\$pf)"
+# 7. VERIFY the addressing actually reverted (config restored + $LAN_IF off the NAT
+#    subnet). Deterministic — does not depend on ethernet carrier being present.
+if [ -n "\$BK" ] && [ -f "\$BK" ]; then
+  cmp -s "\$BK" ${INTERFACES} || { echo "teardown: ${INTERFACES} != backup after restore" >&2; fail=1; }
+fi
+if ip -4 addr show ${LAN_IF} 2>/dev/null | grep -q "inet ${LAN_ADDR}/"; then echo "teardown: ${LAN_IF} still on ${LAN_ADDR}" >&2; fail=1; fi
+ip -4 addr show ${LAN_IF} 2>/dev/null | grep -q 'inet ' || { echo "teardown: ${LAN_IF} has no IPv4 after restore" >&2; fail=1; }
+
+if [ "\$fail" = 0 ]; then
+  logger -t wifi-nat "teardown OK (restored \${BK:-<none>}, ip_forward=\$pf)"
+else
+  logger -t wifi-nat "teardown INCOMPLETE — recovery state preserved (see stderr)"
+fi
+exit "\$fail"
 EOF
   chmod 0755 "$ROLLBACK_BIN"
 }
@@ -548,21 +585,38 @@ cmd_revert() {
 
   # Run the SAME comprehensive teardown the auto-rollback uses (disable units,
   # restore interfaces + managed files, restore forwarding, daemon-reload, ifreload,
-  # then restore a pre-existing dnsmasq — in that order).
+  # then restore a pre-existing dnsmasq — in that order). It VERIFIES the restore and
+  # exits nonzero on failure; we clear recovery state ONLY on a confirmed teardown.
+  local torn=0 on_nat has_ip
   if [ -x "$ROLLBACK_BIN" ]; then
-    "$ROLLBACK_BIN"
+    if "$ROLLBACK_BIN"; then torn=1; fi
   else
     warn "$ROLLBACK_BIN missing — inline fallback"
     systemctl disable --now wifinat dnsmasq "dhclient@${WAN_IF}.service" "wpa_supplicant@${WAN_IF}.service" >/dev/null 2>&1 || true
     nft delete table ip wifinat 2>/dev/null || true
-    if [ -f "$BACKUP_PTR" ] && [ -f "$(cat "$BACKUP_PTR")" ]; then cp -a "$(cat "$BACKUP_PTR")" "$INTERFACES"; fi
-    systemctl daemon-reload; ifreload -a || warn "ifreload returned non-zero — check console"
+    if [ -f "$BACKUP_PTR" ] && [ -f "$(cat "$BACKUP_PTR")" ]; then cp -a "$(cat "$BACKUP_PTR")" "$INTERFACES" || true; fi
+    systemctl daemon-reload
+    ifreload -a || warn "ifreload returned non-zero — check console"
+    on_nat=0; ip -4 addr show "$LAN_IF" 2>/dev/null | grep -q "inet ${LAN_ADDR}/" && on_nat=1
+    has_ip=0; ip -4 addr show "$LAN_IF" 2>/dev/null | grep -q 'inet ' && has_ip=1
+    if [ "$on_nat" = 0 ] && [ "$has_ip" = 1 ]; then torn=1; fi
   fi
-  rm -f "$ROLLBACK_BIN"   # our launcher (kept out of the manifest to avoid self-deletion)
 
-  # Clear the ACTIVE transaction state so a later stage/revert starts fresh and can
-  # never restore this now-obsolete snapshot. Timestamped /root backups are kept.
-  rm -f "$SENTINEL" "$MANIFEST" "$BACKUP_PTR" "$PRIOR_IPF" "$PRIOR_DNS_PRE" "$PRIOR_DNS_EN" "$PRIOR_DNS_ACT"
+  if [ "$torn" != 1 ]; then
+    die "teardown did NOT fully restore the network — recovery state PRESERVED. Inspect 'ip a' / 'journalctl -t wifi-nat', then re-run --revert (or hand-restore $INTERFACES from the backup at $BACKUP_PTR)."
+  fi
+
+  # Teardown confirmed. Restore/remove the rollback launcher from its OWN record (it
+  # is kept out of the manifest so the teardown can't delete itself mid-run).
+  if [ "$(cat "$ROLLBACK_BIN_STATE" 2>/dev/null || echo created)" = existed ] && [ -e "$ROLLBACK_BIN_ORIG" ]; then
+    cp -a "$ROLLBACK_BIN_ORIG" "$ROLLBACK_BIN"
+  else
+    rm -f "$ROLLBACK_BIN"
+  fi
+
+  # Only NOW clear the transaction state, so a later stage/revert starts fresh and can
+  # never restore this obsolete snapshot. Timestamped /root backups are kept.
+  rm -f "$SENTINEL" "$MANIFEST" "$BACKUP_PTR" "$PRIOR_IPF" "$PRIOR_DNS_PRE" "$PRIOR_DNS_EN" "$PRIOR_DNS_ACT" "$ROLLBACK_BIN_STATE" "$ROLLBACK_BIN_ORIG"
   rm -rf "$STASH_DIR"
 
   log "reverted and cleared transaction state (archived /root/interfaces.bak.* kept)."

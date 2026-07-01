@@ -89,11 +89,15 @@ services, removes the `wifinat` nftables table, and restores prior host state fr
 the snapshot taken at stage time (`/var/lib/wifi-nat/prior/`) — files we overwrote
 are put back and only files we created are removed, `ip_forward` returns to its
 pre-cutover value, and a pre-existing dnsmasq is restored to its prior state (left
-disabled only if we installed it). It then **clears the active transaction state**
-(snapshot, manifest, backup pointer) so a future stage/revert starts fresh and can
-never restore an obsolete snapshot; the timestamped `/root/interfaces.bak.*` archives
-are kept. **Config only — no data touched, and the containers need no per-CT change**
-(they stay `ip=dhcp` and simply pull a `192.168.1.x` LAN lease again).
+disabled only if we installed it). The teardown **verifies** the restore (interfaces
+file matches the backup, `vmbr0` is off the NAT subnet); only on a **confirmed**
+teardown does revert then **clear the active transaction state** (snapshot, manifest,
+backup pointer) so a future stage/revert starts fresh and can never restore an
+obsolete snapshot. If the teardown can't confirm the restore it **keeps** the recovery
+state and exits with an error so you can fix and retry. The timestamped
+`/root/interfaces.bak.*` archives are always kept. **Config only — no data touched, and
+the containers need no per-CT change** (they stay `ip=dhcp` and pull a `192.168.1.x`
+LAN lease again).
 
 `./install.sh --status` prints the WiFi link, leases, routes, and nft table at any
 time.
