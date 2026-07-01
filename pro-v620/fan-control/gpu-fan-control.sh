@@ -46,6 +46,8 @@ POLL_INTERVAL="${POLL_INTERVAL:-4}"              # seconds
 PWM_STEP="${PWM_STEP:-4}"                        # min raw delta before re-writing
 MIN_PWM_RAW="${MIN_PWM_RAW:-32}"                 # hard floor (~12.5%); never below
 PWM_READBACK_TOL="${PWM_READBACK_TOL:-4}"        # max |written-readback| counted as success
+PWM_READBACK_RETRIES="${PWM_READBACK_RETRIES:-5}"          # re-read pwm up to this many times before counting a write failed
+PWM_READBACK_RETRY_SLEEP="${PWM_READBACK_RETRY_SLEEP:-0.1}"  # backoff between readbacks (nct6687's EC cache updates async)
 
 # Failure handling — the V620 is passively cooled, so loss of control = no cooling.
 FAN_RPM_MONITOR="${FAN_RPM_MONITOR:-auto}"       # auto|on|off (auto = on iff a tach reads >0 at start)
@@ -110,13 +112,22 @@ read_fan_rpm() {  # echoes the blower RPM (fanN_input) or returns 1
 # write, which must not be mistaken for success). Returns nonzero on any failure.
 write_pwm() {  # $1 = raw
   [ -n "$FAN_CHIP" ] || return 1
-  local en="$FAN_CHIP/pwm${FAN_PWM_CHANNEL}_enable" pw="$FAN_CHIP/pwm${FAN_PWM_CHANNEL}" got d
+  local en="$FAN_CHIP/pwm${FAN_PWM_CHANNEL}_enable" pw="$FAN_CHIP/pwm${FAN_PWM_CHANNEL}" got d i
   [ "$(cat "$en" 2>/dev/null)" = "1" ] || echo 1 > "$en" 2>/dev/null || return 1
   echo "$1" > "$pw" 2>/dev/null || return 1
-  got="$(cat "$pw" 2>/dev/null)" || return 1
-  [ -n "$got" ] || return 1
-  d=$(( got - $1 )); (( d < 0 )) && d=$(( -d ))
-  (( d <= PWM_READBACK_TOL ))
+  # nct6687 serves pwm reads from a cache its EC refreshes asynchronously, so an
+  # immediate read-after-write often returns the PRE-write value. Re-read up to
+  # PWM_READBACK_RETRIES times (short backoff) and accept the first value within
+  # tolerance; only a write that NEVER settles (a genuinely rejected/clamped write)
+  # counts as a failure. The RPM tach watchdog remains the ground truth for airflow.
+  for (( i = 0; i < PWM_READBACK_RETRIES; i++ )); do
+    (( i > 0 )) && sleep "$PWM_READBACK_RETRY_SLEEP"
+    got="$(cat "$pw" 2>/dev/null)" || return 1
+    [ -n "$got" ] || return 1
+    d=$(( got - $1 )); (( d < 0 )) && d=$(( -d ))
+    (( d <= PWM_READBACK_TOL )) && return 0
+  done
+  return 1
 }
 
 # Apply a target PWM, tracking success/failure. last_raw is updated ONLY on a
