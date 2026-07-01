@@ -326,13 +326,20 @@ if [ -f "${MANIFEST}" ]; then
     [ -n "\$f" ] || continue
     if [ "\$st" = existed ]; then
       key="\$(printf '%s' "\$f" | tr '/' '_')"
-      [ -e "${STASH_DIR}/\$key" ] && { cp -a "${STASH_DIR}/\$key" "\$f" || { echo "teardown: failed to restore \$f" >&2; fail=1; }; }
+      if [ -e "${STASH_DIR}/\$key" ]; then
+        cp -a "${STASH_DIR}/\$key" "\$f" || { echo "teardown: failed to restore \$f" >&2; fail=1; }
+      else
+        echo "teardown: stash blob for \$f is missing — cannot restore original" >&2; fail=1
+      fi
     elif [ "\$st" = created ]; then
       rm -f "\$f"
     fi
   done < "${MANIFEST}"
 else
-  # No manifest: best-effort remove only the wifinat-EXCLUSIVE files we know are ours.
+  # Missing manifest = incomplete recovery metadata: cannot restore 'existed'
+  # originals, so this is NOT a clean teardown. Best-effort remove the
+  # wifinat-EXCLUSIVE drop-ins, but mark failure so --revert keeps the snapshot.
+  echo "teardown: recovery manifest ${MANIFEST} is missing — incomplete teardown" >&2; fail=1
   rm -f ${SYSCTL_FILE} ${DNSMASQ_CONF} ${NFT_FILE} ${WIFINAT_UNIT}
 fi
 
@@ -353,13 +360,28 @@ if [ "\$(cat ${PRIOR_DNS_PRE} 2>/dev/null || echo no)" = yes ]; then
   fi
 fi
 
-# 7. VERIFY the addressing actually reverted (config restored + $LAN_IF off the NAT
-#    subnet). Deterministic — does not depend on ethernet carrier being present.
+# 7. VERIFY the restore. Deterministic — does not depend on ethernet carrier.
+#    (a) addressing reverted: interfaces == backup, $LAN_IF off the NAT subnet.
 if [ -n "\$BK" ] && [ -f "\$BK" ]; then
   cmp -s "\$BK" ${INTERFACES} || { echo "teardown: ${INTERFACES} != backup after restore" >&2; fail=1; }
 fi
 if ip -4 addr show ${LAN_IF} 2>/dev/null | grep -q "inet ${LAN_ADDR}/"; then echo "teardown: ${LAN_IF} still on ${LAN_ADDR}" >&2; fail=1; fi
 ip -4 addr show ${LAN_IF} 2>/dev/null | grep -q 'inet ' || { echo "teardown: ${LAN_IF} has no IPv4 after restore" >&2; fail=1; }
+#    (b) the WiFi/NAT stack is actually gone (won't return on reboot / no stale fwd).
+for u in wpa_supplicant@${WAN_IF} dhclient@${WAN_IF} wifinat; do
+  if systemctl is-enabled --quiet "\$u" 2>/dev/null; then echo "teardown: \$u still enabled (would return on reboot)" >&2; fail=1; fi
+done
+if /usr/sbin/nft list table ip wifinat >/dev/null 2>&1; then echo "teardown: nft table ip wifinat still present" >&2; fail=1; fi
+cur_ipf="\$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo '')"
+[ "\$cur_ipf" = "\$pf" ] || { echo "teardown: ip_forward=\$cur_ipf, expected \$pf" >&2; fail=1; }
+#    (c) dnsmasq matches its expected end state: enabled ONLY if it pre-existed enabled.
+want_dns=no
+if [ "\$(cat ${PRIOR_DNS_PRE} 2>/dev/null || echo no)" = yes ] && [ "\$(cat ${PRIOR_DNS_EN} 2>/dev/null || true)" = enabled ]; then want_dns=yes; fi
+if [ "\$want_dns" = yes ]; then
+  systemctl is-enabled --quiet dnsmasq 2>/dev/null || { echo "teardown: dnsmasq should be enabled (prior) but is not" >&2; fail=1; }
+else
+  if systemctl is-enabled --quiet dnsmasq 2>/dev/null; then echo "teardown: dnsmasq should be disabled but is enabled" >&2; fail=1; fi
+fi
 
 if [ "\$fail" = 0 ]; then
   logger -t wifi-nat "teardown OK (restored \${BK:-<none>}, ip_forward=\$pf)"
@@ -587,20 +609,12 @@ cmd_revert() {
   # restore interfaces + managed files, restore forwarding, daemon-reload, ifreload,
   # then restore a pre-existing dnsmasq — in that order). It VERIFIES the restore and
   # exits nonzero on failure; we clear recovery state ONLY on a confirmed teardown.
-  local torn=0 on_nat has_ip
-  if [ -x "$ROLLBACK_BIN" ]; then
-    if "$ROLLBACK_BIN"; then torn=1; fi
-  else
-    warn "$ROLLBACK_BIN missing — inline fallback"
-    systemctl disable --now wifinat dnsmasq "dhclient@${WAN_IF}.service" "wpa_supplicant@${WAN_IF}.service" >/dev/null 2>&1 || true
-    nft delete table ip wifinat 2>/dev/null || true
-    if [ -f "$BACKUP_PTR" ] && [ -f "$(cat "$BACKUP_PTR")" ]; then cp -a "$(cat "$BACKUP_PTR")" "$INTERFACES" || true; fi
-    systemctl daemon-reload
-    ifreload -a || warn "ifreload returned non-zero — check console"
-    on_nat=0; ip -4 addr show "$LAN_IF" 2>/dev/null | grep -q "inet ${LAN_ADDR}/" && on_nat=1
-    has_ip=0; ip -4 addr show "$LAN_IF" 2>/dev/null | grep -q 'inet ' && has_ip=1
-    if [ "$on_nat" = 0 ] && [ "$has_ip" = 1 ]; then torn=1; fi
-  fi
+  # Always run the ONE canonical, verified teardown. If the helper is missing (e.g.
+  # deleted mid-transaction), regenerate it from render_teardown rather than doing a
+  # weaker inline restore that could falsely report success and clear recovery state.
+  [ -x "$ROLLBACK_BIN" ] || { warn "$ROLLBACK_BIN missing — regenerating it"; render_teardown; }
+  local torn=0
+  if "$ROLLBACK_BIN"; then torn=1; fi
 
   if [ "$torn" != 1 ]; then
     die "teardown did NOT fully restore the network — recovery state PRESERVED. Inspect 'ip a' / 'journalctl -t wifi-nat', then re-run --revert (or hand-restore $INTERFACES from the backup at $BACKUP_PTR)."
