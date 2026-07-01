@@ -41,6 +41,15 @@ readonly ROLLBACK_BIN="/usr/local/sbin/wifi-nat-rollback"
 readonly INTERFACES="/etc/network/interfaces"
 readonly STATE_DIR="/var/lib/wifi-nat"
 readonly BACKUP_PTR="${STATE_DIR}/interfaces-backup-path"
+# Prior-state snapshot, so --revert / rollback restore rather than guess.
+readonly PRIOR_DIR="${STATE_DIR}/prior"
+readonly STASH_DIR="${PRIOR_DIR}/blobs"
+readonly MANIFEST="${PRIOR_DIR}/manifest"
+readonly SENTINEL="${PRIOR_DIR}/.captured"
+readonly PRIOR_IPF="${PRIOR_DIR}/ip_forward"
+readonly PRIOR_DNS_PRE="${PRIOR_DIR}/dnsmasq-preinstalled"
+readonly PRIOR_DNS_EN="${PRIOR_DIR}/dnsmasq-enabled"
+readonly PRIOR_DNS_ACT="${PRIOR_DIR}/dnsmasq-active"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
@@ -48,6 +57,43 @@ die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
 require_root() { [ "$(id -u)" -eq 0 ] || die "must run as root (on the Proxmox host)"; }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"; }
+
+# ---- prior-state capture (so --revert / rollback restore, never guess) -------
+
+# Snapshot the host state we are about to change — ONCE, before the first mutation.
+record_prior() {
+  install -d -m 0700 "$PRIOR_DIR"
+  [ -e "$SENTINEL" ] && { log "prior state already recorded ($PRIOR_DIR)"; return; }
+  sysctl -n net.ipv4.ip_forward 2>/dev/null > "$PRIOR_IPF" || echo 0 > "$PRIOR_IPF"
+  if dpkg -s dnsmasq >/dev/null 2>&1; then
+    printf 'yes\n' > "$PRIOR_DNS_PRE"
+    systemctl is-enabled dnsmasq 2>/dev/null > "$PRIOR_DNS_EN" || true
+    systemctl is-active  dnsmasq 2>/dev/null > "$PRIOR_DNS_ACT" || true
+  else
+    printf 'no\n' > "$PRIOR_DNS_PRE"
+  fi
+  : > "$MANIFEST"
+  touch "$SENTINEL"
+  log "recorded prior host state -> $PRIOR_DIR"
+}
+
+# Record a managed file BEFORE we (over)write it: copy the original if it existed,
+# else note we created it — so --revert restores originals and removes only files
+# we introduced. Idempotent; no-op until record_prior has run.
+stash_file() {
+  local f="$1" key
+  [ -e "$SENTINEL" ] || return 0
+  grep -qxF "existed $f" "$MANIFEST" 2>/dev/null && return 0
+  grep -qxF "created $f" "$MANIFEST" 2>/dev/null && return 0
+  install -d -m 0700 "$STASH_DIR"
+  if [ -e "$f" ]; then
+    key="$(printf '%s' "$f" | tr '/' '_')"
+    cp -a "$f" "$STASH_DIR/$key"
+    printf 'existed %s\n' "$f" >> "$MANIFEST"
+  else
+    printf 'created %s\n' "$f" >> "$MANIFEST"
+  fi
+}
 
 # ---- config -----------------------------------------------------------------
 
@@ -86,7 +132,9 @@ require_online() {
 # ---- render (idempotent writers) --------------------------------------------
 
 install_packages() {
-  local pkgs=(wpasupplicant iw dnsmasq wireless-regdb)
+  # isc-dhcp-client (deprecated but still packaged in Trixie) provides the
+  # /usr/sbin/dhclient the rendered dhclient@.service and the test path use.
+  local pkgs=(wpasupplicant iw dnsmasq wireless-regdb isc-dhcp-client)
   if dpkg -s "${pkgs[@]}" >/dev/null 2>&1; then
     log "packages already present: ${pkgs[*]}"
   else
@@ -94,9 +142,15 @@ install_packages() {
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}" || die "apt install failed"
   fi
+  require_command dhclient
   # We manage dnsmasq's lifecycle (it must not start until vmbr0 is renumbered to
   # $LAN_ADDR, or it fails to bind listen-address). Installing the pkg auto-starts
-  # it, so stop+disable now; --cutover starts it after the flip.
+  # it, so stop+disable now; --cutover starts it after the flip. If dnsmasq was
+  # ALREADY in use before this run, record_prior captured its state and --revert
+  # restores it — warn so the takeover isn't a surprise.
+  if [ "$(cat "$PRIOR_DNS_PRE" 2>/dev/null || echo no)" = "yes" ] && [ "$(cat "$PRIOR_DNS_ACT" 2>/dev/null || true)" = "active" ]; then
+    warn "dnsmasq was already running — wifinat will take it over (prior state recorded; --revert restores it)"
+  fi
   systemctl disable --now dnsmasq >/dev/null 2>&1 || true
 }
 
@@ -108,6 +162,7 @@ render_regdomain() {
   if [ -f "$REGDOM_FILE" ] && grep -qxF "$want" "$REGDOM_FILE"; then
     log "regdomain modprobe option already set ($REGDOM_FILE)"
   else
+    stash_file "$REGDOM_FILE"
     log "setting WiFi regulatory domain -> $COUNTRY ($REGDOM_FILE)"
     printf '# Managed by host-net/wifi-nat/install.sh — unlock %s WiFi channels.\n%s\n' "$COUNTRY" "$want" > "$REGDOM_FILE"
   fi
@@ -115,13 +170,14 @@ render_regdomain() {
 
 render_wpa() {
   install -d -m 0755 "$WPA_DIR"
+  stash_file "$WPA_CONF"
   log "rendering $WPA_CONF (0600) for SSID '$WIFI_SSID'"
-  # Pull only the hashed psk from wpa_passphrase (skip its plaintext #psk= line),
-  # so the passphrase only ever lives in the gitignored secrets file. Build the
-  # network block ourselves rather than editing wpa_passphrase's braces.
+  # Feed the passphrase on STDIN (not argv) so it never appears in ps/proc; take
+  # only the hashed psk (skip wpa_passphrase's plaintext #psk= line) and build the
+  # network block ourselves.
   local psk_hash
-  psk_hash="$(wpa_passphrase "$WIFI_SSID" "$WIFI_PSK" | awk -F= '/^[[:space:]]*psk=/{print $2; exit}')"
-  [ -n "$psk_hash" ] || die "wpa_passphrase produced no psk (bad SSID/passphrase?)"
+  psk_hash="$(printf '%s\n' "$WIFI_PSK" | wpa_passphrase "$WIFI_SSID" | awk -F= '/^[[:space:]]*psk=/{print $2; exit}')" || true
+  [ -n "$psk_hash" ] || die "wpa_passphrase produced no psk (passphrase must be 8-63 chars; check SSID/passphrase)"
   {
     printf 'ctrl_interface=/run/wpa_supplicant\nctrl_interface_group=0\nupdate_config=1\ncountry=%s\n\n' "$COUNTRY"
     printf 'network={\n\tssid="%s"\n\tpsk=%s\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256\n\tscan_ssid=1\n}\n' "$WIFI_SSID" "$psk_hash"
@@ -130,6 +186,7 @@ render_wpa() {
 }
 
 render_dhclient_unit() {
+  stash_file "$DHCLIENT_UNIT"
   log "rendering $DHCLIENT_UNIT"
   cat > "$DHCLIENT_UNIT" <<EOF
 [Unit]
@@ -152,6 +209,7 @@ EOF
 }
 
 render_dnsmasq() {
+  stash_file "$DNSMASQ_CONF"
   log "rendering $DNSMASQ_CONF (LAN DHCP+DNS on $LAN_IF)"
   {
     printf '# Managed by host-net/wifi-nat/install.sh. Serves DHCP+DNS to the LXCs on\n'
@@ -175,6 +233,7 @@ render_dnsmasq() {
 
 render_nftables() {
   install -d -m 0755 "$(dirname "$NFT_FILE")"
+  stash_file "$NFT_FILE"; stash_file "$WIFINAT_UNIT"; stash_file "$SYSCTL_FILE"
   log "rendering $NFT_FILE (masquerade + port-forwards)"
   {
     printf '#!/usr/sbin/nft -f\n'
@@ -222,17 +281,26 @@ EOF
 }
 
 render_rollback_helper() {
+  stash_file "$ROLLBACK_BIN"
   log "rendering $ROLLBACK_BIN"
   cat > "$ROLLBACK_BIN" <<EOF
 #!/usr/bin/env bash
-# Auto-rollback: restore the pre-cutover network so a bad flip self-recovers.
+# Auto-rollback: restore the pre-cutover network AND make sure the WiFi/NAT stack
+# does not come back on the next reboot (disable, not just stop). Self-recovers a
+# bad flip on a headless box.
 set -uo pipefail
 BK="\$(cat ${BACKUP_PTR} 2>/dev/null || true)"
-systemctl stop dnsmasq wifinat 2>/dev/null || true
+# Disable (not merely stop) so nothing returns on reboot against the restored config.
+systemctl disable --now wifinat dnsmasq dhclient@${WAN_IF} wpa_supplicant@${WAN_IF} 2>/dev/null || true
 /usr/sbin/nft delete table ip wifinat 2>/dev/null || true
+# Drop the persistent forwarding knob and restore its pre-cutover value.
+rm -f ${SYSCTL_FILE}
+pf="\$(cat ${PRIOR_IPF} 2>/dev/null || echo 0)"
+sysctl -w net.ipv4.ip_forward="\$pf" >/dev/null 2>&1 || true
+# Restore the ethernet interfaces config.
 if [ -n "\$BK" ] && [ -f "\$BK" ]; then cp -a "\$BK" ${INTERFACES}; fi
 ifreload -a || true
-logger -t wifi-nat "auto-rollback executed (restored \${BK:-<none>})"
+logger -t wifi-nat "auto-rollback executed (restored \${BK:-<none>}, ip_forward=\$pf)"
 EOF
   chmod 0755 "$ROLLBACK_BIN"
 }
@@ -294,6 +362,18 @@ wan_egress_ok() {  # prove traffic actually leaves via $WAN_IF (SO_BINDTODEVICE)
   ping -I "$WAN_IF" -c3 -W2 "$TEST_PING_IP" >/dev/null 2>&1
 }
 
+# Every check must hold for a healthy cutover. Prints each failure; returns nonzero
+# if ANY fail. This is the gate --confirm must pass before it cancels the rollback.
+verify_health() {
+  local bad=0
+  ip -4 addr show "$LAN_IF" 2>/dev/null | grep -q "inet ${LAN_ADDR}/" || { warn "health: $LAN_IF is not ${LAN_ADDR}"; bad=1; }
+  ip route show default 2>/dev/null | grep -q "dev ${WAN_IF}" || { warn "health: default route not via $WAN_IF"; bad=1; }
+  wan_egress_ok || { warn "health: no egress via $WAN_IF (ping $TEST_PING_IP)"; bad=1; }
+  nft list table ip wifinat >/dev/null 2>&1 || { warn "health: nft table ip wifinat missing"; bad=1; }
+  systemctl is-active --quiet dnsmasq || { warn "health: dnsmasq not active"; bad=1; }
+  return "$bad"
+}
+
 # ---- commands ---------------------------------------------------------------
 
 cmd_stage() {
@@ -301,6 +381,7 @@ cmd_stage() {
   load_config 1
   require_online
   require_command wpa_passphrase
+  record_prior
   install_packages
   render_regdomain
   render_wpa
@@ -310,7 +391,7 @@ cmd_stage() {
   render_rollback_helper
   backup_interfaces
   systemctl daemon-reload
-  log "STAGE complete — nothing on the network changed yet."
+  log "STAGE complete — routing unchanged (dnsmasq stopped; prior state saved for --revert)."
   log "Next: ./install.sh --test-wifi   (verify WiFi works before the cutover)"
 }
 
@@ -318,6 +399,7 @@ cmd_test_wifi() {
   require_root
   load_config
   [ -f "$WPA_CONF" ] || die "$WPA_CONF missing — run ./install.sh (stage) first"
+  require_command dhclient
   log "bringing $WAN_IF up as a SECONDARY uplink (ethernet stays primary)"
   wan_associate
   # One-shot lease at a HIGH metric so it can't steal the ethernet default route
@@ -344,6 +426,7 @@ cmd_cutover() {
   [ -f "$WPA_CONF" ] || die "$WPA_CONF missing — run ./install.sh (stage) first"
   [ -f "$BACKUP_PTR" ] || die "no interfaces backup recorded — run ./install.sh (stage) first"
   grep -q "address ${LAN_ADDR}/${LAN_PREFIX}" "$INTERFACES" && die "already cut over ($LAN_IF is $LAN_ADDR). Use --revert to undo."
+  require_command dhclient
 
   log "bringing up the WiFi WAN for real (enable at boot)"
   systemctl enable --now "wpa_supplicant@${WAN_IF}.service" >/dev/null 2>&1 || true
@@ -358,11 +441,20 @@ cmd_cutover() {
   # Enable forwarding (the sysctl file was rendered at stage time).
   sysctl --system >/dev/null 2>&1 || true
 
-  log "arming self-rollback: restores the old config in ${ROLLBACK_MINUTES} min unless you run --confirm"
+  # Arm the auto-rollback BEFORE the flip. It's the headless safety net, so failing
+  # to arm it must ABORT (nothing changed yet) — unless the operator opts out.
   systemctl stop net-rollback.timer 2>/dev/null || true
   systemctl reset-failed net-rollback.timer net-rollback.service 2>/dev/null || true
-  systemd-run --on-active="${ROLLBACK_MINUTES}min" --unit=net-rollback "$ROLLBACK_BIN" \
-    || warn "could not arm systemd-run rollback timer — keep console access!"
+  if [ "${WIFI_NAT_NO_ROLLBACK:-0}" = "1" ]; then
+    warn "WIFI_NAT_NO_ROLLBACK=1 — proceeding with NO auto-rollback (be sure you have console access)"
+  else
+    log "arming self-rollback: restores the old config in ${ROLLBACK_MINUTES} min unless you run --confirm"
+    systemd-run --on-active="${ROLLBACK_MINUTES}min" --unit=net-rollback "$ROLLBACK_BIN" \
+      || die "failed to arm the rollback timer — ABORTING (nothing changed). Fix systemd-run, or set WIFI_NAT_NO_ROLLBACK=1 to override."
+    systemctl is-active --quiet net-rollback.timer \
+      || die "rollback timer did not come up — ABORTING before the flip (nothing changed)."
+    log "rollback armed (net-rollback.timer active)."
+  fi
 
   warn "FLIPPING NOW. If your SSH drops, reconnect to the host's WiFi IP and run:  ./install.sh --confirm"
   warn "(keep the ethernet cable plugged in until you've confirmed, so the rollback route still works)"
@@ -370,20 +462,26 @@ cmd_cutover() {
   ifreload -a || warn "ifreload returned non-zero — check 'ip a' / console"
   systemctl enable --now wifinat dnsmasq >/dev/null 2>&1 || warn "wifinat/dnsmasq did not start cleanly — check status"
 
-  log "post-flip check:"
+  log "post-flip health check:"
   ip route show default || true
-  if nft list table ip wifinat >/dev/null 2>&1; then log "nft table ip wifinat loaded"; else warn "nft table ip wifinat NOT loaded"; fi
-  if systemctl is-active --quiet dnsmasq; then log "dnsmasq active"; else warn "dnsmasq NOT active"; fi
+  if verify_health; then
+    log "HEALTHY. Reconnect if needed, then LOCK IT IN:  ./install.sh --confirm"
+  else
+    warn "UNHEALTHY — do NOT --confirm (it will refuse). Fix the above, or let the rollback auto-revert in ${ROLLBACK_MINUTES} min."
+  fi
   warn "Reboot the CTs to pick up their 10.10.10.x leases:  for c in 120 121 200; do pct reboot \$c; done"
-  warn "CONFIRM within ${ROLLBACK_MINUTES} min or it auto-reverts:  ./install.sh --confirm"
 }
 
 cmd_confirm() {
   require_root
+  load_config
+  # Refuse to cancel the safety net unless the cutover is actually healthy — this is
+  # what prevents a broken network from being made permanent.
+  verify_health || die "health checks FAILED — refusing to cancel the rollback. Fix the issues above, or let the timer auto-revert, then re-run --confirm once healthy."
   systemctl stop net-rollback.timer 2>/dev/null || true
   systemctl reset-failed net-rollback.timer net-rollback.service 2>/dev/null || true
-  log "rollback cancelled — WiFi NAT is now permanent."
-  log "Set a DHCP reservation on your router for the ${WAN_IF:-wlo1} MAC so 'ssh pve' keeps a stable IP."
+  log "healthy + confirmed — rollback cancelled, WiFi NAT is now permanent."
+  log "Set a DHCP reservation on your router for the ${WAN_IF} MAC so 'ssh pve' keeps a stable IP."
 }
 
 cmd_revert() {
@@ -393,17 +491,46 @@ cmd_revert() {
   systemctl stop net-rollback.timer 2>/dev/null || true
   systemctl disable --now wifinat dnsmasq "dhclient@${WAN_IF}.service" "wpa_supplicant@${WAN_IF}.service" >/dev/null 2>&1 || true
   nft delete table ip wifinat 2>/dev/null || true
+
+  # Restore the ethernet interfaces config.
   if [ -f "$BACKUP_PTR" ] && [ -f "$(cat "$BACKUP_PTR")" ]; then
     cp -a "$(cat "$BACKUP_PTR")" "$INTERFACES"
     log "restored $INTERFACES from $(cat "$BACKUP_PTR")"
   else
-    warn "no interfaces backup found — restore $INTERFACES by hand (vmbr0 -> bridge-ports $WAN_IF... wait, ethernet nic0, static 192.168.1.50/24, gateway 192.168.1.1)"
+    warn "no interfaces backup found — restore $INTERFACES by hand (vmbr0: bridge-ports nic0, static 192.168.1.50/24, gateway 192.168.1.1)"
   fi
-  rm -f "$DNSMASQ_CONF" "$NFT_FILE" "$WIFINAT_UNIT" "$DHCLIENT_UNIT" "$SYSCTL_FILE" "$REGDOM_FILE" "$WPA_CONF" "$ROLLBACK_BIN"
-  sysctl -w net.ipv4.ip_forward=0 >/dev/null 2>&1 || true
+
+  # Restore every managed file from the manifest: bring back originals we
+  # overwrote, remove only files we created ourselves.
+  if [ -f "$MANIFEST" ]; then
+    local state f key
+    while read -r state f; do
+      [ -n "$f" ] || continue
+      case "$state" in
+        existed) key="$(printf '%s' "$f" | tr '/' '_')"; [ -e "$STASH_DIR/$key" ] && cp -a "$STASH_DIR/$key" "$f" ;;
+        created) rm -f "$f" ;;
+      esac
+    done < "$MANIFEST"
+    log "restored/removed managed files per $MANIFEST"
+  else
+    warn "no manifest — removing wifinat files best-effort"
+    rm -f "$DNSMASQ_CONF" "$NFT_FILE" "$WIFINAT_UNIT" "$DHCLIENT_UNIT" "$SYSCTL_FILE" "$REGDOM_FILE" "$WPA_CONF" "$ROLLBACK_BIN"
+  fi
+
+  # Restore forwarding to its pre-cutover value (not a hardcoded 0).
+  local pf; pf="$(cat "$PRIOR_IPF" 2>/dev/null || echo 0)"
+  sysctl -w net.ipv4.ip_forward="$pf" >/dev/null 2>&1 || true
+
+  # Restore dnsmasq to its prior state (only if it pre-existed; else leave disabled).
+  if [ "$(cat "$PRIOR_DNS_PRE" 2>/dev/null || echo no)" = "yes" ]; then
+    if [ "$(cat "$PRIOR_DNS_EN" 2>/dev/null || true)" = "enabled" ]; then systemctl enable dnsmasq >/dev/null 2>&1 || true; fi
+    if [ "$(cat "$PRIOR_DNS_ACT" 2>/dev/null || true)" = "active" ]; then systemctl start dnsmasq >/dev/null 2>&1 || true; fi
+    log "restored prior dnsmasq state"
+  fi
+
   systemctl daemon-reload
   ifreload -a || warn "ifreload returned non-zero — check console"
-  log "reverted. Reboot the CTs to re-pull LAN DHCP:  for c in 120 121 200; do pct reboot \$c; done"
+  log "reverted (ip_forward=$pf). Reboot the CTs to re-pull LAN DHCP:  for c in 120 121 200; do pct reboot \$c; done"
 }
 
 cmd_status() {

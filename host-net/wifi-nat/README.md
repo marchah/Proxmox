@@ -45,14 +45,23 @@ Spectrum WiFi ──STA──▶ wlo1 (WAN: wpa_supplicant@wlo1 + dhclient@wlo1,
 ./install.sh --cutover    # Arm auto-rollback, flip vmbr0 -> 10.10.10.1 NAT, start services.
                           #        Your SSH will move to the WiFi IP.
 # ...reconnect to the host's WiFi IP...
-./install.sh --confirm    # Cancel the auto-rollback = make the change permanent.
+./install.sh --confirm    # Health-check + cancel the auto-rollback = make it permanent.
 for c in 120 121 200; do pct reboot $c; done   # CTs pick up their 10.10.10.x leases.
 ```
 
+`--cutover` **aborts before touching anything** if it can't arm (and verify) the
+rollback timer — set `WIFI_NAT_NO_ROLLBACK=1` only if you're on console and
+deliberately want no auto-revert. `--confirm` runs mandatory health checks
+(vmbr0 address, default route via `wlo1`, WiFi egress, nftables table, dnsmasq
+active) and **refuses to cancel the rollback if the network is broken** — so a bad
+flip can't be made permanent.
+
 If you do **not** run `--confirm`, the cutover **auto-reverts** after
-`ROLLBACK_MINUTES` (default 10) via a `systemd-run` timer that restores the
-backed-up `/etc/network/interfaces`. Keep the ethernet cable plugged in during the
-cutover so that rollback route still works.
+`ROLLBACK_MINUTES` (default 10): a `systemd-run` timer restores the backed-up
+`/etc/network/interfaces`, **disables** the WiFi/NAT/dnsmasq units (so they don't
+return on reboot), removes the forwarding drop-in, and resets `ip_forward` to its
+pre-cutover value. Keep the ethernet cable plugged in during the cutover so that
+rollback route still works.
 
 **Riskiest step:** the `ifreload -a` inside `--cutover` drops the `192.168.1.1`
 default route SSH rides on. It's guarded by (1) `wlo1` being kept out of
@@ -68,11 +77,14 @@ for c in 120 121 200; do pct reboot $c; done
 ```
 
 Restores the original ethernet-bridge `/etc/network/interfaces` from the backup,
-stops/disables the WiFi + NAT + dnsmasq services, removes the `wifinat` nftables
-table, and turns forwarding back off. **Config only — no data touched, and the
-containers need no per-CT change** (they stay `ip=dhcp` and simply pull a
-`192.168.1.x` LAN lease again). The interfaces backup in `/root/interfaces.bak.*`
-is kept.
+disables the WiFi + NAT + dnsmasq services, removes the `wifinat` nftables table,
+and restores prior host state from the snapshot taken at stage time
+(`/var/lib/wifi-nat/prior/`): files we overwrote are put back and only files we
+created are removed, `ip_forward` returns to its pre-cutover value, and dnsmasq is
+restored to whatever state it had before (left disabled only if we installed it).
+**Config only — no data touched, and the containers need no per-CT change** (they
+stay `ip=dhcp` and simply pull a `192.168.1.x` LAN lease again). The interfaces
+backup in `/root/interfaces.bak.*` is kept.
 
 `./install.sh --status` prints the WiFi link, leases, routes, and nft table at any
 time.
@@ -81,7 +93,7 @@ time.
 
 | Path | Purpose |
 |---|---|
-| pkgs `wpasupplicant iw dnsmasq wireless-regdb` | WiFi client, DHCP/DNS, 5 GHz regdb |
+| pkgs `wpasupplicant iw dnsmasq wireless-regdb isc-dhcp-client` | WiFi client, DHCP/DNS, 5 GHz regdb, dhclient |
 | `/etc/wpa_supplicant/wpa_supplicant-wlo1.conf` (0600) | WiFi association (`country=US`, hashed PSK) |
 | `/etc/systemd/system/dhclient@.service` | DHCP client on the WAN iface (kept out of ifupdown2) |
 | `/etc/modprobe.d/cfg80211.conf` | persists the regulatory domain |
