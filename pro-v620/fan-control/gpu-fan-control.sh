@@ -188,15 +188,23 @@ failsafe() {
   return 1
 }
 
-# Validate the readback-retry knobs up front — a bad value (0, negative, non-numeric)
-# would make EVERY verified write fail and could escalate to a false poweroff. Runs
-# before BOTH the --failsafe one-shot and the control loop; clamp to safe defaults.
-if ! [[ "$PWM_READBACK_RETRIES" =~ ^[0-9]+$ ]] || (( PWM_READBACK_RETRIES < 1 )); then
+# Validate the readback-retry knobs up front — a bad value would make EVERY verified
+# write fail and could escalate to a false poweroff. Runs before BOTH the --failsafe
+# one-shot and the control loop; clamp to safe defaults.
+# RETRIES must be a base-10 integer >= 1. Force base-10 (10#) so a value like "08"
+# is not mis-parsed as invalid octal by the later (( )) (which would run zero attempts
+# and fail every write); this also normalizes away leading zeros.
+if [[ "$PWM_READBACK_RETRIES" =~ ^[0-9]+$ ]] && (( 10#$PWM_READBACK_RETRIES >= 1 )); then
+  PWM_READBACK_RETRIES=$(( 10#$PWM_READBACK_RETRIES ))
+else
   log "WARN: PWM_READBACK_RETRIES='${PWM_READBACK_RETRIES}' invalid (need integer >=1); using 5"
   PWM_READBACK_RETRIES=5
 fi
-if ! [[ "$PWM_READBACK_RETRY_SLEEP" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-  log "WARN: PWM_READBACK_RETRY_SLEEP='${PWM_READBACK_RETRY_SLEEP}' invalid (need a number); using 0.1"
+# RETRY_SLEEP must be a POSITIVE number — zero (0, 0.0, 00) removes the backoff the
+# retries rely on to let the async EC cache update, defeating the fix. Reject
+# non-numbers and any all-zero value.
+if ! [[ "$PWM_READBACK_RETRY_SLEEP" =~ ^[0-9]+([.][0-9]+)?$ ]] || [[ "$PWM_READBACK_RETRY_SLEEP" =~ ^0*([.]0*)?$ ]]; then
+  log "WARN: PWM_READBACK_RETRY_SLEEP='${PWM_READBACK_RETRY_SLEEP}' invalid (need a positive number); using 0.1"
   PWM_READBACK_RETRY_SLEEP=0.1
 fi
 
