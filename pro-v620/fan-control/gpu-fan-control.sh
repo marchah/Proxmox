@@ -46,8 +46,11 @@ POLL_INTERVAL="${POLL_INTERVAL:-4}"              # seconds
 PWM_STEP="${PWM_STEP:-4}"                        # min raw delta before re-writing
 MIN_PWM_RAW="${MIN_PWM_RAW:-32}"                 # hard floor (~12.5%); never below
 PWM_READBACK_TOL="${PWM_READBACK_TOL:-4}"        # max |written-readback| counted as success
-PWM_READBACK_RETRIES="${PWM_READBACK_RETRIES:-5}"          # re-read pwm up to this many times before counting a write failed
-PWM_READBACK_RETRY_SLEEP="${PWM_READBACK_RETRY_SLEEP:-0.1}"  # backoff between readbacks (nct6687's EC cache updates async)
+# nct6687 refreshes its sensor cache only ~once per second (measured), so the readback
+# window MUST span more than one refresh or every read returns the same stale value.
+# Window = (RETRIES-1)*SLEEP; default 5 x 0.5s = ~2s (TTL ~1.0s + margin).
+PWM_READBACK_RETRIES="${PWM_READBACK_RETRIES:-5}"           # readback attempts per write
+PWM_READBACK_RETRY_SLEEP="${PWM_READBACK_RETRY_SLEEP:-0.5}"  # backoff between attempts
 
 # Failure handling — the V620 is passively cooled, so loss of control = no cooling.
 FAN_RPM_MONITOR="${FAN_RPM_MONITOR:-auto}"       # auto|on|off (auto = on iff a tach reads >0 at start)
@@ -108,11 +111,12 @@ read_fan_rpm() {  # echoes the blower RPM (fanN_input) or returns 1
   cat "$FAN_CHIP/fan${FAN_PWM_CHANNEL}_input" 2>/dev/null
 }
 
-# Read pwmN back until it settles within `tol` of `target`, absorbing the nct6687
-# async EC cache (an immediate read-after-write often returns the PRE-write value).
-# A transient read error / empty read does NOT abort — it just consumes one attempt;
-# we fail only if NO attempt yields a matching value. Echoes the settled value (or the
-# last one read); returns 0 iff some reading was within tol.
+# Read pwmN back until it settles within `tol` of `target`. nct6687 refreshes its
+# sensor cache only ~once per second (measured), so a read within ~1s of the write
+# returns the PRE-write value; the retry window ((RETRIES-1)*SLEEP, ~2s by default)
+# must span more than one refresh. A transient read error / empty read does NOT abort
+# — it just consumes one attempt; we fail only if NO attempt yields a matching value.
+# Echoes the settled value (or the last one read); returns 0 iff some reading matched.
 pwm_read_settled() {  # $1 = pwm path, $2 = target, $3 = tol
   local pw="$1" target="$2" tol="$3" got d i last=""
   for (( i = 0; i < PWM_READBACK_RETRIES; i++ )); do
