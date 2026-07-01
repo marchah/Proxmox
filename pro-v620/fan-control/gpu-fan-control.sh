@@ -46,6 +46,11 @@ POLL_INTERVAL="${POLL_INTERVAL:-4}"              # seconds
 PWM_STEP="${PWM_STEP:-4}"                        # min raw delta before re-writing
 MIN_PWM_RAW="${MIN_PWM_RAW:-32}"                 # hard floor (~12.5%); never below
 PWM_READBACK_TOL="${PWM_READBACK_TOL:-4}"        # max |written-readback| counted as success
+# nct6687 refreshes its sensor cache only ~once per second (measured), so the readback
+# window MUST span more than one refresh or every read returns the same stale value.
+# Window = (RETRIES-1)*SLEEP; default 5 x 0.5s = ~2s (TTL ~1.0s + margin).
+PWM_READBACK_RETRIES="${PWM_READBACK_RETRIES:-5}"           # readback attempts per write
+PWM_READBACK_RETRY_SLEEP="${PWM_READBACK_RETRY_SLEEP:-0.5}"  # backoff between attempts
 
 # Failure handling — the V620 is passively cooled, so loss of control = no cooling.
 FAN_RPM_MONITOR="${FAN_RPM_MONITOR:-auto}"       # auto|on|off (auto = on iff a tach reads >0 at start)
@@ -106,17 +111,33 @@ read_fan_rpm() {  # echoes the blower RPM (fanN_input) or returns 1
   cat "$FAN_CHIP/fan${FAN_PWM_CHANNEL}_input" 2>/dev/null
 }
 
+# Read pwmN back until it settles within `tol` of `target`. nct6687 refreshes its
+# sensor cache only ~once per second (measured), so a read within ~1s of the write
+# returns the PRE-write value; the retry window ((RETRIES-1)*SLEEP, ~2s by default)
+# must span more than one refresh. A transient read error / empty read does NOT abort
+# — it just consumes one attempt; we fail only if NO attempt yields a matching value.
+# Echoes the settled value (or the last one read); returns 0 iff some reading matched.
+pwm_read_settled() {  # $1 = pwm path, $2 = target, $3 = tol
+  local pw="$1" target="$2" tol="$3" got d i last=""
+  for (( i = 0; i < PWM_READBACK_RETRIES; i++ )); do
+    (( i > 0 )) && sleep "$PWM_READBACK_RETRY_SLEEP"
+    got="$(cat "$pw" 2>/dev/null)"; [ -n "$got" ] || continue
+    last="$got"
+    d=$(( got - target )); (( d < 0 )) && d=$(( -d ))
+    if (( d <= tol )); then printf '%s' "$got"; return 0; fi
+  done
+  printf '%s' "$last"
+  return 1
+}
+
 # Write PWM in manual mode and CONFIRM it took effect (the SIO can reject/clamp a
 # write, which must not be mistaken for success). Returns nonzero on any failure.
 write_pwm() {  # $1 = raw
   [ -n "$FAN_CHIP" ] || return 1
-  local en="$FAN_CHIP/pwm${FAN_PWM_CHANNEL}_enable" pw="$FAN_CHIP/pwm${FAN_PWM_CHANNEL}" got d
+  local en="$FAN_CHIP/pwm${FAN_PWM_CHANNEL}_enable" pw="$FAN_CHIP/pwm${FAN_PWM_CHANNEL}"
   [ "$(cat "$en" 2>/dev/null)" = "1" ] || echo 1 > "$en" 2>/dev/null || return 1
   echo "$1" > "$pw" 2>/dev/null || return 1
-  got="$(cat "$pw" 2>/dev/null)" || return 1
-  [ -n "$got" ] || return 1
-  d=$(( got - $1 )); (( d < 0 )) && d=$(( -d ))
-  (( d <= PWM_READBACK_TOL ))
+  pwm_read_settled "$pw" "$1" "$PWM_READBACK_TOL" >/dev/null
 }
 
 # Apply a target PWM, tracking success/failure. last_raw is updated ONLY on a
@@ -162,14 +183,34 @@ failsafe() {
   fi
   echo 1 > "$en" 2>/dev/null
   echo 255 > "$pw" 2>/dev/null
-  v="$(cat "$pw" 2>/dev/null)"
-  if [ "$(cat "$en" 2>/dev/null)" = "1" ] && [ -n "$v" ] && (( v >= 240 )); then
+  # Same async-cache race as write_pwm: retry the readback (tol 15 => accept >=240).
+  if v="$(pwm_read_settled "$pw" 255 15)" && [ "$(cat "$en" 2>/dev/null)" = "1" ]; then
     log "WARN failsafe: could not restore BIOS auto; forced PUMP_FAN1 to 100% (manual, pwm=$v)"
     return 0
   fi
   log "CRITICAL failsafe: could not set ANY safe fan state (auto or 100%) on pwm${FAN_PWM_CHANNEL}"
   return 1
 }
+
+# Validate the readback-retry knobs up front — a bad value would make EVERY verified
+# write fail and could escalate to a false poweroff. Runs before BOTH the --failsafe
+# one-shot and the control loop; clamp to safe defaults.
+# RETRIES must be a base-10 integer >= 1. Force base-10 (10#) so a value like "08"
+# is not mis-parsed as invalid octal by the later (( )) (which would run zero attempts
+# and fail every write); this also normalizes away leading zeros.
+if [[ "$PWM_READBACK_RETRIES" =~ ^[0-9]+$ ]] && (( 10#$PWM_READBACK_RETRIES >= 1 )); then
+  PWM_READBACK_RETRIES=$(( 10#$PWM_READBACK_RETRIES ))
+else
+  log "WARN: PWM_READBACK_RETRIES='${PWM_READBACK_RETRIES}' invalid (need integer >=1); using 5"
+  PWM_READBACK_RETRIES=5
+fi
+# RETRY_SLEEP must be a POSITIVE number — zero (0, 0.0, 00) removes the backoff the
+# retries rely on to let the async EC cache update, defeating the fix. Reject
+# non-numbers and any all-zero value.
+if ! [[ "$PWM_READBACK_RETRY_SLEEP" =~ ^[0-9]+([.][0-9]+)?$ ]] || [[ "$PWM_READBACK_RETRY_SLEEP" =~ ^0*([.]0*)?$ ]]; then
+  log "WARN: PWM_READBACK_RETRY_SLEEP='${PWM_READBACK_RETRY_SLEEP}' invalid (need a positive number); using 0.1"
+  PWM_READBACK_RETRY_SLEEP=0.1
+fi
 
 # --failsafe: one-shot used by the unit's ExecStopPost (also covers SIGKILL,
 # where the EXIT trap below would not run). Propagate its exit status.
