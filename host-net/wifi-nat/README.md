@@ -49,19 +49,26 @@ Spectrum WiFi ──STA──▶ wlo1 (WAN: wpa_supplicant@wlo1 + dhclient@wlo1,
 for c in 120 121 200; do pct reboot $c; done   # CTs pick up their 10.10.10.x leases.
 ```
 
-`--cutover` **aborts before touching anything** if it can't arm (and verify) the
-rollback timer — set `WIFI_NAT_NO_ROLLBACK=1` only if you're on console and
-deliberately want no auto-revert. `--confirm` runs mandatory health checks
-(vmbr0 address, default route via `wlo1`, WiFi egress, nftables table, dnsmasq
-active) and **refuses to cancel the rollback if the network is broken** — so a bad
-flip can't be made permanent.
+`--cutover` is **transactional**: it first proves WiFi egress with only *transient*
+changes (an EXIT trap undoes them on any abort), then arms the rollback timer, and
+only *then* makes persistent changes (enable units, `ip_forward`, flip). So if
+anything fails before the timer is armed — including a failed WiFi association or a
+`systemd-run` failure — it aborts with **nothing persistent changed**. Set
+`WIFI_NAT_NO_ROLLBACK=1` only if you're on console and deliberately want no
+auto-revert.
+
+`--confirm` runs mandatory health checks — vmbr0 address, default route via `wlo1`,
+WiFi egress, nftables table, dnsmasq active, **and `is-enabled` for all four units
+(so the setup survives a reboot)** — and **refuses to cancel the rollback if any
+fail**, so a broken or non-persistent flip can't be made permanent.
 
 If you do **not** run `--confirm`, the cutover **auto-reverts** after
-`ROLLBACK_MINUTES` (default 10): a `systemd-run` timer restores the backed-up
-`/etc/network/interfaces`, **disables** the WiFi/NAT/dnsmasq units (so they don't
-return on reboot), removes the forwarding drop-in, and resets `ip_forward` to its
-pre-cutover value. Keep the ethernet cable plugged in during the cutover so that
-rollback route still works.
+`ROLLBACK_MINUTES` (default 10): a `systemd-run` timer runs the **same full teardown
+as `--revert`** — disables the WiFi/NAT/dnsmasq units, removes the forwarding
+drop-in and resets `ip_forward` to its pre-cutover value, restores the backed-up
+`/etc/network/interfaces` and every managed file (originals back, our files removed),
+and brings a pre-existing dnsmasq back to its prior state (in that order). Keep the
+ethernet cable plugged in during the cutover so that rollback route still works.
 
 **Riskiest step:** the `ifreload -a` inside `--cutover` drops the `192.168.1.1`
 default route SSH rides on. It's guarded by (1) `wlo1` being kept out of
@@ -76,15 +83,17 @@ plugged, (5) console access.
 for c in 120 121 200; do pct reboot $c; done
 ```
 
-Restores the original ethernet-bridge `/etc/network/interfaces` from the backup,
-disables the WiFi + NAT + dnsmasq services, removes the `wifinat` nftables table,
-and restores prior host state from the snapshot taken at stage time
-(`/var/lib/wifi-nat/prior/`): files we overwrote are put back and only files we
-created are removed, `ip_forward` returns to its pre-cutover value, and dnsmasq is
-restored to whatever state it had before (left disabled only if we installed it).
-**Config only — no data touched, and the containers need no per-CT change** (they
-stay `ip=dhcp` and simply pull a `192.168.1.x` LAN lease again). The interfaces
-backup in `/root/interfaces.bak.*` is kept.
+Runs the full teardown (the same one the auto-rollback uses): restores the original
+ethernet-bridge `/etc/network/interfaces`, disables the WiFi + NAT + dnsmasq
+services, removes the `wifinat` nftables table, and restores prior host state from
+the snapshot taken at stage time (`/var/lib/wifi-nat/prior/`) — files we overwrote
+are put back and only files we created are removed, `ip_forward` returns to its
+pre-cutover value, and a pre-existing dnsmasq is restored to its prior state (left
+disabled only if we installed it). It then **clears the active transaction state**
+(snapshot, manifest, backup pointer) so a future stage/revert starts fresh and can
+never restore an obsolete snapshot; the timestamped `/root/interfaces.bak.*` archives
+are kept. **Config only — no data touched, and the containers need no per-CT change**
+(they stay `ip=dhcp` and simply pull a `192.168.1.x` LAN lease again).
 
 `./install.sh --status` prints the WiFi link, leases, routes, and nft table at any
 time.
