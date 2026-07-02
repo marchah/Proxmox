@@ -94,7 +94,7 @@ Useful overrides:
   VMID=121 LXC_HOSTNAME=hermes ./create-lxc-hermes-agent.sh
   TARGET_LXC_VMID=120 ./create-lxc-hermes-agent.sh
   TARGET_HOSTNAME=llamacpp ./create-lxc-hermes-agent.sh   # CT 120's name; preferred over its IP (survives address changes)
-  TARGET_BASE_URL=http://192.168.1.50:1234/v1 ./create-lxc-hermes-agent.sh  # pin an exact endpoint (skips discovery)
+  TARGET_BASE_URL=http://<ct120-ip>:1234/v1 ./create-lxc-hermes-agent.sh  # pin an exact endpoint (skips discovery)
   MODEL_IDENTIFIER=qwen3.6-35b-a3b ./create-lxc-hermes-agent.sh
   HERMES_VERSION=v2026.6.19 ./create-lxc-hermes-agent.sh  # pin a different release (GIT TAG, not the v0.x.y title)
   HERMES_VERSION=latest ./create-lxc-hermes-agent.sh      # track main HEAD, UNVERIFIED (no checksum/pin)
