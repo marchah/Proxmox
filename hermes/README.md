@@ -32,13 +32,19 @@ This is the same command the official Hermes Docker image runs.
 
 ## What it points at
 
-The provisioner auto-discovers CT 120's IP and writes `/root/.hermes/config.yaml`:
+The provisioner points Hermes at CT 120 and writes `/root/.hermes/config.yaml`. It
+**prefers CT 120's hostname** (`TARGET_HOSTNAME`, default `llamacpp`) over a discovered
+IP, because a name that a shared resolver maps to CT 120 (e.g. the host WiFi-NAT setup's
+dnsmasq → CT 120's reserved IP) survives CT 120 address changes, whereas a baked-in IP
+goes stale (as it did on the ethernet→WiFi cutover). The name is **verified from inside
+the Hermes container** at provision time; if it doesn't resolve there, it falls back to
+CT 120's discovered IP:
 
 ```yaml
 model:
   default: qwen3.6-35b-a3b        # CT 120's --alias
   provider: custom
-  base_url: http://<CT120-IP>:1234/v1
+  base_url: http://llamacpp:1234/v1   # TARGET_HOSTNAME; falls back to http://<CT120-IP>:1234/v1
   api_key: ""                     # CT 120 is keyless
   context_length: 65536           # one CT 120 slot (262144 / --parallel 4)
 terminal:
@@ -80,7 +86,8 @@ user allowlist (without an allowlist Hermes denies all incoming users).
 | `VMID` / `LXC_HOSTNAME` | `121` / `hermes` | container id / hostname |
 | `ROOT_SIZE_GB` / `MEMORY_MB` / `SWAP_MB` / `CORES` | `30` / `8192` / `2048` / `4` | sizing (sized for Playwright Chromium + Node + uv/py3.11) |
 | `TARGET_LXC_VMID` | `120` | CT to discover the model API from |
-| `TARGET_BASE_URL` | _(discovered)_ | override the model endpoint directly |
+| `TARGET_HOSTNAME` | `llamacpp` | CT 120's name; preferred over its IP (verified from the Hermes CT, falls back to the discovered IP) |
+| `TARGET_BASE_URL` | _(hostname, then IP)_ | pin the model endpoint directly (skips discovery) |
 | `MODEL_IDENTIFIER` | `qwen3.6-35b-a3b` | served model id (CT 120's `--alias`) |
 | `MODEL_CONTEXT_LENGTH` | `65536` | per-request context written into config.yaml |
 | `HERMES_VERSION` | `v2026.6.19` | pinned git tag (installer fetched from the tag + SHA-256 verified); `latest` = main HEAD, **unverified** |
@@ -102,8 +109,11 @@ user allowlist (without an allowlist Hermes denies all incoming users).
   `curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/<tag>/scripts/install.sh | sha256sum`.
   `HERMES_VERSION=latest` opts out: it streams the mutable upstream installer (main HEAD),
   **unverified** — for testing only.
-- **CT 120 IP drift:** the discovered `base_url` is written once. Give CT 120 a DHCP
-  reservation so its IP is stable; if it does move, edit `model.base_url` in
+- **CT 120 IP drift:** using `TARGET_HOSTNAME` (`llamacpp`, the default) makes `base_url`
+  robust to CT 120 changing address, as long as a shared resolver maps the name to CT 120
+  (the host WiFi-NAT dnsmasq does this via CT 120's reservation). If the provisioner had to
+  fall back to a discovered IP (name didn't resolve from the Hermes CT), the old caveat
+  applies: give CT 120 a DHCP reservation, and if it moves, edit `model.base_url` in
   `/root/.hermes/config.yaml` and `systemctl restart hermes`.
 - **Browser tools** work out of the box (verified): Hermes auto-injects `--no-sandbox` when
   it detects it is running as root, so headless Chromium launches in the LXC. The script

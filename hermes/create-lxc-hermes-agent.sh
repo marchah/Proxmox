@@ -34,7 +34,15 @@ START_ON_BOOT="${START_ON_BOOT:-1}"
 
 # --- Target LLM runtime (CT 120) ---
 TARGET_LXC_VMID="${TARGET_LXC_VMID:-120}"
-TARGET_BASE_URL="${TARGET_BASE_URL:-}"          # empty → discover CT 120's IP
+# CT 120's hostname. When the containers share a resolver that knows this name (e.g. the
+# host WiFi-NAT setup's dnsmasq maps it to CT 120's reserved IP), it survives CT 120
+# address changes — so it is PREFERRED over a discovered IP, which goes stale if CT 120's
+# address ever changes (as happened on the ethernet→WiFi cutover). Verified from inside
+# the Hermes container at provision time; falls back to the discovered IP if it doesn't
+# resolve there.
+TARGET_HOSTNAME="${TARGET_HOSTNAME:-llamacpp}"
+TARGET_BASE_URL="${TARGET_BASE_URL:-}"          # empty → prefer TARGET_HOSTNAME, fall back to CT 120's IP
+TARGET_BASE_URL_FALLBACK=""                     # set by discover_target_base_url (CT 120's discovered IP URL)
 # CT 120 serves its model under this --alias (see pro-v620/create-lxc-...sh MODEL_ALIAS);
 # /v1/models reports it and OpenAI requests must set "model" to it. Override if it changes.
 MODEL_IDENTIFIER="${MODEL_IDENTIFIER:-qwen3.6-35b-a3b}"
@@ -85,7 +93,8 @@ Run this script on the Proxmox host as root.
 Useful overrides:
   VMID=121 LXC_HOSTNAME=hermes ./create-lxc-hermes-agent.sh
   TARGET_LXC_VMID=120 ./create-lxc-hermes-agent.sh
-  TARGET_BASE_URL=http://192.168.1.50:1234/v1 ./create-lxc-hermes-agent.sh
+  TARGET_HOSTNAME=llamacpp ./create-lxc-hermes-agent.sh   # CT 120's name; preferred over its IP (survives address changes)
+  TARGET_BASE_URL=http://<ct120-ip>:1234/v1 ./create-lxc-hermes-agent.sh  # pin an exact endpoint (skips discovery)
   MODEL_IDENTIFIER=qwen3.6-35b-a3b ./create-lxc-hermes-agent.sh
   HERMES_VERSION=v2026.6.19 ./create-lxc-hermes-agent.sh  # pin a different release (GIT TAG, not the v0.x.y title)
   HERMES_VERSION=latest ./create-lxc-hermes-agent.sh      # track main HEAD, UNVERIFIED (no checksum/pin)
@@ -155,33 +164,37 @@ assert_vmid_available() {
 discover_target_base_url() {
   local target_ip
 
+  # Explicit override always wins; no fallback needed.
   if [[ -n ${TARGET_BASE_URL} ]]; then
+    TARGET_BASE_URL_FALLBACK=""
     return
   fi
 
+  # PREFER the stable hostname. We can't tell here whether it resolves from the (not-yet-
+  # created) Hermes container's view, so we also capture CT 120's current IP as a fallback
+  # the container itself will use only if the hostname doesn't resolve there. This avoids
+  # baking in an IP that goes stale when CT 120's address changes (e.g. a network move).
+  TARGET_BASE_URL="http://${TARGET_HOSTNAME}:1234/v1"
+  TARGET_BASE_URL_FALLBACK=""
   if pct status "${TARGET_LXC_VMID}" >/dev/null 2>&1; then
     target_ip="$(pct exec "${TARGET_LXC_VMID}" -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
-    if [[ -n ${target_ip} ]]; then
-      TARGET_BASE_URL="http://${target_ip}:1234/v1"
-      return
-    fi
+    [[ -n ${target_ip} ]] && TARGET_BASE_URL_FALLBACK="http://${target_ip}:1234/v1"
   fi
 
-  # Fallback to a DNS name if CT 120 is not running at provision time. The base_url can be
-  # re-pointed later by editing /root/.hermes/config.yaml and restarting hermes.service.
-  TARGET_BASE_URL="http://llamacpp:1234/v1"
-  cat >&2 <<WARN
+  if [[ -z ${TARGET_BASE_URL_FALLBACK} ]]; then
+    cat >&2 <<WARN
 
 ============================================================
-WARNING: could not reach CT ${TARGET_LXC_VMID} to discover its IP.
-TARGET_BASE_URL defaulted to ${TARGET_BASE_URL}. If that DNS name does
-not resolve, Hermes will not reach the model until you fix it:
-  - Start CT ${TARGET_LXC_VMID}, then edit /root/.hermes/config.yaml
-    (model.base_url) on CT ${VMID} and: systemctl restart hermes
-  - Or re-run with TARGET_BASE_URL=http://<ip>:1234/v1
+NOTE: could not reach CT ${TARGET_LXC_VMID} to capture a fallback IP.
+Hermes will be pointed at ${TARGET_BASE_URL}. If that name does not
+resolve from CT ${VMID}, fix it after CT ${TARGET_LXC_VMID} is up:
+  - edit /root/.hermes/config.yaml (model.base_url) on CT ${VMID}
+    and: systemctl restart hermes
+  - or re-run with TARGET_BASE_URL=http://<ip>:1234/v1
 ============================================================
 
 WARN
+  fi
 }
 
 maybe_generate_api_key() {
@@ -270,7 +283,8 @@ install_and_configure() {
     "${TARGET_BASE_URL}" \
     "${MODEL_IDENTIFIER}" \
     "${MODEL_CONTEXT_LENGTH}" \
-    "${API_SERVER_PORT}" <<'CONTAINER_SCRIPT'
+    "${API_SERVER_PORT}" \
+    "${TARGET_BASE_URL_FALLBACK}" <<'CONTAINER_SCRIPT'
 set -Eeuo pipefail
 
 HERMES_VERSION="$1"
@@ -280,6 +294,7 @@ TARGET_BASE_URL="$4"
 MODEL_IDENTIFIER="$5"
 MODEL_CONTEXT_LENGTH="$6"
 API_SERVER_PORT="$7"
+TARGET_BASE_URL_FALLBACK="$8"   # discovered IP URL; used only if TARGET_BASE_URL doesn't resolve here
 
 # The API key was pushed as a mode-600 raw-value file (kept out of argv/env so it never
 # appears in `ps`). Read it with command substitution — NOT `source` — so its contents are
@@ -345,12 +360,27 @@ HERMES_BIN="$(command -v hermes 2>/dev/null || echo /usr/local/bin/hermes)"
 "${HERMES_BIN}" --version 2>/dev/null || true
 
 # 3. Point Hermes at the CT 120 runtime (custom OpenAI-compatible endpoint, no key).
+# Prefer TARGET_BASE_URL (the stable hostname), but verify it resolves + answers FROM THIS
+# container — the correct vantage point (the host/CT 120 resolve names this container may
+# not, and vice-versa). Fall back to the discovered IP only if the hostname fails here. If
+# curl is somehow unavailable, both tests are simply skipped and we keep the hostname.
 install -d -m 700 "${HERMES_HOME}"
+EFFECTIVE_BASE_URL="${TARGET_BASE_URL}"
+if curl -fsS -m 5 -o /dev/null "${TARGET_BASE_URL}/models" 2>/dev/null; then
+  printf 'model provider reachable at %s\n' "${TARGET_BASE_URL}"
+elif [[ -n ${TARGET_BASE_URL_FALLBACK} ]] && curl -fsS -m 5 -o /dev/null "${TARGET_BASE_URL_FALLBACK}/models" 2>/dev/null; then
+  printf 'note: %s not reachable from this container; using discovered IP %s instead\n' \
+    "${TARGET_BASE_URL}" "${TARGET_BASE_URL_FALLBACK}" >&2
+  EFFECTIVE_BASE_URL="${TARGET_BASE_URL_FALLBACK}"
+else
+  printf 'warning: neither %s nor the fallback answered now; writing %s — re-point model.base_url later if the model is unreachable\n' \
+    "${TARGET_BASE_URL}" "${TARGET_BASE_URL}" >&2
+fi
 cat >"${HERMES_HOME}/config.yaml" <<YAML
 model:
   default: ${MODEL_IDENTIFIER}
   provider: custom
-  base_url: ${TARGET_BASE_URL}
+  base_url: ${EFFECTIVE_BASE_URL}
   api_key: ""
   context_length: ${MODEL_CONTEXT_LENGTH}
 terminal:
