@@ -29,10 +29,13 @@ Spectrum WiFi ──STA──▶ wlo1 (WAN: wpa_supplicant@wlo1 + dhclient@wlo1,
 2. Review `wifi-nat.env` (subnet, DHCP range, reservations, port-forwards).
 3. Have **physical console access** available for the cutover — it's the ultimate
    fallback if the WiFi flip goes wrong.
-4. Set a **DHCP reservation on your router** for the `wlo1` MAC
-   (`50:c2:e8:95:42:ff`) so the host keeps a stable IP. If the new-site LAN is
-   `192.168.1.0/24`, reserve `192.168.1.50` so `ssh pve` and the tooling keep
-   working unchanged; otherwise update `~/.ssh/config` after the move.
+4. Set a **DHCP reservation on your router** for the `wlo1` MAC so the host keeps a
+   stable IP — a plain lease can drift on renewal or a router reboot, and with no
+   console that means hunting for the box by MAC (`arp -a | grep -i <wlo1-mac>` from
+   the LAN). Routers often refuse to move an existing lease, so the simplest path is
+   to reserve **whatever IP `wlo1` already has**, then point `ssh pve` / `~/.ssh/config`
+   and the `pve` MCP (`PVE_BASE_URL`) at it. (The container `.120/.121` reservations
+   are separate — the host's own dnsmasq handles those.)
 
 ## Staged rollout (do this while still on ethernet)
 
@@ -129,4 +132,23 @@ LAN except the forwarded ports.
   CT120 share `10.10.10.x`); `make bench` over `ssh pve` is unaffected.
 - From your Mac / the rest of the LAN, reach the container APIs at the host's WiFi
   IP: `http://<host-ip>:1234/v1/models` (llama.cpp) and `:8642` (Hermes).
+- **Hermes (CT121)** stores CT120's endpoint in `/root/.hermes/config.yaml`, so a CT120
+  IP change (like this cutover) breaks it with "model provider failed after retries".
+  Point `model.base_url` at the stable name `http://llamacpp:1234/v1` (dnsmasq resolves
+  it to CT120's reserved IP) and `systemctl restart hermes`. The provisioner now prefers
+  that name by default — see [`hermes/`](../../hermes/README.md).
 - Add Plex's `10.10.10.x` to `PORT_FORWARDS` (`tcp 32400 …`) once it's deployed.
+
+## Troubleshooting
+
+- **`--test-wifi` won't associate — `journalctl -u wpa_supplicant@wlo1` shows
+  `auth_failures` / `CONN_FAILED` even with the correct passphrase:** check the card's
+  **antennas are physically connected**. A weak signal (very negative dBm in
+  `iw dev wlo1 scan`) drops the WPA handshake and looks exactly like a wrong password.
+- **Can't find the host after a cutover:** it's on WiFi at whatever IP the router leased
+  `wlo1` (not necessarily what you expected). Locate it by MAC from the LAN:
+  `arp -a | grep -i <wlo1-mac>`. If the flip went unhealthy, the auto-rollback restores
+  ethernet within `ROLLBACK_MINUTES`; if the box is unreachable and console-less, a
+  power-cycle brings it back on the restored config.
+- **`ssh pve` fails host-key verification after the IP changes:** the new IP isn't trusted
+  yet — `ssh-keygen -R <ip>` then reconnect (accept the key), or `ssh-keyscan <ip> >> ~/.ssh/known_hosts`.

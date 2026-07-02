@@ -10,6 +10,9 @@ Utilities for creating and operating local Proxmox LXCs and VMs.
 - `bench-runner/`: disposable LXC for OpenAI-compatible LLM benchmarks.
 - `hermes/`: persistent LXC running NousResearch's Hermes Agent (the agent that
   consumes the LLM runtime's API).
+- `host-net/`: host-side networking that runs on the Proxmox host itself (not in an
+  LXC). `host-net/wifi-nat/` turns the host into a WiFi-uplink NAT gateway so it can
+  run with no ethernet.
 
 Each GPU folder should own its own model/runtime assumptions. LLM containers tend
 to need GPU-specific environment variables, memory sizing, context settings, and
@@ -83,6 +86,14 @@ Run directly on the Proxmox host without cloning the repo:
 ```bash
 bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/hermes/create-lxc-hermes-agent.sh)"
 ```
+
+### Host WiFi-NAT Gateway (runs on the host, not in an LXC)
+
+`host-net/wifi-nat/install.sh` lets the Proxmox host run with **no ethernet**: the
+onboard WiFi (`wlo1`) becomes the routed WAN and `vmbr0` becomes an internal NAT'd LAN
+(`10.10.10.0/24`) that the LXCs sit behind (dnsmasq DHCP/DNS + nftables masquerade +
+port-forwards). It's staged and reversible, with an auto-rollback guarding the risky
+cutover. See [host-net/wifi-nat/README.md](host-net/wifi-nat/README.md).
 
 ### RX 6700 XT LLM Runtime LXC (prior GPU)
 
