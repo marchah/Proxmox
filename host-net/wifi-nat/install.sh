@@ -566,23 +566,48 @@ cmd_cutover() {
   fi
   trap - EXIT   # committed from here — the armed rollback (or --revert) is the safety net
 
-  # --- COMMIT: enable persistently, forward, flip, start services. Past this point
-  # the armed rollback (or --revert) is the safety net; we warn rather than die. ---
+  # --- COMMIT. Order matters: flip vmbr0 OFF the LAN first (frees .50, drops its
+  # default route), THEN acquire the WAN lease so dhclient installs a clean, sole
+  # default route via $WAN_IF (acquiring it before the flip is what left us with no
+  # default route last time). Past this point the armed rollback / --revert is the
+  # safety net; we warn rather than die. ---
   warn "FLIPPING NOW. If your SSH drops, reconnect to the host's WiFi IP and run:  ./install.sh --confirm"
   warn "(keep the ethernet cable plugged in until you've confirmed, so the rollback route still works)"
+  local _ gw
   systemctl enable --now "wpa_supplicant@${WAN_IF}.service" >/dev/null 2>&1 || warn "could not enable wpa_supplicant@${WAN_IF} (won't survive reboot)"
   systemctl enable "dhclient@${WAN_IF}.service" >/dev/null 2>&1 || warn "could not enable dhclient@${WAN_IF} (won't survive reboot)"
-  systemctl restart "dhclient@${WAN_IF}.service" || warn "dhclient@${WAN_IF} restart failed"
-  local _; for _ in $(seq 1 15); do ip -4 addr show "$WAN_IF" | grep -q 'inet ' && break; sleep 1; done
   sysctl --system >/dev/null 2>&1 || true
+
+  # 1) Flip vmbr0 off the LAN.
   rewrite_vmbr0
   ifreload -a || warn "ifreload returned non-zero — check 'ip a' / console"
+
+  # 2) Acquire the WAN lease in the POST-flip routing state (release any stale lease
+  #    first so the router can honor a reservation now that .50 is free).
+  dhclient -r "$WAN_IF" >/dev/null 2>&1 || true
+  systemctl restart "dhclient@${WAN_IF}.service" || warn "dhclient@${WAN_IF} restart failed"
+
+  # 3) Wait for a real default route + egress via $WAN_IF (not merely an address).
+  for _ in $(seq 1 30); do
+    ip route show default 2>/dev/null | grep -q "dev ${WAN_IF}" && wan_egress_ok && break
+    sleep 1
+  done
+  # Fallback: address but no DHCP default route -> add one from the lease's routers option.
+  if ! ip route show default 2>/dev/null | grep -q "dev ${WAN_IF}"; then
+    gw="$(awk '/option routers/{gsub(/;/,"",$NF); r=$NF} END{print r}' \
+          /var/lib/dhcp/dhclient."${WAN_IF}".leases /var/lib/dhcp/dhclient.leases 2>/dev/null | tail -1)"
+    if [ -n "${gw:-}" ]; then
+      warn "no DHCP default route; adding 'default via $gw dev ${WAN_IF}' from the lease"
+      ip route replace default via "$gw" dev "${WAN_IF}" 2>/dev/null || true
+    fi
+  fi
+
   systemctl enable --now wifinat dnsmasq >/dev/null 2>&1 || warn "wifinat/dnsmasq did not enable/start cleanly — check status"
 
-  log "post-flip health check:"
+  log "post-flip health check (${WAN_IF} = $(ip -4 -br addr show "$WAN_IF" 2>/dev/null | awk '{print $3}')):"
   ip route show default || true
   if verify_health; then
-    log "HEALTHY. Reconnect if needed, then LOCK IT IN:  ./install.sh --confirm"
+    log "HEALTHY. Reconnect to the host's WiFi IP above, then LOCK IT IN:  ./install.sh --confirm"
   else
     warn "UNHEALTHY — do NOT --confirm (it will refuse). Fix the above, or let the rollback auto-revert in ${ROLLBACK_MINUTES} min."
   fi
