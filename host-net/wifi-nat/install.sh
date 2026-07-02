@@ -154,6 +154,7 @@ install_packages() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}" || die "apt install failed"
   fi
   require_command dhclient
+  require_command wpa_passphrase   # from wpasupplicant, just installed above
   # We manage dnsmasq's lifecycle (it must not start until vmbr0 is renumbered to
   # $LAN_ADDR, or it fails to bind listen-address). Installing the pkg auto-starts
   # it, so stop+disable now; --cutover starts it after the flip. If dnsmasq was
@@ -432,18 +433,22 @@ EOF
 
 # ---- WAN bring-up helpers ---------------------------------------------------
 
-wan_associate() {  # start wpa + wait for association
+wan_associate() {  # (re)start wpa + wait for association. Secrets aren't loaded here
+  # (the wpa conf is already rendered), so never reference $WIFI_SSID — under set -u
+  # that would crash the failure path. Dump the wpa log instead, which names the cause.
   require_command wpa_supplicant
   rfkill unblock wifi 2>/dev/null || true
   ip link set "$WAN_IF" up 2>/dev/null || true
   iw reg set "$COUNTRY" 2>/dev/null || true
-  systemctl start "wpa_supplicant@${WAN_IF}.service" || die "wpa_supplicant@${WAN_IF} failed to start"
+  systemctl restart "wpa_supplicant@${WAN_IF}.service" || die "wpa_supplicant@${WAN_IF} failed to start (journalctl -u wpa_supplicant@${WAN_IF} -n 30)"
   local _
-  for _ in $(seq 1 20); do
+  for _ in $(seq 1 30); do
     iw dev "$WAN_IF" link 2>/dev/null | grep -q 'Connected to' && { log "associated: $(iw dev "$WAN_IF" link | awk '/SSID/{print $2}')"; return 0; }
     sleep 1
   done
-  die "wlo1 did not associate to '$WIFI_SSID' in 20s — check SSID/passphrase and signal (journalctl -u wpa_supplicant@${WAN_IF})"
+  warn "wlo1 did not associate in 30s. Recent wpa_supplicant log (auth_failures/CONN_FAILED => wrong passphrase; weak signal => coverage):"
+  journalctl -u "wpa_supplicant@${WAN_IF}" -n 12 --no-pager 2>/dev/null | sed 's/^/    /' || true
+  die "wlo1 association failed — see log above; fix credentials/signal and re-run --test-wifi."
 }
 
 wan_egress_ok() {  # prove traffic actually leaves via $WAN_IF (SO_BINDTODEVICE)
@@ -484,7 +489,6 @@ cmd_stage() {
   require_root
   load_config 1
   require_online
-  require_command wpa_passphrase
   record_prior
   install_packages
   render_regdomain
