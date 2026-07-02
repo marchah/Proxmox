@@ -247,3 +247,14 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   OverDrive exposes no clock-ceiling knob, so an undervolt is the only power/thermal lever
   (−100 mV ≈ −18 % power / −8 °C peak junction at flat throughput). The undervolt installer also
   enables OverDrive via `/etc/modprobe.d/amdgpu-overdrive.conf` (needs a reboot to take effect).
+- **Non-GPU host networking lives under `host-net/`** (also host-side, NOT in an LXC).
+  `host-net/wifi-nat/` lets the host run with **no ethernet**: onboard WiFi (`wlo1`) becomes the
+  routed WAN and `vmbr0` becomes an internal NAT'd LAN (`10.10.10.0/24`) the LXCs sit behind
+  (dnsmasq DHCP/DNS + nftables masquerade/port-forwards, reservations `.120`→CT120 / `.121`→CT121).
+  Same idempotent-`install.sh` + `.env` idiom, but **staged/transactional** because it re-points
+  the host's own uplink: `stage → --test-wifi → --cutover → --confirm`, with an armed auto-rollback
+  (a full, verified teardown) as the safety net and `--revert` to undo. Containers keep `ip=dhcp`
+  (no per-CT change) — they just get `10.10.10.x` and are reached from the LAN via the host's WiFi
+  IP + the DNAT port-forwards. Consumers that hard-code a container's IP (e.g. Hermes's
+  `model.base_url`, the bench-runner's `MODEL_API_URL`) must use the dnsmasq name / be re-pointed
+  after the cutover changes CT 120's address.

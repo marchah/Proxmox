@@ -11,6 +11,9 @@
 ansible/secrets.yml
 *.retry
 
+# host WiFi NAT — local WiFi credentials (the .example stays tracked).
+host-net/wifi-nat/wifi-nat.secrets.env
+
 # Downloaded model artifacts and local caches.
 models/
 artifacts/
