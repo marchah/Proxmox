@@ -104,9 +104,10 @@ kb-rag/
 ## Corpus policy
 
 Glob-driven in `app/index.config.yaml` (gitignore-style; a file is indexed if it matches
-`include` and not `exclude`). Excluded by default: `jobs/**`, `hardware*`,
-`gpu-llm-upgrade-guide.md`, `claude-gpu-recommendation.md`, `hermes/**`, and nav/meta files
-(`README/INDEX/SCHEMA/AGENT_GUIDE`). Adding a new catalog `.md` to the KB indexes it
+`include` and not `exclude`). The KB stores knowledge as per-item files in topic folders
+(`ai-tools/`, `mcp/`, …) with all personal/non-knowledge content under `personal/`, so the
+policy is `include: ["**/*.md"]` and `exclude: ["personal/**", "**/README.md", "INDEX.md",
+"SCHEMA.md", "AGENT_GUIDE.md"]`. Adding a new item file or topic folder indexes it
 automatically on the next reindex.
 
 ## Notes

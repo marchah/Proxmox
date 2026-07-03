@@ -12,19 +12,13 @@ embed_dim: 384
 query_prefix: "Represent this sentence for searching relevant passages: "
 
 # Corpus policy (gitignore-style globs). A file is indexed if it matches `include`
-# AND not `exclude`. Only *.md is ever eligible.
+# AND not `exclude`. Only *.md is ever eligible. The catalogs are split into per-item
+# topic folders (ai-tools/, mcp/, ...), so include everything and exclude the rest.
 include:
-  - "*.md"
-  - "coding-architectures/*.md"
-  - "coding-paradigms-and-patterns/*.md"
+  - "**/*.md"
 exclude:
-  - "jobs/**"            # daily automation reports — separate corpus for now
-  - "hardware.md"        # personal
-  - "hardware/**"        # personal
-  - "gpu-llm-upgrade-guide.md"      # personal purchasing/upgrade planning
-  - "claude-gpu-recommendation.md"  # personal GPU purchasing rec
-  - "hermes/**"          # agent config/automation, not knowledge
-  - "README.md"          # KB nav/meta (matches at any depth)
+  - "personal/**"        # hardware, gpu notes, hermes/, jobs/ — all personal content lives here
+  - "**/README.md"       # folder nav/index pages (root + every topic-folder README)
   - "INDEX.md"
   - "SCHEMA.md"
   - "AGENT_GUIDE.md"

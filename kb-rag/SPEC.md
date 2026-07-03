@@ -40,26 +40,19 @@ Configured as gitignore-style globs in `index.config.yaml` (NOT hardcoded), so t
 editable without touching the reindexer. Only `*.md` files are ever eligible; everything else
 (`.stl`, `.png`, `.scad`, `.py`, `.DS_Store`) is ignored by construction.
 
-**Included** — the reusable knowledge catalogs + patterns/architectures:
-
-```
-agent-skills.md              ai-coding-agent-plugins.md   ai-tools.md
-chatgpt-apps.md              cloud-native-tools.md        local-ai-models.md
-mcp.md                       model-reference-sources.md   software-libraries.md
-coding-architectures/*.md    coding-paradigms-and-patterns/*.md
-```
+The KB stores knowledge as **per-item files in topic folders** (`ai-tools/<tool>.md`,
+`mcp/<server>.md`, `local-ai-models/<model>.md`, …) plus `coding-architectures/` and
+`coding-paradigms-and-patterns/`. All personal/non-knowledge content lives under `personal/`
+(hardware, GPU notes, `hermes/`, `jobs/`). So the policy is simply: **include everything,
+exclude `personal/` + nav/meta.**
 
 **Excluded**:
 
 | Path | Why |
 | --- | --- |
-| `jobs/**` | Daily automation reports — separated for now, per your instruction. (Easy to add later as its own corpus/namespace.) |
-| `hardware.md`, `hardware/**` | Personal hardware/build notes. |
-| `gpu-llm-upgrade-guide.md` | Personal purchasing/upgrade planning. |
-| `claude-gpu-recommendation.md` | Personal GPU purchasing rec (the "couple others" — same class as the two above). **Confirm.** |
-| `hermes/**` | Agent config/automation, not knowledge. |
-| `README.md`, `INDEX.md`, `SCHEMA.md`, `AGENT_GUIDE.md` | KB navigation/meta, not domain knowledge — excluding keeps retrieval from returning "how the KB works" instead of answers. |
-| `**/README.md` (in subfolders) | Folder nav (`coding-architectures/README.md`, etc.). |
+| `personal/**` | All personal content — hardware, GPU purchasing notes, `hermes/` config/automation, `jobs/` daily reports. |
+| `**/README.md` | Folder nav/index pages — root README + every topic-folder README. |
+| `INDEX.md`, `SCHEMA.md`, `AGENT_GUIDE.md` | KB navigation/meta, not domain knowledge — excluding keeps retrieval from returning "how the KB works" instead of answers. |
 
 Default `index.config.yaml`:
 
@@ -67,21 +60,13 @@ Default `index.config.yaml`:
 repo_url: git@github.com:marchah/CognitiveStack.git
 branch: main
 include:
-  - "*.md"
-  - "coding-architectures/*.md"
-  - "coding-paradigms-and-patterns/*.md"
+  - "**/*.md"
 exclude:
-  - "jobs/**"
-  - "hardware.md"
-  - "hardware/**"
-  - "gpu-llm-upgrade-guide.md"
-  - "claude-gpu-recommendation.md"
-  - "hermes/**"
-  - "README.md"
+  - "personal/**"
+  - "**/README.md"
   - "INDEX.md"
   - "SCHEMA.md"
   - "AGENT_GUIDE.md"
-  - "**/README.md"
 ```
 
 ## Architecture / data flow
