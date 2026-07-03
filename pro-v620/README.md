@@ -333,8 +333,10 @@ to spare. Two performance realities:
 Guidance: treat the per-slot ceiling as a **ceiling, not the operating point** —
 trim agent history (≈4–8k keeps decode ~20–30 tok/s/agent), cap output/reasoning
 length, and reuse a stable prefix per agent so the slot cache hits. Speculative
-decoding (`--model-draft`) does **not** help this profile: it targets single-stream
-decode, not prefill, and its benefit shrinks under concurrency and at large context.
+decoding (`--model-draft`) does **not** help — not this profile, not any: it targets
+single-stream decode (not prefill), its benefit shrinks under concurrency and at large
+context, and on this Vulkan/MoE combo the draft is inert regardless (measured — see
+*Speculative decoding* below).
 
 **Overnight long-context mode (`262144/1`)** is verified healthy — one slot owns
 the full **256k** window (25.9 GiB VRAM). A *cold* 256k prefill takes several
@@ -342,6 +344,36 @@ minutes, so this suits a single long-running agent that grows its context
 incrementally (each turn prefix-cached, only new tokens prefilled), not repeated
 cold 256k loads. Switch with `llamacpp-reload 262144 1`, and back to `262144 4`
 for daytime concurrency.
+
+### Speculative decoding — tested, inert on this card (2026-07-03)
+
+Speculative decoding (`--model-draft`) was A/B'd directly and gives **no speedup** here, so
+it is deliberately left out of the serve command.
+
+Setup: `llama-server` `b9835` (Vulkan), target `Qwen3.6-35B-A3B-UD-Q5_K_XL`, drafter
+`unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M` (vocab-matched, 248,320 tokens), one `/completion` per
+config — ctx 16384, `-ctk/-ctv q8_0`, greedy, 200 output tokens:
+
+| Config | Decode |
+| --- | ---: |
+| Baseline (no draft) | 79.7 tok/s |
+| `--spec-draft-n-max 8` | 79.5 tok/s |
+| `--spec-draft-n-min 48 --spec-draft-n-max 64` (forced) | 79.6 tok/s |
+
+Flat within noise — **including** the config that *forces* 48–64 draft tokens/step, which
+cannot match baseline if drafting had actually run. The draft is **inert**. Three
+independent reasons, all pointing the same way:
+
+1. **Vulkan backend limitation** — [llama.cpp #23126](https://github.com/ggml-org/llama.cpp/issues/23126):
+   with draft + target on a single Vulkan/RADV device (our exact config), the draft graph
+   serializes behind the target on one compute queue → no speedup, sometimes a large slowdown.
+2. **Even on CUDA it loses** — an RTX 3090 A/B of this *same* model measured **−39%** at 100%
+   draft acceptance ([thc1006](https://github.com/thc1006/qwen3.6-speculative-decoding-rtx3090)).
+3. **It's a 3B-active MoE** — per-token decode is already cheap, so draft/verify overhead
+   dominates; speculative decoding pays off on dense models, not this one.
+
+(The ~79.6 tok/s here is a controlled A/B baseline at `q8_0` KV / ctx 16k / greedy — slightly
+below the 83.1 tok/s headline single-stream figure the suite measures with the serve defaults.)
 
 ### Model bake-off — round 1: Qwen3.5 Q4 vs Q5 vs Hermes 4.3 36B
 
