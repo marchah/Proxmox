@@ -425,7 +425,7 @@ print_summary() {
   log "Done"
   printf 'kb-rag LXC: %s (%s)\n' "${VMID}" "${LXC_HOSTNAME}"
   if [[ -n ${ip} ]]; then
-    printf 'REST:  http://%s:%s/v1/search   MCP: http://%s:%s/mcp\n' "${ip}" "${API_PORT}" "${ip}" "${API_PORT}"
+    printf 'REST:  http://%s:%s/v1/search   MCP: http://%s:%s/mcp/\n' "${ip}" "${API_PORT}" "${ip}" "${API_PORT}"
     printf 'By name (dnsmasq): http://%s:%s/v1  (from other containers)\n' "${LXC_HOSTNAME}" "${API_PORT}"
   else
     printf 'Endpoint: check container IP, port %s\n' "${API_PORT}"
@@ -436,7 +436,7 @@ print_summary() {
   printf '  Search:            curl -s http://%s:%s/v1/search -H "Authorization: Bearer <key>" -H "content-type: application/json" -d '\''{"query":"..."}'\''\n' "${LXC_HOSTNAME}" "${API_PORT}"
   printf '  Reindex now:       pct exec %s -- kb-reindex\n' "${VMID}"
   printf '  Index stats:       pct exec %s -- kb-stats\n' "${VMID}"
-  printf '  Wire into Hermes:  register MCP server http://%s:%s/mcp (Bearer <key>)\n' "${LXC_HOSTNAME}" "${API_PORT}"
+  printf '  Wire into Hermes:  register MCP server http://%s:%s/mcp/ (Bearer <key>)\n' "${LXC_HOSTNAME}" "${API_PORT}"
 }
 
 main() {

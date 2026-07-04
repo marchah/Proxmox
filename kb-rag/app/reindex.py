@@ -77,7 +77,14 @@ def run(full: bool = False, no_git: bool = False, config_path: str | None = None
         with open(full_path, encoding="utf-8") as f:
             chunks.extend(chunk_markdown(rel, f.read()))
 
-    embedder = Embedder(cfg["embed_model"], cfg["embed_dim"], cfg["query_prefix"])
+    # Never let a clone/glob failure silently wipe a good index: refuse an empty corpus
+    # BEFORE touching the store (prune on [] would erase everything and report success).
+    if not chunks:
+        raise SystemExit(
+            "reindex: refusing to index an empty corpus (clone/glob failure?); "
+            "existing index left untouched"
+        )
+
     store = Store(cfg["db_path"], cfg["embed_dim"])
     if full:
         store.drop_all()
@@ -87,6 +94,9 @@ def run(full: bool = False, no_git: bool = False, config_path: str | None = None
     changed = [c for c in chunks if existing.get(c.chunk_uid) != c.content_hash]
 
     if changed:
+        # Load the embedding model only when there is something to embed (the 10-min timer
+        # otherwise pays the ONNX load cost on every no-op run).
+        embedder = Embedder(cfg["embed_model"], cfg["embed_dim"], cfg["query_prefix"])
         vectors = embedder.embed_documents([c.embed_text() for c in changed])
         for chunk, vec in zip(changed, vectors):
             store.upsert(chunk, vec)

@@ -199,7 +199,18 @@ def chunk_markdown(path: str, text: str) -> list[Chunk]:
             seen[base] = n + 1
             slug = base if n == 0 else f"{base}-{n + 1}"
             uid = f"{path}#{slug}"
-            content_hash = hashlib.sha256(piece.encode("utf-8")).hexdigest()[:16]
+            added = _find_date(piece, "Added") or fm.get("created", "")
+            last_verified = _find_date(piece, "Last verified") or fm.get("last_verified", "")
+            tags = fm.get("tags", [])
+            # Hash the full indexed record (metadata + body), not just the body — so a
+            # frontmatter-only change (title/tags/status/confidence/last_verified) still
+            # registers as changed on reindex.
+            record = "\x1f".join([
+                title, sub_head, fm.get("type", ""), fm.get("status", ""),
+                fm.get("source", ""), fm.get("confidence", ""), ",".join(tags),
+                added, last_verified, piece,
+            ])
+            content_hash = hashlib.sha256(record.encode("utf-8")).hexdigest()[:16]
             chunks.append(
                 Chunk(
                     chunk_uid=uid,
@@ -210,11 +221,9 @@ def chunk_markdown(path: str, text: str) -> list[Chunk]:
                     status=fm.get("status", ""),
                     source=fm.get("source", ""),
                     confidence=fm.get("confidence", ""),
-                    tags=fm.get("tags", []),
-                    added=_find_date(piece, "Added") or fm.get("created", ""),
-                    last_verified=(
-                        _find_date(piece, "Last verified") or fm.get("last_verified", "")
-                    ),
+                    tags=tags,
+                    added=added,
+                    last_verified=last_verified,
                     content=piece,
                     content_hash=content_hash,
                     token_count=_est_tokens(piece),

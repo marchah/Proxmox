@@ -295,7 +295,7 @@ curl -s http://kb-rag:8770/v1/search -H "Authorization: Bearer $KB_API_KEY" \
   -d '{"query":"just in time agent access","top_k":5}' | jq .
 
 # Hermes (CT 121): register the MCP server so the agent gets kb_search/kb_get/kb_stats
-#   base_url: http://kb-rag:8770/mcp   auth: Bearer <KB_API_KEY>
+#   base_url: http://kb-rag:8770/mcp/   auth: Bearer <KB_API_KEY>
 ```
 
 **Fallback:** if `kb-rag` is down, agents can still `git clone`/grep the CognitiveStack repo —

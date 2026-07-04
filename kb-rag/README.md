@@ -78,8 +78,9 @@ curl -s http://kb-rag:8770/health   # no auth
 
 ### MCP (agents)
 
-Register `http://kb-rag:8770/mcp` (streamable HTTP, header `Authorization: Bearer <key>`) as an
-MCP server. Tools: `kb_search`, `kb_get`, `kb_stats`.
+Register `http://kb-rag:8770/mcp/` (trailing slash — `/mcp` 307-redirects to it) as a
+streamable-HTTP MCP server, header `Authorization: Bearer <key>`. Tools: `kb_search`, `kb_get`,
+`kb_stats`.
 
 ## Layout
 

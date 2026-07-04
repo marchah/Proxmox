@@ -64,7 +64,10 @@ def do_search(query, top_k, mode, filters) -> list[dict]:
 
 
 # --- MCP ------------------------------------------------------------------
-mcp = FastMCP("kb-rag", stateless_http=True)
+# streamable_http_path="/" so mounting the sub-app at /mcp yields /mcp (not /mcp/mcp).
+# json_response=True returns a single JSON body instead of an SSE stream (simpler + avoids
+# streaming edge cases behind middleware).
+mcp = FastMCP("kb-rag", stateless_http=True, streamable_http_path="/", json_response=True)
 
 
 @mcp.tool()
@@ -115,15 +118,27 @@ async def lifespan(app: FastAPI):
         yield
 
 
+class BearerAuthMiddleware:
+    """Pure-ASGI bearer auth. NOT BaseHTTPMiddleware — that wrapper breaks the mounted MCP
+    app's streaming (ClosedResourceError). Runs outermost, covers /mcp + /v1, skips /health."""
+
+    def __init__(self, app, api_key: str):
+        self.app = app
+        self.api_key = api_key
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and self.api_key and scope.get("path") != "/health":
+            headers = dict(scope.get("headers") or [])
+            if headers.get(b"authorization", b"").decode() != f"Bearer {self.api_key}":
+                await JSONResponse({"detail": "unauthorized"}, status_code=401)(
+                    scope, receive, send
+                )
+                return
+        await self.app(scope, receive, send)
+
+
 app = FastAPI(title="kb-rag", lifespan=lifespan)
-
-
-@app.middleware("http")
-async def require_bearer(request, call_next):
-    if API_KEY and request.url.path != "/health":
-        if request.headers.get("authorization", "") != f"Bearer {API_KEY}":
-            return JSONResponse({"detail": "unauthorized"}, status_code=401)
-    return await call_next(request)
+app.add_middleware(BearerAuthMiddleware, api_key=API_KEY)
 
 
 @app.get("/health")
