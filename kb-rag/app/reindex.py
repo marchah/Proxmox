@@ -96,7 +96,10 @@ def run(full: bool = False, no_git: bool = False, config_path: str | None = None
     if changed:
         # Load the embedding model only when there is something to embed (the 10-min timer
         # otherwise pays the ONNX load cost on every no-op run).
-        embedder = Embedder(cfg["embed_model"], cfg["embed_dim"], cfg["query_prefix"])
+        embedder = Embedder(
+            cfg["embed_model"], cfg["embed_dim"], cfg["query_prefix"],
+            threads=cfg["embed_threads"], batch_size=cfg["embed_batch_size"],
+        )
         vectors = embedder.embed_documents([c.embed_text() for c in changed])
         for chunk, vec in zip(changed, vectors):
             store.upsert(chunk, vec)

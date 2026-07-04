@@ -18,16 +18,30 @@ class Embedder:
         model: str,
         dim: int,
         query_prefix: str = "",
+        threads: int | None = None,
+        batch_size: int = 32,
         fake: bool | None = None,
     ):
         self.dim = dim
         self.query_prefix = query_prefix or ""
+        # Small batches bound peak memory: at seq-len 512 the attention tensors scale with
+        # batch_size, and the default (256) OOMs a small LXC. 32 keeps the peak well under 1 GB.
+        self.batch_size = batch_size
         self.fake = os.environ.get("KB_FAKE_EMBED") == "1" if fake is None else fake
         self._model = None
         if not self.fake:
+            # Cap OpenMP/BLAS threads BEFORE importing onnxruntime/numpy (they read these at
+            # import). Without it they size to the HOST core count → excess threads + memory.
+            if threads:
+                for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+                    os.environ.setdefault(_var, str(threads))
             from fastembed import TextEmbedding
 
-            self._model = TextEmbedding(model_name=model)
+            # threads=N sets onnxruntime intra_op_num_threads explicitly. In an LXC this is
+            # essential: without it onnxruntime sizes its pool to the HOST core count and tries
+            # to pin threads to cores outside the container's cpuset (pthread_setaffinity_np
+            # errors). Setting it also disables that affinity attempt.
+            self._model = TextEmbedding(model_name=model, threads=threads)
 
     def _fake_vec(self, text: str) -> list[float]:
         vals: list[float] = []
@@ -43,7 +57,10 @@ class Embedder:
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if self.fake:
             return [self._fake_vec(t) for t in texts]
-        return [list(map(float, v)) for v in self._model.embed(list(texts))]
+        # parallel default (None) = in-process, no data-parallel workers. Multiprocessing
+        # (parallel=0 or >1) deadlocks in the LXC (fork-after-onnxruntime-threads via
+        # forkserver). Memory is bounded instead by the onnxruntime `threads` limit.
+        return [list(map(float, v)) for v in self._model.embed(list(texts), batch_size=self.batch_size)]
 
     def embed_query(self, text: str) -> list[float]:
         if self.fake:
