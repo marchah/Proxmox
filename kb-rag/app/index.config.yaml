@@ -1,0 +1,28 @@
+# kb-rag index configuration.
+# Process env overrides these (KB_REPO_DIR, KB_DB_PATH, KB_EMBED_MODEL, KB_EMBED_DIM, ...).
+
+repo_url: git@github.com:marchah/CognitiveStack.git
+branch: main
+repo_dir: /opt/kb-rag/data/repo
+db_path: /opt/kb-rag/data/kb.sqlite
+
+# Embedding model — CPU (fastembed/ONNX). Changing this or embed_dim requires `kb-reindex --full`.
+embed_model: BAAI/bge-small-en-v1.5
+embed_dim: 384
+query_prefix: "Represent this sentence for searching relevant passages: "
+
+# Corpus policy (gitignore-style globs). A file is indexed if it matches `include`
+# AND not `exclude`. Only *.md is ever eligible. The catalogs are split into per-item
+# topic folders (ai-tools/, mcp/, ...), so include everything and exclude the rest.
+include:
+  - "**/*.md"
+exclude:
+  - "personal/**"        # hardware, gpu notes, hermes/, jobs/ — all personal content lives here
+  - "**/README.md"       # folder nav/index pages (root + every topic-folder README)
+  - "INDEX.md"
+  - "SCHEMA.md"
+  - "AGENT_GUIDE.md"
+
+defaults:
+  top_k: 8
+  mode: hybrid
