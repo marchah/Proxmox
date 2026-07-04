@@ -368,10 +368,13 @@ if [[ "${INSTALL_BROWSER}" == "1" ]]; then
   apt-get install -y python3-venv
   python3 -m venv /opt/readability
   /opt/readability/bin/pip install --upgrade pip >/dev/null
-  /opt/readability/bin/pip install trafilatura==2.1.0 readability-lxml==0.8.4.1
+  # lxml_html_clean is REQUIRED on lxml 6.x: both trafilatura (via justext) and
+  # readability-lxml import lxml.html.clean, which moved to this separate package.
+  /opt/readability/bin/pip install trafilatura==2.1.0 readability-lxml==0.8.4.1 lxml_html_clean==0.4.5
   ln -sf /opt/readability/bin/trafilatura /usr/local/bin/trafilatura
-  # Fail provisioning if either package can't actually run (not just "pip said OK").
-  trafilatura --version >/dev/null 2>&1 \
+  # Fail provisioning if either package can't actually run (not just "pip said OK"). Full
+  # paths: /usr/local/bin is not on this non-login pct-exec PATH.
+  /opt/readability/bin/trafilatura --version >/dev/null 2>&1 \
     || { printf 'error: trafilatura CLI not runnable after install\n' >&2; exit 1; }
   /opt/readability/bin/python -c 'from readability import Document' >/dev/null 2>&1 \
     || { printf 'error: readability-lxml not importable after install\n' >&2; exit 1; }
