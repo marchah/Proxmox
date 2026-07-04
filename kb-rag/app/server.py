@@ -24,6 +24,14 @@ from store import Store
 
 CFG = load_config()
 API_KEY = os.environ.get("KB_API_KEY", "")
+# Fail closed: the service binds 0.0.0.0, so an empty key would serve the whole index
+# unauthenticated. Provisioning always sets a key; a damaged/manual config must not silently
+# expose it. Set KB_ALLOW_NO_AUTH=1 only for local dev.
+if not API_KEY and os.environ.get("KB_ALLOW_NO_AUTH") != "1":
+    raise RuntimeError(
+        "KB_API_KEY is empty — refusing to start unauthenticated on 0.0.0.0. "
+        "Set KB_API_KEY, or KB_ALLOW_NO_AUTH=1 for local dev only."
+    )
 _VALID_MODES = ("hybrid", "vector", "keyword")
 
 _store: Store | None = None
