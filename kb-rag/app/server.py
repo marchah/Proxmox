@@ -40,7 +40,10 @@ def store() -> Store:
 def embedder() -> Embedder:
     global _embedder
     if _embedder is None:
-        _embedder = Embedder(CFG["embed_model"], CFG["embed_dim"], CFG["query_prefix"])
+        _embedder = Embedder(
+            CFG["embed_model"], CFG["embed_dim"], CFG["query_prefix"],
+            threads=CFG["embed_threads"],
+        )
     return _embedder
 
 
