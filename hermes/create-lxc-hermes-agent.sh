@@ -370,6 +370,11 @@ if [[ "${INSTALL_BROWSER}" == "1" ]]; then
   /opt/readability/bin/pip install --upgrade pip >/dev/null
   /opt/readability/bin/pip install trafilatura==2.1.0 readability-lxml==0.8.4.1
   ln -sf /opt/readability/bin/trafilatura /usr/local/bin/trafilatura
+  # Fail provisioning if either package can't actually run (not just "pip said OK").
+  trafilatura --version >/dev/null 2>&1 \
+    || { printf 'error: trafilatura CLI not runnable after install\n' >&2; exit 1; }
+  /opt/readability/bin/python -c 'from readability import Document' >/dev/null 2>&1 \
+    || { printf 'error: readability-lxml not importable after install\n' >&2; exit 1; }
 fi
 
 # 3. Point Hermes at the CT 120 runtime (custom OpenAI-compatible endpoint, no key).
