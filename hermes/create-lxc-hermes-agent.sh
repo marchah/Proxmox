@@ -74,7 +74,7 @@ API_SERVER_KEY="${API_SERVER_KEY:-}"
 API_SERVER_PORT="${API_SERVER_PORT:-8642}"
 
 # --- Browser automation (Playwright Chromium) ---
-INSTALL_BROWSER="${INSTALL_BROWSER:-1}"         # 1 → installer runs `playwright install --with-deps chromium`
+INSTALL_BROWSER="${INSTALL_BROWSER:-1}"         # 1 → Playwright Chromium + the readability extractor (trafilatura) used by the KB-ingestion skill
 
 # --- Messaging gateway platforms ---
 # Not pre-wired here: the gateway starts with no platforms. Add Telegram/Discord/Slack/…
@@ -98,7 +98,7 @@ Useful overrides:
   MODEL_IDENTIFIER=qwen3.6-35b-a3b ./create-lxc-hermes-agent.sh
   HERMES_VERSION=v2026.6.19 ./create-lxc-hermes-agent.sh  # pin a different release (GIT TAG, not the v0.x.y title)
   HERMES_VERSION=latest ./create-lxc-hermes-agent.sh      # track main HEAD, UNVERIFIED (no checksum/pin)
-  INSTALL_BROWSER=0 ./create-lxc-hermes-agent.sh        # skip Playwright Chromium (leaner)
+  INSTALL_BROWSER=0 ./create-lxc-hermes-agent.sh        # skip Playwright Chromium + readability extractor (leaner)
   API_SERVER_KEY=my-secret ./create-lxc-hermes-agent.sh # else auto-generated and printed
 
 After it is up, add messaging platforms (Telegram/Discord/Slack/…) without re-provisioning:
@@ -358,6 +358,30 @@ command -v hermes >/dev/null 2>&1 || [[ -x /usr/local/bin/hermes ]] \
   || { printf 'error: hermes CLI not found after install\n' >&2; exit 1; }
 HERMES_BIN="$(command -v hermes 2>/dev/null || echo /usr/local/bin/hermes)"
 "${HERMES_BIN}" --version 2>/dev/null || true
+
+# 2b. Web-ingestion toolchain for the KB skills (part of the browser toolchain, INSTALL_BROWSER=1):
+#   - gh (GitHub CLI): the knowledge-ingestion `kb-open-pr` helper uses it to clone/push/open PRs.
+#   - trafilatura + readability-lxml in a dedicated /opt/readability venv (off the system and
+#     Hermes interpreters): the web-extraction skill's clean-text extractor. The trafilatura CLI
+#     goes on PATH; /opt/readability/bin/python exposes the readability fallback.
+# Versions pinned (validated together; bump deliberately).
+if [[ "${INSTALL_BROWSER}" == "1" ]]; then
+  apt-get install -y python3-venv gh
+  python3 -m venv /opt/readability
+  /opt/readability/bin/pip install --upgrade pip >/dev/null
+  # lxml_html_clean is REQUIRED on lxml 6.x: both trafilatura (via justext) and
+  # readability-lxml import lxml.html.clean, which moved to this separate package.
+  /opt/readability/bin/pip install trafilatura==2.1.0 readability-lxml==0.8.4.1 lxml_html_clean==0.4.5
+  ln -sf /opt/readability/bin/trafilatura /usr/local/bin/trafilatura
+  # Fail provisioning if either package can't actually run (not just "pip said OK"). Full
+  # paths: /usr/local/bin is not on this non-login pct-exec PATH.
+  /opt/readability/bin/trafilatura --version >/dev/null 2>&1 \
+    || { printf 'error: trafilatura CLI not runnable after install\n' >&2; exit 1; }
+  /opt/readability/bin/python -c 'from readability import Document' >/dev/null 2>&1 \
+    || { printf 'error: readability-lxml not importable after install\n' >&2; exit 1; }
+  command -v gh >/dev/null 2>&1 \
+    || { printf 'error: gh (GitHub CLI) not installed — kb-open-pr needs it\n' >&2; exit 1; }
+fi
 
 # 3. Point Hermes at the CT 120 runtime (custom OpenAI-compatible endpoint, no key).
 # Prefer TARGET_BASE_URL (the stable hostname), but verify it resolves + answers FROM THIS
