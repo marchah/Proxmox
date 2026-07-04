@@ -359,13 +359,14 @@ command -v hermes >/dev/null 2>&1 || [[ -x /usr/local/bin/hermes ]] \
 HERMES_BIN="$(command -v hermes 2>/dev/null || echo /usr/local/bin/hermes)"
 "${HERMES_BIN}" --version 2>/dev/null || true
 
-# 2b. Readability extractor for the KB-ingestion skill: it cleans a fetched page to main
-# content BEFORE the LLM reads it (never raw HTML). Part of the web-ingestion toolchain, so it
-# travels with the browser (INSTALL_BROWSER=1). A dedicated venv keeps these off the system and
-# Hermes interpreters; the trafilatura CLI goes on PATH, and /opt/readability/bin/python
-# exposes the readability-lxml fallback. Versions pinned (validated together; bump deliberately).
+# 2b. Web-ingestion toolchain for the KB skills (part of the browser toolchain, INSTALL_BROWSER=1):
+#   - gh (GitHub CLI): the knowledge-ingestion `kb-open-pr` helper uses it to clone/push/open PRs.
+#   - trafilatura + readability-lxml in a dedicated /opt/readability venv (off the system and
+#     Hermes interpreters): the web-extraction skill's clean-text extractor. The trafilatura CLI
+#     goes on PATH; /opt/readability/bin/python exposes the readability fallback.
+# Versions pinned (validated together; bump deliberately).
 if [[ "${INSTALL_BROWSER}" == "1" ]]; then
-  apt-get install -y python3-venv
+  apt-get install -y python3-venv gh
   python3 -m venv /opt/readability
   /opt/readability/bin/pip install --upgrade pip >/dev/null
   # lxml_html_clean is REQUIRED on lxml 6.x: both trafilatura (via justext) and
@@ -378,6 +379,8 @@ if [[ "${INSTALL_BROWSER}" == "1" ]]; then
     || { printf 'error: trafilatura CLI not runnable after install\n' >&2; exit 1; }
   /opt/readability/bin/python -c 'from readability import Document' >/dev/null 2>&1 \
     || { printf 'error: readability-lxml not importable after install\n' >&2; exit 1; }
+  command -v gh >/dev/null 2>&1 \
+    || { printf 'error: gh (GitHub CLI) not installed — kb-open-pr needs it\n' >&2; exit 1; }
 fi
 
 # 3. Point Hermes at the CT 120 runtime (custom OpenAI-compatible endpoint, no key).
