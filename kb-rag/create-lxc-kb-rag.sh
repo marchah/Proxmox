@@ -340,9 +340,10 @@ SH
 chmod +x /usr/local/bin/kb-reindex /usr/local/bin/kb-stats
 
 # 7. Initial index: clone the KB (deploy key) + build from scratch. This also warms the ONNX
-#    model cache. Fail loudly if it doesn't produce chunks.
+#    model cache. Fail loudly if it doesn't produce chunks. Full path: /usr/local/bin is not
+#    on the PATH of this non-login `pct exec` shell.
 set -a; . /etc/kb-rag.env; set +a
-kb-reindex --full
+/usr/local/bin/kb-reindex --full
 
 # 8. systemd: the API server + a reindex timer.
 cat >/etc/systemd/system/kb-rag.service <<'SERVICE'
