@@ -183,9 +183,11 @@ class Store:
 
     def _vector_ids(self, embedding: list[float], limit: int) -> list[int]:
         emb = sqlite_vec.serialize_float32(embedding)
+        # Use the `k = ?` KNN form, not `LIMIT ?`: on older SQLite (Debian 12) a bound LIMIT
+        # isn't propagated to the vec0 vtable, which then errors ("a LIMIT or 'k = ?' ...").
         rows = self.conn.execute(
-            "SELECT rowid FROM vec_chunks WHERE embedding MATCH ? "
-            "ORDER BY distance LIMIT ?",
+            "SELECT rowid FROM vec_chunks WHERE embedding MATCH ? AND k = ? "
+            "ORDER BY distance",
             (emb, limit),
         ).fetchall()
         return [r["rowid"] for r in rows]
