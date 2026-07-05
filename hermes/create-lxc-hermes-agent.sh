@@ -432,6 +432,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=HERMES_HOME=${HERMES_HOME}
+# HOME is set because `gh` (used by the KB-ingestion PR helper) fails on an unset HOME. The KB tokens
+# are deliberately NOT loaded into the service env: the ingestion helpers (kb-open-pr.sh / kb-dedup.sh)
+# source ${HERMES_HOME}/.env themselves, only when their specific key is needed — so secrets stay
+# scoped to those short-lived helper processes (and pick up rotated keys immediately) rather than
+# being inherited by every command the agent runs.
+Environment=HOME=/root
 ExecStart=${HERMES_BIN} gateway run
 Restart=on-failure
 RestartSec=10
