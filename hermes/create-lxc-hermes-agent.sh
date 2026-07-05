@@ -316,7 +316,7 @@ export HERMES_HOME=/root/.hermes
 # tools unavailable at runtime. (Verified on a real provision.)
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl git build-essential python3
+apt-get install -y ca-certificates curl git build-essential python3 jq
 
 # 2. Install Hermes — pinned + checksum-verified by default. Fetch scripts/install.sh from
 # the pinned git tag's raw URL (immutable), verify its SHA-256, then run it with
