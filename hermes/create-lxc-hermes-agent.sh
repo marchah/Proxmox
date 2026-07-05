@@ -409,7 +409,30 @@ model:
   context_length: ${MODEL_CONTEXT_LENGTH}
 terminal:
   backend: local
+  # Run the agent from /root (a neutral home), not its install dir. Hermes auto-loads a project
+  # context file (.hermes.md / AGENTS.md / ...) from the working dir on every prompt; without this it
+  # falls back to the install dir and pulls its ~70 KB codebase AGENTS.md into every turn's context.
+  cwd: /root
 YAML
+
+# 3b. Small project-context file for the agent's cwd (/root) — Hermes loads it as `.hermes.md` on
+# every prompt now that terminal.cwd=/root, so keep it SHORT. It replaces the giant install-dir
+# AGENTS.md that would otherwise be slurped + truncated each turn.
+cat >/root/.hermes.md <<'HERMESMD'
+# Homelab Hermes agent — quick context
+
+You are the homelab **Hermes agent** on this Proxmox LXC. On every task:
+
+- **Local model:** you run on the CT 120 LLM runtime (see `model.base_url` in `~/.hermes/config.yaml`)
+  — a modest context window, so be economical with tokens.
+- **Skills** live in `~/.hermes/skills`; prefer them over hand-rolled shell/git.
+- **Knowledge base:** if the `knowledge-ingestion` skill is installed, use it to capture things into
+  CognitiveStack (it dedups via kb-rag, authors a SCHEMA entry, and opens a PR — never hand-roll
+  git/tokens; multiple items in one request → one PR).
+- **Web fetch:** if the `web-extraction` skill is installed, use its `kb-fetch.sh <url>` for clean
+  text; for GitHub repo metadata use `gh api ... --jq` (never pipe `curl` into `python3`/`sh`).
+- **Secrets** live in `~/.hermes/.env` — never print or commit them.
+HERMESMD
 
 # 4. Secrets + API-server enablement live in .env (root-only). The bearer key is required
 # even on loopback because the API exposes terminal access.
