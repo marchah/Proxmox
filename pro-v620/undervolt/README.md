@@ -49,6 +49,25 @@ input-length 128→32768, soak) with **zero** GPU faults (no resets / ring
 timeouts). If you ever observe instability under load, move `OFFSET_MV` closer to
 0 (e.g. `-75`).
 
+**Deeper-undervolt sweep (2026-07-09, on the second V620 — see the
+`second-v620-validated` note):** −100 mV is this card's safe floor; going deeper
+was tested and **rejected**:
+
+| Offset | Single-stream | Under concurrent load | Result |
+| --- | --- | --- | --- |
+| −100 mV | correct | correct (5/5 before **and** after a c1→8 stress) | **stable — keep** |
+| −125 mV | correct | **silent garbage output** (runs of one char), no crash, no dmesg fault | **unsafe** |
+| −150 mV | — | compute-ring timeout → **MODE1 GPU reset, VRAM lost** | hard crash |
+
+−125 mV's danger is that it fails *silently*: it passes a single-stream check and
+throws no kernel fault, but under concurrency the model emits corrupt tokens. Two
+gotchas when testing your own floor: (1) check output correctness **after** a load
+stress, not just before — corruption is load-induced; (2) the suite's garbage
+guard only flags `?`-runs, so `/`-style garbage slips through as "OK" (and inflates
+tok/s, since junk generates fast). A clean `systemctl restart llamacpp` is required
+to clear the corrupted model state after such an event (and after any GPU reset —
+llama-server's auto-reload can come back subtly broken).
+
 ## Install / operate
 
 Run on the Proxmox host as root:
