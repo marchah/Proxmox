@@ -24,10 +24,15 @@
 # the daemon. Errors are handled explicitly.
 set -uo pipefail
 
-# ---- config (override via /etc/gpu-fan-control.env) -------------------------
+# ---- config (override via /etc/gpu-fan-control-<instance>.env) --------------
 GPU_HWMON_NAME="${GPU_HWMON_NAME:-amdgpu}"
+# Optional exact PCI address (e.g. 0000:2d:00.0) to pick ONE GPU when several match
+# GPU_HWMON_NAME (this host has two V620s). Empty = first amdgpu found. Selecting by
+# PCI address is stable across boots; cardN enumeration is not.
+GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-}"
 FAN_HWMON_NAME="${FAN_HWMON_NAME:-nct6687}"
-FAN_PWM_CHANNEL="${FAN_PWM_CHANNEL:-2}"          # PUMP_FAN1 = pwm2/fan2 (verified)
+FAN_PWM_CHANNEL="${FAN_PWM_CHANNEL:-2}"          # pwm channel driving THIS GPU's fan
+FAN_LABEL="${FAN_LABEL:-fan}"                    # cosmetic name for logs (e.g. blower, arctic)
 
 # Curve is driven by the EDGE temperature (the stable "GPU temp").
 CURVE_TEMP_LABEL="${CURVE_TEMP_LABEL:-edge}"
@@ -69,6 +74,23 @@ resolve_hwmon() {  # $1 = name ; echoes path or returns 1
   for h in /sys/class/hwmon/hwmon* /sys/class/drm/card*/device/hwmon/hwmon*; do
     [ -r "$h/name" ] || continue
     if [ "$(cat "$h/name" 2>/dev/null)" = "$want" ]; then echo "$h"; return 0; fi
+  done
+  return 1
+}
+
+# Resolve the GPU hwmon dir, optionally pinned to an exact PCI address so the right
+# card is picked when several match GPU_HWMON_NAME (two V620s here). The hwmon's
+# `device` symlink resolves to the PCI device dir; its basename is the PCI address.
+resolve_gpu_hwmon() {  # echoes path or returns 1
+  local h pci
+  for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
+    [ -r "$h/name" ] || continue
+    [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
+    if [ -n "$GPU_PCI_ADDRESS" ]; then
+      pci="$(basename "$(readlink -f "$h/device" 2>/dev/null)" 2>/dev/null)"
+      [ "$pci" = "$GPU_PCI_ADDRESS" ] || continue
+    fi
+    echo "$h"; return 0
   done
   return 1
 }
@@ -178,14 +200,14 @@ failsafe() {
   local en="$chip/pwm${FAN_PWM_CHANNEL}_enable" pw="$chip/pwm${FAN_PWM_CHANNEL}" v
   echo 2 > "$en" 2>/dev/null
   if [ "$(cat "$en" 2>/dev/null)" = "2" ]; then
-    log "failsafe: PUMP_FAN1 (pwm${FAN_PWM_CHANNEL}) handed back to BIOS auto (enable=2)"
+    log "failsafe: ${FAN_LABEL} (pwm${FAN_PWM_CHANNEL}) handed back to BIOS auto (enable=2)"
     return 0
   fi
   echo 1 > "$en" 2>/dev/null
   echo 255 > "$pw" 2>/dev/null
   # Same async-cache race as write_pwm: retry the readback (tol 15 => accept >=240).
   if v="$(pwm_read_settled "$pw" 255 15)" && [ "$(cat "$en" 2>/dev/null)" = "1" ]; then
-    log "WARN failsafe: could not restore BIOS auto; forced PUMP_FAN1 to 100% (manual, pwm=$v)"
+    log "WARN failsafe: could not restore BIOS auto; forced ${FAN_LABEL} to 100% (manual, pwm=$v)"
     return 0
   fi
   log "CRITICAL failsafe: could not set ANY safe fan state (auto or 100%) on pwm${FAN_PWM_CHANNEL}"
@@ -220,10 +242,10 @@ trap 'exit 0' INT TERM
 trap 'failsafe' EXIT
 
 # ---- startup ---------------------------------------------------------------
-GPU_CHIP="$(resolve_hwmon "$GPU_HWMON_NAME" || true)"
+GPU_CHIP="$(resolve_gpu_hwmon || true)"
 FAN_CHIP="$(resolve_hwmon "$FAN_HWMON_NAME" || true)"
 [ -n "$FAN_CHIP" ] || { log "FATAL: '$FAN_HWMON_NAME' hwmon not found (is the nct6687 module loaded?)"; exit 1; }
-[ -n "$GPU_CHIP" ] || { log "FATAL: '$GPU_HWMON_NAME' hwmon not found (is amdgpu bound to the V620?)"; exit 1; }
+[ -n "$GPU_CHIP" ] || { log "FATAL: '$GPU_HWMON_NAME'${GPU_PCI_ADDRESS:+ @ $GPU_PCI_ADDRESS} hwmon not found (is amdgpu bound to the V620?)"; exit 1; }
 
 # Curve sensor is mandatory.
 read_temp_c "$GPU_CHIP" "$CURVE_TEMP_LABEL" >/dev/null 2>&1 \
@@ -254,7 +276,7 @@ case "$FAN_RPM_MONITOR" in
     ;;
 esac
 
-log "started: GPU=$GPU_CHIP FAN=$FAN_CHIP pwm${FAN_PWM_CHANNEL}; curve ${PWM_MIN_PCT}%@${EDGE_MIN_C}C..100%@${EDGE_MAX_C}C; hotspot override>=${HOTSPOT_OVERRIDE_C}C (${HOTSPOT_TEMP_LABELS:-none}); tach_watchdog=${fan_monitor} fail_action=${FAN_FAIL_ACTION}"
+log "started[${FAN_LABEL}]: GPU=$GPU_CHIP FAN=$FAN_CHIP pwm${FAN_PWM_CHANNEL}; curve ${PWM_MIN_PCT}%@${EDGE_MIN_C}C..100%@${EDGE_MAX_C}C; hotspot override>=${HOTSPOT_OVERRIDE_C}C (${HOTSPOT_TEMP_LABELS:-none}); tach_watchdog=${fan_monitor} fail_action=${FAN_FAIL_ACTION}"
 
 last_raw=-1
 override=0
@@ -262,7 +284,7 @@ fan_fail=0
 loops=0
 while :; do
   loops=$(( loops + 1 ))
-  [ -d "$GPU_CHIP" ] || GPU_CHIP="$(resolve_hwmon "$GPU_HWMON_NAME" || true)"
+  [ -d "$GPU_CHIP" ] || GPU_CHIP="$(resolve_gpu_hwmon || true)"
   [ -d "$FAN_CHIP" ] || FAN_CHIP="$(resolve_hwmon "$FAN_HWMON_NAME" || true)"
 
   edge="$(read_temp_c "$GPU_CHIP" "$CURVE_TEMP_LABEL")" || edge=""

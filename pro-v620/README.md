@@ -4,6 +4,17 @@ Scripts in this folder target the desktop server's **Radeon Pro V620** (Navi 21 
 gfx1030, RDNA 2, **32 GB** GDDR6, 72 CUs). The V620 **replaces the RX 6700 XT** —
 the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 
+> **Dual-GPU update:** the host now runs **two V620s** — one in the PCIe-1 (CPU) slot
+> `0000:2d:00.0` cooled by a blower, one in the PCIe-3 (chipset) slot `0000:06:00.0`
+> cooled by 2× Arctic S4028-6K fans. CT 120's container passes through all of
+> `/dev/dri`, so llama.cpp **splits the model across both cards** (each ~half the
+> weights + KV). Both are undervolted −100 mV and each has its own fan curve — the
+> host-side services are now **per-GPU**: `gpu-undervolt` applies to every V620, and
+> `gpu-fan-control@blower` / `gpu-fan-control@arctic` run one instance per cooler
+> (see [`fan-control/`](fan-control/) and [`undervolt/`](undervolt/)). The single-card
+> figures below (benchmarks, thermals, the undervolt A/B) were measured on **one** V620
+> and remain valid as per-card characterization.
+
 With ~2.7× the VRAM of the 6700 XT (32 GB vs 12 GB), this card serves a much
 larger model. There is a single runtime script here (no LM Studio sibling —
 llama.cpp is the chosen engine, per the 6700 XT comparison):

@@ -13,11 +13,15 @@ root**. macOS is only the authoring/editing environment; the scripts run remotel
 Three containers form the system:
 
 - **CT 120** (`pro-v620/`): a *privileged* Ubuntu LXC — the **LLM runtime** — serving
-  `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, 35B total / ~3B active) on a **Radeon Pro V620**
-  (Navi 21 / gfx1030, 32 GB) via Vulkan, exposing an OpenAI-compatible API at `0.0.0.0:1234`
-  under the id `qwen3.6-35b-a3b`:
+  `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, 35B total / ~3B active) via Vulkan, exposing an
+  OpenAI-compatible API at `0.0.0.0:1234` under the id `qwen3.6-35b-a3b`. The host now has
+  **two Radeon Pro V620s** (Navi 21 / gfx1030, 32 GB each): one in the **PCIe-1** (CPU) slot
+  `0000:2d:00.0` cooled by a **blower**, one in the **PCIe-3** (chipset) slot `0000:06:00.0`
+  cooled by **2× Arctic S4028-6K** fans. The container passes through all of `/dev/dri`, so
+  llama.cpp currently sees both Vulkan devices and **splits the model across both** (each holds
+  ~half the weights + KV). Both cards are undervolted −100 mV; each has its own fan curve:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
-    (hostname `llamacpp`). This is the current GPU/model.
+    (hostname `llamacpp`). This is the current runtime.
   - **Prior GPU (`rx-6700-xt/`, kept for reference):** the V620 replaced a Radeon RX 6700 XT
     (12 GiB) that served `Qwen3.5-9B-Q4_K_M.gguf` (id `qwen3.5-9b`) via two interchangeable
     engine scripts — `create-lxc-lmstudio-qwen3.5-9b.sh` (LM Studio `lms`) and
@@ -42,7 +46,7 @@ VMIDs `120`/`121`/`200` and hostnames are defaults overridable via env vars (`VM
 All run on the Proxmox host as root.
 
 ```bash
-# Provision the GPU LLM-runtime container (CT 120) — current GPU: Radeon Pro V620
+# Provision the GPU LLM-runtime container (CT 120) — GPUs: two Radeon Pro V620 (model split across both)
 ./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
 # Prior GPU (RX 6700 XT) — kept for reference; pick ONE engine (mutually exclusive)
 ./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
@@ -91,8 +95,9 @@ mega-launcher — the RX 6700 XT has two sibling scripts (`...-lmstudio-...` and
 brand-new folder/script (`pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`) for its larger
 32 GB / MoE model rather than a flag on the 6700 XT script.
 Both GPUs use Vulkan (mesa RADV) — Navi 22/gfx1031 on the 6700 XT, Navi 21/gfx1030 on the
-V620 — the container installs `mesa-vulkan-drivers` and passes through `/dev/dri` (render node
-`renderD128`), plus a pinned model repo/file/SHA-256 in a privileged container. (The V620
+V620 — the container installs `mesa-vulkan-drivers` and passes through `/dev/dri`. With **two
+V620s** installed, both render nodes (`renderD128` + `renderD129`) pass through and llama.cpp
+splits the model across both cards; plus a pinned model repo/file/SHA-256 in a privileged container. (The V620
 model is a single-file unsharded GGUF, so the download/verify path is unchanged; on 32 GB it
 defaults to ctx 262144 / `--parallel 4` (the model's ~256k native max, 64k per slot; this
 MoE's KV cache is cheap, ~20 KB/token, ~29.8 GiB total at Q5). A single agent needing the whole
@@ -225,7 +230,7 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
 - **VMID allocation** (homelab-wide scheme — pick a new script's default `VMID` from the
   matching range):
   - `100-119` — infra / services
-  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp` on the V620; the
+  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, on two V620s; the
     prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the Hermes Agent that
     consumes CT 120's API)
   - `140-159` — databases
@@ -234,15 +239,19 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   `.gitignore`: `models/`, `results/`, `artifacts/`, `bench-results*.tgz`, `.env*`).
 - Container model storage (`/models`) uses `backup=0` — weights are large and
   re-downloadable; back up container config / service files / small state separately.
-- Both AMD GPUs are driven via **Vulkan** (mesa RADV) — the V620 (Navi 21/gfx1030) and the
-  prior RX 6700 XT (Navi 22/gfx1031): the container installs the Vulkan userspace
-  (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and passes through `/dev/dri` (render node
-  `renderD128`). The engine offloads all layers to the GPU (LM Studio `--gpu max`, llama.cpp
-  `-ngl 99`); verify with `vulkaninfo` and a non-trivial `mem_info_vram_used`.
+- The GPUs are driven via **Vulkan** (mesa RADV). The host now runs **two Radeon Pro V620s**
+  (Navi 21/gfx1030); the prior RX 6700 XT (Navi 22/gfx1031) is kept only for reference. The
+  container installs the Vulkan userspace (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and
+  passes through all of `/dev/dri` (both render nodes `renderD128`+`renderD129`), so llama.cpp
+  offloads all layers (`-ngl 99`) and splits across both cards; verify with `vulkaninfo` and a
+  non-trivial `mem_info_vram_used` on each card.
 - **V620 host-side GPU services live under `pro-v620/` and run on the Proxmox host (NOT in the
-  LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`: `pro-v620/fan-control/`
-  drives the passively-cooled card's blower off GPU temp (out-of-tree `nct6687`, PUMP_FAN1=pwm2),
-  and `pro-v620/undervolt/` applies a persistent GFX **voltage offset**. The V620's board power
+  LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`. With two V620s these are
+  now **per-GPU**: `pro-v620/fan-control/` runs one `gpu-fan-control@<instance>` per cooler
+  (out-of-tree `nct6687`; `@blower`→pwm2 for the PCIe-1 card, `@arctic`→pwm4 for the PCIe-3
+  card's 2× Arctic S4028-6K), each pinned to its GPU by PCI address and driven off that card's
+  temp; `pro-v620/undervolt/` applies a persistent GFX **voltage offset** to **every** V620
+  (both at −100 mV). The V620's board power
   is **firmware-locked at 250 W** (`power1_cap` write of any other value → `-EINVAL`) and
   OverDrive exposes no clock-ceiling knob, so an undervolt is the only power/thermal lever
   (−100 mV ≈ −18 % power / −8 °C peak junction at flat throughput). The undervolt installer also

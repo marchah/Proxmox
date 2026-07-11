@@ -4,7 +4,7 @@ Utilities for creating and operating local Proxmox LXCs and VMs.
 
 ## Layout
 
-- `pro-v620/`: scripts and notes for the **Radeon Pro V620** (current GPU).
+- `pro-v620/`: scripts and notes for the **Radeon Pro V620** (current GPU — the host now has **two**).
 - `rx-6700-xt/`: scripts and notes for the Radeon RX 6700 XT (prior GPU — the
   V620 replaced it; kept for reference).
 - `bench-runner/`: disposable LXC for OpenAI-compatible LLM benchmarks.
@@ -30,8 +30,8 @@ Containers are allocated VMIDs by role:
 | 140-159 | Databases         |
 | 200+    | Test / temporary  |
 
-Current containers: CT `120` (the AI/LLM runtime — now on the Radeon Pro V620,
-provisioned by `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`), CT `121`
+Current containers: CT `120` (the AI/LLM runtime — now on **two Radeon Pro V620s**,
+model split across both; provisioned by `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`), CT `121`
 (`hermes`, the Hermes Agent that consumes CT 120's API) and CT `200`
 (`bench-runner`, disposable). Each creation script defaults its `VMID` to the
 matching range and accepts a `VMID=` override.
@@ -57,7 +57,9 @@ bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/be
 Creates a privileged Ubuntu LXC serving a high-parameter Qwen model on the
 **Radeon Pro V620** (Navi 21 / gfx1030, 32 GB) via **Vulkan**:
 
-- GPU: Radeon Pro V620 (32 GB — replaces the 12 GiB RX 6700 XT)
+- GPU: **two Radeon Pro V620s** (32 GB each — replaced the 12 GiB RX 6700 XT). One
+  in the PCIe-1 slot (blower-cooled), one in PCIe-3 (2× Arctic S4028-6K); llama.cpp
+  splits the model across both. Both undervolted −100 mV, each with its own fan curve.
 - Model: `unsloth/Qwen3.6-35B-A3B-GGUF` / `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf`
   (MoE, 35B total / ~3B active — fast, fits 32 GB at Q5)
 - Engine: `create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`

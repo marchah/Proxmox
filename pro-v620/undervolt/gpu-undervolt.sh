@@ -37,6 +37,13 @@ GPU_PCI_ID="${GPU_PCI_ID:-1002:73a1}"   # Radeon Pro V620 (Navi 21 / gfx1030)
 # Optional exact PCI address (e.g. 0000:2d:00.0) to disambiguate identical cards.
 GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-}"
 WAIT_SECS="${WAIT_SECS:-30}"            # max wait for pp_od_clk_voltage at boot
+# How many V620s to WAIT for at boot before applying (this host has two). 0 = auto:
+# apply once the match count is stable across two scans, which can miss a 2nd card
+# that binds a few seconds late. Set to the real count (e.g. 2) so a late-binding
+# card still gets the offset; if FEWER than this are present after WAIT_SECS the
+# service FAILS loudly (no silent partial undervolt) — fix the card and restart.
+# Ignored when GPU_PCI_ADDRESS pins one card (=> expect 1).
+EXPECTED_GPU_COUNT="${EXPECTED_GPU_COUNT:-0}"
 
 # ---------------------------------------------------------------------------
 log()  { printf 'gpu-undervolt: %s\n' "$*"; }
@@ -45,14 +52,14 @@ die()  { printf 'gpu-undervolt: ERROR: %s\n' "$*" >&2; exit 1; }
 
 require_root() { [ "$(id -u)" -eq 0 ] || die "must run as root (on the Proxmox host)"; }
 
-# Resolve the V620's card device dir (the one holding pp_od_clk_voltage). Match by
-# PCI vendor:device — and, if set, an exact PCI address — NOT by card index (cardN
-# is unstable across boots) and NOT by "first amdgpu GPU" (a second AMD card must
-# never receive the V620's offset).
-#   stdout = matching dir, exit 0 : exactly one match
-#   exit 1                        : no match yet (retryable while amdgpu binds)
-#   stdout = match list, exit 2   : multiple matches (fatal; set GPU_PCI_ADDRESS)
-resolve_card_dev() {
+# Resolve the V620 card device dir(s) holding pp_od_clk_voltage. Match by PCI
+# vendor:device — and, if GPU_PCI_ADDRESS is set, an exact PCI address — NOT by
+# card index (cardN is unstable across boots). Matching by the V620 PCI ID means a
+# second AMD card that is NOT a V620 can never receive the offset, while EVERY V620
+# in the box does (this host runs two). Pin GPU_PCI_ADDRESS to target just one.
+#   stdout = matching dir(s), one per line, exit 0 : >=1 match
+#   exit 1                                         : no match yet (amdgpu binding)
+resolve_card_devs() {
   local dev vid did pci
   local -a matches=()
   for dev in /sys/class/drm/card*/device; do
@@ -66,11 +73,9 @@ resolve_card_dev() {
     fi
     matches+=("$dev")
   done
-  case "${#matches[@]}" in
-    1) printf '%s\n' "${matches[0]}"; return 0 ;;
-    0) return 1 ;;
-    *) printf '%s\n' "${matches[*]}"; return 2 ;;
-  esac
+  (( ${#matches[@]} >= 1 )) || return 1
+  printf '%s\n' "${matches[@]}"
+  return 0
 }
 
 # Read the currently-applied GFX voltage offset (e.g. "-100mV") from the OD node.
@@ -171,36 +176,62 @@ apply_offset() {  # $1 = card dev, $2 = mV
 # kill the subshell — without `set -e`, main would then barrel on with an empty dev
 # and apply_offset would write to a root-relative path. resolve_card_dev returns
 # status codes (never dies) for exactly that reason, so it IS safe in `$(...)`.
-CARD_DEV=""
-wait_for_card() {  # sets CARD_DEV or dies
-  local rc waited=0
+CARD_DEVS=()
+# Wait for the V620 OverDrive node(s) to appear and settle. amdgpu can bind a few
+# seconds into boot, and with two cards the second may show up just after the first.
+# If EXPECTED_GPU_COUNT>0 (or GPU_PCI_ADDRESS pins one card), wait until that many
+# match so a late-binding card is not missed; if WAIT_SECS elapses with FEWER, DIE
+# (fail loudly rather than under-apply a partial). Otherwise (auto, count 0) wait
+# until the match COUNT is stable across two consecutive scans, then act on whatever
+# is present (>=1), or die if none. Sets CARD_DEVS.
+# MUST be called directly, never via `x="$(wait_for_cards)"`: it dies on failure,
+# and a die() inside command substitution would only kill the subshell.
+wait_for_cards() {  # sets CARD_DEVS or dies
+  local waited=0 prev=-1 n want="$EXPECTED_GPU_COUNT"
+  [ -n "$GPU_PCI_ADDRESS" ] && want=1   # pinning one card => expect exactly one
+  local -a cur
   while :; do
-    CARD_DEV="$(resolve_card_dev)"; rc=$?
-    (( rc == 0 )) && return 0
-    (( rc == 2 )) && die "multiple GPUs match ${GPU_PCI_ID}${GPU_PCI_ADDRESS:+ @ ${GPU_PCI_ADDRESS}} ($CARD_DEV) — set GPU_PCI_ADDRESS in /etc/gpu-undervolt.env to pick one"
-    (( waited >= WAIT_SECS )) && die "no GPU matching ${GPU_PCI_ID}${GPU_PCI_ADDRESS:+ @ ${GPU_PCI_ADDRESS}} exposing pp_od_clk_voltage after ${WAIT_SECS}s — OverDrive not enabled? Check: cat /sys/module/amdgpu/parameters/ppfeaturemask (needs bit 0x4000); reboot after install.sh writes /etc/modprobe.d/amdgpu-overdrive.conf"
-    sleep 2; waited=$(( waited + 2 ))
+    mapfile -t cur < <(resolve_card_devs)
+    n=${#cur[@]}
+    # Target count reached (EXPECTED_GPU_COUNT / pinned single card).
+    if (( want > 0 && n >= want )); then CARD_DEVS=("${cur[@]}"); return 0; fi
+    # Auto mode (want==0): accept once the count is stable across two scans.
+    if (( want == 0 && n >= 1 && n == prev )); then CARD_DEVS=("${cur[@]}"); return 0; fi
+    if (( waited >= WAIT_SECS )); then
+      # want>0 and still here => the target was never reached => partial. Fail LOUDLY
+      # instead of under-applying: RemainAfterExit would otherwise mask a missing/late
+      # second card as success. Stock 0 mV is safe, so failing (leaving the found card
+      # at stock via ExecStopPost=--reset) is the safe, visible outcome; a restart
+      # re-applies to all once every card is up.
+      if (( want > 0 )); then
+        die "only ${n}/${want} expected V620(s) exposing pp_od_clk_voltage after ${WAIT_SECS}s — refusing a partial undervolt (EXPECTED_GPU_COUNT=${want}). Reseat/fix the missing card then 'systemctl restart gpu-undervolt', or lower EXPECTED_GPU_COUNT."
+      fi
+      # auto mode (want==0): apply to whatever is present, or die if none.
+      if (( n >= 1 )); then CARD_DEVS=("${cur[@]}"); return 0; fi
+      die "no GPU matching ${GPU_PCI_ID}${GPU_PCI_ADDRESS:+ @ ${GPU_PCI_ADDRESS}} exposing pp_od_clk_voltage after ${WAIT_SECS}s — OverDrive not enabled? Check: cat /sys/module/amdgpu/parameters/ppfeaturemask (needs bit 0x4000); reboot after install.sh writes /etc/modprobe.d/amdgpu-overdrive.conf"
+    fi
+    prev=$n; sleep 2; waited=$(( waited + 2 ))
   done
 }
 
 main() {
   require_root
-  local mode="${1:-apply}" dev rc
+  local mode="${1:-apply}" dev
   case "$mode" in
     apply)
       validate_offset "$OFFSET_MV"
-      wait_for_card                       # sets CARD_DEV or dies (called directly so die aborts)
-      apply_offset "$CARD_DEV" "$OFFSET_MV"
+      wait_for_cards                      # sets CARD_DEVS or dies (called directly so die aborts)
+      for dev in "${CARD_DEVS[@]}"; do apply_offset "$dev" "$OFFSET_MV"; done
       ;;
     --reset)
-      # Best-effort return to stock voltage (used on service stop). If the OD node
-      # is gone (amdgpu unloaded), there is nothing to reset.
-      dev="$(resolve_card_dev)"; rc=$?
-      case "$rc" in
-        0) apply_offset "$dev" 0 ;;
-        1) log "no matching OverDrive node present; nothing to reset" ;;
-        2) die "multiple GPUs match ${GPU_PCI_ID}${GPU_PCI_ADDRESS:+ @ ${GPU_PCI_ADDRESS}} ($dev) — set GPU_PCI_ADDRESS in /etc/gpu-undervolt.env to pick one" ;;
-      esac
+      # Best-effort return to stock voltage (used on service stop). Reset every
+      # matching V620; if none are present (amdgpu unloaded) there is nothing to do.
+      mapfile -t CARD_DEVS < <(resolve_card_devs)
+      if (( ${#CARD_DEVS[@]} >= 1 )); then
+        for dev in "${CARD_DEVS[@]}"; do apply_offset "$dev" 0; done
+      else
+        log "no matching OverDrive node present; nothing to reset"
+      fi
       ;;
     *) die "usage: gpu-undervolt [apply|--reset]" ;;
   esac
