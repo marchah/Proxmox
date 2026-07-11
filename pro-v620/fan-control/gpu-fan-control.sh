@@ -24,7 +24,7 @@
 # the daemon. Errors are handled explicitly.
 set -uo pipefail
 
-# ---- config (override via /etc/gpu-fan-control.env) -------------------------
+# ---- config (override via /etc/gpu-fan-control-<instance>.env) --------------
 GPU_HWMON_NAME="${GPU_HWMON_NAME:-amdgpu}"
 # Optional exact PCI address (e.g. 0000:2d:00.0) to pick ONE GPU when several match
 # GPU_HWMON_NAME (this host has two V620s). Empty = first amdgpu found. Selecting by
