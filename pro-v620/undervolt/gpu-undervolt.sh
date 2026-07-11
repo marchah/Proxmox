@@ -37,6 +37,11 @@ GPU_PCI_ID="${GPU_PCI_ID:-1002:73a1}"   # Radeon Pro V620 (Navi 21 / gfx1030)
 # Optional exact PCI address (e.g. 0000:2d:00.0) to disambiguate identical cards.
 GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-}"
 WAIT_SECS="${WAIT_SECS:-30}"            # max wait for pp_od_clk_voltage at boot
+# How many V620s to WAIT for at boot before applying (this host has two). 0 = auto:
+# apply once the match count is stable across two scans, which can miss a 2nd card
+# that binds a few seconds late. Set to the real count (e.g. 2) so a late-binding
+# card still gets the offset. Ignored when GPU_PCI_ADDRESS pins one card (=> expect 1).
+EXPECTED_GPU_COUNT="${EXPECTED_GPU_COUNT:-0}"
 
 # ---------------------------------------------------------------------------
 log()  { printf 'gpu-undervolt: %s\n' "$*"; }
@@ -171,20 +176,29 @@ apply_offset() {  # $1 = card dev, $2 = mV
 # status codes (never dies) for exactly that reason, so it IS safe in `$(...)`.
 CARD_DEVS=()
 # Wait for the V620 OverDrive node(s) to appear and settle. amdgpu can bind a few
-# seconds into boot, and with two cards the second may show up just after the first,
-# so we wait until the match COUNT is stable across two consecutive scans (or
-# WAIT_SECS elapses, after which we act on whatever is present). Sets CARD_DEVS.
+# seconds into boot, and with two cards the second may show up just after the first.
+# If EXPECTED_GPU_COUNT>0 (or GPU_PCI_ADDRESS pins one card), wait until that many
+# match so a late-binding card is not missed; otherwise (auto) wait until the match
+# COUNT is stable across two consecutive scans. Either way, once WAIT_SECS elapses we
+# act on whatever is present (>=1) or die if none. Sets CARD_DEVS.
 # MUST be called directly, never via `x="$(wait_for_cards)"`: it dies on failure,
 # and a die() inside command substitution would only kill the subshell.
 wait_for_cards() {  # sets CARD_DEVS or dies
-  local waited=0 prev=-1 n
+  local waited=0 prev=-1 n want="$EXPECTED_GPU_COUNT"
+  [ -n "$GPU_PCI_ADDRESS" ] && want=1   # pinning one card => expect exactly one
   local -a cur
   while :; do
     mapfile -t cur < <(resolve_card_devs)
     n=${#cur[@]}
-    if (( n >= 1 && n == prev )); then CARD_DEVS=("${cur[@]}"); return 0; fi
+    # Target count reached (EXPECTED_GPU_COUNT / pinned single card).
+    if (( want > 0 && n >= want )); then CARD_DEVS=("${cur[@]}"); return 0; fi
+    # Auto mode (want==0): accept once the count is stable across two scans.
+    if (( want == 0 && n >= 1 && n == prev )); then CARD_DEVS=("${cur[@]}"); return 0; fi
     if (( waited >= WAIT_SECS )); then
-      (( n >= 1 )) && { CARD_DEVS=("${cur[@]}"); return 0; }
+      if (( n >= 1 )); then
+        (( want > 0 && n < want )) && warn "only ${n}/${want} expected V620(s) present after ${WAIT_SECS}s — undervolting those found; run 'systemctl restart gpu-undervolt' once all are up"
+        CARD_DEVS=("${cur[@]}"); return 0
+      fi
       die "no GPU matching ${GPU_PCI_ID}${GPU_PCI_ADDRESS:+ @ ${GPU_PCI_ADDRESS}} exposing pp_od_clk_voltage after ${WAIT_SECS}s — OverDrive not enabled? Check: cat /sys/module/amdgpu/parameters/ppfeaturemask (needs bit 0x4000); reboot after install.sh writes /etc/modprobe.d/amdgpu-overdrive.conf"
     fi
     prev=$n; sleep 2; waited=$(( waited + 2 ))

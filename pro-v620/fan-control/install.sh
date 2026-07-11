@@ -123,9 +123,16 @@ build_driver() {
 activate_driver() {  # $1 = 1 if we just (re)built
   modprobe -r nct6683 2>/dev/null || true
   if [ "${1:-0}" = "1" ] && lsmod | grep -q '^nct6687\b'; then
-    systemctl stop gpu-fan-control 2>/dev/null || true   # release the chip + fail safe
+    # Release the chip: stop EVERY fan-control consumer (the per-GPU instances AND
+    # any legacy single unit) so the rebuilt module can replace the loaded one.
+    # Stopping only the old unit would leave the @instances holding nct6687 open, so
+    # `modprobe -r` would fail and the OLD build would stay live until reboot.
+    # enable_service (later in main) restarts the instances.
+    local inst
+    for inst in "${INSTANCES[@]}"; do systemctl stop "gpu-fan-control@${inst}.service" 2>/dev/null || true; done
+    systemctl stop gpu-fan-control.service 2>/dev/null || true
     modprobe -r nct6687 2>/dev/null \
-      || warn "nct6687 in use; the new driver build will become active on next reboot"
+      || warn "nct6687 still in use — the REBUILT driver only becomes active after a reboot (it is loaded at boot via /etc/modules-load.d)"
   fi
   modprobe nct6687 2>/dev/null || true
 }
