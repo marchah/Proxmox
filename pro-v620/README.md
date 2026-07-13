@@ -14,6 +14,15 @@ the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 > (see [`fan-control/`](fan-control/) and [`undervolt/`](undervolt/)). The single-card
 > figures below (benchmarks, thermals, the undervolt A/B) were measured on **one** V620
 > and remain valid as per-card characterization.
+>
+> **⚠️ GPU 2 (Arctic) is cooling-limited to ~half-load.** Benchmarking GPU 2 *alone*
+> (whole model pinned to `06:00.0` via `GGML_VK_VISIBLE_DEVICES=0`) overheats it: within
+> ~5 min junction hit **106 °C** (crit 100 / emergency ~105) at 250 W with the Arctic fan
+> **maxed at 100%**, and it thermal-throttled — aborted. The 2× Arctic S4028-6K are
+> low-CFM (measured ~14 °C worse than the blower at equal fan speed): fine for GPU 2's
+> *half* of the split (~70 °C peak), but not a full solo 250 W load. GPU 1 (blower) runs a
+> full load at ~83 °C. **So keep the model split, or fit GPU 2 with a blower before running
+> a solo model on it** — even at −100 mV the undervolt doesn't close the gap.
 
 With ~2.7× the VRAM of the 6700 XT (32 GB vs 12 GB), this card serves a much
 larger model. There is a single runtime script here (no LM Studio sibling —

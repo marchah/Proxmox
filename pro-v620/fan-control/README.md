@@ -16,6 +16,12 @@ service runs **one systemd instance per card**:
 Each instance pins its GPU by **PCI address** (`GPU_PCI_ADDRESS`) — stable across
 boots, unlike the `cardN` index which flips — and its fan by `FAN_PWM_CHANNEL`.
 
+> **⚠️ The Arctic cooling is half-load-only.** The 2× S4028-6K are low-CFM (measured
+> ~14 °C worse than the blower at equal fan speed). GPU 2 is fine for its *half* of a
+> split model (~70 °C peak), but a **full solo load overheats it** — pinning the whole
+> model to GPU 2 hit junction **106 °C** at 250 W with the fan maxed, throttling. Run GPU 2
+> only in the split, or fit it with a blower before giving it a solo model.
+
 ## Why a kernel driver swap is needed
 
 The board is an **MSI MAG B550 Tomahawk Max** → Super-I/O chip **Nuvoton
