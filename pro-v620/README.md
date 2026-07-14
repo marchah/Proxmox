@@ -18,8 +18,12 @@ the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 > S4028-6K — low-CFM (~14 °C worse than a blower at equal fan): fine for GPU 2's *half* of the
 > split (~70 °C) but a **full solo load overheated it** (junction **106 °C** at 250 W, fan
 > maxed, throttling — even at −100 mV). GPU 1's blower ran a full load at ~83 °C. The NF-F12
-> shroud replaced the Arctic pair to fix this; **whether one NF-F12 holds *both* cards under a
-> sustained full load is still to be load-tested** — until then, prefer the split.
+> shroud replaced the Arctic pair to fix this. **Load-tested 2026-07-14:** the shroud holds the
+> **split** comfortably (both ~56–59 °C at 60% fan) but **cannot sustain a solo full load** — one
+> card maxes the fan and settles at ~91 °C (GPU 1) / ~97 °C (GPU 2), holding but with no headroom.
+> **Prefer the split** for full-model work; the [`gpu-thermal-watchdog/`](gpu-thermal-watchdog/)
+> stops the LLM server at 102 °C as the last-resort net. Per-cooler thermals + 3D-print mounts:
+> [`fan-control/README.md`](fan-control/README.md).
 
 With ~2.7× the VRAM of the 6700 XT (32 GB vs 12 GB), this card serves a much
 larger model. There is a single runtime script here (no LM Studio sibling —

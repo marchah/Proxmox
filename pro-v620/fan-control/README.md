@@ -27,6 +27,25 @@ and a required sensor missing on **any** of them forces 100%.
 >   it only sufficed for GPU 2's *half* of a split model (~70 °C). A blower or the NF-F12
 >   shroud is the fix — hence the current single-shroud setup.
 
+## Measured thermals & 3D-printed mounts (per cooler)
+
+Junction temperature at −100 mV undervolt (the [`undervolt/`](../undervolt/) floor).
+**Split** = model split across both cards (each ~half the load — the normal config);
+**solo full-load** = the whole model on one card (~250 W board power).
+
+| Cooler | Card(s) | Split (½-load) | Solo full-load (250 W) | 3D-printed mount |
+|--------|---------|----------------|------------------------|------------------|
+| **9733 blower** (radial) | 1 (PCIe-1) | — | **~83 °C** @ ~93% fan — comfortable ✅ | [thingiverse:7296707](https://www.thingiverse.com/thing:7296707) |
+| **2× Arctic S4028-6K** (40 mm axial) | 1 (PCIe-3) | ~70 °C ✅ | **106 °C**, fan maxed, throttling ❌ | [printables 1712035](https://www.printables.com/model/1712035-amd-v340-v520-v620-mi25-mi50-mi60-mi100-mi210-fan) |
+| **NF-F12 iPPC-3000** (120 mm, current) | both | **~56–59 °C** @ 60% fan ✅ | GPU1 ~91 °C / GPU2 ~97 °C @ 100% fan ⚠️ | [printables 1670548](https://www.printables.com/model/1670548-v620-dual-shroud) |
+
+Takeaways: the blower has the most headroom on a solo full-load; the low-CFM Arctic pair
+**cannot** sustain one (static pressure through the passive heatsink is the bottleneck); the
+single **NF-F12 shroud holds the split comfortably** but runs a solo full-load right at its
+limit (fan maxed, ~8 °C from the 100 °C throttle). For solo full-load work prefer the blower —
+or rely on the [`gpu-thermal-watchdog/`](../gpu-thermal-watchdog/) (stops the LLM server at
+102 °C) as the last-resort safety net.
+
 ## Why a kernel driver swap is needed
 
 The board is an **MSI MAG B550 Tomahawk Max** → Super-I/O chip **Nuvoton
