@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Install GPU-temperature-based fan control for the Radeon Pro V620 cooler(s) on a
-# Proxmox host with an MSI MAG B550 board. Runs one systemd instance per GPU/cooler
-# (this host has two V620s: a blower on the PCIe-1 card, 2x Arctic S4028-6K on the
-# PCIe-3 card), each pinned to its GPU by PCI address.
+# Proxmox host with an MSI MAG B550 board. Runs one systemd instance per cooler
+# (this host's two V620s share a single NF-F12 iPPC-3000 in a shroud — one @shroud
+# instance cooling both cards, its curve tracking the hotter one), pinned by PCI address.
 #
 # Run on the Proxmox host as root. Idempotent — safe to re-run.
 #

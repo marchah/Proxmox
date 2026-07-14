@@ -16,10 +16,11 @@ Three containers form the system:
   `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, 35B total / ~3B active) via Vulkan, exposing an
   OpenAI-compatible API at `0.0.0.0:1234` under the id `qwen3.6-35b-a3b`. The host now has
   **two Radeon Pro V620s** (Navi 21 / gfx1030, 32 GB each): one in the **PCIe-1** (CPU) slot
-  `0000:2d:00.0` cooled by a **blower**, one in the **PCIe-3** (chipset) slot `0000:06:00.0`
-  cooled by **2× Arctic S4028-6K** fans. The container passes through all of `/dev/dri`, so
-  llama.cpp currently sees both Vulkan devices and **splits the model across both** (each holds
-  ~half the weights + KV). Both cards are undervolted −100 mV; each has its own fan curve:
+  `0000:2d:00.0`, one in the **PCIe-3** (chipset) slot `0000:06:00.0`, both cooled by a single
+  **NF-F12 iPPC-3000** 120 mm fan in a shared shroud (one `gpu-fan-control@shroud` instance whose
+  curve tracks the hotter card). The container passes through all of `/dev/dri`, so llama.cpp
+  currently sees both Vulkan devices and **splits the model across both** (each holds ~half the
+  weights + KV). Both cards are undervolted −100 mV:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
     (hostname `llamacpp`). This is the current runtime.
   - **Prior GPU (`rx-6700-xt/`, kept for reference):** the V620 replaced a Radeon RX 6700 XT
