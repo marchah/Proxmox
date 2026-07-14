@@ -256,6 +256,17 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   OverDrive exposes no clock-ceiling knob, so an undervolt is the only power/thermal lever
   (−100 mV ≈ −18 % power / −8 °C peak junction at flat throughput). The undervolt installer also
   enables OverDrive via `/etc/modprobe.d/amdgpu-overdrive.conf` (needs a reboot to take effect).
+- **A last-resort GPU over-temp watchdog lives under `pro-v620/gpu-thermal-watchdog/`** (also
+  host-side, NOT in an LXC; same idempotent `install.sh` + systemd unit + `.env` idiom, but no
+  kernel module — it only *reads* amdgpu hwmon). It watches junction/mem on both V620s and, if
+  either crosses a trip temp (default **102 °C** junction / 101 °C mem — deliberately **above**
+  the 100 °C hardware throttle, **below** the 105 °C emergency reset), gracefully stops the LLM
+  server (`pct exec 120 -- systemctl stop llamacpp`) so the card cools before the hardware has to
+  reset it (a MODE1 reset corrupts the running inference). Failure philosophy is the **opposite**
+  of the fan controller's: stopping the model is disruptive, so a missing sensor is logged and
+  skipped rather than treated as over-temp (the 105 °C hardware emergency is the final backstop).
+  It never fires in the split (normal) config (~59 °C) — only a sustained **solo full-load** on
+  one card reaches these temps (which the shroud cannot hold below the low-90s °C).
 - **Non-GPU host networking lives under `host-net/`** (also host-side, NOT in an LXC).
   `host-net/wifi-nat/` lets the host run with **no ethernet**: onboard WiFi (`wlo1`) becomes the
   routed WAN and `vmbr0` becomes an internal NAT'd LAN (`10.10.10.0/24`) the LXCs sit behind
