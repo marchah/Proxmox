@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 #
-# gpu-fan-control — drive the Radeon Pro V620 blower (wired to PUMP_FAN1) from
-# the GPU's own temperature, via the writable out-of-tree nct6687 hwmon driver.
+# gpu-fan-control — drive a Radeon Pro V620 cooler fan from the GPU's own
+# temperature, via the writable out-of-tree nct6687 hwmon driver. One instance per
+# cooler (see gpu-fan-control@.service); each instance's fan PWM channel is set via
+# FAN_PWM_CHANNEL and the GPU(s) it cools via GPU_PCI_ADDRESS.
 #
 # Why this exists: the MSI MAG B550 board's in-tree nct6683 driver is read-only,
-# so the BIOS can only steer PUMP_FAN1 off its PCIE temperature probe, never the
-# GPU die. This daemon reads amdgpu's sensors and writes the fan PWM directly
-# (manual mode). PUMP_FAN1 is pwm channel 2 on this board (verified empirically:
-# driving pwm2 moved only fan2's RPM).
+# so the BIOS can only steer the fan headers off a motherboard temperature probe,
+# never the GPU die. This daemon reads amdgpu's sensors and writes the fan PWM
+# directly (manual mode). pwm↔fan channels were verified empirically (driving pwmN
+# moves only fanN).
 #
-# The V620 is a passively cooled datacenter card — the blower is its ONLY
-# cooling — so the daemon is defensive about it:
+# The V620 is a passively cooled datacenter card — its fan is the ONLY cooling — so
+# the daemon is defensive about it:
 #   * the curve is driven by EDGE temp; the HOTTEST of junction+mem forces 100%;
 #   * EVERY sensor present at startup is required: if any disappears, force 100%;
-#   * the blower's tachometer is watched — if it stops spinning while we command
+#   * the fan's tachometer is watched — if it stops spinning while we command
 #     airflow, force 100% and (optionally) power off to protect the GPU;
 #   * every PWM write is read back; persistent write failures escalate (we cannot
 #     trust the fan when our commands are not taking effect);
@@ -34,7 +36,7 @@ GPU_HWMON_NAME="${GPU_HWMON_NAME:-amdgpu}"
 GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-}"
 FAN_HWMON_NAME="${FAN_HWMON_NAME:-nct6687}"
 FAN_PWM_CHANNEL="${FAN_PWM_CHANNEL:-2}"          # pwm channel driving THIS GPU's fan
-FAN_LABEL="${FAN_LABEL:-fan}"                    # cosmetic name for logs (e.g. blower, arctic)
+FAN_LABEL="${FAN_LABEL:-fan}"                    # cosmetic name for logs (e.g. shroud, blower, arctic)
 
 # Curve is driven by the EDGE temperature (the stable "GPU temp").
 CURVE_TEMP_LABEL="${CURVE_TEMP_LABEL:-edge}"
@@ -62,7 +64,7 @@ PWM_READBACK_RETRY_SLEEP="${PWM_READBACK_RETRY_SLEEP:-0.5}"  # backoff between a
 # Failure handling — the V620 is passively cooled, so loss of control = no cooling.
 FAN_RPM_MONITOR="${FAN_RPM_MONITOR:-auto}"       # auto|on|off (auto = on iff a tach reads >0 at start)
 FAN_MIN_RPM="${FAN_MIN_RPM:-150}"                # below this, while commanding airflow, = not spinning
-FAN_FAIL_GRACE="${FAN_FAIL_GRACE:-3}"            # consecutive bad polls before declaring a blower failure
+FAN_FAIL_GRACE="${FAN_FAIL_GRACE:-3}"            # consecutive bad polls before declaring a fan failure
 WRITE_FAIL_GRACE="${WRITE_FAIL_GRACE:-3}"        # consecutive failed PWM writes before CRITICAL
 FAN_FAIL_ACTION="${FAN_FAIL_ACTION:-warn}"       # warn | poweroff (power off to protect the GPU)
 FAN_FAIL_POWEROFF_GRACE="${FAN_FAIL_POWEROFF_GRACE:-15}"  # bad polls before poweroff (if enabled)
@@ -152,7 +154,7 @@ raw_for_temp() {  # $1 = curve-input °C ; echoes target raw pwm via the curve
 }
 
 FAN_CHIP=""
-read_fan_rpm() {  # echoes the blower RPM (fanN_input) or returns 1
+read_fan_rpm() {  # echoes the fan RPM (fanN_input) or returns 1
   [ -n "$FAN_CHIP" ] || return 1
   cat "$FAN_CHIP/fan${FAN_PWM_CHANNEL}_input" 2>/dev/null
 }
@@ -189,7 +191,7 @@ write_pwm() {  # $1 = raw
 # Apply a target PWM, tracking success/failure. last_raw is updated ONLY on a
 # confirmed write, so a failed write keeps us retrying (and the failure visible)
 # rather than pretending the new speed is in effect. Persistent write failures
-# escalate exactly like a dead blower — control is effectively lost either way.
+# escalate exactly like a dead fan — control is effectively lost either way.
 write_fail=0
 apply_pwm() {  # $1 = target raw ; returns write_pwm status
   local target="$1"
@@ -297,7 +299,7 @@ else
   done
 fi
 
-# Watch the blower tach? (auto: only if it reports RPM now — off for 2-wire fans.)
+# Watch the fan tach? (auto: only if it reports RPM now — off for 2-wire fans.)
 fan_monitor=0
 case "$FAN_RPM_MONITOR" in
   on)  fan_monitor=1 ;;
@@ -305,7 +307,7 @@ case "$FAN_RPM_MONITOR" in
   *)
     rpm0="$(read_fan_rpm)"
     if [ -n "$rpm0" ] && (( rpm0 > 0 )); then fan_monitor=1
-    else log "WARN: blower tach reads no RPM at start — tach watchdog DISABLED (set FAN_RPM_MONITOR=on to force)"; fi
+    else log "WARN: fan tach reads no RPM at start — tach watchdog DISABLED (set FAN_RPM_MONITOR=on to force)"; fi
     ;;
 esac
 
@@ -355,26 +357,26 @@ while :; do
   expected_gpu_missing=0
   (( ${#MISSING_ADDRS[@]} > 0 )) && expected_gpu_missing=1
 
-  # --- blower fault: commanding airflow but the tach says it's not spinning ---
-  blower_fault=0
+  # --- fan fault: commanding airflow but the tach says it's not spinning ---
+  fan_fault=0
   if (( fan_monitor )); then
     if (( last_raw >= MIN_PWM_RAW )) && { [ -z "$rpm" ] || (( rpm < FAN_MIN_RPM )); }; then
       fan_fail=$(( fan_fail + 1 ))
     else
       fan_fail=0
     fi
-    (( fan_fail >= FAN_FAIL_GRACE )) && blower_fault=1
+    (( fan_fail >= FAN_FAIL_GRACE )) && fan_fault=1
   fi
 
   # --- faults force 100% and fail loud (writes still verified by apply_pwm) ---
-  if (( sensor_fault || blower_fault || expected_gpu_missing )); then
+  if (( sensor_fault || fan_fault || expected_gpu_missing )); then
     (( sensor_fault )) && (( loops % 10 == 1 )) && \
       log "WARN: required GPU sensor missing (edge='${edge:-}' hotspot_missing=${hotspot_missing}); forcing 100%"
     (( expected_gpu_missing )) && (( loops % 10 == 1 )) && \
       log "CRITICAL: configured GPU missing (${#GPU_CHIPS[@]}/${EXPECTED_COUNT} present, MISSING ${MISSING_ADDRS[*]}) — the shared fan cools all listed cards; forced 100% until present"
-    if (( blower_fault )); then
+    if (( fan_fault )); then
       if (( fan_fail == FAN_FAIL_GRACE )) || (( fan_fail % 15 == 0 )); then
-        log "CRITICAL: blower not spinning (rpm='${rpm:-?}' < ${FAN_MIN_RPM} while commanding pwm>=${MIN_PWM_RAW}) — V620 has NO other cooling; forced 100%"
+        log "CRITICAL: fan not spinning (rpm='${rpm:-?}' < ${FAN_MIN_RPM} while commanding pwm>=${MIN_PWM_RAW}) — V620 has NO other cooling; forced 100%"
       fi
       if [ "$FAN_FAIL_ACTION" = poweroff ] && (( fan_fail >= FAN_FAIL_POWEROFF_GRACE )); then
         log "CRITICAL: airflow not restored after ${fan_fail} polls; powering off to protect the GPU (FAN_FAIL_ACTION=poweroff)"

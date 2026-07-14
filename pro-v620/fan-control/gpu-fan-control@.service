@@ -2,8 +2,9 @@
 Description=GPU fan control (%i) — Radeon Pro V620 cooler, GPU-temp driven
 Documentation=https://github.com/Marchah/Proxmox/tree/main/pro-v620/fan-control
 # Needs the nct6687 (writable PWM) module and amdgpu bound to the card.
-# One instance per GPU/cooler; the per-instance env pins the GPU (by PCI address)
-# and its fan pwm channel: gpu-fan-control@blower, gpu-fan-control@arctic.
+# One instance per cooler; the per-instance env pins the GPU(s) (by PCI address)
+# and its fan pwm channel — e.g. gpu-fan-control@shroud (current: one NF-F12 cooling
+# both cards); prior per-GPU examples: gpu-fan-control@blower, gpu-fan-control@arctic.
 Wants=systemd-modules-load.service
 After=systemd-modules-load.service
 ConditionPathExistsGlob=/sys/class/hwmon/hwmon*/name
