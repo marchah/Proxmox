@@ -1,26 +1,50 @@
-# GPU fan control — Radeon Pro V620 coolers (per-GPU instances)
+# GPU fan control — Radeon Pro V620 coolers (per-cooler instances)
 
-Host-level (Proxmox) service that drives each V620's cooler fan from **that GPU's
-own temperature**, instead of the BIOS smart-fan curve (which can only read a
-motherboard temperature probe). The V620s are passively cooled datacenter cards,
-so their fans are the **only** cooling.
+Host-level (Proxmox) service that drives the V620 cooler fan(s) from the **GPU's own
+temperature**, instead of the BIOS smart-fan curve (which can only read a motherboard
+temperature probe). The V620s are passively cooled datacenter cards, so their fans are
+the **only** cooling.
 
-This host runs **two V620s**, each with its own cooler on its own fan header, so the
-service runs **one systemd instance per card**:
+The service runs **one systemd instance per cooler**. Current hardware — a single
+**NF-F12 iPPC-3000 in a shared shroud cools BOTH V620s**:
 
-| Instance | GPU (PCI address) | Cooler | nct6687 pwm | Idle floor |
-|----------|-------------------|--------|-------------|------------|
-| `gpu-fan-control@blower` | PCIe-1 `0000:2d:00.0` | 9733 12V blower (Pump Fan header) | pwm2 | 12.5% (~750 RPM) |
-| `gpu-fan-control@arctic` | PCIe-3 `0000:06:00.0` | 2× Arctic S4028-6K, 40 mm (fan 2 header) | pwm4 | 22% (~690 RPM) |
+| Instance | GPU(s) cooled | Cooler | nct6687 pwm | Idle floor |
+|----------|---------------|--------|-------------|------------|
+| `gpu-fan-control@shroud` | both — `0000:2d:00.0` + `0000:06:00.0` | NF-F12 iPPC-3000, 120 mm (FAN1) | pwm3 | 50% (~1480 RPM) |
 
-Each instance pins its GPU by **PCI address** (`GPU_PCI_ADDRESS`) — stable across
-boots, unlike the `cardN` index which flips — and its fan by `FAN_PWM_CHANNEL`.
+An instance pins its GPU(s) by **PCI address** (`GPU_PCI_ADDRESS` — comma-separated for a
+shared cooler; stable across boots, unlike the `cardN` index) and its fan by
+`FAN_PWM_CHANNEL`. When one fan cools several GPUs the curve tracks the **hottest** card,
+and a required sensor missing on **any** of them forces 100%.
 
-> **⚠️ The Arctic cooling is half-load-only.** The 2× S4028-6K are low-CFM (measured
-> ~14 °C worse than the blower at equal fan speed). GPU 2 is fine for its *half* of a
-> split model (~70 °C peak), but a **full solo load overheats it** — pinning the whole
-> model to GPU 2 hit junction **106 °C** at 250 W with the fan maxed, throttling. Run GPU 2
-> only in the split, or fit it with a blower before giving it a solo model.
+> **Cooling history / gotchas**
+> - **The NF-F12 iPPC-3000 floor is high:** on this board it stalls below ~47% and won't
+>   cold-start below ~43% (pwm 112), so the idle floor is 50% (~1480 RPM) — there is no
+>   quiet idle with this fan (measured).
+> - **Prior per-GPU setup (env files kept in-repo for reference):** `@blower` (9733 blower,
+>   pwm2, PCIe-1) + `@arctic` (2× Arctic S4028-6K, pwm4, PCIe-3). The Arctic pair was low-CFM
+>   and **overheated GPU 2 on a full solo load** (junction **106 °C**, fan maxed, throttling);
+>   it only sufficed for GPU 2's *half* of a split model (~70 °C). A blower or the NF-F12
+>   shroud is the fix — hence the current single-shroud setup.
+
+## Measured thermals & 3D-printed mounts (per cooler)
+
+Junction temperature at −100 mV undervolt (the [`undervolt/`](../undervolt/) floor).
+**Split** = model split across both cards (each ~half the load — the normal config);
+**solo full-load** = the whole model on one card (~250 W board power).
+
+| Cooler | Card(s) | Split (½-load) | Solo full-load (250 W) | 3D-printed mount |
+|--------|---------|----------------|------------------------|------------------|
+| **9733 blower** (radial) | 1 (PCIe-1) | — | **~83 °C** @ ~93% fan — comfortable ✅ | [thingiverse:7296707](https://www.thingiverse.com/thing:7296707) |
+| **2× Arctic S4028-6K** (40 mm axial) | 1 (PCIe-3) | ~70 °C ✅ | **106 °C**, fan maxed, throttling ❌ | [printables 1712035](https://www.printables.com/model/1712035-amd-v340-v520-v620-mi25-mi50-mi60-mi100-mi210-fan) |
+| **NF-F12 iPPC-3000** (120 mm, current) | both | **~56–59 °C** @ 60% fan ✅ | GPU1 ~91 °C / GPU2 ~97 °C @ 100% fan ⚠️ | [printables 1670548](https://www.printables.com/model/1670548-v620-dual-shroud) |
+
+Takeaways: the blower has the most headroom on a solo full-load; the low-CFM Arctic pair
+**cannot** sustain one (static pressure through the passive heatsink is the bottleneck); the
+single **NF-F12 shroud holds the split comfortably** but runs a solo full-load right at its
+limit (fan maxed, ~8 °C from the 100 °C throttle). For solo full-load work prefer the blower —
+or rely on the [`gpu-thermal-watchdog/`](../gpu-thermal-watchdog/) (stops the LLM server at
+102 °C) as the last-resort safety net.
 
 ## Why a kernel driver swap is needed
 
@@ -39,25 +63,28 @@ are offset from the board silkscreen: channel `N` = `System Fan #(N-2)`.
 
 ## Control logic (per instance)
 
-- Curve driven by the **edge** temperature; the **hottest** of the hotspot
-  sensors (**junction + mem**) forces 100% as a safety override (with hysteresis).
-- The fan **never stops** — `MIN_PWM_RAW` is a hard floor (the fan is the card's
-  only cooling). The 9733 blower holds ~750 RPM at 12.5%. The 2× S4028-6K have a
-  higher floor: they **stall below ~18%** and **won't cold-start below ~21%**, so
-  the Arctic floor is **22% (pwm 56, ~690 RPM)** — the lowest that reliably spins
-  both up from a dead stop on boot.
-- Profiles (tune in `/etc/gpu-fan-control-<instance>.env`):
-  - **blower** — `edge ≤35 °C → 12.5%`, ramp, `edge ≥88 °C → 100%`.
-  - **arctic** — `edge ≤40 °C → 22%`, ramp, `edge ≥85 °C → 100%`.
-  - both — `junction|mem ≥90 °C → 100%`.
+- Curve driven by the **edge** temperature (the **hottest** edge across all cooled GPUs
+  when one fan cools several); the **hottest** of the hotspot sensors (**junction + mem**,
+  across all cooled GPUs) forces 100% as a safety override (with hysteresis).
+- The fan **never stops** — `MIN_PWM_RAW` is a hard floor (the fan is the cards' only
+  cooling). The current **NF-F12 iPPC-3000** floor is **50% (pwm 128, ~1480 RPM)**: it
+  stalls below ~47% and won't cold-start below ~43% (pwm 112) on this board, so there is
+  no quiet idle with this fan. (Prior per-cooler floors — 9733 blower 12.5%, Arctic 22% —
+  live in the reference env files and the *Measured thermals* / cooling-history notes above.)
+- Current **shroud** profile (`/etc/gpu-fan-control-shroud.env`): `edge ≤45 °C → 50%`,
+  ramp, `edge ≥80 °C → 100%`; `junction|mem ≥90 °C → 100%` (resume at 87 °C).
 - **Fail toward cooling.** Every sensor present at startup (edge *and* each of
-  `HOTSPOT_TEMP_LABELS`) is then required: if any one disappears the daemon forces
-  100%. Missing a configured sensor at startup is fatal.
+  `HOTSPOT_TEMP_LABELS`) is then required: if any disappears the daemon forces 100%.
+  Likewise, every GPU in an explicit `GPU_PCI_ADDRESS` list is a **required set**, re-checked
+  every poll: if any listed card is missing/unbound the daemon forces 100% and logs
+  `CRITICAL` (the shared fan cools all listed cards, so an untracked one must not be left
+  following only the present card). Missing a configured *sensor* on a present card at
+  startup is fatal.
 - **Tach watchdog.** If the fan reads below `FAN_MIN_RPM` while airflow is
   commanded, the daemon forces 100% and logs `CRITICAL`; every PWM write is read
-  back and persistent write failures escalate the same way. The Arctic pair share
-  one header via a splitter, so only **one** fan's tach is visible — a total stall
-  of the tach'd fan is caught; a single-fan failure of the other is not.
+  back and persistent write failures escalate the same way. This matters most for the
+  shroud — it's the **sole cooler for both GPUs**, so a stall means both lose airflow
+  (the amdgpu 100 °C throttle / ~105 °C cutout is the hardware backstop).
 - **Failsafe:** on any stop/crash the instance hands its channel back to the
   BIOS/SIO auto curve (`pwmN_enable=2`), or a verified manual 100% if that can't be
   confirmed — never the idle floor. Via the EXIT trap and the unit's `ExecStopPost`.
@@ -67,19 +94,19 @@ are offset from the board silkscreen: channel `N` = `System Fan #(N-2)`.
 
 | File | Installed to | Purpose |
 |------|--------------|---------|
-| `gpu-fan-control.sh`          | `/usr/local/sbin/gpu-fan-control`            | the control daemon (GPU pinned via `GPU_PCI_ADDRESS`) |
+| `gpu-fan-control.sh`          | `/usr/local/sbin/gpu-fan-control`            | the control daemon (GPU(s) pinned via `GPU_PCI_ADDRESS`) |
 | `gpu-fan-control@.service`    | `/etc/systemd/system/gpu-fan-control@.service` | systemd **template** (one instance per cooler) |
-| `gpu-fan-control-blower.env`  | `/etc/gpu-fan-control-blower.env`            | PCIe-1 blower: curve + PCI/channel pins |
-| `gpu-fan-control-arctic.env`  | `/etc/gpu-fan-control-arctic.env`            | PCIe-3 Arctic: curve + PCI/channel pins |
-| `install.sh`                  | —                                            | one-shot installer (driver + both instances) |
+| `gpu-fan-control-shroud.env`  | `/etc/gpu-fan-control-shroud.env`            | **current**: NF-F12 shroud cooling both GPUs (curve + PCI/channel pins) |
+| `gpu-fan-control-blower.env`, `gpu-fan-control-arctic.env` | (not installed) | prior per-GPU coolers, kept in-repo for reference |
+| `install.sh`                  | —                                            | one-shot installer (driver + the `INSTANCES` cooler(s)) |
 
-The daemon resolves the `nct6687` chip by **name** and the GPU by **PCI address**
-each boot (the `hwmonN`/`cardN` numbers are not stable).
+The daemon resolves the `nct6687` chip by **name** and each GPU by **PCI address**
+every boot (the `hwmonN`/`cardN` numbers are not stable).
 
 ## Install
 
-Run on the Proxmox host as root (idempotent — sets up the driver and **both**
-instances, and migrates off any old single-instance service):
+Run on the Proxmox host as root (idempotent — sets up the driver and the cooler
+instance(s) in `INSTANCES` (currently `shroud`), and retires any stale/older ones):
 
 ```bash
 ./pro-v620/fan-control/install.sh
@@ -93,23 +120,22 @@ moving ref like `master` is rejected unless `NCT6687D_ALLOW_UNPINNED=1`.
 ## Operate
 
 ```bash
-systemctl status gpu-fan-control@blower gpu-fan-control@arctic
-journalctl -u gpu-fan-control@arctic -f     # watch edge/junction -> pwm decisions
+systemctl status gpu-fan-control@shroud
+journalctl -u gpu-fan-control@shroud -f     # watch edge(max of both GPUs) -> pwm decisions
 
-# live state of both channels (resolve nct6687 hwmon first)
+# live state of the shroud fan (resolve nct6687 hwmon first)
 H=$(for h in /sys/class/hwmon/hwmon*; do [ "$(cat $h/name)" = nct6687 ] && echo $h; done)
-echo "blower: pwm=$(cat $H/pwm2) rpm=$(cat $H/fan2_input)"
-echo "arctic: pwm=$(cat $H/pwm4) rpm=$(cat $H/fan4_input)"
+echo "shroud (NF-F12, FAN1): pwm=$(cat $H/pwm3) rpm=$(cat $H/fan3_input)"
 
-# retune one cooler
-$EDITOR /etc/gpu-fan-control-arctic.env
-systemctl restart gpu-fan-control@arctic
+# retune the curve
+$EDITOR /etc/gpu-fan-control-shroud.env
+systemctl restart gpu-fan-control@shroud
 ```
 
 ## Uninstall
 
 ```bash
-systemctl disable --now gpu-fan-control@blower gpu-fan-control@arctic
+systemctl disable --now gpu-fan-control@shroud
 rm -f /usr/local/sbin/gpu-fan-control /etc/gpu-fan-control-*.env \
       /etc/systemd/system/gpu-fan-control@.service
 systemctl daemon-reload

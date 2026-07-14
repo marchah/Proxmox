@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Install GPU-temperature-based fan control for the Radeon Pro V620 cooler(s) on a
-# Proxmox host with an MSI MAG B550 board. Runs one systemd instance per GPU/cooler
-# (this host has two V620s: a blower on the PCIe-1 card, 2x Arctic S4028-6K on the
-# PCIe-3 card), each pinned to its GPU by PCI address.
+# Proxmox host with an MSI MAG B550 board. Runs one systemd instance per cooler
+# (this host's two V620s share a single NF-F12 iPPC-3000 in a shroud — one @shroud
+# instance cooling both cards, its curve tracking the hotter one), pinned by PCI address.
 #
 # Run on the Proxmox host as root. Idempotent — safe to re-run.
 #
@@ -39,10 +39,14 @@ readonly BLACKLIST_PATH="/etc/modprobe.d/nct6687.conf"
 readonly MODLOAD_PATH="/etc/modules-load.d/nct6687.conf"
 # Records the driver commit SHA we built, so a bumped NCT6687D_REF triggers a rebuild.
 readonly DRIVER_SHA_FILE="/var/lib/gpu-fan-control.driver-sha"
-# One systemd instance per GPU/cooler; each reads its own /etc/gpu-fan-control-<i>.env
-# (pins the GPU by PCI address + its fan pwm channel). This host runs two V620s:
-#   blower -> PCIe-1 card (pwm2),  arctic -> PCIe-3 card (pwm4).
-readonly INSTANCES=(blower arctic)
+# One systemd instance per COOLER; each reads its own /etc/gpu-fan-control-<i>.env
+# (pins the GPU(s) it cools by PCI address + its fan pwm channel). Current hardware:
+# one NF-F12 in a shared shroud cools BOTH V620s (curve = hottest of the two).
+#   shroud -> both V620s (pwm3, FAN1)
+# Reference env files for the prior per-GPU coolers (blower/arctic) are kept in the
+# repo but not installed while INSTANCES lists only 'shroud'. Any enabled instance
+# NOT listed here is retired on install (see install_service).
+readonly INSTANCES=(shroud)
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
@@ -123,14 +127,19 @@ build_driver() {
 activate_driver() {  # $1 = 1 if we just (re)built
   modprobe -r nct6683 2>/dev/null || true
   if [ "${1:-0}" = "1" ] && lsmod | grep -q '^nct6687\b'; then
-    # Release the chip: stop EVERY fan-control consumer (the per-GPU instances AND
-    # any legacy single unit) so the rebuilt module can replace the loaded one.
-    # Stopping only the old unit would leave the @instances holding nct6687 open, so
-    # `modprobe -r` would fail and the OLD build would stay live until reboot.
-    # enable_service (later in main) restarts the instances.
-    local inst
-    for inst in "${INSTANCES[@]}"; do systemctl stop "gpu-fan-control@${inst}.service" 2>/dev/null || true; done
-    systemctl stop gpu-fan-control.service 2>/dev/null || true
+    # Release the chip: stop EVERY loaded fan-control consumer — ANY `gpu-fan-control@*`
+    # instance (not just those in INSTANCES) plus the legacy single unit — so the rebuilt
+    # module can replace the loaded one. Stopping only INSTANCES would let a STALE instance
+    # from a prior setup (e.g. @blower / @arctic before the shroud) keep nct6687 open, so
+    # `modprobe -r` would fail and the OLD build would stay live until reboot. Those stale
+    # units are fully disabled/retired later in install_service; here we only need them
+    # stopped. enable_service (later in main) restarts the current INSTANCES.
+    local units
+    units="$(systemctl list-units --full --all --no-legend 'gpu-fan-control@*.service' gpu-fan-control.service 2>/dev/null | awk '{print $1}')" || true
+    if [ -n "$units" ]; then
+      # shellcheck disable=SC2086  # word-splitting the unit list is intended
+      systemctl stop $units 2>/dev/null || true
+    fi
     modprobe -r nct6687 2>/dev/null \
       || warn "nct6687 still in use — the REBUILT driver only becomes active after a reboot (it is loaded at boot via /etc/modules-load.d)"
   fi
@@ -204,6 +213,17 @@ install_service() {
     systemctl disable --now gpu-fan-control.service >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/gpu-fan-control.service
   fi
+
+  # Retire any enabled instances no longer in INSTANCES (e.g. a previous per-GPU
+  # blower/arctic setup replaced by a single shroud fan) so they don't keep driving
+  # now-empty channels or fight the current instance for the chip.
+  local link ename want keep
+  for link in /etc/systemd/system/multi-user.target.wants/gpu-fan-control@*.service; do
+    [ -e "$link" ] || continue
+    ename="$(basename "$link")"; ename="${ename#gpu-fan-control@}"; ename="${ename%.service}"
+    keep=0; for want in "${INSTANCES[@]}"; do [ "$ename" = "$want" ] && keep=1; done
+    (( keep )) || { log "retiring stale instance gpu-fan-control@${ename}"; systemctl disable --now "gpu-fan-control@${ename}.service" >/dev/null 2>&1 || true; }
+  done
   systemctl daemon-reload
 }
 

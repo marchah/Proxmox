@@ -4,25 +4,26 @@ Scripts in this folder target the desktop server's **Radeon Pro V620** (Navi 21 
 gfx1030, RDNA 2, **32 GB** GDDR6, 72 CUs). The V620 **replaces the RX 6700 XT** —
 the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 
-> **Dual-GPU update:** the host now runs **two V620s** — one in the PCIe-1 (CPU) slot
-> `0000:2d:00.0` cooled by a blower, one in the PCIe-3 (chipset) slot `0000:06:00.0`
-> cooled by 2× Arctic S4028-6K fans. CT 120's container passes through all of
-> `/dev/dri`, so llama.cpp **splits the model across both cards** (each ~half the
-> weights + KV). Both are undervolted −100 mV and each has its own fan curve — the
-> host-side services are now **per-GPU**: `gpu-undervolt` applies to every V620, and
-> `gpu-fan-control@blower` / `gpu-fan-control@arctic` run one instance per cooler
-> (see [`fan-control/`](fan-control/) and [`undervolt/`](undervolt/)). The single-card
-> figures below (benchmarks, thermals, the undervolt A/B) were measured on **one** V620
-> and remain valid as per-card characterization.
+> **Dual-GPU update:** the host now runs **two V620s** — PCIe-1 (CPU) slot `0000:2d:00.0`
+> and PCIe-3 (chipset) slot `0000:06:00.0`. CT 120's container passes through all of
+> `/dev/dri`, so llama.cpp **splits the model across both cards** (each ~half the weights +
+> KV). Both are undervolted −100 mV (`undervolt/` applies to every V620). **Cooling
+> (current): one NF-F12 iPPC-3000 in a shared shroud cools BOTH cards**, driven by a single
+> `gpu-fan-control@shroud` instance whose curve tracks the **hotter** of the two (see
+> [`fan-control/`](fan-control/) and [`undervolt/`](undervolt/)). The single-card figures
+> below (benchmarks, thermals, undervolt A/B) were measured on **one** V620 and remain valid
+> as per-card characterization.
 >
-> **⚠️ GPU 2 (Arctic) is cooling-limited to ~half-load.** Benchmarking GPU 2 *alone*
-> (whole model pinned to `06:00.0` via `GGML_VK_VISIBLE_DEVICES=0`) overheats it: within
-> ~5 min junction hit **106 °C** (crit 100 / emergency ~105) at 250 W with the Arctic fan
-> **maxed at 100%**, and it thermal-throttled — aborted. The 2× Arctic S4028-6K are
-> low-CFM (measured ~14 °C worse than the blower at equal fan speed): fine for GPU 2's
-> *half* of the split (~70 °C peak), but not a full solo 250 W load. GPU 1 (blower) runs a
-> full load at ~83 °C. **So keep the model split, or fit GPU 2 with a blower before running
-> a solo model on it** — even at −100 mV the undervolt doesn't close the gap.
+> **⚠️ Per-GPU solo-load cooling history.** Before the shroud, GPU 2 was cooled by 2× Arctic
+> S4028-6K — low-CFM (~14 °C worse than a blower at equal fan): fine for GPU 2's *half* of the
+> split (~70 °C) but a **full solo load overheated it** (junction **106 °C** at 250 W, fan
+> maxed, throttling — even at −100 mV). GPU 1's blower ran a full load at ~83 °C. The NF-F12
+> shroud replaced the Arctic pair to fix this. **Load-tested 2026-07-14:** the shroud holds the
+> **split** comfortably (both ~56–59 °C at 60% fan) but **cannot sustain a solo full load** — one
+> card maxes the fan and settles at ~91 °C (GPU 1) / ~97 °C (GPU 2), holding but with no headroom.
+> **Prefer the split** for full-model work; the [`gpu-thermal-watchdog/`](gpu-thermal-watchdog/)
+> stops the LLM server at 102 °C as the last-resort net. Per-cooler thermals + 3D-print mounts:
+> [`fan-control/README.md`](fan-control/README.md).
 
 With ~2.7× the VRAM of the 6700 XT (32 GB vs 12 GB), this card serves a much
 larger model. There is a single runtime script here (no LM Studio sibling —

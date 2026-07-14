@@ -16,10 +16,11 @@ Three containers form the system:
   `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, 35B total / ~3B active) via Vulkan, exposing an
   OpenAI-compatible API at `0.0.0.0:1234` under the id `qwen3.6-35b-a3b`. The host now has
   **two Radeon Pro V620s** (Navi 21 / gfx1030, 32 GB each): one in the **PCIe-1** (CPU) slot
-  `0000:2d:00.0` cooled by a **blower**, one in the **PCIe-3** (chipset) slot `0000:06:00.0`
-  cooled by **2× Arctic S4028-6K** fans. The container passes through all of `/dev/dri`, so
-  llama.cpp currently sees both Vulkan devices and **splits the model across both** (each holds
-  ~half the weights + KV). Both cards are undervolted −100 mV; each has its own fan curve:
+  `0000:2d:00.0`, one in the **PCIe-3** (chipset) slot `0000:06:00.0`, both cooled by a single
+  **NF-F12 iPPC-3000** 120 mm fan in a shared shroud (one `gpu-fan-control@shroud` instance whose
+  curve tracks the hotter card). The container passes through all of `/dev/dri`, so llama.cpp
+  currently sees both Vulkan devices and **splits the model across both** (each holds ~half the
+  weights + KV). Both cards are undervolted −100 mV:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
     (hostname `llamacpp`). This is the current runtime.
   - **Prior GPU (`rx-6700-xt/`, kept for reference):** the V620 replaced a Radeon RX 6700 XT
@@ -246,11 +247,13 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   offloads all layers (`-ngl 99`) and splits across both cards; verify with `vulkaninfo` and a
   non-trivial `mem_info_vram_used` on each card.
 - **V620 host-side GPU services live under `pro-v620/` and run on the Proxmox host (NOT in the
-  LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`. With two V620s these are
-  now **per-GPU**: `pro-v620/fan-control/` runs one `gpu-fan-control@<instance>` per cooler
-  (out-of-tree `nct6687`; `@blower`→pwm2 for the PCIe-1 card, `@arctic`→pwm4 for the PCIe-3
-  card's 2× Arctic S4028-6K), each pinned to its GPU by PCI address and driven off that card's
-  temp; `pro-v620/undervolt/` applies a persistent GFX **voltage offset** to **every** V620
+  LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`. `pro-v620/fan-control/`
+  runs one `gpu-fan-control@<instance>` per **cooler** (out-of-tree `nct6687`) — currently a
+  single **`@shroud`→pwm3** driving one NF-F12 iPPC-3000 120 mm fan in a shared shroud that cools
+  **both** cards (curve tracks the hotter card; a required sensor missing on either forces 100%).
+  Prior per-GPU env files (`@blower`→pwm2, `@arctic`→pwm4 for 2× Arctic S4028-6K) are kept in-repo
+  for reference. Each instance pins its GPU(s) by PCI address and is driven off the card temp(s);
+  `pro-v620/undervolt/` applies a persistent GFX **voltage offset** to **every** V620
   (both at −100 mV). The V620's board power
   is **firmware-locked at 250 W** (`power1_cap` write of any other value → `-EINVAL`) and
   OverDrive exposes no clock-ceiling knob, so an undervolt is the only power/thermal lever

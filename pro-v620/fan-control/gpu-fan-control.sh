@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 #
-# gpu-fan-control — drive the Radeon Pro V620 blower (wired to PUMP_FAN1) from
-# the GPU's own temperature, via the writable out-of-tree nct6687 hwmon driver.
+# gpu-fan-control — drive a Radeon Pro V620 cooler fan from the GPU's own
+# temperature, via the writable out-of-tree nct6687 hwmon driver. One instance per
+# cooler (see gpu-fan-control@.service); each instance's fan PWM channel is set via
+# FAN_PWM_CHANNEL and the GPU(s) it cools via GPU_PCI_ADDRESS.
 #
 # Why this exists: the MSI MAG B550 board's in-tree nct6683 driver is read-only,
-# so the BIOS can only steer PUMP_FAN1 off its PCIE temperature probe, never the
-# GPU die. This daemon reads amdgpu's sensors and writes the fan PWM directly
-# (manual mode). PUMP_FAN1 is pwm channel 2 on this board (verified empirically:
-# driving pwm2 moved only fan2's RPM).
+# so the BIOS can only steer the fan headers off a motherboard temperature probe,
+# never the GPU die. This daemon reads amdgpu's sensors and writes the fan PWM
+# directly (manual mode). pwm↔fan channels were verified empirically (driving pwmN
+# moves only fanN).
 #
-# The V620 is a passively cooled datacenter card — the blower is its ONLY
-# cooling — so the daemon is defensive about it:
+# The V620 is a passively cooled datacenter card — its fan is the ONLY cooling — so
+# the daemon is defensive about it:
 #   * the curve is driven by EDGE temp; the HOTTEST of junction+mem forces 100%;
 #   * EVERY sensor present at startup is required: if any disappears, force 100%;
-#   * the blower's tachometer is watched — if it stops spinning while we command
+#   * the fan's tachometer is watched — if it stops spinning while we command
 #     airflow, force 100% and (optionally) power off to protect the GPU;
 #   * every PWM write is read back; persistent write failures escalate (we cannot
 #     trust the fan when our commands are not taking effect);
@@ -26,13 +28,15 @@ set -uo pipefail
 
 # ---- config (override via /etc/gpu-fan-control-<instance>.env) --------------
 GPU_HWMON_NAME="${GPU_HWMON_NAME:-amdgpu}"
-# Optional exact PCI address (e.g. 0000:2d:00.0) to pick ONE GPU when several match
-# GPU_HWMON_NAME (this host has two V620s). Empty = first amdgpu found. Selecting by
-# PCI address is stable across boots; cardN enumeration is not.
+# Which GPU(s) this fan cools, by exact PCI address (stable across boots; cardN is
+# not). Empty = first amdgpu found. A COMMA-SEPARATED list (e.g.
+# "0000:2d:00.0,0000:06:00.0") is supported for ONE fan cooling SEVERAL GPUs (a
+# shared shroud): the curve then tracks the HOTTEST card, and any required sensor
+# missing on ANY of them forces 100%.
 GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-}"
 FAN_HWMON_NAME="${FAN_HWMON_NAME:-nct6687}"
 FAN_PWM_CHANNEL="${FAN_PWM_CHANNEL:-2}"          # pwm channel driving THIS GPU's fan
-FAN_LABEL="${FAN_LABEL:-fan}"                    # cosmetic name for logs (e.g. blower, arctic)
+FAN_LABEL="${FAN_LABEL:-fan}"                    # cosmetic name for logs (e.g. shroud, blower, arctic)
 
 # Curve is driven by the EDGE temperature (the stable "GPU temp").
 CURVE_TEMP_LABEL="${CURVE_TEMP_LABEL:-edge}"
@@ -60,7 +64,7 @@ PWM_READBACK_RETRY_SLEEP="${PWM_READBACK_RETRY_SLEEP:-0.5}"  # backoff between a
 # Failure handling — the V620 is passively cooled, so loss of control = no cooling.
 FAN_RPM_MONITOR="${FAN_RPM_MONITOR:-auto}"       # auto|on|off (auto = on iff a tach reads >0 at start)
 FAN_MIN_RPM="${FAN_MIN_RPM:-150}"                # below this, while commanding airflow, = not spinning
-FAN_FAIL_GRACE="${FAN_FAIL_GRACE:-3}"            # consecutive bad polls before declaring a blower failure
+FAN_FAIL_GRACE="${FAN_FAIL_GRACE:-3}"            # consecutive bad polls before declaring a fan failure
 WRITE_FAIL_GRACE="${WRITE_FAIL_GRACE:-3}"        # consecutive failed PWM writes before CRITICAL
 FAN_FAIL_ACTION="${FAN_FAIL_ACTION:-warn}"       # warn | poweroff (power off to protect the GPU)
 FAN_FAIL_POWEROFF_GRACE="${FAN_FAIL_POWEROFF_GRACE:-15}"  # bad polls before poweroff (if enabled)
@@ -78,21 +82,43 @@ resolve_hwmon() {  # $1 = name ; echoes path or returns 1
   return 1
 }
 
-# Resolve the GPU hwmon dir, optionally pinned to an exact PCI address so the right
-# card is picked when several match GPU_HWMON_NAME (two V620s here). The hwmon's
-# `device` symlink resolves to the PCI device dir; its basename is the PCI address.
-resolve_gpu_hwmon() {  # echoes path or returns 1
-  local h pci
+# Find the amdgpu hwmon dir for ONE PCI address (boot-stable: the hwmon's `device`
+# symlink basename is the PCI address; cardN is not). Echoes the path; returns 1 if
+# that card is not currently present.
+find_hwmon_for_addr() {  # $1 = pci address
+  local addr="$1" h pci
   for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
     [ -r "$h/name" ] || continue
     [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
-    if [ -n "$GPU_PCI_ADDRESS" ]; then
-      pci="$(basename "$(readlink -f "$h/device" 2>/dev/null)" 2>/dev/null)"
-      [ "$pci" = "$GPU_PCI_ADDRESS" ] || continue
-    fi
+    pci="$(basename "$(readlink -f "$h/device" 2>/dev/null)" 2>/dev/null)"
+    [ "$pci" = "$addr" ] || continue
     echo "$h"; return 0
   done
   return 1
+}
+
+# Rebuild GPU_CHIPS (present hwmon paths) and MISSING_ADDRS from the EXPECTED set.
+# Empty GPU_PCI_ADDRESS = auto (first amdgpu found; nothing "missing"). An explicit
+# comma list is a REQUIRED set: each listed card must be present, and any absent one is
+# recorded so the control loop forces 100% — the shared fan cools ALL listed cards, so an
+# untracked card could overheat while the curve follows only the present one. Called at
+# startup AND every poll (so a late/returning card is picked up and an empty result can
+# never wedge the daemon). Sets the globals; no return value.
+refresh_gpus() {
+  GPU_CHIPS=(); MISSING_ADDRS=()
+  local addr path h
+  if (( ${#EXPECTED_ADDRS[@]} == 0 )); then
+    for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
+      [ -r "$h/name" ] || continue
+      [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
+      GPU_CHIPS+=("$h"); break
+    done
+    return 0
+  fi
+  for addr in "${EXPECTED_ADDRS[@]}"; do
+    if path="$(find_hwmon_for_addr "$addr")"; then GPU_CHIPS+=("$path")
+    else MISSING_ADDRS+=("$addr"); fi
+  done
 }
 
 # Read a labelled temperature (whole °C) from an amdgpu hwmon dir.
@@ -128,7 +154,7 @@ raw_for_temp() {  # $1 = curve-input °C ; echoes target raw pwm via the curve
 }
 
 FAN_CHIP=""
-read_fan_rpm() {  # echoes the blower RPM (fanN_input) or returns 1
+read_fan_rpm() {  # echoes the fan RPM (fanN_input) or returns 1
   [ -n "$FAN_CHIP" ] || return 1
   cat "$FAN_CHIP/fan${FAN_PWM_CHANNEL}_input" 2>/dev/null
 }
@@ -165,7 +191,7 @@ write_pwm() {  # $1 = raw
 # Apply a target PWM, tracking success/failure. last_raw is updated ONLY on a
 # confirmed write, so a failed write keeps us retrying (and the failure visible)
 # rather than pretending the new speed is in effect. Persistent write failures
-# escalate exactly like a dead blower — control is effectively lost either way.
+# escalate exactly like a dead fan — control is effectively lost either way.
 write_fail=0
 apply_pwm() {  # $1 = target raw ; returns write_pwm status
   local target="$1"
@@ -242,29 +268,38 @@ trap 'exit 0' INT TERM
 trap 'failsafe' EXIT
 
 # ---- startup ---------------------------------------------------------------
-GPU_CHIP="$(resolve_gpu_hwmon || true)"
+# Parse the EXPECTED GPU set once (comma list; empty = auto / first amdgpu found).
+declare -a EXPECTED_ADDRS=() GPU_CHIPS=() MISSING_ADDRS=() _raw=()
+IFS=',' read -ra _raw <<< "$GPU_PCI_ADDRESS"
+for _a in ${_raw[@]+"${_raw[@]}"}; do _a="${_a// /}"; [ -n "$_a" ] && EXPECTED_ADDRS+=("$_a"); done
+
+refresh_gpus
 FAN_CHIP="$(resolve_hwmon "$FAN_HWMON_NAME" || true)"
 [ -n "$FAN_CHIP" ] || { log "FATAL: '$FAN_HWMON_NAME' hwmon not found (is the nct6687 module loaded?)"; exit 1; }
-[ -n "$GPU_CHIP" ] || { log "FATAL: '$GPU_HWMON_NAME'${GPU_PCI_ADDRESS:+ @ $GPU_PCI_ADDRESS} hwmon not found (is amdgpu bound to the V620?)"; exit 1; }
+(( ${#GPU_CHIPS[@]} >= 1 )) || { log "FATAL: no '$GPU_HWMON_NAME' hwmon found${GPU_PCI_ADDRESS:+ for $GPU_PCI_ADDRESS} (is amdgpu bound to the V620(s)?)"; exit 1; }
+if (( ${#EXPECTED_ADDRS[@]} > 0 )); then EXPECTED_COUNT=${#EXPECTED_ADDRS[@]}; else EXPECTED_COUNT=${#GPU_CHIPS[@]}; fi
+(( ${#MISSING_ADDRS[@]} == 0 )) || log "WARN: only ${#GPU_CHIPS[@]}/${EXPECTED_COUNT} configured GPU(s) present at startup — MISSING ${MISSING_ADDRS[*]}; forcing 100% until all are present"
 
-# Curve sensor is mandatory.
-read_temp_c "$GPU_CHIP" "$CURVE_TEMP_LABEL" >/dev/null 2>&1 \
-  || { log "FATAL: curve sensor '$CURVE_TEMP_LABEL' not present on $GPU_CHIP"; exit 1; }
-
-# Every configured hotspot label must be present now; each then becomes REQUIRED,
-# so losing any one mid-run forces the safety state (a single remaining sensor must
-# not mask the loss of another). Empty list disables the override entirely.
+# Curve + hotspot sensors are mandatory on EVERY cooled GPU: with one fan cooling
+# several cards the curve tracks the hottest, and a missing sensor on ANY card forces
+# the safety state at runtime — so a card lacking one must fail loudly here at startup.
 read -ra HOTSPOT_LABELS <<< "$HOTSPOT_TEMP_LABELS"
+for gc in "${GPU_CHIPS[@]}"; do
+  read_temp_c "$gc" "$CURVE_TEMP_LABEL" >/dev/null 2>&1 \
+    || { log "FATAL: curve sensor '$CURVE_TEMP_LABEL' not present on $gc"; exit 1; }
+done
 if (( ${#HOTSPOT_LABELS[@]} == 0 )); then
   log "WARN: no hotspot sensors configured (HOTSPOT_TEMP_LABELS empty) — high-temp override DISABLED"
 else
-  for label in "${HOTSPOT_LABELS[@]}"; do
-    read_temp_c "$GPU_CHIP" "$label" >/dev/null 2>&1 \
-      || { log "FATAL: hotspot sensor '$label' not present on $GPU_CHIP (adjust HOTSPOT_TEMP_LABELS if this card differs)"; exit 1; }
+  for gc in "${GPU_CHIPS[@]}"; do
+    for label in "${HOTSPOT_LABELS[@]}"; do
+      read_temp_c "$gc" "$label" >/dev/null 2>&1 \
+        || { log "FATAL: hotspot sensor '$label' not present on $gc (adjust HOTSPOT_TEMP_LABELS if this card differs)"; exit 1; }
+    done
   done
 fi
 
-# Watch the blower tach? (auto: only if it reports RPM now — off for 2-wire fans.)
+# Watch the fan tach? (auto: only if it reports RPM now — off for 2-wire fans.)
 fan_monitor=0
 case "$FAN_RPM_MONITOR" in
   on)  fan_monitor=1 ;;
@@ -272,11 +307,11 @@ case "$FAN_RPM_MONITOR" in
   *)
     rpm0="$(read_fan_rpm)"
     if [ -n "$rpm0" ] && (( rpm0 > 0 )); then fan_monitor=1
-    else log "WARN: blower tach reads no RPM at start — tach watchdog DISABLED (set FAN_RPM_MONITOR=on to force)"; fi
+    else log "WARN: fan tach reads no RPM at start — tach watchdog DISABLED (set FAN_RPM_MONITOR=on to force)"; fi
     ;;
 esac
 
-log "started[${FAN_LABEL}]: GPU=$GPU_CHIP FAN=$FAN_CHIP pwm${FAN_PWM_CHANNEL}; curve ${PWM_MIN_PCT}%@${EDGE_MIN_C}C..100%@${EDGE_MAX_C}C; hotspot override>=${HOTSPOT_OVERRIDE_C}C (${HOTSPOT_TEMP_LABELS:-none}); tach_watchdog=${fan_monitor} fail_action=${FAN_FAIL_ACTION}"
+log "started[${FAN_LABEL}]: GPUs=${GPU_CHIPS[*]} (${#GPU_CHIPS[@]}/${EXPECTED_COUNT}) FAN=$FAN_CHIP pwm${FAN_PWM_CHANNEL}; curve ${PWM_MIN_PCT}%@${EDGE_MIN_C}C..100%@${EDGE_MAX_C}C (hottest of all cooled GPUs); hotspot override>=${HOTSPOT_OVERRIDE_C}C (${HOTSPOT_TEMP_LABELS:-none}); tach_watchdog=${fan_monitor} fail_action=${FAN_FAIL_ACTION}"
 
 last_raw=-1
 override=0
@@ -284,45 +319,64 @@ fan_fail=0
 loops=0
 while :; do
   loops=$(( loops + 1 ))
-  [ -d "$GPU_CHIP" ] || GPU_CHIP="$(resolve_gpu_hwmon || true)"
+  # Re-resolve the EXPECTED GPU set EVERY poll: pick up a late/returning card, and detect
+  # any expected card that is missing/unbound. (An explicit list is a required set — the
+  # shared fan cools all of them, so an untracked card must force 100%; see below.)
+  refresh_gpus
   [ -d "$FAN_CHIP" ] || FAN_CHIP="$(resolve_hwmon "$FAN_HWMON_NAME" || true)"
 
-  edge="$(read_temp_c "$GPU_CHIP" "$CURVE_TEMP_LABEL")" || edge=""
-  rpm="$(read_fan_rpm)"                                 || rpm=""
+  # edge = HOTTEST curve-temp across all cooled GPUs (one fan may cool several). A card
+  # whose sensor is unreadable, or none readable at all, is a fault (fail toward cooling).
+  edge=""; edge_missing=0
+  for gc in "${GPU_CHIPS[@]}"; do
+    v="$(read_temp_c "$gc" "$CURVE_TEMP_LABEL")" || { edge_missing=1; continue; }
+    if [ -z "$edge" ] || (( v > edge )); then edge="$v"; fi
+  done
+  rpm="$(read_fan_rpm)" || rpm=""
 
-  # Hotspot = hottest of the REQUIRED labels; flag if any required one is missing.
+  # Hotspot = hottest of the REQUIRED labels across all cooled GPUs; flag any missing.
   hotspot=""
   hotspot_missing=0
   if (( ${#HOTSPOT_LABELS[@]} )); then
-    for label in "${HOTSPOT_LABELS[@]}"; do
-      v="$(read_temp_c "$GPU_CHIP" "$label")" || { hotspot_missing=1; continue; }
-      if [ -z "$hotspot" ] || (( v > hotspot )); then hotspot="$v"; fi
+    for gc in "${GPU_CHIPS[@]}"; do
+      for label in "${HOTSPOT_LABELS[@]}"; do
+        v="$(read_temp_c "$gc" "$label")" || { hotspot_missing=1; continue; }
+        if [ -z "$hotspot" ] || (( v > hotspot )); then hotspot="$v"; fi
+      done
     done
   fi
 
   # --- sensor fault: a required sensor present at startup is now missing ---
   sensor_fault=0
-  [ -z "$edge" ] && sensor_fault=1
+  { [ -z "$edge" ] || (( edge_missing )); } && sensor_fault=1
   (( hotspot_missing )) && sensor_fault=1
 
-  # --- blower fault: commanding airflow but the tach says it's not spinning ---
-  blower_fault=0
+  # --- expected-GPU fault: a configured card is absent (explicit list only) ---
+  # The shared fan cools ALL listed cards, so following "hottest of the present subset"
+  # would let an untracked card overheat with the fan low — force 100% until it returns.
+  expected_gpu_missing=0
+  (( ${#MISSING_ADDRS[@]} > 0 )) && expected_gpu_missing=1
+
+  # --- fan fault: commanding airflow but the tach says it's not spinning ---
+  fan_fault=0
   if (( fan_monitor )); then
     if (( last_raw >= MIN_PWM_RAW )) && { [ -z "$rpm" ] || (( rpm < FAN_MIN_RPM )); }; then
       fan_fail=$(( fan_fail + 1 ))
     else
       fan_fail=0
     fi
-    (( fan_fail >= FAN_FAIL_GRACE )) && blower_fault=1
+    (( fan_fail >= FAN_FAIL_GRACE )) && fan_fault=1
   fi
 
   # --- faults force 100% and fail loud (writes still verified by apply_pwm) ---
-  if (( sensor_fault || blower_fault )); then
+  if (( sensor_fault || fan_fault || expected_gpu_missing )); then
     (( sensor_fault )) && (( loops % 10 == 1 )) && \
       log "WARN: required GPU sensor missing (edge='${edge:-}' hotspot_missing=${hotspot_missing}); forcing 100%"
-    if (( blower_fault )); then
+    (( expected_gpu_missing )) && (( loops % 10 == 1 )) && \
+      log "CRITICAL: configured GPU missing (${#GPU_CHIPS[@]}/${EXPECTED_COUNT} present, MISSING ${MISSING_ADDRS[*]}) — the shared fan cools all listed cards; forced 100% until present"
+    if (( fan_fault )); then
       if (( fan_fail == FAN_FAIL_GRACE )) || (( fan_fail % 15 == 0 )); then
-        log "CRITICAL: blower not spinning (rpm='${rpm:-?}' < ${FAN_MIN_RPM} while commanding pwm>=${MIN_PWM_RAW}) — V620 has NO other cooling; forced 100%"
+        log "CRITICAL: fan not spinning (rpm='${rpm:-?}' < ${FAN_MIN_RPM} while commanding pwm>=${MIN_PWM_RAW}) — V620 has NO other cooling; forced 100%"
       fi
       if [ "$FAN_FAIL_ACTION" = poweroff ] && (( fan_fail >= FAN_FAIL_POWEROFF_GRACE )); then
         log "CRITICAL: airflow not restored after ${fan_fail} polls; powering off to protect the GPU (FAN_FAIL_ACTION=poweroff)"
