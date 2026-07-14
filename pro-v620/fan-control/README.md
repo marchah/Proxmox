@@ -63,20 +63,23 @@ are offset from the board silkscreen: channel `N` = `System Fan #(N-2)`.
 
 ## Control logic (per instance)
 
-- Curve driven by the **edge** temperature; the **hottest** of the hotspot
-  sensors (**junction + mem**) forces 100% as a safety override (with hysteresis).
-- The fan **never stops** — `MIN_PWM_RAW` is a hard floor (the fan is the card's
-  only cooling). The 9733 blower holds ~750 RPM at 12.5%. The 2× S4028-6K have a
-  higher floor: they **stall below ~18%** and **won't cold-start below ~21%**, so
-  the Arctic floor is **22% (pwm 56, ~690 RPM)** — the lowest that reliably spins
-  both up from a dead stop on boot.
-- Profiles (tune in `/etc/gpu-fan-control-<instance>.env`):
-  - **blower** — `edge ≤35 °C → 12.5%`, ramp, `edge ≥88 °C → 100%`.
-  - **arctic** — `edge ≤40 °C → 22%`, ramp, `edge ≥85 °C → 100%`.
-  - both — `junction|mem ≥90 °C → 100%`.
+- Curve driven by the **edge** temperature (the **hottest** edge across all cooled GPUs
+  when one fan cools several); the **hottest** of the hotspot sensors (**junction + mem**,
+  across all cooled GPUs) forces 100% as a safety override (with hysteresis).
+- The fan **never stops** — `MIN_PWM_RAW` is a hard floor (the fan is the cards' only
+  cooling). The current **NF-F12 iPPC-3000** floor is **50% (pwm 128, ~1480 RPM)**: it
+  stalls below ~47% and won't cold-start below ~43% (pwm 112) on this board, so there is
+  no quiet idle with this fan. (Prior per-cooler floors — 9733 blower 12.5%, Arctic 22% —
+  live in the reference env files and the *Measured thermals* / cooling-history notes above.)
+- Current **shroud** profile (`/etc/gpu-fan-control-shroud.env`): `edge ≤45 °C → 50%`,
+  ramp, `edge ≥80 °C → 100%`; `junction|mem ≥90 °C → 100%` (resume at 87 °C).
 - **Fail toward cooling.** Every sensor present at startup (edge *and* each of
-  `HOTSPOT_TEMP_LABELS`) is then required: if any one disappears the daemon forces
-  100%. Missing a configured sensor at startup is fatal.
+  `HOTSPOT_TEMP_LABELS`) is then required: if any disappears the daemon forces 100%.
+  Likewise, every GPU in an explicit `GPU_PCI_ADDRESS` list is a **required set**, re-checked
+  every poll: if any listed card is missing/unbound the daemon forces 100% and logs
+  `CRITICAL` (the shared fan cools all listed cards, so an untracked one must not be left
+  following only the present card). Missing a configured *sensor* on a present card at
+  startup is fatal.
 - **Tach watchdog.** If the fan reads below `FAN_MIN_RPM` while airflow is
   commanded, the daemon forces 100% and logs `CRITICAL`; every PWM write is read
   back and persistent write failures escalate the same way. This matters most for the

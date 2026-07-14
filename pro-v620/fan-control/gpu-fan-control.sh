@@ -80,34 +80,43 @@ resolve_hwmon() {  # $1 = name ; echoes path or returns 1
   return 1
 }
 
-# Resolve the GPU hwmon dir(s) this fan cools. GPU_PCI_ADDRESS may be empty (first
-# amdgpu found), a single PCI address, or a comma-separated list (one fan cooling
-# several GPUs via a shared shroud). Echoes one hwmon path per resolved GPU, in the
-# listed order; returns 1 if none found. The hwmon's `device` symlink resolves to the
-# PCI device dir; its basename is the PCI address (matching by address is boot-stable).
-resolve_gpu_hwmons() {  # echoes path(s), one per line; returns 1 if none
-  local h pci addr found=0
-  local -a addrs
-  if [ -z "$GPU_PCI_ADDRESS" ]; then
-    for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
-      [ -r "$h/name" ] || continue
-      [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
-      echo "$h"; return 0
-    done
-    return 1
-  fi
-  IFS=',' read -ra addrs <<< "$GPU_PCI_ADDRESS"
-  for addr in "${addrs[@]}"; do
-    addr="${addr// /}"; [ -n "$addr" ] || continue
-    for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
-      [ -r "$h/name" ] || continue
-      [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
-      pci="$(basename "$(readlink -f "$h/device" 2>/dev/null)" 2>/dev/null)"
-      [ "$pci" = "$addr" ] || continue
-      echo "$h"; found=1; break
-    done
+# Find the amdgpu hwmon dir for ONE PCI address (boot-stable: the hwmon's `device`
+# symlink basename is the PCI address; cardN is not). Echoes the path; returns 1 if
+# that card is not currently present.
+find_hwmon_for_addr() {  # $1 = pci address
+  local addr="$1" h pci
+  for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
+    [ -r "$h/name" ] || continue
+    [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
+    pci="$(basename "$(readlink -f "$h/device" 2>/dev/null)" 2>/dev/null)"
+    [ "$pci" = "$addr" ] || continue
+    echo "$h"; return 0
   done
-  (( found )) && return 0 || return 1
+  return 1
+}
+
+# Rebuild GPU_CHIPS (present hwmon paths) and MISSING_ADDRS from the EXPECTED set.
+# Empty GPU_PCI_ADDRESS = auto (first amdgpu found; nothing "missing"). An explicit
+# comma list is a REQUIRED set: each listed card must be present, and any absent one is
+# recorded so the control loop forces 100% — the shared fan cools ALL listed cards, so an
+# untracked card could overheat while the curve follows only the present one. Called at
+# startup AND every poll (so a late/returning card is picked up and an empty result can
+# never wedge the daemon). Sets the globals; no return value.
+refresh_gpus() {
+  GPU_CHIPS=(); MISSING_ADDRS=()
+  local addr path h
+  if (( ${#EXPECTED_ADDRS[@]} == 0 )); then
+    for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
+      [ -r "$h/name" ] || continue
+      [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
+      GPU_CHIPS+=("$h"); break
+    done
+    return 0
+  fi
+  for addr in "${EXPECTED_ADDRS[@]}"; do
+    if path="$(find_hwmon_for_addr "$addr")"; then GPU_CHIPS+=("$path")
+    else MISSING_ADDRS+=("$addr"); fi
+  done
 }
 
 # Read a labelled temperature (whole °C) from an amdgpu hwmon dir.
@@ -257,10 +266,17 @@ trap 'exit 0' INT TERM
 trap 'failsafe' EXIT
 
 # ---- startup ---------------------------------------------------------------
-mapfile -t GPU_CHIPS < <(resolve_gpu_hwmons)
+# Parse the EXPECTED GPU set once (comma list; empty = auto / first amdgpu found).
+declare -a EXPECTED_ADDRS=() GPU_CHIPS=() MISSING_ADDRS=() _raw=()
+IFS=',' read -ra _raw <<< "$GPU_PCI_ADDRESS"
+for _a in ${_raw[@]+"${_raw[@]}"}; do _a="${_a// /}"; [ -n "$_a" ] && EXPECTED_ADDRS+=("$_a"); done
+
+refresh_gpus
 FAN_CHIP="$(resolve_hwmon "$FAN_HWMON_NAME" || true)"
 [ -n "$FAN_CHIP" ] || { log "FATAL: '$FAN_HWMON_NAME' hwmon not found (is the nct6687 module loaded?)"; exit 1; }
 (( ${#GPU_CHIPS[@]} >= 1 )) || { log "FATAL: no '$GPU_HWMON_NAME' hwmon found${GPU_PCI_ADDRESS:+ for $GPU_PCI_ADDRESS} (is amdgpu bound to the V620(s)?)"; exit 1; }
+if (( ${#EXPECTED_ADDRS[@]} > 0 )); then EXPECTED_COUNT=${#EXPECTED_ADDRS[@]}; else EXPECTED_COUNT=${#GPU_CHIPS[@]}; fi
+(( ${#MISSING_ADDRS[@]} == 0 )) || log "WARN: only ${#GPU_CHIPS[@]}/${EXPECTED_COUNT} configured GPU(s) present at startup — MISSING ${MISSING_ADDRS[*]}; forcing 100% until all are present"
 
 # Curve + hotspot sensors are mandatory on EVERY cooled GPU: with one fan cooling
 # several cards the curve tracks the hottest, and a missing sensor on ANY card forces
@@ -293,7 +309,7 @@ case "$FAN_RPM_MONITOR" in
     ;;
 esac
 
-log "started[${FAN_LABEL}]: GPUs=${GPU_CHIPS[*]} FAN=$FAN_CHIP pwm${FAN_PWM_CHANNEL}; curve ${PWM_MIN_PCT}%@${EDGE_MIN_C}C..100%@${EDGE_MAX_C}C (hottest of ${#GPU_CHIPS[@]} GPU(s)); hotspot override>=${HOTSPOT_OVERRIDE_C}C (${HOTSPOT_TEMP_LABELS:-none}); tach_watchdog=${fan_monitor} fail_action=${FAN_FAIL_ACTION}"
+log "started[${FAN_LABEL}]: GPUs=${GPU_CHIPS[*]} (${#GPU_CHIPS[@]}/${EXPECTED_COUNT}) FAN=$FAN_CHIP pwm${FAN_PWM_CHANNEL}; curve ${PWM_MIN_PCT}%@${EDGE_MIN_C}C..100%@${EDGE_MAX_C}C (hottest of all cooled GPUs); hotspot override>=${HOTSPOT_OVERRIDE_C}C (${HOTSPOT_TEMP_LABELS:-none}); tach_watchdog=${fan_monitor} fail_action=${FAN_FAIL_ACTION}"
 
 last_raw=-1
 override=0
@@ -301,8 +317,10 @@ fan_fail=0
 loops=0
 while :; do
   loops=$(( loops + 1 ))
-  # Re-resolve GPU chips if any went missing (e.g. amdgpu rebind).
-  for gc in "${GPU_CHIPS[@]}"; do [ -d "$gc" ] || { mapfile -t GPU_CHIPS < <(resolve_gpu_hwmons); break; }; done
+  # Re-resolve the EXPECTED GPU set EVERY poll: pick up a late/returning card, and detect
+  # any expected card that is missing/unbound. (An explicit list is a required set — the
+  # shared fan cools all of them, so an untracked card must force 100%; see below.)
+  refresh_gpus
   [ -d "$FAN_CHIP" ] || FAN_CHIP="$(resolve_hwmon "$FAN_HWMON_NAME" || true)"
 
   # edge = HOTTEST curve-temp across all cooled GPUs (one fan may cool several). A card
@@ -331,6 +349,12 @@ while :; do
   { [ -z "$edge" ] || (( edge_missing )); } && sensor_fault=1
   (( hotspot_missing )) && sensor_fault=1
 
+  # --- expected-GPU fault: a configured card is absent (explicit list only) ---
+  # The shared fan cools ALL listed cards, so following "hottest of the present subset"
+  # would let an untracked card overheat with the fan low — force 100% until it returns.
+  expected_gpu_missing=0
+  (( ${#MISSING_ADDRS[@]} > 0 )) && expected_gpu_missing=1
+
   # --- blower fault: commanding airflow but the tach says it's not spinning ---
   blower_fault=0
   if (( fan_monitor )); then
@@ -343,9 +367,11 @@ while :; do
   fi
 
   # --- faults force 100% and fail loud (writes still verified by apply_pwm) ---
-  if (( sensor_fault || blower_fault )); then
+  if (( sensor_fault || blower_fault || expected_gpu_missing )); then
     (( sensor_fault )) && (( loops % 10 == 1 )) && \
       log "WARN: required GPU sensor missing (edge='${edge:-}' hotspot_missing=${hotspot_missing}); forcing 100%"
+    (( expected_gpu_missing )) && (( loops % 10 == 1 )) && \
+      log "CRITICAL: configured GPU missing (${#GPU_CHIPS[@]}/${EXPECTED_COUNT} present, MISSING ${MISSING_ADDRS[*]}) — the shared fan cools all listed cards; forced 100% until present"
     if (( blower_fault )); then
       if (( fan_fail == FAN_FAIL_GRACE )) || (( fan_fail % 15 == 0 )); then
         log "CRITICAL: blower not spinning (rpm='${rpm:-?}' < ${FAN_MIN_RPM} while commanding pwm>=${MIN_PWM_RAW}) — V620 has NO other cooling; forced 100%"

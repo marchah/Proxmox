@@ -127,14 +127,19 @@ build_driver() {
 activate_driver() {  # $1 = 1 if we just (re)built
   modprobe -r nct6683 2>/dev/null || true
   if [ "${1:-0}" = "1" ] && lsmod | grep -q '^nct6687\b'; then
-    # Release the chip: stop EVERY fan-control consumer (the per-GPU instances AND
-    # any legacy single unit) so the rebuilt module can replace the loaded one.
-    # Stopping only the old unit would leave the @instances holding nct6687 open, so
-    # `modprobe -r` would fail and the OLD build would stay live until reboot.
-    # enable_service (later in main) restarts the instances.
-    local inst
-    for inst in "${INSTANCES[@]}"; do systemctl stop "gpu-fan-control@${inst}.service" 2>/dev/null || true; done
-    systemctl stop gpu-fan-control.service 2>/dev/null || true
+    # Release the chip: stop EVERY loaded fan-control consumer — ANY `gpu-fan-control@*`
+    # instance (not just those in INSTANCES) plus the legacy single unit — so the rebuilt
+    # module can replace the loaded one. Stopping only INSTANCES would let a STALE instance
+    # from a prior setup (e.g. @blower / @arctic before the shroud) keep nct6687 open, so
+    # `modprobe -r` would fail and the OLD build would stay live until reboot. Those stale
+    # units are fully disabled/retired later in install_service; here we only need them
+    # stopped. enable_service (later in main) restarts the current INSTANCES.
+    local units
+    units="$(systemctl list-units --full --all --no-legend 'gpu-fan-control@*.service' gpu-fan-control.service 2>/dev/null | awk '{print $1}')" || true
+    if [ -n "$units" ]; then
+      # shellcheck disable=SC2086  # word-splitting the unit list is intended
+      systemctl stop $units 2>/dev/null || true
+    fi
     modprobe -r nct6687 2>/dev/null \
       || warn "nct6687 still in use — the REBUILT driver only becomes active after a reboot (it is loaded at boot via /etc/modules-load.d)"
   fi
