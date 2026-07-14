@@ -26,9 +26,11 @@ set -uo pipefail
 
 # ---- config (override via /etc/gpu-fan-control-<instance>.env) --------------
 GPU_HWMON_NAME="${GPU_HWMON_NAME:-amdgpu}"
-# Optional exact PCI address (e.g. 0000:2d:00.0) to pick ONE GPU when several match
-# GPU_HWMON_NAME (this host has two V620s). Empty = first amdgpu found. Selecting by
-# PCI address is stable across boots; cardN enumeration is not.
+# Which GPU(s) this fan cools, by exact PCI address (stable across boots; cardN is
+# not). Empty = first amdgpu found. A COMMA-SEPARATED list (e.g.
+# "0000:2d:00.0,0000:06:00.0") is supported for ONE fan cooling SEVERAL GPUs (a
+# shared shroud): the curve then tracks the HOTTEST card, and any required sensor
+# missing on ANY of them forces 100%.
 GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-}"
 FAN_HWMON_NAME="${FAN_HWMON_NAME:-nct6687}"
 FAN_PWM_CHANNEL="${FAN_PWM_CHANNEL:-2}"          # pwm channel driving THIS GPU's fan
@@ -78,21 +80,34 @@ resolve_hwmon() {  # $1 = name ; echoes path or returns 1
   return 1
 }
 
-# Resolve the GPU hwmon dir, optionally pinned to an exact PCI address so the right
-# card is picked when several match GPU_HWMON_NAME (two V620s here). The hwmon's
-# `device` symlink resolves to the PCI device dir; its basename is the PCI address.
-resolve_gpu_hwmon() {  # echoes path or returns 1
-  local h pci
-  for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
-    [ -r "$h/name" ] || continue
-    [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
-    if [ -n "$GPU_PCI_ADDRESS" ]; then
+# Resolve the GPU hwmon dir(s) this fan cools. GPU_PCI_ADDRESS may be empty (first
+# amdgpu found), a single PCI address, or a comma-separated list (one fan cooling
+# several GPUs via a shared shroud). Echoes one hwmon path per resolved GPU, in the
+# listed order; returns 1 if none found. The hwmon's `device` symlink resolves to the
+# PCI device dir; its basename is the PCI address (matching by address is boot-stable).
+resolve_gpu_hwmons() {  # echoes path(s), one per line; returns 1 if none
+  local h pci addr found=0
+  local -a addrs
+  if [ -z "$GPU_PCI_ADDRESS" ]; then
+    for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
+      [ -r "$h/name" ] || continue
+      [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
+      echo "$h"; return 0
+    done
+    return 1
+  fi
+  IFS=',' read -ra addrs <<< "$GPU_PCI_ADDRESS"
+  for addr in "${addrs[@]}"; do
+    addr="${addr// /}"; [ -n "$addr" ] || continue
+    for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
+      [ -r "$h/name" ] || continue
+      [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
       pci="$(basename "$(readlink -f "$h/device" 2>/dev/null)" 2>/dev/null)"
-      [ "$pci" = "$GPU_PCI_ADDRESS" ] || continue
-    fi
-    echo "$h"; return 0
+      [ "$pci" = "$addr" ] || continue
+      echo "$h"; found=1; break
+    done
   done
-  return 1
+  (( found )) && return 0 || return 1
 }
 
 # Read a labelled temperature (whole °C) from an amdgpu hwmon dir.
@@ -242,25 +257,27 @@ trap 'exit 0' INT TERM
 trap 'failsafe' EXIT
 
 # ---- startup ---------------------------------------------------------------
-GPU_CHIP="$(resolve_gpu_hwmon || true)"
+mapfile -t GPU_CHIPS < <(resolve_gpu_hwmons)
 FAN_CHIP="$(resolve_hwmon "$FAN_HWMON_NAME" || true)"
 [ -n "$FAN_CHIP" ] || { log "FATAL: '$FAN_HWMON_NAME' hwmon not found (is the nct6687 module loaded?)"; exit 1; }
-[ -n "$GPU_CHIP" ] || { log "FATAL: '$GPU_HWMON_NAME'${GPU_PCI_ADDRESS:+ @ $GPU_PCI_ADDRESS} hwmon not found (is amdgpu bound to the V620?)"; exit 1; }
+(( ${#GPU_CHIPS[@]} >= 1 )) || { log "FATAL: no '$GPU_HWMON_NAME' hwmon found${GPU_PCI_ADDRESS:+ for $GPU_PCI_ADDRESS} (is amdgpu bound to the V620(s)?)"; exit 1; }
 
-# Curve sensor is mandatory.
-read_temp_c "$GPU_CHIP" "$CURVE_TEMP_LABEL" >/dev/null 2>&1 \
-  || { log "FATAL: curve sensor '$CURVE_TEMP_LABEL' not present on $GPU_CHIP"; exit 1; }
-
-# Every configured hotspot label must be present now; each then becomes REQUIRED,
-# so losing any one mid-run forces the safety state (a single remaining sensor must
-# not mask the loss of another). Empty list disables the override entirely.
+# Curve + hotspot sensors are mandatory on EVERY cooled GPU: with one fan cooling
+# several cards the curve tracks the hottest, and a missing sensor on ANY card forces
+# the safety state at runtime — so a card lacking one must fail loudly here at startup.
 read -ra HOTSPOT_LABELS <<< "$HOTSPOT_TEMP_LABELS"
+for gc in "${GPU_CHIPS[@]}"; do
+  read_temp_c "$gc" "$CURVE_TEMP_LABEL" >/dev/null 2>&1 \
+    || { log "FATAL: curve sensor '$CURVE_TEMP_LABEL' not present on $gc"; exit 1; }
+done
 if (( ${#HOTSPOT_LABELS[@]} == 0 )); then
   log "WARN: no hotspot sensors configured (HOTSPOT_TEMP_LABELS empty) — high-temp override DISABLED"
 else
-  for label in "${HOTSPOT_LABELS[@]}"; do
-    read_temp_c "$GPU_CHIP" "$label" >/dev/null 2>&1 \
-      || { log "FATAL: hotspot sensor '$label' not present on $GPU_CHIP (adjust HOTSPOT_TEMP_LABELS if this card differs)"; exit 1; }
+  for gc in "${GPU_CHIPS[@]}"; do
+    for label in "${HOTSPOT_LABELS[@]}"; do
+      read_temp_c "$gc" "$label" >/dev/null 2>&1 \
+        || { log "FATAL: hotspot sensor '$label' not present on $gc (adjust HOTSPOT_TEMP_LABELS if this card differs)"; exit 1; }
+    done
   done
 fi
 
@@ -276,7 +293,7 @@ case "$FAN_RPM_MONITOR" in
     ;;
 esac
 
-log "started[${FAN_LABEL}]: GPU=$GPU_CHIP FAN=$FAN_CHIP pwm${FAN_PWM_CHANNEL}; curve ${PWM_MIN_PCT}%@${EDGE_MIN_C}C..100%@${EDGE_MAX_C}C; hotspot override>=${HOTSPOT_OVERRIDE_C}C (${HOTSPOT_TEMP_LABELS:-none}); tach_watchdog=${fan_monitor} fail_action=${FAN_FAIL_ACTION}"
+log "started[${FAN_LABEL}]: GPUs=${GPU_CHIPS[*]} FAN=$FAN_CHIP pwm${FAN_PWM_CHANNEL}; curve ${PWM_MIN_PCT}%@${EDGE_MIN_C}C..100%@${EDGE_MAX_C}C (hottest of ${#GPU_CHIPS[@]} GPU(s)); hotspot override>=${HOTSPOT_OVERRIDE_C}C (${HOTSPOT_TEMP_LABELS:-none}); tach_watchdog=${fan_monitor} fail_action=${FAN_FAIL_ACTION}"
 
 last_raw=-1
 override=0
@@ -284,25 +301,34 @@ fan_fail=0
 loops=0
 while :; do
   loops=$(( loops + 1 ))
-  [ -d "$GPU_CHIP" ] || GPU_CHIP="$(resolve_gpu_hwmon || true)"
+  # Re-resolve GPU chips if any went missing (e.g. amdgpu rebind).
+  for gc in "${GPU_CHIPS[@]}"; do [ -d "$gc" ] || { mapfile -t GPU_CHIPS < <(resolve_gpu_hwmons); break; }; done
   [ -d "$FAN_CHIP" ] || FAN_CHIP="$(resolve_hwmon "$FAN_HWMON_NAME" || true)"
 
-  edge="$(read_temp_c "$GPU_CHIP" "$CURVE_TEMP_LABEL")" || edge=""
-  rpm="$(read_fan_rpm)"                                 || rpm=""
+  # edge = HOTTEST curve-temp across all cooled GPUs (one fan may cool several). A card
+  # whose sensor is unreadable, or none readable at all, is a fault (fail toward cooling).
+  edge=""; edge_missing=0
+  for gc in "${GPU_CHIPS[@]}"; do
+    v="$(read_temp_c "$gc" "$CURVE_TEMP_LABEL")" || { edge_missing=1; continue; }
+    if [ -z "$edge" ] || (( v > edge )); then edge="$v"; fi
+  done
+  rpm="$(read_fan_rpm)" || rpm=""
 
-  # Hotspot = hottest of the REQUIRED labels; flag if any required one is missing.
+  # Hotspot = hottest of the REQUIRED labels across all cooled GPUs; flag any missing.
   hotspot=""
   hotspot_missing=0
   if (( ${#HOTSPOT_LABELS[@]} )); then
-    for label in "${HOTSPOT_LABELS[@]}"; do
-      v="$(read_temp_c "$GPU_CHIP" "$label")" || { hotspot_missing=1; continue; }
-      if [ -z "$hotspot" ] || (( v > hotspot )); then hotspot="$v"; fi
+    for gc in "${GPU_CHIPS[@]}"; do
+      for label in "${HOTSPOT_LABELS[@]}"; do
+        v="$(read_temp_c "$gc" "$label")" || { hotspot_missing=1; continue; }
+        if [ -z "$hotspot" ] || (( v > hotspot )); then hotspot="$v"; fi
+      done
     done
   fi
 
   # --- sensor fault: a required sensor present at startup is now missing ---
   sensor_fault=0
-  [ -z "$edge" ] && sensor_fault=1
+  { [ -z "$edge" ] || (( edge_missing )); } && sensor_fault=1
   (( hotspot_missing )) && sensor_fault=1
 
   # --- blower fault: commanding airflow but the tach says it's not spinning ---

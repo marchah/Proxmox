@@ -39,10 +39,14 @@ readonly BLACKLIST_PATH="/etc/modprobe.d/nct6687.conf"
 readonly MODLOAD_PATH="/etc/modules-load.d/nct6687.conf"
 # Records the driver commit SHA we built, so a bumped NCT6687D_REF triggers a rebuild.
 readonly DRIVER_SHA_FILE="/var/lib/gpu-fan-control.driver-sha"
-# One systemd instance per GPU/cooler; each reads its own /etc/gpu-fan-control-<i>.env
-# (pins the GPU by PCI address + its fan pwm channel). This host runs two V620s:
-#   blower -> PCIe-1 card (pwm2),  arctic -> PCIe-3 card (pwm4).
-readonly INSTANCES=(blower arctic)
+# One systemd instance per COOLER; each reads its own /etc/gpu-fan-control-<i>.env
+# (pins the GPU(s) it cools by PCI address + its fan pwm channel). Current hardware:
+# one NF-F12 in a shared shroud cools BOTH V620s (curve = hottest of the two).
+#   shroud -> both V620s (pwm3, FAN1)
+# Reference env files for the prior per-GPU coolers (blower/arctic) are kept in the
+# repo but not installed while INSTANCES lists only 'shroud'. Any enabled instance
+# NOT listed here is retired on install (see install_service).
+readonly INSTANCES=(shroud)
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
@@ -204,6 +208,17 @@ install_service() {
     systemctl disable --now gpu-fan-control.service >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/gpu-fan-control.service
   fi
+
+  # Retire any enabled instances no longer in INSTANCES (e.g. a previous per-GPU
+  # blower/arctic setup replaced by a single shroud fan) so they don't keep driving
+  # now-empty channels or fight the current instance for the chip.
+  local link ename want keep
+  for link in /etc/systemd/system/multi-user.target.wants/gpu-fan-control@*.service; do
+    [ -e "$link" ] || continue
+    ename="$(basename "$link")"; ename="${ename#gpu-fan-control@}"; ename="${ename%.service}"
+    keep=0; for want in "${INSTANCES[@]}"; do [ "$ename" = "$want" ] && keep=1; done
+    (( keep )) || { log "retiring stale instance gpu-fan-control@${ename}"; systemctl disable --now "gpu-fan-control@${ename}.service" >/dev/null 2>&1 || true; }
+  done
   systemctl daemon-reload
 }
 
