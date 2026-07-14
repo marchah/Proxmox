@@ -1,0 +1,20 @@
+[Unit]
+Description=GPU thermal watchdog — Radeon Pro V620 last-resort over-temp protection
+Documentation=https://github.com/Marchah/Proxmox/tree/main/pro-v620/gpu-thermal-watchdog
+# Reads amdgpu hwmon (needs the card bound) and stops an LXC service via pct on a
+# trip; ordered after pve-guests so pct is ready, but it monitors regardless of
+# whether the guest is up (it only calls pct when it actually needs to act).
+Wants=systemd-modules-load.service
+After=systemd-modules-load.service pve-guests.service
+ConditionPathExistsGlob=/sys/class/drm/card*/device/hwmon/hwmon*/name
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/gpu-thermal-watchdog.env
+ExecStart=/usr/local/sbin/gpu-thermal-watchdog
+# A safety daemon should always come back — even a clean exit is unexpected here.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
