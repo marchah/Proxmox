@@ -60,9 +60,13 @@ log() { printf 'gpu-thermal-watchdog: %s\n' "$*"; }
 
 # A non-numeric threshold would make every (( )) comparison treat it as 0 and trip
 # instantly (stopping the model in a loop) — validate up front, clamp to a default.
-validate_int() {  # $1=name $2=value $3=default ; echoes a valid int >=1
+validate_int() {  # $1=name $2=value $3=default ; echoes ONLY the sanitized int
   if [[ "$2" =~ ^[0-9]+$ ]] && (( 10#$2 >= 1 )); then echo $(( 10#$2 )); return; fi
-  log "WARN: $1='$2' invalid (need integer >=1); using $3"; echo "$3"
+  # WARN to STDERR, not stdout: callers capture stdout via $(...), so a warning printed
+  # to stdout would be appended to the returned value and corrupt the threshold (the very
+  # thing this function guards against). stderr still reaches the journal.
+  log "WARN: $1='$2' invalid (need integer >=1); using $3" >&2
+  echo "$3"
 }
 
 # Find the amdgpu hwmon dir for one PCI address. Matching by address is boot-stable
