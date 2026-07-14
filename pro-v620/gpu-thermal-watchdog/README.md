@@ -82,10 +82,25 @@ After editing: `systemctl restart gpu-thermal-watchdog`.
 
 ### Testing it without cooking a card
 
-Point the trip below the current temp and log-only, so it exercises the whole detect
-→ trip path without stopping anything:
+Point the trip below the current temp **and** switch to log-only, so it exercises the
+whole detect → trip path without stopping the model. Edit the env file directly — the
+unit's `EnvironmentFile=` is applied after (and overrides) the manager environment, so
+`systemctl set-environment WATCHDOG_ACTION=warn` would be clobbered by the file's
+`WATCHDOG_ACTION=stop` and the test could still stop llama.cpp.
 
 ```bash
-systemctl set-environment WATCHDOG_ACTION=warn   # (or edit the env file)
-# temporarily set TRIP_JUNCTION_C=30 in the env, restart, watch the journal, then revert
+cp /etc/gpu-thermal-watchdog.env /etc/gpu-thermal-watchdog.env.bak
+sed -i 's/^WATCHDOG_ACTION=.*/WATCHDOG_ACTION=warn/; s/^TRIP_JUNCTION_C=.*/TRIP_JUNCTION_C=30/' \
+  /etc/gpu-thermal-watchdog.env
+systemctl restart gpu-thermal-watchdog
+journalctl -u gpu-thermal-watchdog -f   # expect CRITICAL + "would stop … no action taken"; model stays up
+# revert
+mv /etc/gpu-thermal-watchdog.env.bak /etc/gpu-thermal-watchdog.env
+systemctl restart gpu-thermal-watchdog
 ```
+
+(Note: a systemd drop-in `Environment=WATCHDOG_ACTION=warn` would *not* help either —
+`EnvironmentFile=` is still applied after it. If you'd rather not touch the env file,
+stop the service and run the daemon in the foreground with explicit env instead:
+`systemctl stop gpu-thermal-watchdog && WATCHDOG_ACTION=warn TRIP_JUNCTION_C=30 /usr/local/sbin/gpu-thermal-watchdog`
+— the script reads env vars directly, so the file's values don't apply.)
