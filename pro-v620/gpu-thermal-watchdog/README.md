@@ -37,6 +37,13 @@ cannot hold below the low-90s °C — see [`../fan-control/README.md`](../fan-co
 - **Fails safe toward NOT acting on missing data**: stopping the model is disruptive,
   so an unreadable sensor is logged and skipped rather than treated as an over-temp.
   The 105 °C hardware emergency remains the final backstop if a sensor truly dies.
+- **Never silently watches fewer cards than configured**: the expected PCI set is
+  re-resolved **every poll**, so a card that is missing at startup, binds late, or
+  disappears and returns (e.g. an amdgpu reset) is watched the moment it appears. A
+  partial set does **not** abort the daemon (that would remove the only graceful
+  protection) — it watches what's present and logs a loud `WARN` naming the missing
+  address until the full set is back. Only a *totally* absent GPU stack (0 present at
+  startup) is fatal.
 
 ## Install
 

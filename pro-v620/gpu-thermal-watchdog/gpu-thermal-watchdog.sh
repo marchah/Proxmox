@@ -29,6 +29,8 @@ set -uo pipefail
 GPU_HWMON_NAME="${GPU_HWMON_NAME:-amdgpu}"
 # Which GPU(s) to watch, by exact PCI address (stable across boots; cardN is not).
 # Empty = every amdgpu found. A comma-separated list watches several (both V620s).
+# Each listed address is required: a missing/late/typo'd one is watched-when-it-appears
+# (the set is re-resolved every poll) and loudly warned about, never silently dropped.
 GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:2d:00.0,0000:06:00.0}"
 
 # Trip thresholds (whole °C). junction emergency is 105C, mem emergency 103C, so
@@ -63,32 +65,47 @@ validate_int() {  # $1=name $2=value $3=default ; echoes a valid int >=1
   log "WARN: $1='$2' invalid (need integer >=1); using $3"; echo "$3"
 }
 
-# Resolve the amdgpu hwmon dir(s) to watch. GPU_PCI_ADDRESS may be empty (every
-# amdgpu found) or a comma-separated list. Matching by PCI address is boot-stable
-# (the hwmon's `device` symlink basename is the PCI address); cardN is not.
-resolve_gpu_hwmons() {  # echoes path(s), one per line; returns 1 if none
-  local h pci addr found=0
-  local -a addrs
-  if [ -z "$GPU_PCI_ADDRESS" ]; then
-    for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
-      [ -r "$h/name" ] || continue
-      [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
-      echo "$h"; found=1
-    done
-    (( found )) && return 0 || return 1
-  fi
-  IFS=',' read -ra addrs <<< "$GPU_PCI_ADDRESS"
-  for addr in "${addrs[@]}"; do
-    addr="${addr// /}"; [ -n "$addr" ] || continue
-    for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
-      [ -r "$h/name" ] || continue
-      [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
-      pci="$(basename "$(readlink -f "$h/device" 2>/dev/null)" 2>/dev/null)"
-      [ "$pci" = "$addr" ] || continue
-      echo "$h"; found=1; break
-    done
+# Find the amdgpu hwmon dir for one PCI address. Matching by address is boot-stable
+# (the hwmon's `device` symlink basename is the PCI address); cardN is not. Echoes
+# the path; returns 1 if that card is not currently present.
+find_hwmon_for_addr() {  # $1 = pci address
+  local addr="$1" h pci
+  for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
+    [ -r "$h/name" ] || continue
+    [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] || continue
+    pci="$(basename "$(readlink -f "$h/device" 2>/dev/null)" 2>/dev/null)"
+    [ "$pci" = "$addr" ] || continue
+    echo "$h"; return 0
   done
-  (( found )) && return 0 || return 1
+  return 1
+}
+
+# Auto mode (no addresses configured): echo every amdgpu hwmon found, one per line.
+find_all_hwmons() {
+  local h
+  for h in /sys/class/drm/card*/device/hwmon/hwmon* /sys/class/hwmon/hwmon*; do
+    [ -r "$h/name" ] || continue
+    [ "$(cat "$h/name" 2>/dev/null)" = "$GPU_HWMON_NAME" ] && echo "$h"
+  done
+}
+
+# Rebuild GPU_CHIPS (present hwmon paths) and MISSING_ADDRS from the EXPECTED set.
+# Explicit list: resolve EACH expected address, recording which are absent so a
+# missing/late/typo'd card is known (not silently dropped). Auto mode: every amdgpu
+# found is present, nothing is "missing". Called at startup AND unconditionally every
+# poll, so an empty result can never wedge the daemon and a returning card is picked
+# up. Assigns the two globals; no return value.
+refresh_present() {
+  GPU_CHIPS=(); MISSING_ADDRS=()
+  local addr path
+  if (( ${#EXPECTED_ADDRS[@]} == 0 )); then
+    mapfile -t GPU_CHIPS < <(find_all_hwmons)
+    return 0
+  fi
+  for addr in "${EXPECTED_ADDRS[@]}"; do
+    if path="$(find_hwmon_for_addr "$addr")"; then GPU_CHIPS+=("$path")
+    else MISSING_ADDRS+=("$addr"); fi
+  done
 }
 
 # Read a labelled temperature (whole °C) from an amdgpu hwmon dir.
@@ -125,38 +142,66 @@ POLL_SECS="$(validate_int POLL_SECS "$POLL_SECS" 2)"
 trap 'exit 0' INT TERM
 
 # ---- startup ---------------------------------------------------------------
-mapfile -t GPU_CHIPS < <(resolve_gpu_hwmons)
+# Parse the EXPECTED address set once (comma list, whitespace-stripped). Empty =
+# auto mode (watch every amdgpu found). EXPECTED_COUNT is what we must keep watching.
+declare -a EXPECTED_ADDRS=() GPU_CHIPS=() MISSING_ADDRS=() _raw=()
+IFS=',' read -ra _raw <<< "$GPU_PCI_ADDRESS"
+for _a in ${_raw[@]+"${_raw[@]}"}; do _a="${_a// /}"; [ -n "$_a" ] && EXPECTED_ADDRS+=("$_a"); done
+
+refresh_present
+if (( ${#EXPECTED_ADDRS[@]} > 0 )); then EXPECTED_COUNT=${#EXPECTED_ADDRS[@]}
+else EXPECTED_COUNT=${#GPU_CHIPS[@]}; fi
+
+# A totally absent GPU stack (0 present) is a hard problem (amdgpu not bound) — fail
+# loud; systemd Restart=always retries. A PARTIAL set does NOT die (that would remove
+# the only graceful protection): watch what is present, warn about the rest, and the
+# per-poll re-resolve below picks up a card the moment it appears.
 (( ${#GPU_CHIPS[@]} >= 1 )) || { log "FATAL: no '$GPU_HWMON_NAME' hwmon found${GPU_PCI_ADDRESS:+ for $GPU_PCI_ADDRESS} (is amdgpu bound to the V620(s)?)"; exit 1; }
 
-# junction is the primary metric and MUST be present on every watched card (its
-# absence means the wrong label/card — fail loud). mem is secondary: warn + skip it
-# there (junction tracks it closely, so junction alone still protects the card).
-declare -A WATCH_MEM=()
+# junction is the primary metric and MUST be present on a watched card (its absence
+# means the wrong label/card — fail loud). mem is secondary: warn (junction tracks it
+# closely, so junction alone still protects the card); it is probed inline each poll.
 for gc in "${GPU_CHIPS[@]}"; do
   read_temp_c "$gc" junction >/dev/null 2>&1 \
     || { log "FATAL: junction sensor not present on $gc — cannot watch it"; exit 1; }
-  if read_temp_c "$gc" mem >/dev/null 2>&1; then WATCH_MEM[$gc]=1
-  else log "WARN: mem sensor absent on $gc — watching junction only there"; WATCH_MEM[$gc]=0; fi
+  read_temp_c "$gc" mem >/dev/null 2>&1 \
+    || log "WARN: mem sensor absent on $gc — watching junction only there"
 done
 
-log "started: watching ${#GPU_CHIPS[@]} GPU(s) [${GPU_CHIPS[*]}]; trip junction>=${TRIP_JUNCTION_C}C mem>=${TRIP_MEM_C}C, resume<${RESUME_C}C; action=${WATCHDOG_ACTION} (stop ${LLM_SERVICE} in CT ${LLM_CT_VMID}); auto_resume=${AUTO_RESUME}; poll=${POLL_SECS}s"
+if (( ${#MISSING_ADDRS[@]} > 0 )); then
+  log "WARN: only ${#GPU_CHIPS[@]}/${EXPECTED_COUNT} configured GPU(s) present — MISSING ${MISSING_ADDRS[*]}; watching the rest and retrying each poll"
+fi
+
+log "started: watching ${#GPU_CHIPS[@]}/${EXPECTED_COUNT} GPU(s) [${GPU_CHIPS[*]}]; trip junction>=${TRIP_JUNCTION_C}C mem>=${TRIP_MEM_C}C, resume<${RESUME_C}C; action=${WATCHDOG_ACTION} (stop ${LLM_SERVICE} in CT ${LLM_CT_VMID}); auto_resume=${AUTO_RESUME}; poll=${POLL_SECS}s"
 
 tripped=0
 loops=0
 miss_logged=0
 while :; do
   loops=$(( loops + 1 ))
-  # Re-resolve if a chip dir vanished (e.g. amdgpu rebind).
-  for gc in "${GPU_CHIPS[@]}"; do [ -d "$gc" ] || { mapfile -t GPU_CHIPS < <(resolve_gpu_hwmons); break; }; done
+  # Re-resolve the EXPECTED set every poll (cheap): an empty list can then never wedge
+  # the daemon (a transient vanish always recovers) and a late/returning card is picked
+  # up. Warn on any change, and periodically while still short of the expected count.
+  prev_present=${#GPU_CHIPS[@]}
+  refresh_present
+  cur=${#GPU_CHIPS[@]}
+  miss=""; (( ${#MISSING_ADDRS[@]} )) && miss=" — MISSING ${MISSING_ADDRS[*]}"
+  if (( cur != prev_present )); then
+    if (( cur < EXPECTED_COUNT )); then log "WARN: ${cur}/${EXPECTED_COUNT} configured GPU(s) present${miss}; watching the rest, retrying each poll"
+    else log "all ${EXPECTED_COUNT} configured GPU(s) present again [${GPU_CHIPS[*]}]"; fi
+  elif (( cur < EXPECTED_COUNT )) && (( loops % 30 == 1 )); then
+    log "WARN: still ${cur}/${EXPECTED_COUNT} configured GPU(s) present${miss}"
+  fi
 
   max_j=""; max_m=""; hot_gc=""; read_ok=0; read_miss=0
   for gc in "${GPU_CHIPS[@]}"; do
     j="$(read_temp_c "$gc" junction)" || { read_miss=1; continue; }
     read_ok=1
     if [ -z "$max_j" ] || (( j > max_j )); then max_j="$j"; hot_gc="$gc"; fi
-    if [ "${WATCH_MEM[$gc]:-0}" = "1" ]; then
-      m="$(read_temp_c "$gc" mem)" || { read_miss=1; m=""; }
-      if [ -n "$m" ] && { [ -z "$max_m" ] || (( m > max_m )); }; then max_m="$m"; fi
+    # Probe mem inline (no cached map) so coverage follows a card across hwmon-path
+    # changes on rebind; absent mem is fine — junction alone still protects the card.
+    if m="$(read_temp_c "$gc" mem)"; then
+      if [ -z "$max_m" ] || (( m > max_m )); then max_m="$m"; fi
     fi
   done
 
