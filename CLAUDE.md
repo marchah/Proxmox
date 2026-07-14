@@ -266,7 +266,7 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   of the fan controller's: stopping the model is disruptive, so a missing sensor is logged and
   skipped rather than treated as over-temp (the 105 °C hardware emergency is the final backstop).
   It never fires in the split (normal) config (~59 °C) — only a sustained **solo full-load** on
-  one card reaches these temps (which the shroud cannot hold below the low-90s °C).
+  one card reaches these temps (which pushes a single card's cooling to its limit).
 - **Non-GPU host networking lives under `host-net/`** (also host-side, NOT in an LXC).
   `host-net/wifi-nat/` lets the host run with **no ethernet**: onboard WiFi (`wlo1`) becomes the
   routed WAN and `vmbr0` becomes an internal NAT'd LAN (`10.10.10.0/24`) the LXCs sit behind

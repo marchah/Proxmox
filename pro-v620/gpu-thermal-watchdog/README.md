@@ -14,7 +14,7 @@ two protections:
 
 | Layer | Junction / Mem | What happens |
 |---|---|---|
-| `gpu-fan-control@shroud` | 90 °C hotspot | forces the shroud fan to 100% (cooling) |
+| `gpu-fan-control` | 90 °C hotspot | forces the GPU fan(s) to 100% (cooling) |
 | **GPU throttle** (hardware) | **100 °C / 98 °C** | clocks drop to shed heat — keeps running, just slower. *Normal; this daemon does NOT act on it.* |
 | **→ this watchdog** | **102 °C / 101 °C** | gracefully **stops the LLM server** to remove the load |
 | **GPU emergency** (hardware) | **105 °C / 103 °C** | amdgpu forces a **MODE1 reset** — crashes/corrupts whatever was running (ungraceful) |
@@ -23,8 +23,9 @@ The 102 °C trip is deliberately **above** the 100 °C throttle (a little thrott
 fine) and **below** the 105 °C emergency — the last graceful chance before the reset.
 
 In the normal **split** config both GPUs sit ~59 °C, so this never fires. It only
-matters for a sustained **solo full-load** on a single card (which the NF-F12 shroud
-cannot hold below the low-90s °C — see [`../fan-control/README.md`](../fan-control/README.md)).
+matters for a sustained **solo full-load** on a single card, which pushes that card's
+cooling to its limit — see [`../fan-control/README.md`](../fan-control/README.md) for
+the per-cooler solo-load thermals.
 
 ## Behaviour
 
