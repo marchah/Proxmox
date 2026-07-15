@@ -18,10 +18,13 @@ IP_CONFIG="${IP_CONFIG:-dhcp}"
 MAC="${MAC:-BC:24:11:C0:DE:22}"
 PASSWORD="${PASSWORD:-}"
 START_ON_BOOT="${START_ON_BOOT:-1}"
-START_AFTER_CREATE="${START_AFTER_CREATE:-1}"
 
-# Node major to install (mealdeal and the current agent repos require >= 26).
-NODE_MAJOR="${NODE_MAJOR:-26}"
+# Pinned Node.js — official prebuilt linux-x64 tarball, verified by SHA-256 (no
+# NodeSource `curl | bash`; matches the repo's llama.cpp/llama-swap pinning). Bump
+# VERSION + SHA256 together from https://nodejs.org/dist/<VERSION>/SHASUMS256.txt
+# (the `node-<VERSION>-linux-x64.tar.xz` line). mealdeal + the agent repos need >= 26.
+NODE_VERSION="${NODE_VERSION:-v26.5.0}"
+NODE_SHA256="${NODE_SHA256:-9f619528f1db5ddc41dccf54211066fb42228d69a156733c69cb9d6cc92e358c}"
 
 # Public key of the caller (CT 121 hermes) that will drive this runner over ssh.
 # Get it on CT 121 with:  cat /root/.ssh/coder-runner.pub
@@ -47,11 +50,11 @@ Run this script on the Proxmox host as root.
 Useful overrides:
   VMID=122 LXC_HOSTNAME=coder-runner ./create-lxc-coder-runner.sh
   CODER_SSH_PUBKEY="$(ssh pve pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./create-lxc-coder-runner.sh
-  NODE_MAJOR=26 ./create-lxc-coder-runner.sh
+  NODE_VERSION=v26.5.0 NODE_SHA256=<linux-x64 sha> ./create-lxc-coder-runner.sh
   INSTALL_AIDER=1 ./create-lxc-coder-runner.sh
   MEMORY_MB=8192 CORES=6 ./create-lxc-coder-runner.sh
 
-Creates an unprivileged Debian LXC with: Node <NODE_MAJOR>, git, build toolchain,
+Creates an unprivileged Debian LXC with: pinned Node (NODE_VERSION), git, build toolchain,
 rsync, and sshd (authorizing CODER_SSH_PUBKEY). It holds NO secrets and is
 disposable — rebuild any time with:  pct destroy 122 --purge  &&  re-run this.
 USAGE
@@ -148,10 +151,11 @@ create_container() {
 }
 
 start_container() {
-  if [[ ${START_AFTER_CREATE} == 1 ]]; then
-    log "Starting LXC ${VMID}"
-    pct start "${VMID}"
-  fi
+  # Always start: provisioning runs INSIDE the container (install/ssh/config), so a
+  # stopped CT would just hang wait_for_container and leave a partial CT. If you want
+  # it off afterward, `pct stop` it once provisioning finishes.
+  log "Starting LXC ${VMID}"
+  pct start "${VMID}"
 }
 
 wait_for_container() {
@@ -175,40 +179,33 @@ install_toolchain() {
   run_in_container bash -lc "apt-get update"
   run_in_container bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git jq build-essential python3 python3-venv rsync openssh-server pipx procps xz-utils"
 
-  log "Installing Node ${NODE_MAJOR} (NodeSource, with an official-tarball fallback)"
-  # shellcheck disable=SC2016
-  pct exec "${VMID}" -- bash -s -- "${NODE_MAJOR}" <<'CONTAINER_SCRIPT'
+  log "Installing pinned Node ${NODE_VERSION} (official tarball, SHA-256 verified)"
+  pct exec "${VMID}" -- bash -s -- "${NODE_VERSION}" "${NODE_SHA256}" <<'CONTAINER_SCRIPT'
 set -euo pipefail
-NODE_MAJOR="$1"
+NODE_VERSION="$1"; NODE_SHA256="$2"
 
-installed_major() { node -v 2>/dev/null | sed 's/^v//; s/\..*//'; }
-
-# 1) NodeSource
-if curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - ; then
-  DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs || true
-fi
-
-# 2) Fallback: official prebuilt binaries from nodejs.org (resolve latest N.x)
-if [ "$(installed_major)" != "${NODE_MAJOR}" ]; then
-  echo "NodeSource did not yield Node ${NODE_MAJOR}; falling back to nodejs.org tarball"
+if [ "$(node -v 2>/dev/null || true)" != "${NODE_VERSION}" ]; then
   arch="$(uname -m)"
   case "$arch" in
     x86_64) narch=x64 ;;
     aarch64) narch=arm64 ;;
     *) echo "unsupported arch: $arch" >&2; exit 1 ;;
   esac
-  ver="$(curl -fsSL https://nodejs.org/dist/index.json \
-          | jq -r --arg M "v${NODE_MAJOR}." '[.[] | select(.version | startswith($M))][0].version')"
-  [ -n "$ver" ] && [ "$ver" != null ] || { echo "no Node ${NODE_MAJOR}.x on nodejs.org" >&2; exit 1; }
-  tarball="node-${ver}-linux-${narch}.tar.xz"
-  curl -fsSL "https://nodejs.org/dist/${ver}/${tarball}" -o "/tmp/${tarball}"
+  tarball="node-${NODE_VERSION}-linux-${narch}.tar.xz"
+  curl --fail --show-error --silent --location -o "/tmp/${tarball}" "https://nodejs.org/dist/${NODE_VERSION}/${tarball}"
+  if [ "$narch" = x64 ]; then
+    # NODE_SHA256 pins the linux-x64 tarball (this repo's host is amd64).
+    printf '%s  /tmp/%s\n' "${NODE_SHA256}" "${tarball}" | sha256sum --check -
+  else
+    echo "WARNING: NODE_SHA256 pins linux-x64; skipping checksum on ${narch}" >&2
+  fi
   tar -xJf "/tmp/${tarball}" -C /usr/local --strip-components=1
   rm -f "/tmp/${tarball}"
 fi
 
 corepack enable 2>/dev/null || true
 echo "node: $(node -v)  npm: $(npm -v)"
-[ "$(installed_major)" = "${NODE_MAJOR}" ] || { echo "Node ${NODE_MAJOR} install failed" >&2; exit 1; }
+[ "$(node -v 2>/dev/null || true)" = "${NODE_VERSION}" ] || { echo "Node ${NODE_VERSION} install failed" >&2; exit 1; }
 CONTAINER_SCRIPT
 }
 

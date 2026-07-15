@@ -13,11 +13,15 @@ CT 121 hermes (10.10.10.121)                 CT 122 coder-runner (10.10.10.122, 
   gateway + kanban dispatcher                  node 26 + git + build toolchain (+aider optional)
   git repos + managed worktrees + token  ── rsync worktree + ssh 'npm ci && checks' ──▶ runs ALL execution
   coder's native TEXT edits only               /build/<task>/ per task · disposable
-  ← auto-commits the worktree (reliable)
+  ← coder commits via verify-and-commit (Hermes does NOT auto-commit)
 ```
 
-Trust is **one-directional** (CT 121 → CT 122, never back): CT 122 gets the code + build commands and
-nothing else. A rogue execution is confined to this disposable runner.
+Trust is **one-directional at the SSH layer** — CT 121 holds the key, CT 122 has none, so CT 122 can't ssh
+back. ⚠️ **This is not network isolation:** all the LXCs share `vmbr0`, so code on CT 122 *can* still open
+TCP to CT 121, CT 120, and the host. For real isolation add Proxmox firewall rules (deny CT 122 → host and
+the other CTs; allow only inbound ssh from CT 121 + outbound internet for `npm`). Until then the safety net
+is the **disposable runner + PR-gate + a human-authored (trusted) backlog** — a rogue execution is confined
+to this throwaway CT but is not yet firewalled off the LAN.
 
 ## Create it (once, on the Proxmox host as root)
 
@@ -66,13 +70,16 @@ pct destroy 122 --purge
 
 ## How the loop uses it
 
-Two helper scripts live in the Hermes coder/reviewer profiles on CT 121 (not in this repo):
+Helper scripts live in the Hermes coder/reviewer profiles on CT 121 (not in this repo):
 
 - `run-on-runner.sh <worktree> <cmd>` — rsync the worktree to `coder-runner:/build/<hash>/` and run `<cmd>`
   there over ssh, streaming output and propagating the exit code.
 - `checks-on-runner.sh <worktree>` — detect the repo type (`package.json` → `npm ci && npm run typecheck &&
   npm run lint`; `pyproject.toml` → ruff/mypy/pytest) and run the right checks via `run-on-runner.sh`.
+- `verify-and-commit <worktree>` (coder only) — runs `checks-on-runner`, and **on green, commits the
+  worktree on the CT 121 host**. This is the required final step: **Hermes does NOT auto-commit** managed
+  worktrees and the local model won't reliably run `git`, so a task's commit is created here.
 
-The coder edits natively in its CT 121 worktree, runs `checks-on-runner.sh .` (execution on CT 122), and
-finishes with `kanban_complete` — Hermes auto-commits the managed worktree. The reviewer runs the same
-checks to decide PASS/FAIL. See the `autonomous-coding-loop` design notes.
+The coder edits natively in its CT 121 worktree, runs **`verify-and-commit .`** (checks execute on CT 122;
+the commit lands on the branch only if they pass), then calls `kanban_complete`. The reviewer runs
+`checks-on-runner .` to decide PASS/FAIL. See the `autonomous-coding-loop` design notes.
