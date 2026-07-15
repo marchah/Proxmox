@@ -31,7 +31,9 @@ GPU_HWMON_NAME="${GPU_HWMON_NAME:-amdgpu}"
 # Empty = every amdgpu found. A comma-separated list watches several (both V620s).
 # Each listed address is required: a missing/late/typo'd one is watched-when-it-appears
 # (the set is re-resolved every poll) and loudly warned about, never silently dropped.
-GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:2d:00.0,0000:06:00.0}"
+# NB: `-` not `:-` so an explicit empty value (GPU_PCI_ADDRESS=) reaches auto mode
+# (watch every amdgpu found); `:-` would substitute the default on empty.
+GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS-0000:2d:00.0,0000:06:00.0}"
 
 # Trip thresholds (whole °C). junction emergency is 105C, mem emergency 103C, so
 # these sit a few degrees below each — after the 100C/98C throttle, before the reset.
@@ -59,7 +61,9 @@ RESUME_CMD="${RESUME_CMD:-}"
 # — better to over-shed than let a hot card run unshed). If this is empty but the legacy
 # LLM_CT_VMID/LLM_SERVICE are set, every watched card maps to that one service (the old
 # single-service behavior). PROTECT_CMD/RESUME_CMD still override everything.
-GPU_SERVICE_MAP="${GPU_SERVICE_MAP:-0000:2d:00.0=120:llamacpp,0000:06:00.0=123:llama-swap}"
+# NB: `-` not `:-` so an explicit empty value (GPU_SERVICE_MAP=) reaches the legacy
+# single-service fallback below; `:-` would substitute the default map on empty.
+GPU_SERVICE_MAP="${GPU_SERVICE_MAP-0000:2d:00.0=120:llamacpp,0000:06:00.0=123:llama-swap}"
 # Leave the server DOWN after a trip (default) or auto-restart it once cooled.
 # Default false: reaching the trip temp means cooling could not keep up, so resuming
 # into the same load risks a loop — require a human to confirm it is safe.
@@ -185,11 +189,14 @@ declare -a _pairs=()
 IFS=',' read -ra _pairs <<< "$GPU_SERVICE_MAP"
 for _p in ${_pairs[@]+"${_pairs[@]}"}; do
   _p="${_p// /}"; [ -n "$_p" ] || continue
-  _addr="${_p%%=*}"; _rest="${_p#*=}"
-  if [ -z "$_addr" ] || [ "$_rest" = "$_p" ] || [[ "$_rest" != *:* ]]; then
-    log "WARN: ignoring malformed GPU_SERVICE_MAP entry '$_p' (want PCI=VMID:service)"; continue
+  _addr="${_p%%=*}"; _rest="${_p#*=}"; _vmid="${_rest%%:*}"; _svc="${_rest#*:}"
+  # Reject (treat as unmapped) unless addr present, an '=' existed, VMID is numeric, and
+  # service is non-empty — else an entry like "0000:06:00.0=123:" would set an empty
+  # service and later `systemctl stop ""` instead of the conservative unmapped fallback.
+  if [ -z "$_addr" ] || [ "$_rest" = "$_p" ] || [[ ! "$_vmid" =~ ^[0-9]+$ ]] || [ -z "$_svc" ]; then
+    log "WARN: ignoring malformed GPU_SERVICE_MAP entry '$_p' (want PCI=<numeric-VMID>:<service>)"; continue
   fi
-  SVC_VMID["$_addr"]="${_rest%%:*}"; SVC_NAME["$_addr"]="${_rest#*:}"
+  SVC_VMID["$_addr"]="$_vmid"; SVC_NAME["$_addr"]="$_svc"
 done
 if (( ${#SVC_VMID[@]} == 0 )) && [ -n "$LLM_CT_VMID" ] && [ -n "$LLM_SERVICE" ]; then
   for _a in ${EXPECTED_ADDRS[@]+"${EXPECTED_ADDRS[@]}"}; do
@@ -279,6 +286,12 @@ while :; do
   over=0
   { [ -n "$max_j" ] && (( max_j >= TRIP_JUNCTION_C )); } && over=1
   { [ -n "$max_m" ] && (( max_m >= TRIP_MEM_C )); } && over=1
+
+  # An over-temp was detected (a max crossed) but NO card's PCI address resolved — e.g.
+  # a `device` symlink read failed mid device-rebind/reset, the exact race we protect
+  # against. Never trip-and-do-nothing: push an unmappable sentinel so do_protect takes
+  # the conservative "unmapped -> stop ALL mapped services" path.
+  if (( over )) && (( ${#over_addrs[@]} == 0 )); then over_addrs+=("__unresolved__"); fi
 
   if (( over )); then
     if (( tripped == 0 )); then
