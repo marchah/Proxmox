@@ -22,21 +22,26 @@ the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 > one card runs it hotter than splitting across both did (~56–59 °C). **Load-tested 2026-07-14:** a
 > full solo load maxes the shroud fan and GPU 1 settles at **~91 °C** junction — holding, but with
 > little headroom (still under the 100 °C hardware throttle and the 102 °C watchdog trip). This is
-> the deliberate cost of keeping GPU 2 free; the [`gpu-thermal-watchdog/`](gpu-thermal-watchdog/)
-> stops the LLM server at 102 °C as the last-resort net. (History: GPU 2's original 2× Arctic
+> the deliberate cost of not splitting the model (GPU 2 is reserved for CT 123's own service); the
+> [`gpu-thermal-watchdog/`](gpu-thermal-watchdog/) stops the LLM server at 102 °C as the last-resort net
+> (⚠️ it currently only stops CT 120's service — GPU 2/CT 123 coverage is a pending fix). (History: GPU 2's original 2× Arctic
 > S4028-6K cooler was ~14 °C worse than a blower and a full solo load overheated it — junction
 > **106 °C** at 250 W, throttling — so the NF-F12 shroud replaced the Arctic pair. Per-cooler
 > thermals + 3D-print mounts: [`fan-control/README.md`](fan-control/README.md).) To go back to
 > splitting across both cards, pass through all of `/dev/dri` again in `configure_gpu_passthrough`.
 
-With ~2.7× the VRAM of the 6700 XT (32 GB vs 12 GB), this card serves a much
-larger model. There is a single runtime script here (no LM Studio sibling —
-llama.cpp is the chosen engine, per the 6700 XT comparison):
+With ~2.7× the VRAM of the 6700 XT (32 GB vs 12 GB), each card serves a large
+model. There are **two runtime scripts** here (no LM Studio sibling — llama.cpp is
+the chosen engine, per the 6700 XT comparison), one per V620:
 
-- `create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server` (reload =
-  restart, via the `llamacpp-reload` helper). Defaults to CT `120`, exposes an
-  OpenAI-compatible API on `0.0.0.0:1234`, serves the model under the identifier
-  `qwen3.6-35b-a3b`.
+- `create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — **GPU 1 (CT 120)**, the ops/agent
+  runtime: llama.cpp's `llama-server` (reload = restart, via the `llamacpp-reload`
+  helper). Exposes an OpenAI-compatible API on `0.0.0.0:1234`, serves the model
+  under the identifier `qwen3.6-35b-a3b`.
+- `create-lxc-llama-swap-gpu2.sh` — **GPU 2 (CT 123 `gpu2`)**, the autonomous
+  coding loop: a `llama-swap` proxy on `0.0.0.0:8080` that hot-swaps a coder model
+  (Ornith-1.0-35B) and a reviewer model (ThinkingCap-Qwen3.6-27B), one resident at
+  a time. See the callout above and `create-lxc-llama-swap-gpu2.sh --help`.
 
 ## Model choice: Qwen3.6-35B-A3B (MoE)
 
@@ -48,8 +53,9 @@ The intended consumer is an **agent** (tool-calling loops, where per-step latenc
 compounds), which is exactly where the MoE's speed pays off.
 
 It fits 32 GB at Q5 (~26.6 GB weights) with ~5 GB left for the KV cache — i.e. it
-fits **one** V620 comfortably, which is why CT 120 is pinned to GPU 1 alone and the
-second card is left free (see the note at the top). The dense alternatives that
+fits **one** V620 comfortably, which is why CT 120 is pinned to GPU 1 alone; the
+second card runs the coding loop's `llama-swap` server (CT 123, see the note at the
+top). The dense alternatives that
 also fit (`Qwen3.5-27B`, `Qwen3-32B`) are documented in the repo history if you
 want to trade speed for a dense model — each would be its own script, not a flag on
 this one (per the repo's "one GPU/model/engine per script" convention).
