@@ -30,8 +30,11 @@ the per-cooler solo-load thermals.
 ## Behaviour
 
 - Watches `junction` + `mem` on every configured V620 every `POLL_SECS` (default 2 s).
-- On a trip: stops `llamacpp` in CT 120 (`pct exec 120 -- systemctl stop llamacpp`),
-  logs `CRITICAL`, and keeps the stop asserted while hot (idempotent).
+- On a trip: stops the service that **owns the over-temp card** (per `GPU_SERVICE_MAP`:
+  GPU 1 → `llamacpp` in CT 120, GPU 2 → `llama-swap` in CT 123) — **both if both are
+  hot**, so it never sheds the wrong card's load. An over-temp card not in the map stops
+  **every** mapped service (conservative). Logs `CRITICAL`, keeps the stop asserted while
+  hot (idempotent).
 - **Leaves the server stopped** after cooling (default). Reaching the trip means
   cooling could not keep up, so a human should confirm it is safe before restarting.
   Set `AUTO_RESUME=true` to auto-restart once the card drops below `RESUME_C`.
@@ -73,8 +76,9 @@ journalctl -u gpu-thermal-watchdog -f          # watch it live
 | `TRIP_MEM_C` | `101` | mem trip (°C) |
 | `RESUME_C` | `95` | re-arm / auto-resume below this (°C) |
 | `POLL_SECS` | `2` | poll interval |
-| `WATCHDOG_ACTION` | `stop` | `stop` the LLM service, or `warn` (log only — for testing) |
-| `LLM_CT_VMID` / `LLM_SERVICE` | `120` / `llamacpp` | the LXC + service to stop |
+| `WATCHDOG_ACTION` | `stop` | `stop` the owning service, or `warn` (log only — for testing) |
+| `GPU_SERVICE_MAP` | `0000:2d:00.0=120:llamacpp,0000:06:00.0=123:llama-swap` | per-GPU `PCI=VMID:service` — stop the card's OWNING service (unmapped card → stop all) |
+| `LLM_CT_VMID` / `LLM_SERVICE` | `120` / `llamacpp` | **legacy** single service, used only if `GPU_SERVICE_MAP` is empty |
 | `PROTECT_CMD` / `RESUME_CMD` | *(empty)* | override the stop/start command (run via `bash -c`) |
 | `AUTO_RESUME` | `false` | restart the service once cooled instead of leaving it down |
 
