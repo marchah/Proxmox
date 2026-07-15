@@ -190,11 +190,29 @@ cat /sys/bus/pci/devices/0000:06:00.0/mem_info_vram_used            # ~0 — GPU
 ```
 
 > **Reboot caveat.** The container binds GPU 1's render node by PCI address, but the
-> destination node name is resolved at provision time. A host DRM renumber (only on a
+> destination node *name* is resolved at provision time. A host DRM renumber (only on a
 > GPU add/remove/reseat or kernel/driver change) can leave that name stale → RADV can't
 > init → a **loud** startup failure (the `llamacpp-serve` guard aborts rather than
-> silently running on CPU). Fix by re-running the provisioning script to re-resolve the
-> mount.
+> silently running on CPU). This is deliberately not self-healing — it's rare and the
+> hard stop is safe. Recover in place; a plain re-run of the provisioning script is
+> rejected while CT 120 exists.
+
+#### Recovering after a DRM renumber
+
+On the Proxmox host — re-resolve GPU 1's current DRM node names and fix CT 120's two
+mount entries, then restart. No rebuild, no re-download (model + rootfs untouched):
+
+```bash
+conf=/etc/pve/lxc/120.conf
+rn=$(basename "$(readlink -f /dev/dri/by-path/pci-0000:2d:00.0-render)")   # current renderD*
+cn=$(basename "$(readlink -f /dev/dri/by-path/pci-0000:2d:00.0-card)")     # current card*
+sed -i -E "s#(-render dev/dri/)renderD[0-9]+#\1${rn}#; s#(-card dev/dri/)card[0-9]+#\1${cn}#" "$conf"
+pct stop 120 && pct start 120
+pct exec 120 -- /usr/local/bin/llamacpp-wait-health   # blocks until serving (guard passes)
+```
+
+(Alternatively, `pct destroy 120` then re-run the provisioning script — but that
+re-downloads the ~27 GB model, so the in-place fix above is preferred.)
 
 ### Why Vulkan and not ROCm/HIP?
 

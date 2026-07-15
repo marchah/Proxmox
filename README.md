@@ -30,8 +30,8 @@ Containers are allocated VMIDs by role:
 | 140-159 | Databases         |
 | 200+    | Test / temporary  |
 
-Current containers: CT `120` (the AI/LLM runtime — now on **two Radeon Pro V620s**,
-model split across both; provisioned by `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`), CT `121`
+Current containers: CT `120` (the AI/LLM runtime — pinned to **one of two Radeon Pro
+V620s** (GPU 1; GPU 2 left idle/free); provisioned by `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`), CT `121`
 (`hermes`, the Hermes Agent that consumes CT 120's API) and CT `200`
 (`bench-runner`, disposable). Each creation script defaults its `VMID` to the
 matching range and accepts a `VMID=` override.
@@ -57,9 +57,11 @@ bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/be
 Creates a privileged Ubuntu LXC serving a high-parameter Qwen model on the
 **Radeon Pro V620** (Navi 21 / gfx1030, 32 GB) via **Vulkan**:
 
-- GPU: **two Radeon Pro V620s** (32 GB each — replaced the 12 GiB RX 6700 XT). One
-  in the PCIe-1 slot (blower-cooled), one in PCIe-3 (2× Arctic S4028-6K); llama.cpp
-  splits the model across both. Both undervolted −100 mV, each with its own fan curve.
+- GPU: **two Radeon Pro V620s** (32 GB each — replaced the 12 GiB RX 6700 XT), one in
+  PCIe-1 (`0000:2d:00.0`) and one in PCIe-3 (`0000:06:00.0`). The ~26.6 GB model fits one
+  card, so **CT 120 is pinned to GPU 1 alone and GPU 2 is left idle/free** for a future
+  service. Both cooled by a single **NF-F12 shroud** (one fan curve tracking the hotter
+  card) and undervolted −100 mV. See [`pro-v620/README.md`](pro-v620/README.md).
 - Model: `unsloth/Qwen3.6-35B-A3B-GGUF` / `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf`
   (MoE, 35B total / ~3B active — fast, fits 32 GB at Q5)
 - Engine: `create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`

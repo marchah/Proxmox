@@ -252,8 +252,10 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   `vulkaninfo` / `llama-server --list-devices` (exactly one device) and a non-trivial
   `mem_info_vram_used` on GPU 1 (read by PCI address — `cardN` is not stable) with GPU 2
   near-idle. The bind's dest node name is resolved at provision, so a host DRM renumber (only
-  on a GPU add/remove or kernel change) needs a re-provision; the `llamacpp-serve` guard turns
-  the otherwise-silent CPU fallback into a loud startup failure.
+  on a GPU add/remove or kernel change) needs GPU 1's mount re-resolved in place (rewrite the
+  two entries + restart the CT — see the README "Recovering after a DRM renumber" recipe; a
+  plain re-run is rejected while the CT exists). The `llamacpp-serve` guard turns the
+  otherwise-silent CPU fallback into a loud startup failure.
 - **V620 host-side GPU services live under `pro-v620/` and run on the Proxmox host (NOT in the
   LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`. `pro-v620/fan-control/`
   runs one `gpu-fan-control@<instance>` per **cooler** (out-of-tree `nct6687`) — currently a

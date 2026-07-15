@@ -266,8 +266,10 @@ configure_gpu_passthrough() {
   # REBOOT CAVEAT: the dest name is resolved HERE, at provision. If the host later
   # renumbers renderD*/card* (only on a GPU add/remove/reseat or kernel/driver
   # change), the by-path source still follows GPU 1 but the frozen dest name no
-  # longer matches /sys → the same auth failure. Re-run this script to re-resolve.
-  # The llamacpp-serve guard turns that (otherwise silent) CPU fallback into a loud
+  # longer matches /sys → the same auth failure. Recover in-place by re-resolving
+  # the two mount entries + restarting the CT (README 'Recovering after a DRM
+  # renumber') — a plain re-run of this script is rejected while the CT exists. The
+  # llamacpp-serve guard turns that (otherwise silent) CPU fallback into a loud
   # startup failure so it can't go unnoticed.
   render_node="$(basename "$(readlink -f "${render_link}")")"
   card_node="$(basename "$(readlink -f "${card_link}")")"
@@ -438,8 +440,10 @@ export LD_LIBRARY_PATH="${LLAMACPP_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 if ! "${LLAMACPP_DIR}/llama-server" --list-devices 2>/dev/null | grep -qiE 'Vulkan|V620'; then
   echo "FATAL: no Vulkan device visible to llama.cpp — RADV failed to init the GPU (would run on CPU)." >&2
   echo "The passed-through DRM node likely no longer matches /sys (renderD*/card* renumber" >&2
-  echo "after a reboot / GPU add-remove / kernel change). Re-run the provisioning script" >&2
-  echo "(pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh) to re-resolve the by-path mount." >&2
+  echo "after a reboot / GPU add-remove / kernel change)." >&2
+  echo "Recover on the Proxmox HOST (no rebuild, keeps the model): re-resolve GPU 1's DRM" >&2
+  echo "nodes and fix CT's two lxc.mount.entry lines, then restart the CT — see the" >&2
+  echo "'Recovering after a DRM renumber' recipe in pro-v620/README.md." >&2
   exit 1
 fi
 exec "${LLAMACPP_DIR}/llama-server" \
