@@ -153,9 +153,20 @@ do_protect() {  # $1 = PCI addr of the over-temp card
   if [ -n "${SVC_VMID[$addr]:-}" ]; then
     pct exec "${SVC_VMID[$addr]}" -- systemctl stop "${SVC_NAME[$addr]}"; return $?
   fi
-  log "WARN: over-temp card '${addr}' not in GPU_SERVICE_MAP — stopping ALL mapped services"
-  for a in "${!SVC_VMID[@]}"; do pct exec "${SVC_VMID[$a]}" -- systemctl stop "${SVC_NAME[$a]}" || rc=1; done
-  return "$rc"
+  # Unmapped card. If ANY services are mapped, stop them all (conservative). If the map is
+  # EMPTY (e.g. auto-discovery + legacy mode, where no addresses were known up front), fall
+  # straight to the legacy single service — never return "stopped" having stopped nothing.
+  if (( ${#SVC_VMID[@]} > 0 )); then
+    log "WARN: over-temp card '${addr}' not in GPU_SERVICE_MAP — stopping ALL mapped services"
+    for a in "${!SVC_VMID[@]}"; do pct exec "${SVC_VMID[$a]}" -- systemctl stop "${SVC_NAME[$a]}" || rc=1; done
+    return "$rc"
+  fi
+  if [ -n "$LLM_CT_VMID" ] && [ -n "$LLM_SERVICE" ]; then
+    log "WARN: empty GPU_SERVICE_MAP — legacy stop of ${LLM_SERVICE} in CT ${LLM_CT_VMID} for over-temp card '${addr}'"
+    pct exec "$LLM_CT_VMID" -- systemctl stop "$LLM_SERVICE"; return $?
+  fi
+  log "ERROR: over-temp card '${addr}' but no GPU_SERVICE_MAP and no LLM_CT_VMID/LLM_SERVICE — CANNOT shed load (only the 105C hardware reset remains)"
+  return 1
 }
 do_resume() {  # $1 = PCI addr of the cooled card
   local addr="${1:-}" a rc=0
@@ -163,8 +174,14 @@ do_resume() {  # $1 = PCI addr of the cooled card
   if [ -n "${SVC_VMID[$addr]:-}" ]; then
     pct exec "${SVC_VMID[$addr]}" -- systemctl start "${SVC_NAME[$addr]}"; return $?
   fi
-  for a in "${!SVC_VMID[@]}"; do pct exec "${SVC_VMID[$a]}" -- systemctl start "${SVC_NAME[$a]}" || rc=1; done
-  return "$rc"
+  if (( ${#SVC_VMID[@]} > 0 )); then
+    for a in "${!SVC_VMID[@]}"; do pct exec "${SVC_VMID[$a]}" -- systemctl start "${SVC_NAME[$a]}" || rc=1; done
+    return "$rc"
+  fi
+  if [ -n "$LLM_CT_VMID" ] && [ -n "$LLM_SERVICE" ]; then
+    pct exec "$LLM_CT_VMID" -- systemctl start "$LLM_SERVICE"; return $?
+  fi
+  return 1
 }
 
 TRIP_JUNCTION_C="$(validate_int TRIP_JUNCTION_C "$TRIP_JUNCTION_C" 102)"
@@ -202,7 +219,11 @@ if (( ${#SVC_VMID[@]} == 0 )) && [ -n "$LLM_CT_VMID" ] && [ -n "$LLM_SERVICE" ];
   for _a in ${EXPECTED_ADDRS[@]+"${EXPECTED_ADDRS[@]}"}; do
     SVC_VMID["$_a"]="$LLM_CT_VMID"; SVC_NAME["$_a"]="$LLM_SERVICE"
   done
-  log "GPU_SERVICE_MAP empty — legacy: mapping all watched cards to ${LLM_SERVICE} in CT ${LLM_CT_VMID}"
+  if (( ${#SVC_VMID[@]} > 0 )); then
+    log "GPU_SERVICE_MAP empty — legacy: mapped ${#SVC_VMID[@]} watched card(s) to ${LLM_SERVICE} in CT ${LLM_CT_VMID}"
+  else
+    log "GPU_SERVICE_MAP empty + auto-discovery — legacy ${LLM_SERVICE} in CT ${LLM_CT_VMID} applied per over-temp card at trip time"
+  fi
 fi
 
 refresh_present
