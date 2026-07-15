@@ -48,15 +48,19 @@ Three containers form the system:
   `200+` test/temporary range because it is disposable — destroy it when done. The suite is
   engine-neutral (it speaks OpenAI `/v1`), so it benchmarks either engine unchanged.
 
-VMIDs `120`/`121`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
+VMIDs `120`/`121`/`122`/`123`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
 
 ## Common commands
 
 All run on the Proxmox host as root.
 
 ```bash
-# Provision the GPU LLM-runtime container (CT 120) — GPU: GPU 1 of two Radeon Pro V620 (GPU 2 left idle)
+# Provision the ops LLM-runtime container (CT 120) — GPU 1 of two Radeon Pro V620
 ./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
+# Autonomous coding loop's GPU-2 model server (CT 123 gpu2) — llama-swap on GPU 2
+./pro-v620/create-lxc-llama-swap-gpu2.sh          # Ornith coder + ThinkingCap reviewer, swapped by name (:8080)
+# The loop's execution sandbox (CT 122 coder-runner; runs npm/build/tests, needs CT 121's ssh pubkey)
+CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./coder-runner/create-lxc-coder-runner.sh
 # Prior GPU (RX 6700 XT) — kept for reference; pick ONE engine (mutually exclusive)
 ./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
 ./rx-6700-xt/create-lxc-llamacpp-qwen3.5-9b.sh    # llama.cpp (llama-server)

@@ -260,8 +260,11 @@ set -Eeuo pipefail
 MODEL="$1"; PORT="$2"; CTX="$3"; ALIAS="$4"
 LS=/opt/llamacpp/current
 export LD_LIBRARY_PATH="${LS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-if ! "${LS}/llama-server" --list-devices 2>/dev/null | grep -qiE 'Vulkan|V620'; then
-  echo "FATAL: no Vulkan device visible to llama.cpp on GPU 2 — RADV failed to init the GPU (would run on CPU)." >&2
+# Require the AMD V620 (RADV) SPECIFICALLY — a bare "Vulkan" match would also accept a
+# software device (llvmpipe/lavapipe) and defeat the guard. Belt-and-suspenders with the
+# unit's RADV-only VK_ICD_FILENAMES.
+if ! "${LS}/llama-server" --list-devices 2>/dev/null | grep -qiE 'V620|RADV'; then
+  echo "FATAL: the V620 (RADV) is not visible to llama.cpp on GPU 2 — RADV failed to init the GPU (would run on CPU/software)." >&2
   echo "CT 123's /dev/dri passthrough likely no longer matches /sys (renderD*/card* renumber after a" >&2
   echo "reboot / GPU add-remove / kernel change). Re-resolve GPU 2's two lxc.mount.entry lines in" >&2
   echo "/etc/pve/lxc/123.conf and restart the CT." >&2
@@ -306,6 +309,9 @@ chown -R llamacpp:llamacpp /models/hf
 # llama-server llama-swap spawns inherits them (pin RADV so it can't bind llvmpipe;
 # the CT-120 silent-CPU-fallback lesson).
 RADV_ICD="$(ls /usr/share/vulkan/icd.d/radeon_icd*.json 2>/dev/null | head -1)"
+# Fail rather than ship a service with an EMPTY VK_ICD_FILENAMES: without the RADV pin the
+# loader enumerates every ICD (incl. software lavapipe) and the guard above loses its teeth.
+[ -n "$RADV_ICD" ] || { echo "FATAL: RADV Vulkan ICD not found (/usr/share/vulkan/icd.d/radeon_icd*.json) — is mesa-vulkan-drivers installed? Refusing to install an unpinned service." >&2; exit 1; }
 cat >/etc/systemd/system/llama-swap.service <<SERVICE
 [Unit]
 Description=llama-swap (GPU 2 coder/reviewer models) on Radeon Pro V620
