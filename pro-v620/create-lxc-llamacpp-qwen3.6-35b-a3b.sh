@@ -10,6 +10,18 @@ set -Eeuo pipefail
 # llama-server on an OpenAI-compatible API at 0.0.0.0:1234. There is no LM Studio
 # sibling for this card (see pro-v620/README.md); llama.cpp is the chosen engine.
 readonly GPU_NAME="Radeon Pro V620"
+# The host has TWO V620s (PCIe-1/CPU slot 0000:2d:00.0 and PCIe-3/chipset slot
+# 0000:06:00.0), but this container is pinned to GPU 1 ALONE: the ~26.6 GB model
+# fits a single 32 GB card, so there is no reason to split it, and leaving GPU 2
+# idle keeps it free for a future second service. Passthrough binds only GPU 1's
+# DRM nodes (see configure_gpu_passthrough) — bind-isolating one render node is the
+# only reboot-stable way to pin one of two IDENTICAL cards (name/vendor:device are
+# the same; Vulkan indices reorder across boots). GPU 2 must stay present +
+# amdgpu-bound (the host fan/undervolt/watchdog services expect both cards);
+# "idle" here means no workload, not removed. Set GPU_PCI_ADDRESS= to pin the
+# other card instead.
+readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:2d:00.0}"    # GPU 1 (PCIe-1/CPU) — the card this container uses
+readonly GPU2_PCI_ADDRESS="${GPU2_PCI_ADDRESS:-0000:06:00.0}"  # GPU 2 (PCIe-3/chipset) — left idle, NOT passed through
 # Pinned llama.cpp prebuilt Vulkan release. Bump TAG + SHA256 together; look up
 # both on https://github.com/ggml-org/llama.cpp/releases (the asset is
 # llama-<tag>-bin-ubuntu-vulkan-x64.tar.gz; the SHA-256 is the release asset's
@@ -42,8 +54,10 @@ readonly MODEL_ALIAS="qwen3.6-35b-a3b"
 # --parallel 4. This MoE's KV cache is cheap (~20 KB/token), so even 256k fits the
 # V620 at Q5: ~29.8 GiB used of ~30 GiB usable (the card exposes 30704 MiB, not a
 # full 32) — only ~0.2 GiB real margin. Stress-verified (a 4-concurrent prefill
-# held), but NO safety buffer: a heavier transient could OOM. If that bites, drop
-# --ctx-size, switch to Q4, or quantize the KV cache. A larger --ctx-size does NOT slow shorter
+# held), but NO safety buffer: a heavier transient could OOM. If that bites, dial
+# back via `llamacpp-reload 131072 4` (~23.2 GiB), switch to Q4, or quantize the KV
+# cache. (The model runs on GPU 1 alone — see the GPU_PCI_ADDRESS note above — so
+# this is the true single-card budget, not a per-card half of a split.) A larger --ctx-size does NOT slow shorter
 # requests (attention is over actual length, not the max), so this ceiling is
 # "free" — an occasional high-context agent just works, no reload needed. Daytime
 # ~4 agents share it (64k per slot); a single agent can use the whole 256k window
@@ -88,7 +102,7 @@ usage() {
 Create an Ubuntu LXC for llama.cpp (llama-server) on a Radeon Pro V620.
 
 Fixed runtime/model target:
-  GPU:    Radeon Pro V620 (Navi 21 / gfx1030, 32 GB)
+  GPU:    Radeon Pro V620 (Navi 21 / gfx1030, 32 GB) — GPU 1 only; GPU 2 left idle
   Engine: llama.cpp llama-server (prebuilt Vulkan release)
   Model:  unsloth/Qwen3.6-35B-A3B-GGUF / Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf (MoE)
   API:    0.0.0.0:1234 (OpenAI-compatible)
@@ -109,8 +123,12 @@ After it is up, change context length / parallel slots without re-provisioning:
   pct exec 120 -- llamacpp-reload <context-length> <parallel>
 
 Important:
-  The container is privileged so /dev/dri passthrough (the Vulkan render node)
-  works with less friction. Treat it as a trusted container.
+  The container is privileged so GPU passthrough (the Vulkan render node) works
+  with less friction. Treat it as a trusted container. It is pinned to ONE V620
+  (GPU 1, 0000:2d:00.0) by bind-mounting only that card's DRM nodes; the second
+  card (GPU 2, 0000:06:00.0) is left idle/free. Set GPU_PCI_ADDRESS= to pin the
+  other card. Keep GPU 2 present + amdgpu-bound so the host fan/undervolt/watchdog
+  services stay happy.
 USAGE
 }
 
@@ -154,9 +172,11 @@ assert_vmid_available() {
 }
 
 assert_gpu_devices_exist() {
-  [[ -d /dev/dri ]] || die "/dev/dri not found; AMD DRM device directory is missing"
-  [[ -e /dev/dri/card0 ]] || die "/dev/dri/card0 not found; AMD DRM card device is missing"
-  [[ -e /dev/dri/renderD128 ]] || die "/dev/dri/renderD128 not found; AMD DRM render node (Vulkan) is missing"
+  # Pin GPU 1 by PCI address via the udev-stable by-path symlink (raw renderD*/
+  # card* numbers renumber across reboots, so never assert those directly).
+  [[ -d /dev/dri/by-path ]] || die "/dev/dri/by-path not found; DRM by-path symlinks missing (udev not populating them?)"
+  [[ -e "/dev/dri/by-path/pci-${GPU_PCI_ADDRESS}-render" ]] || \
+    die "GPU 1 render node (${GPU_PCI_ADDRESS}) not found at /dev/dri/by-path/pci-${GPU_PCI_ADDRESS}-render; is the card present and amdgpu-bound?"
 }
 
 create_container() {
@@ -196,18 +216,45 @@ create_container() {
 configure_gpu_passthrough() {
   local conf_file
   local dri_major
+  local render_link
+  local card_link
+  local render_node
+  local card_node
 
-  log "Configuring ${GPU_NAME} device passthrough (Vulkan render node)"
+  log "Configuring single-GPU passthrough: only GPU 1 (${GPU_PCI_ADDRESS}); GPU 2 (${GPU2_PCI_ADDRESS}) left idle"
 
   conf_file="/etc/pve/lxc/${VMID}.conf"
-  dri_major="$(stat -c '%t' /dev/dri/card0 2>/dev/null || true)"
+  # Resolve GPU 1's DRM nodes by PCI address via the udev-stable by-path symlinks.
+  # We bind-mount the SYMLINK (stable, PCI-encoded — the kernel resolves it at each
+  # container start, so it always follows GPU 1 even if renderD*/card* renumber
+  # across host reboots) but mount it at the node's REAL name inside the container.
+  render_link="/dev/dri/by-path/pci-${GPU_PCI_ADDRESS}-render"
+  card_link="/dev/dri/by-path/pci-${GPU_PCI_ADDRESS}-card"
 
-  [[ -n ${dri_major} ]] || die "could not determine /dev/dri/card0 major"
+  [[ -e ${render_link} ]] || die "render node for GPU 1 (${GPU_PCI_ADDRESS}) not found at ${render_link}; is the card present and amdgpu-bound?"
+
+  # CRITICAL: mount at the node's REAL name (renderD129/card1 here), NOT a renamed
+  # renderD128/card0. Inside the LXC, /sys/class/drm still shows the HOST's node
+  # names, and RADV correlates /dev/dri/<name> to /sys/class/drm/<name> for DRM
+  # auth. A renamed node (e.g. GPU 1's renderD129 mounted as renderD128) scrambles
+  # that mapping → `amdgpu_get_auth failed` → RADV can't init the device →
+  # llama.cpp silently falls back to CPU. So keep the /dev name == the /sys name.
+  render_node="$(basename "$(readlink -f "${render_link}")")"
+  card_node="$(basename "$(readlink -f "${card_link}")")"
+
+  # DRM major (226) via the resolved node; -L follows the symlink, %t is hex.
+  dri_major="$(stat -Lc '%t' "${render_link}" 2>/dev/null || true)"
+  [[ -n ${dri_major} ]] || die "could not determine DRM major for ${render_link}"
 
   {
-    printf '\n# AMD GPU (/dev/dri) passthrough for llama.cpp Vulkan on %s\n' "${GPU_NAME}"
+    printf '\n# Single-GPU passthrough for llama.cpp Vulkan: ONLY GPU 1 (%s).\n' "${GPU_PCI_ADDRESS}"
+    printf '# GPU 2 (%s) is deliberately NOT passed through so it stays idle/free.\n' "${GPU2_PCI_ADDRESS}"
+    printf '# The cgroup allow is a DRM-major wildcard, but only GPU 1'\''s nodes are\n'
+    printf '# bind-mounted below (at their real names, per configure_gpu_passthrough),\n'
+    printf '# so the container can physically see just one card.\n'
     printf 'lxc.cgroup2.devices.allow: c %d:* rwm\n' "0x${dri_major}"
-    printf 'lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir\n'
+    printf 'lxc.mount.entry: %s dev/dri/%s none bind,optional,create=file\n' "${render_link}" "${render_node}"
+    printf 'lxc.mount.entry: %s dev/dri/%s none bind,optional,create=file\n' "${card_link}" "${card_node}"
   } >>"${conf_file}"
 }
 
@@ -449,6 +496,7 @@ print_summary() {
   log "Done"
   printf 'LXC: %s (%s)\n' "${VMID}" "${LXC_HOSTNAME}"
   printf 'GPU target: %s\n' "${GPU_NAME}"
+  printf 'GPU pin: %s (GPU 1) only; %s (GPU 2) left idle\n' "${GPU_PCI_ADDRESS}" "${GPU2_PCI_ADDRESS}"
   printf 'Engine: llama.cpp llama-server %s (Vulkan)\n' "${LLAMACPP_RELEASE_TAG}"
   printf 'Models mount: /models (%sG on %s, backup disabled)\n' "${MODELS_SIZE_GB}" "${MODELS_STORAGE}"
   if [[ -n ${ip} ]]; then

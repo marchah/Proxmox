@@ -30,8 +30,9 @@ and a required sensor missing on **any** of them forces 100%.
 ## Measured thermals & 3D-printed mounts (per cooler)
 
 Junction temperature at −100 mV undervolt (the [`undervolt/`](../undervolt/) floor).
-**Split** = model split across both cards (each ~half the load — the normal config);
-**solo full-load** = the whole model on one card (~250 W board power).
+**Split** = model split across both cards (each ~half the load — the prior config, still an
+option if all of `/dev/dri` is passed through); **solo full-load** = the whole model on one card
+(~250 W board power — **CT 120's current default**, pinned to GPU 1).
 
 | Cooler | Card(s) | Split (½-load) | Solo full-load (250 W) | 3D-printed mount |
 |--------|---------|----------------|------------------------|------------------|
