@@ -250,7 +250,10 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   passes through **only GPU 1's** render node (bind-mounted by PCI address via the `by-path`
   symlink), so llama.cpp offloads all layers (`-ngl 99`) onto that single card; verify with
   `vulkaninfo` / `llama-server --list-devices` (exactly one device) and a non-trivial
-  `mem_info_vram_used` on GPU 1 with GPU 2 near-idle.
+  `mem_info_vram_used` on GPU 1 (read by PCI address — `cardN` is not stable) with GPU 2
+  near-idle. The bind's dest node name is resolved at provision, so a host DRM renumber (only
+  on a GPU add/remove or kernel change) needs a re-provision; the `llamacpp-serve` guard turns
+  the otherwise-silent CPU fallback into a loud startup failure.
 - **V620 host-side GPU services live under `pro-v620/` and run on the Proxmox host (NOT in the
   LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`. `pro-v620/fan-control/`
   runs one `gpu-fan-control@<instance>` per **cooler** (out-of-tree `nct6687`) — currently a

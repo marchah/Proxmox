@@ -183,9 +183,18 @@ device. llama-server offloads all layers with `--n-gpu-layers 99`. Confirm the G
 is visible to Vulkan and resident in VRAM:
 
 ```bash
-pct exec 120 -- vulkaninfo --summary                                # expect a V620 under the radv driver
-cat /sys/class/drm/card0/device/mem_info_vram_used                  # ~30 GB while serving a request
+pct exec 120 -- vulkaninfo --summary                                # expect exactly ONE V620 under the radv driver
+# cardN numbering is NOT stable — read GPU 1 by PCI address (card0 here is the idle GPU 2):
+cat /sys/bus/pci/devices/0000:2d:00.0/mem_info_vram_used            # ~29.8 GiB while the model is loaded (GPU 1)
+cat /sys/bus/pci/devices/0000:06:00.0/mem_info_vram_used            # ~0 — GPU 2 stays idle
 ```
+
+> **Reboot caveat.** The container binds GPU 1's render node by PCI address, but the
+> destination node name is resolved at provision time. A host DRM renumber (only on a
+> GPU add/remove/reseat or kernel/driver change) can leave that name stale → RADV can't
+> init → a **loud** startup failure (the `llamacpp-serve` guard aborts rather than
+> silently running on CPU). Fix by re-running the provisioning script to re-resolve the
+> mount.
 
 ### Why Vulkan and not ROCm/HIP?
 

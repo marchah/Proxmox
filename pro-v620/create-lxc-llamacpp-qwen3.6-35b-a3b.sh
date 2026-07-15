@@ -21,7 +21,11 @@ readonly GPU_NAME="Radeon Pro V620"
 # "idle" here means no workload, not removed. Set GPU_PCI_ADDRESS= to pin the
 # other card instead.
 readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:2d:00.0}"    # GPU 1 (PCIe-1/CPU) — the card this container uses
-readonly GPU2_PCI_ADDRESS="${GPU2_PCI_ADDRESS:-0000:06:00.0}"  # GPU 2 (PCIe-3/chipset) — left idle, NOT passed through
+# The other V620 (left idle) is INFORMATIONAL ONLY (logs/comments); the passthrough
+# uses GPU_PCI_ADDRESS alone. It is DERIVED at runtime (resolve_idle_gpu) from the
+# other V620 present, so it can't collide with the pinned card when GPU_PCI_ADDRESS
+# is overridden. Set GPU2_PCI_ADDRESS= only to override the informational label.
+GPU2_PCI_ADDRESS="${GPU2_PCI_ADDRESS:-}"
 # Pinned llama.cpp prebuilt Vulkan release. Bump TAG + SHA256 together; look up
 # both on https://github.com/ggml-org/llama.cpp/releases (the asset is
 # llama-<tag>-bin-ubuntu-vulkan-x64.tar.gz; the SHA-256 is the release asset's
@@ -213,6 +217,26 @@ create_container() {
   pct create "${create_args[@]}"
 }
 
+# Resolve the OTHER V620 (the idle card) for logging only — never used by the
+# passthrough. Derived from what's present so it can't collide with the pinned card;
+# same /sys/class/drm scan idiom as undervolt/fan-control. Leaves GPU2_PCI_ADDRESS
+# empty (→ "the other V620" in messages) if none is found or one is already set.
+resolve_idle_gpu() {
+  local c addr vendor device
+  [[ -n ${GPU2_PCI_ADDRESS} ]] && return    # explicit override wins
+  for c in /sys/class/drm/card[0-9]*; do
+    [[ -e ${c}/device/device ]] || continue
+    addr="$(basename "$(readlink -f "${c}/device")")"
+    [[ ${addr} == "${GPU_PCI_ADDRESS}" ]] && continue
+    vendor="$(cat "${c}/device/vendor" 2>/dev/null || true)"
+    device="$(cat "${c}/device/device" 2>/dev/null || true)"
+    if [[ ${vendor} == 0x1002 && ${device} == 0x73a1 ]]; then
+      GPU2_PCI_ADDRESS="${addr}"
+      return
+    fi
+  done
+}
+
 configure_gpu_passthrough() {
   local conf_file
   local dri_major
@@ -221,7 +245,7 @@ configure_gpu_passthrough() {
   local render_node
   local card_node
 
-  log "Configuring single-GPU passthrough: only GPU 1 (${GPU_PCI_ADDRESS}); GPU 2 (${GPU2_PCI_ADDRESS}) left idle"
+  log "Configuring single-GPU passthrough: only GPU 1 (${GPU_PCI_ADDRESS}); ${GPU2_PCI_ADDRESS:-the other V620} left idle"
 
   conf_file="/etc/pve/lxc/${VMID}.conf"
   # Resolve GPU 1's DRM nodes by PCI address via the udev-stable by-path symlinks.
@@ -239,6 +263,12 @@ configure_gpu_passthrough() {
   # auth. A renamed node (e.g. GPU 1's renderD129 mounted as renderD128) scrambles
   # that mapping → `amdgpu_get_auth failed` → RADV can't init the device →
   # llama.cpp silently falls back to CPU. So keep the /dev name == the /sys name.
+  # REBOOT CAVEAT: the dest name is resolved HERE, at provision. If the host later
+  # renumbers renderD*/card* (only on a GPU add/remove/reseat or kernel/driver
+  # change), the by-path source still follows GPU 1 but the frozen dest name no
+  # longer matches /sys → the same auth failure. Re-run this script to re-resolve.
+  # The llamacpp-serve guard turns that (otherwise silent) CPU fallback into a loud
+  # startup failure so it can't go unnoticed.
   render_node="$(basename "$(readlink -f "${render_link}")")"
   card_node="$(basename "$(readlink -f "${card_link}")")"
 
@@ -248,7 +278,7 @@ configure_gpu_passthrough() {
 
   {
     printf '\n# Single-GPU passthrough for llama.cpp Vulkan: ONLY GPU 1 (%s).\n' "${GPU_PCI_ADDRESS}"
-    printf '# GPU 2 (%s) is deliberately NOT passed through so it stays idle/free.\n' "${GPU2_PCI_ADDRESS}"
+    printf '# %s is deliberately NOT passed through so it stays idle/free.\n' "${GPU2_PCI_ADDRESS:-the other V620}"
     printf '# The cgroup allow is a DRM-major wildcard, but only GPU 1'\''s nodes are\n'
     printf '# bind-mounted below (at their real names, per configure_gpu_passthrough),\n'
     printf '# so the container can physically see just one card.\n'
@@ -400,6 +430,18 @@ set -a
 source /etc/llamacpp.env
 set +a
 export LD_LIBRARY_PATH="${LLAMACPP_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+# Guard: RADV must see the pinned GPU. If the passed-through DRM node no longer
+# matches /sys (renderD*/card* renumbered after a reboot / GPU add-remove / kernel
+# change), RADV fails DRM auth and llama.cpp would SILENTLY fall back to CPU. Fail
+# loud instead. Runs with the unit's VK_ICD_FILENAMES (RADV-only, from the
+# vulkan.conf drop-in), so a matched line is the real V620, not llvmpipe.
+if ! "${LLAMACPP_DIR}/llama-server" --list-devices 2>/dev/null | grep -qiE 'Vulkan|V620'; then
+  echo "FATAL: no Vulkan device visible to llama.cpp — RADV failed to init the GPU (would run on CPU)." >&2
+  echo "The passed-through DRM node likely no longer matches /sys (renderD*/card* renumber" >&2
+  echo "after a reboot / GPU add-remove / kernel change). Re-run the provisioning script" >&2
+  echo "(pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh) to re-resolve the by-path mount." >&2
+  exit 1
+fi
 exec "${LLAMACPP_DIR}/llama-server" \
   --model "${MODEL_PATH}" \
   --host "${MODEL_SERVER_BIND}" \
@@ -496,7 +538,7 @@ print_summary() {
   log "Done"
   printf 'LXC: %s (%s)\n' "${VMID}" "${LXC_HOSTNAME}"
   printf 'GPU target: %s\n' "${GPU_NAME}"
-  printf 'GPU pin: %s (GPU 1) only; %s (GPU 2) left idle\n' "${GPU_PCI_ADDRESS}" "${GPU2_PCI_ADDRESS}"
+  printf 'GPU pin: %s (GPU 1) in use; %s left idle\n' "${GPU_PCI_ADDRESS}" "${GPU2_PCI_ADDRESS:-the other V620}"
   printf 'Engine: llama.cpp llama-server %s (Vulkan)\n' "${LLAMACPP_RELEASE_TAG}"
   printf 'Models mount: /models (%sG on %s, backup disabled)\n' "${MODELS_SIZE_GB}" "${MODELS_STORAGE}"
   if [[ -n ${ip} ]]; then
@@ -519,6 +561,7 @@ main() {
   require_command pveam
   assert_vmid_available
   assert_gpu_devices_exist
+  resolve_idle_gpu
   download_template_if_missing
   create_container
   configure_gpu_passthrough
