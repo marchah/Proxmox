@@ -237,9 +237,22 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   - `100-119` — infra / services
   - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, pinned to GPU 1 of two V620s, GPU 2 idle; the
     prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the Hermes Agent that
-    consumes CT 120's API)
+    consumes CT 120's API. CT 122 `coder-runner` — the autonomous coding loop's execution sandbox)
   - `140-159` — databases
   - `200+` — test / temporary (CT 200 `bench-runner` — disposable benchmark LXC)
+- **Autonomous coding loop / execution isolation (`coder-runner/`, CT 122).** The homelab runs a
+  self-driving coder↔reviewer loop on **Hermes kanban** (CT 121): coder/reviewer *profiles* work each task
+  in an isolated git worktree/branch, PR-gated (no auto-merge to public `main`). The loop's design rule is
+  that **untrusted project code executes only on a separate, generic, disposable LXC — CT 122
+  `coder-runner`** (Node + git + toolchain, holds no secrets), never inside the Hermes LXC. CT 121 drives
+  it over **ssh+rsync** via `checks-on-runner`/`run-on-runner`/`verify-and-commit` helpers (installed into
+  the coder/reviewer profiles, not this repo). Key facts learned the hard way: Hermes does **not**
+  auto-commit managed worktrees and the local model won't reliably run `git`, so commits are made
+  deterministically by `verify-and-commit` (checks on CT 122 → commit on the CT 121 host on green); a fix
+  task must use `--workspace worktree:<absolute-repo-path>` (plain `worktree`+`--project` fails when created
+  from inside a worker); keep worktrees out of the repo tree to avoid `git add -A` swallowing them as
+  gitlinks. `coder-runner/create-lxc-coder-runner.sh` provisions CT 122 (once; repo-agnostic — add repos via
+  `hermes project`, never a new LXC). See `coder-runner/README.md` and the `autonomous-coding-loop` memory.
 - Keep downloaded model weights and generated results out of git (already covered by
   `.gitignore`: `models/`, `results/`, `artifacts/`, `bench-results*.tgz`, `.env*`).
 - Container model storage (`/models`) uses `backup=0` — weights are large and
