@@ -9,8 +9,9 @@ the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 > fits a single 32 GB card, so **CT 120 is pinned to GPU 1 alone**: its container bind-mounts
 > only GPU 1's `/dev/dri` render node (via the udev-stable `by-path` symlink — the only
 > reboot-stable way to pin one of two *identical* cards; see `configure_gpu_passthrough` in the
-> script). **GPU 2 is left idle/free** for a future second service (e.g. a coder/reviewer split).
-> GPU 2 stays physically present + amdgpu-bound, so the host services still manage both cards:
+> script). **GPU 2 now runs CT 123 `gpu2`** — a `llama-swap` server for the autonomous coding loop's
+> coder/reviewer split (`create-lxc-llama-swap-gpu2.sh`; Ornith coder + ThinkingCap reviewer, swapped
+> one at a time on `0.0.0.0:8080`). GPU 2 stays amdgpu-bound, so the host services manage both cards:
 > both are undervolted −100 mV (`undervolt/` applies to every V620), and **cooling is one NF-F12
 > iPPC-3000 in a shared shroud** driven by a single `gpu-fan-control@shroud` instance whose curve
 > tracks the **hotter** card — now GPU 1 under load (see [`fan-control/`](fan-control/) and
@@ -186,7 +187,7 @@ is visible to Vulkan and resident in VRAM:
 pct exec 120 -- vulkaninfo --summary                                # expect exactly ONE V620 under the radv driver
 # cardN numbering is NOT stable — read GPU 1 by PCI address (card0 here is the idle GPU 2):
 cat /sys/bus/pci/devices/0000:2d:00.0/mem_info_vram_used            # ~29.8 GiB while the model is loaded (GPU 1)
-cat /sys/bus/pci/devices/0000:06:00.0/mem_info_vram_used            # ~0 — GPU 2 stays idle
+cat /sys/bus/pci/devices/0000:06:00.0/mem_info_vram_used            # GPU 2: ~0 when the loop is idle; high while CT 123 has a model loaded
 ```
 
 > **Reboot caveat.** The container binds GPU 1's render node by PCI address, but the
