@@ -21,11 +21,16 @@ Three containers form the system:
   curve tracks the hotter card). CT 120 is **pinned to GPU 1 alone** (`0000:2d:00.0`): its
   container bind-mounts only that card's `/dev/dri` render node (via the udev-stable `by-path`
   symlink — the reboot-stable way to pin one of two identical cards), so llama.cpp sees a single
-  Vulkan device and runs the whole ~26.6 GB model on it. **GPU 2 (`0000:06:00.0`) is left idle/free**
-  for a future second service; it stays amdgpu-bound so the host fan/undervolt/watchdog services
-  still manage both. Both cards are undervolted −100 mV:
+  Vulkan device and runs the whole ~26.6 GB model on it. **GPU 2 (`0000:06:00.0`) runs CT 123 `gpu2`**
+  (a `llama-swap` server for the autonomous coding loop — see below); it stays amdgpu-bound so the host
+  fan/undervolt/watchdog services manage both. Both cards are undervolted −100 mV:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
     (hostname `llamacpp`). This is the current runtime.
+  - `pro-v620/create-lxc-llama-swap-gpu2.sh` — **CT 123 `gpu2`** on GPU 2: a `llama-swap` proxy for the
+    autonomous coding loop that hot-swaps between a coder model (Ornith-1.0-35B) and a reviewer model
+    (ThinkingCap-Qwen3.6-27B), one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
+    Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
+    The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
   - **Prior GPU (`rx-6700-xt/`, kept for reference):** the V620 replaced a Radeon RX 6700 XT
     (12 GiB) that served `Qwen3.5-9B-Q4_K_M.gguf` (id `qwen3.5-9b`) via two interchangeable
     engine scripts — `create-lxc-lmstudio-qwen3.5-9b.sh` (LM Studio `lms`) and
@@ -43,15 +48,19 @@ Three containers form the system:
   `200+` test/temporary range because it is disposable — destroy it when done. The suite is
   engine-neutral (it speaks OpenAI `/v1`), so it benchmarks either engine unchanged.
 
-VMIDs `120`/`121`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
+VMIDs `120`/`121`/`122`/`123`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
 
 ## Common commands
 
 All run on the Proxmox host as root.
 
 ```bash
-# Provision the GPU LLM-runtime container (CT 120) — GPU: GPU 1 of two Radeon Pro V620 (GPU 2 left idle)
+# Provision the ops LLM-runtime container (CT 120) — GPU 1 of two Radeon Pro V620
 ./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
+# Autonomous coding loop's GPU-2 model server (CT 123 gpu2) — llama-swap on GPU 2
+./pro-v620/create-lxc-llama-swap-gpu2.sh          # Ornith coder + ThinkingCap reviewer, swapped by name (:8080)
+# The loop's execution sandbox (CT 122 coder-runner; runs npm/build/tests, needs CT 121's ssh pubkey)
+CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./coder-runner/create-lxc-coder-runner.sh
 # Prior GPU (RX 6700 XT) — kept for reference; pick ONE engine (mutually exclusive)
 ./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
 ./rx-6700-xt/create-lxc-llamacpp-qwen3.5-9b.sh    # llama.cpp (llama-server)
@@ -235,9 +244,10 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
 - **VMID allocation** (homelab-wide scheme — pick a new script's default `VMID` from the
   matching range):
   - `100-119` — infra / services
-  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, pinned to GPU 1 of two V620s, GPU 2 idle; the
+  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, pinned to GPU 1 of two V620s; the
     prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the Hermes Agent that
-    consumes CT 120's API. CT 122 `coder-runner` — the autonomous coding loop's execution sandbox)
+    consumes CT 120's API. CT 122 `coder-runner` — the coding loop's execution sandbox; CT 123 `gpu2` —
+    a `llama-swap` server on GPU 2 for the loop (Ornith coder + ThinkingCap reviewer, swapped one at a time))
   - `140-159` — databases
   - `200+` — test / temporary (CT 200 `bench-runner` — disposable benchmark LXC)
 - **Autonomous coding loop / execution isolation (`coder-runner/`, CT 122).** The homelab runs a
