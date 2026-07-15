@@ -18,9 +18,12 @@ Three containers form the system:
   **two Radeon Pro V620s** (Navi 21 / gfx1030, 32 GB each): one in the **PCIe-1** (CPU) slot
   `0000:2d:00.0`, one in the **PCIe-3** (chipset) slot `0000:06:00.0`, both cooled by a single
   **NF-F12 iPPC-3000** 120 mm fan in a shared shroud (one `gpu-fan-control@shroud` instance whose
-  curve tracks the hotter card). The container passes through all of `/dev/dri`, so llama.cpp
-  currently sees both Vulkan devices and **splits the model across both** (each holds ~half the
-  weights + KV). Both cards are undervolted −100 mV:
+  curve tracks the hotter card). CT 120 is **pinned to GPU 1 alone** (`0000:2d:00.0`): its
+  container bind-mounts only that card's `/dev/dri` render node (via the udev-stable `by-path`
+  symlink — the reboot-stable way to pin one of two identical cards), so llama.cpp sees a single
+  Vulkan device and runs the whole ~26.6 GB model on it. **GPU 2 (`0000:06:00.0`) is left idle/free**
+  for a future second service; it stays amdgpu-bound so the host fan/undervolt/watchdog services
+  still manage both. Both cards are undervolted −100 mV:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
     (hostname `llamacpp`). This is the current runtime.
   - **Prior GPU (`rx-6700-xt/`, kept for reference):** the V620 replaced a Radeon RX 6700 XT
@@ -47,7 +50,7 @@ VMIDs `120`/`121`/`200` and hostnames are defaults overridable via env vars (`VM
 All run on the Proxmox host as root.
 
 ```bash
-# Provision the GPU LLM-runtime container (CT 120) — GPUs: two Radeon Pro V620 (model split across both)
+# Provision the GPU LLM-runtime container (CT 120) — GPU: GPU 1 of two Radeon Pro V620 (GPU 2 left idle)
 ./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
 # Prior GPU (RX 6700 XT) — kept for reference; pick ONE engine (mutually exclusive)
 ./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
@@ -96,9 +99,10 @@ mega-launcher — the RX 6700 XT has two sibling scripts (`...-lmstudio-...` and
 brand-new folder/script (`pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`) for its larger
 32 GB / MoE model rather than a flag on the 6700 XT script.
 Both GPUs use Vulkan (mesa RADV) — Navi 22/gfx1031 on the 6700 XT, Navi 21/gfx1030 on the
-V620 — the container installs `mesa-vulkan-drivers` and passes through `/dev/dri`. With **two
-V620s** installed, both render nodes (`renderD128` + `renderD129`) pass through and llama.cpp
-splits the model across both cards; plus a pinned model repo/file/SHA-256 in a privileged container. (The V620
+V620 — the container installs `mesa-vulkan-drivers` and passes through the GPU render node. With
+**two V620s** installed, CT 120 bind-mounts **only GPU 1's** render node (by PCI address, via the
+`by-path` symlink), so llama.cpp sees one Vulkan device and runs the model on that card while GPU 2
+stays idle; plus a pinned model repo/file/SHA-256 in a privileged container. (The V620
 model is a single-file unsharded GGUF, so the download/verify path is unchanged; on 32 GB it
 defaults to ctx 262144 / `--parallel 4` (the model's ~256k native max, 64k per slot; this
 MoE's KV cache is cheap, ~20 KB/token, ~29.8 GiB total at Q5). A single agent needing the whole
@@ -231,7 +235,7 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
 - **VMID allocation** (homelab-wide scheme — pick a new script's default `VMID` from the
   matching range):
   - `100-119` — infra / services
-  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, on two V620s; the
+  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, pinned to GPU 1 of two V620s, GPU 2 idle; the
     prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the Hermes Agent that
     consumes CT 120's API)
   - `140-159` — databases
@@ -243,9 +247,15 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
 - The GPUs are driven via **Vulkan** (mesa RADV). The host now runs **two Radeon Pro V620s**
   (Navi 21/gfx1030); the prior RX 6700 XT (Navi 22/gfx1031) is kept only for reference. The
   container installs the Vulkan userspace (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and
-  passes through all of `/dev/dri` (both render nodes `renderD128`+`renderD129`), so llama.cpp
-  offloads all layers (`-ngl 99`) and splits across both cards; verify with `vulkaninfo` and a
-  non-trivial `mem_info_vram_used` on each card.
+  passes through **only GPU 1's** render node (bind-mounted by PCI address via the `by-path`
+  symlink), so llama.cpp offloads all layers (`-ngl 99`) onto that single card; verify with
+  `vulkaninfo` / `llama-server --list-devices` (exactly one device) and a non-trivial
+  `mem_info_vram_used` on GPU 1 (read by PCI address — `cardN` is not stable) with GPU 2
+  near-idle. The bind's dest node name is resolved at provision, so a host DRM renumber (only
+  on a GPU add/remove or kernel change) needs GPU 1's mount re-resolved in place (rewrite the
+  two entries + restart the CT — see the README "Recovering after a DRM renumber" recipe; a
+  plain re-run is rejected while the CT exists). The `llamacpp-serve` guard turns the
+  otherwise-silent CPU fallback into a loud startup failure.
 - **V620 host-side GPU services live under `pro-v620/` and run on the Proxmox host (NOT in the
   LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`. `pro-v620/fan-control/`
   runs one `gpu-fan-control@<instance>` per **cooler** (out-of-tree `nct6687`) — currently a

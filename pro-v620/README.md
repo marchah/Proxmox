@@ -4,26 +4,29 @@ Scripts in this folder target the desktop server's **Radeon Pro V620** (Navi 21 
 gfx1030, RDNA 2, **32 GB** GDDR6, 72 CUs). The V620 **replaces the RX 6700 XT** —
 the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 
-> **Dual-GPU update:** the host now runs **two V620s** — PCIe-1 (CPU) slot `0000:2d:00.0`
-> and PCIe-3 (chipset) slot `0000:06:00.0`. CT 120's container passes through all of
-> `/dev/dri`, so llama.cpp **splits the model across both cards** (each ~half the weights +
-> KV). Both are undervolted −100 mV (`undervolt/` applies to every V620). **Cooling
-> (current): one NF-F12 iPPC-3000 in a shared shroud cools BOTH cards**, driven by a single
-> `gpu-fan-control@shroud` instance whose curve tracks the **hotter** of the two (see
-> [`fan-control/`](fan-control/) and [`undervolt/`](undervolt/)). The single-card figures
-> below (benchmarks, thermals, undervolt A/B) were measured on **one** V620 and remain valid
-> as per-card characterization.
+> **Two V620s, one in use:** the host runs **two V620s** — PCIe-1 (CPU) slot `0000:2d:00.0`
+> ("GPU 1") and PCIe-3 (chipset) slot `0000:06:00.0` ("GPU 2"). The model is only ~26.6 GB and
+> fits a single 32 GB card, so **CT 120 is pinned to GPU 1 alone**: its container bind-mounts
+> only GPU 1's `/dev/dri` render node (via the udev-stable `by-path` symlink — the only
+> reboot-stable way to pin one of two *identical* cards; see `configure_gpu_passthrough` in the
+> script). **GPU 2 is left idle/free** for a future second service (e.g. a coder/reviewer split).
+> GPU 2 stays physically present + amdgpu-bound, so the host services still manage both cards:
+> both are undervolted −100 mV (`undervolt/` applies to every V620), and **cooling is one NF-F12
+> iPPC-3000 in a shared shroud** driven by a single `gpu-fan-control@shroud` instance whose curve
+> tracks the **hotter** card — now GPU 1 under load (see [`fan-control/`](fan-control/) and
+> [`undervolt/`](undervolt/)). The single-card figures below (benchmarks, thermals, undervolt A/B)
+> were measured on **one** V620, which is exactly this configuration.
 >
-> **⚠️ Per-GPU solo-load cooling history.** Before the shroud, GPU 2 was cooled by 2× Arctic
-> S4028-6K — low-CFM (~14 °C worse than a blower at equal fan): fine for GPU 2's *half* of the
-> split (~70 °C) but a **full solo load overheated it** (junction **106 °C** at 250 W, fan
-> maxed, throttling — even at −100 mV). GPU 1's blower ran a full load at ~83 °C. The NF-F12
-> shroud replaced the Arctic pair to fix this. **Load-tested 2026-07-14:** the shroud holds the
-> **split** comfortably (both ~56–59 °C at 60% fan) but **cannot sustain a solo full load** — one
-> card maxes the fan and settles at ~91 °C (GPU 1) / ~97 °C (GPU 2), holding but with no headroom.
-> **Prefer the split** for full-model work; the [`gpu-thermal-watchdog/`](gpu-thermal-watchdog/)
-> stops the LLM server at 102 °C as the last-resort net. Per-cooler thermals + 3D-print mounts:
-> [`fan-control/README.md`](fan-control/README.md).
+> **⚠️ Thermal trade-off of running solo on GPU 1.** Concentrating the whole model + all compute on
+> one card runs it hotter than splitting across both did (~56–59 °C). **Load-tested 2026-07-14:** a
+> full solo load maxes the shroud fan and GPU 1 settles at **~91 °C** junction — holding, but with
+> little headroom (still under the 100 °C hardware throttle and the 102 °C watchdog trip). This is
+> the deliberate cost of keeping GPU 2 free; the [`gpu-thermal-watchdog/`](gpu-thermal-watchdog/)
+> stops the LLM server at 102 °C as the last-resort net. (History: GPU 2's original 2× Arctic
+> S4028-6K cooler was ~14 °C worse than a blower and a full solo load overheated it — junction
+> **106 °C** at 250 W, throttling — so the NF-F12 shroud replaced the Arctic pair. Per-cooler
+> thermals + 3D-print mounts: [`fan-control/README.md`](fan-control/README.md).) To go back to
+> splitting across both cards, pass through all of `/dev/dri` again in `configure_gpu_passthrough`.
 
 With ~2.7× the VRAM of the 6700 XT (32 GB vs 12 GB), this card serves a much
 larger model. There is a single runtime script here (no LM Studio sibling —
@@ -43,11 +46,12 @@ dense 27B/32B at comparable quality — the best capability-per-second on this c
 The intended consumer is an **agent** (tool-calling loops, where per-step latency
 compounds), which is exactly where the MoE's speed pays off.
 
-It fits 32 GB at Q5 (~26.6 GB weights) with ~5 GB left for the KV cache. The dense
-alternatives that also fit (`Qwen3.5-27B`, `Qwen3-32B`) are documented in the repo
-history if you want to trade speed for a dense model — each would be its own
-script, not a flag on this one (per the repo's "one GPU/model/engine per script"
-convention).
+It fits 32 GB at Q5 (~26.6 GB weights) with ~5 GB left for the KV cache — i.e. it
+fits **one** V620 comfortably, which is why CT 120 is pinned to GPU 1 alone and the
+second card is left free (see the note at the top). The dense alternatives that
+also fit (`Qwen3.5-27B`, `Qwen3-32B`) are documented in the repo history if you
+want to trade speed for a dense model — each would be its own script, not a flag on
+this one (per the repo's "one GPU/model/engine per script" convention).
 
 ## llama.cpp Qwen3.6-35B-A3B LXC
 
@@ -91,7 +95,8 @@ modest `16384` MB — fine on this 31 GiB host. Bump it only if you switch to
 `--no-mmap`.)
 
 The script creates a privileged Ubuntu LXC with a `/models` mount (backup
-disabled) and `/dev/dri` passthrough, plus the Vulkan userspace and the
+disabled) and GPU 1's render-node passthrough (only that one card; see the top
+note), plus the Vulkan userspace and the
 **libglvnd/EGL stack** (`libglvnd0 libgl1 libglx0 libegl1`) — without the latter
 the Mesa ICD loader can silently report zero Vulkan devices inside the container.
 It installs:
@@ -172,15 +177,42 @@ application state separately.
 
 The V620 (Navi 21 / gfx1030) is driven through **Vulkan** (mesa RADV). The script
 installs the Vulkan userspace (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) plus
-the libglvnd/EGL stack, passes through `/dev/dri`, and pins the RADV ICD
+the libglvnd/EGL stack, passes through only GPU 1's render node, and pins the RADV ICD
 (`VK_ICD_FILENAMES`) so the engine can't fall back to the llvmpipe software
 device. llama-server offloads all layers with `--n-gpu-layers 99`. Confirm the GPU
 is visible to Vulkan and resident in VRAM:
 
 ```bash
-pct exec 120 -- vulkaninfo --summary                                # expect a V620 under the radv driver
-cat /sys/class/drm/card0/device/mem_info_vram_used                  # ~30 GB while serving a request
+pct exec 120 -- vulkaninfo --summary                                # expect exactly ONE V620 under the radv driver
+# cardN numbering is NOT stable — read GPU 1 by PCI address (card0 here is the idle GPU 2):
+cat /sys/bus/pci/devices/0000:2d:00.0/mem_info_vram_used            # ~29.8 GiB while the model is loaded (GPU 1)
+cat /sys/bus/pci/devices/0000:06:00.0/mem_info_vram_used            # ~0 — GPU 2 stays idle
 ```
+
+> **Reboot caveat.** The container binds GPU 1's render node by PCI address, but the
+> destination node *name* is resolved at provision time. A host DRM renumber (only on a
+> GPU add/remove/reseat or kernel/driver change) can leave that name stale → RADV can't
+> init → a **loud** startup failure (the `llamacpp-serve` guard aborts rather than
+> silently running on CPU). This is deliberately not self-healing — it's rare and the
+> hard stop is safe. Recover in place; a plain re-run of the provisioning script is
+> rejected while CT 120 exists.
+
+#### Recovering after a DRM renumber
+
+On the Proxmox host — re-resolve GPU 1's current DRM node names and fix CT 120's two
+mount entries, then restart. No rebuild, no re-download (model + rootfs untouched):
+
+```bash
+conf=/etc/pve/lxc/120.conf
+rn=$(basename "$(readlink -f /dev/dri/by-path/pci-0000:2d:00.0-render)")   # current renderD*
+cn=$(basename "$(readlink -f /dev/dri/by-path/pci-0000:2d:00.0-card)")     # current card*
+sed -i -E "s#(-render dev/dri/)renderD[0-9]+#\1${rn}#; s#(-card dev/dri/)card[0-9]+#\1${cn}#" "$conf"
+pct stop 120 && pct start 120
+pct exec 120 -- /usr/local/bin/llamacpp-wait-health   # blocks until serving (guard passes)
+```
+
+(Alternatively, `pct destroy 120` then re-run the provisioning script — but that
+re-downloads the ~27 GB model, so the in-place fix above is preferred.)
 
 ### Why Vulkan and not ROCm/HIP?
 
