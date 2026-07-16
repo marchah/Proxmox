@@ -24,10 +24,16 @@
     # runs llamacpp — the only supported engine here; the prior RX 6700 XT's lmstudio
     # path was removed when that card was decommissioned.
     runtime: llamacpp
-    # Default to 4 slots = the operational CT 120 default, so a plain `make bench`
-    # never downgrades the running model. Override with -e parallel=1 for a
-    # single-slot run.
+    # Benchmark concurrency — kept at 4 for run-to-run comparability with the existing
+    # result sets (pro-v620/results/.../parallel-4). This is the BENCHMARK default, NOT the
+    # operational one (CT 120 ships --parallel 2). The pre-batch/per-item reload uses this
+    # value; the post-run restore uses `restore_parallel` below, so benching at 4 leaves the
+    # operational default untouched. Override per-run with -e parallel=1 (single 256k slot).
     parallel: 4
+    # Where the post-batch/post-sweep restore leaves CT 120 — the operational default, decoupled
+    # from `parallel` so a benchmark never clobbers prod. Tracks the CT 120 script default
+    # (--parallel 2). Override with -e restore_parallel=N.
+    restore_parallel: 2
     # Served model id (== llama-server --alias on CT 120). The bench-runner also
     # auto-detects it from /v1/models, but the reload/label/telemetry paths use it.
     model_key: qwen3.6-35b-a3b
@@ -47,9 +53,13 @@
         # the helper the llama.cpp container ships (blocks until healthy).
         # Absolute path: the Ubuntu container's PATH omits /usr/local/bin.
         reload_cmd: "/usr/local/bin/llamacpp-reload {{ model_context }} {{ parallel }}"
+        # Post-run restore returns CT 120 to the operational default (restore_parallel), not the
+        # benchmark concurrency, so a run leaves prod as it found it.
+        restore_cmd: "/usr/local/bin/llamacpp-reload {{ model_context }} {{ restore_parallel }}"
         version_cmd: "/opt/llamacpp/current/llama-server --version 2>&1"
     runtime_label: "{{ runtimes[runtime].label }}"
     model_reload_cmd: "{{ runtimes[runtime].reload_cmd }}"
+    model_restore_cmd: "{{ runtimes[runtime].restore_cmd }}"
     # Optional host-orchestrated context-length sweep (reloads CT 120 per context,
     # benches it via the host-telemetry sidecar). Off by default; enable with
     # -e context_sweep=true. Set benchmarks=[] to run only the context sweep.
@@ -230,9 +240,9 @@
       always:
         # Don't let a restore failure abort the play before results are fetched;
         # it's reported at the end alongside any benchmark failures.
-        - name: Restore a clean model after the batch (cliff safety)
+        - name: Restore CT 120 to the operational default after the batch (cliff safety)
           ansible.builtin.command:
-            argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_reload_cmd }}"]
+            argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_restore_cmd }}"]
           changed_when: true
           register: post_batch_restore
           failed_when: false
@@ -295,7 +305,7 @@
         MODEL_KEY: "{{ model_key }}"
         MODEL_PARALLEL: "{{ parallel }}"
         RESTORE_CONTEXT: "{{ model_context }}"
-        RESTORE_PARALLEL: "{{ parallel }}"
+        RESTORE_PARALLEL: "{{ restore_parallel }}"
         CONTEXTS: "{{ context_sweep_contexts }}"
         OUT_DIR: "{{ host_suite_dir }}/context-sweep"
       register: context_sweep_run

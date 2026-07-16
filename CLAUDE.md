@@ -113,9 +113,12 @@ V620 — the container installs `mesa-vulkan-drivers` and passes through the GPU
 `by-path` symlink), so llama.cpp sees one Vulkan device and runs the model on that card while GPU 2
 stays idle; plus a pinned model repo/file/SHA-256 in a privileged container. (The V620
 model is a single-file unsharded GGUF, so the download/verify path is unchanged; on 32 GB it
-defaults to ctx 262144 / `--parallel 4` (the model's ~256k native max, 64k per slot; this
-MoE's KV cache is cheap, ~20 KB/token, ~29.8 GiB total at Q5). A single agent needing the whole
-256k window uses `llamacpp-reload 262144 1`; tunable via `llamacpp-reload`.)
+defaults to ctx 262144 / `--parallel 2` (the model's ~256k native max, 128k per slot; this
+MoE's KV cache is cheap, ~20 KB/token, ~29.8 GiB total at Q5). It was `--parallel 4` (64k/slot),
+but qwen3.6's uncapped reasoning could fill a whole 64k slot with `<think>` and return
+`finish_reason='length'` with no answer (Hermes "Thinking Budget Exhausted"); 128k/slot leaves
+room for reasoning + answer. A single agent needing the whole 256k window uses
+`llamacpp-reload 262144 1`; tunable via `llamacpp-reload`.)
 
 Engine differences that matter when extending the llama.cpp script:
 - It installs a **pinned prebuilt Vulkan `llama-server` release** (tag + tarball SHA-256 in

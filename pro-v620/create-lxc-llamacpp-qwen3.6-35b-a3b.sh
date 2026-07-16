@@ -54,8 +54,8 @@ readonly MODEL_REVISION="a483e9e6cbd595906af30beda3187c2663a1118c"
 # ansible/host benchmark tooling pins model_key to this. NOTE: this id is
 # client-facing — OpenAI requests must set "model" to it. See pro-v620/README.md.
 readonly MODEL_ALIAS="qwen3.6-35b-a3b"
-# 256k total context — the model's native maximum (262144), 64k per slot at
-# --parallel 4. This MoE's KV cache is cheap (~20 KB/token), so even 256k fits the
+# 256k total context — the model's native maximum (262144), 128k per slot at
+# --parallel 2. This MoE's KV cache is cheap (~20 KB/token), so even 256k fits the
 # V620 at Q5: ~29.8 GiB used of ~30 GiB usable (the card exposes 30704 MiB, not a
 # full 32) — only ~0.2 GiB real margin. Stress-verified (a 4-concurrent prefill
 # held), but NO safety buffer: a heavier transient could OOM. If that bites, dial
@@ -64,7 +64,7 @@ readonly MODEL_ALIAS="qwen3.6-35b-a3b"
 # this is the true single-card budget, not a per-card half of a split.) A larger --ctx-size does NOT slow shorter
 # requests (attention is over actual length, not the max), so this ceiling is
 # "free" — an occasional high-context agent just works, no reload needed. Daytime
-# ~4 agents share it (64k per slot); a single agent can use the whole 256k window
+# ~2 agents share it (128k per slot); a single agent can use the whole 256k window
 # via `llamacpp-reload 262144 1`. Bigger contexts DECODE slower, and a cold 256k
 # prefill takes minutes (fine for incremental/prefix-cached growth) — see README.
 # Retune live via `llamacpp-reload <context-length> <parallel>`.
@@ -73,11 +73,16 @@ readonly MODEL_CONTEXT_LENGTH="262144"
 # ~26.6 GB model fits in the V620's 32 GB (the llama.cpp equivalent of LM Studio's
 # --gpu max).
 readonly MODEL_GPU_LAYERS="99"
-# 4 continuous-batching slots (llama-server --parallel). The MoE activates only
-# ~3B params/token, so it batches cheaply and should scale well under
-# concurrency; tune with `llamacpp-reload <ctx> <parallel>` once benchmarked.
-# Continuous batching is on by default in llama-server.
-readonly MODEL_PARALLEL="4"
+# 2 continuous-batching slots (llama-server --parallel) → 131072 tokens per slot.
+# Was 4 (64k/slot), but qwen3.6 is a *thinking* model served with no output cap
+# (n_predict -1), so its reasoning generates until the slot's context physically
+# fills: a heavy request (e.g. a KB-ingestion skill) burned the whole 64k slot on
+# <think> and returned finish_reason='length' with no visible answer — Hermes then
+# surfaces "Thinking Budget Exhausted". 128k/slot leaves ample room for the
+# reasoning AND the answer. The MoE activates only ~3B params/token so it still
+# batches cheaply; go back to 4 (or down to 1 for a single 256k agent) via
+# `llamacpp-reload <ctx> <parallel>`. Continuous batching is on by default.
+readonly MODEL_PARALLEL="2"
 readonly MODEL_SERVER_BIND="0.0.0.0"
 readonly MODEL_SERVER_PORT="1234"
 
