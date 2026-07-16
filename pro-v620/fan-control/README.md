@@ -73,7 +73,7 @@ are offset from the board silkscreen: channel `N` = `System Fan #(N-2)`.
   no quiet idle with this fan. (Prior per-cooler floors — 9733 blower 12.5%, Arctic 22% —
   live in the reference env files and the *Measured thermals* / cooling-history notes above.)
 - Current **shroud** profile (`/etc/gpu-fan-control-shroud.env`): `edge ≤45 °C → 50%`,
-  ramp, `edge ≥80 °C → 100%`; `junction|mem ≥90 °C → 100%` (resume at 87 °C).
+  ramp, `edge ≥80 °C → 100%`; `junction|mem ≥80 °C → 100%` (resume at 77 °C).
 - **Fail toward cooling.** Every sensor present at startup (edge *and* each of
   `HOTSPOT_TEMP_LABELS`) is then required: if any disappears the daemon forces 100%.
   Likewise, every GPU in an explicit `GPU_PCI_ADDRESS` list is a **required set**, re-checked
@@ -154,7 +154,7 @@ dkms remove nct6687d/1 --all
   `modprobe -r nct6683 && modprobe nct6687`.
 - **`hwmon not found @ <pci>`** — the instance's `GPU_PCI_ADDRESS` doesn't match a
   bound amdgpu card; check `lspci -D | grep -i V620` and the env file.
-- **Fan at full speed unexpectedly** — junction ≥ 90 °C (override), a stalled tach,
+- **Fan at full speed unexpectedly** — junction ≥ 80 °C (override), a stalled tach,
   or an unreadable GPU sensor (fails toward 100%); check the instance's journal.
 - **Wrong fan / wrong card** — each instance is pinned by `GPU_PCI_ADDRESS` +
   `FAN_PWM_CHANNEL`; identify a channel by driving each `pwmN` and watching which
