@@ -47,6 +47,9 @@ model:
   base_url: http://llamacpp:1234/v1   # TARGET_HOSTNAME; falls back to http://<CT120-IP>:1234/v1
   api_key: ""                     # CT 120 is keyless
   context_length: 65536           # half a CT 120 slot (slot = 262144 / --parallel 2 = 131072)
+providers:
+  custom:                         # key == the resolved agent.provider for this endpoint
+    request_timeout_seconds: 1800 # 30 min; a queued request (CT 120 --parallel 2) won't hit the 600s SDK default
 terminal:
   backend: local                  # the LXC itself is the sandbox
 ```
@@ -93,6 +96,7 @@ user allowlist (without an allowlist Hermes denies all incoming users).
 | `TARGET_BASE_URL` | _(hostname, then IP)_ | pin the model endpoint directly (skips discovery) |
 | `MODEL_IDENTIFIER` | `qwen3.6-35b-a3b` | served model id (CT 120's `--alias`) |
 | `MODEL_CONTEXT_LENGTH` | `65536` | per-request context written into config.yaml |
+| `MODEL_REQUEST_TIMEOUT_SECONDS` | `1800` | main model-call timeout (s) → `providers.custom.request_timeout_seconds`; keeps a queued request (CT 120 `--parallel 2`) from tripping the OpenAI SDK's 600s default |
 | `HERMES_VERSION` | `v2026.6.19` | pinned git tag (installer fetched from the tag + SHA-256 verified); `latest` = main HEAD, **unverified** |
 | `HERMES_INSTALLER_SHA256` | _(pinned)_ | expected SHA-256 of the tag's `scripts/install.sh`; bump together with the tag |
 | `API_SERVER_KEY` | _(generated)_ | bearer key for the API server |

@@ -54,6 +54,12 @@ MODEL_IDENTIFIER="${MODEL_IDENTIFIER:-qwen3.6-35b-a3b}"
 # Concurrent Hermes subagents + external API clients all draw from CT 120's 2 slots; on
 # CT 120, `llamacpp-reload <ctx> <parallel>` is the lever.
 MODEL_CONTEXT_LENGTH="${MODEL_CONTEXT_LENGTH:-65536}"
+# Main model-call timeout (seconds), written as providers.custom.request_timeout_seconds. CT 120's
+# --parallel 2 means a 3rd concurrent request QUEUES (llama-server queues, doesn't reject); without
+# an explicit value the OpenAI SDK default (read=600s) would fire on a >10-min queue wait. 1800s
+# (30 min) absorbs that. The provider key MUST be `custom` — that's the resolved agent.provider for
+# this bare-custom llamacpp endpoint (a mismatched key silently falls back to the 600s default).
+MODEL_REQUEST_TIMEOUT_SECONDS="${MODEL_REQUEST_TIMEOUT_SECONDS:-1800}"
 
 # --- Hermes version (pinned + checksum-verified by default) ---
 # The install is pinned to an immutable git tag: the container fetches scripts/install.sh
@@ -287,7 +293,8 @@ install_and_configure() {
     "${MODEL_IDENTIFIER}" \
     "${MODEL_CONTEXT_LENGTH}" \
     "${API_SERVER_PORT}" \
-    "${TARGET_BASE_URL_FALLBACK}" <<'CONTAINER_SCRIPT'
+    "${TARGET_BASE_URL_FALLBACK}" \
+    "${MODEL_REQUEST_TIMEOUT_SECONDS}" <<'CONTAINER_SCRIPT'
 set -Eeuo pipefail
 
 HERMES_VERSION="$1"
@@ -298,6 +305,7 @@ MODEL_IDENTIFIER="$5"
 MODEL_CONTEXT_LENGTH="$6"
 API_SERVER_PORT="$7"
 TARGET_BASE_URL_FALLBACK="$8"   # discovered IP URL; used only if TARGET_BASE_URL doesn't resolve here
+MODEL_REQUEST_TIMEOUT_SECONDS="$9"
 
 # The API key was pushed as a mode-600 raw-value file (kept out of argv/env so it never
 # appears in `ps`). Read it with command substitution — NOT `source` — so its contents are
@@ -410,6 +418,12 @@ model:
   base_url: ${EFFECTIVE_BASE_URL}
   api_key: ""
   context_length: ${MODEL_CONTEXT_LENGTH}
+providers:
+  # Timeout for the main model call. CT 120 runs --parallel 2, so a 3rd concurrent request queues;
+  # this keeps a queued request from tripping the OpenAI SDK's 600s default read timeout. The key
+  # MUST be `custom` (== the resolved agent.provider for this endpoint).
+  custom:
+    request_timeout_seconds: ${MODEL_REQUEST_TIMEOUT_SECONDS}
 terminal:
   backend: local
   # Run the agent from /root (a neutral home), not its install dir. Hermes auto-loads a project
