@@ -37,7 +37,7 @@ make help            # list targets
 make ping            # test SSH connectivity to the Proxmox host
 make check           # syntax-check the playbook
 make smoke           # plumbing test (push + reload, no benchmarks)
-make bench           # full batch, --parallel 2 (the operational default)
+make bench           # full batch, --parallel 4 (benchmark default; CT 120 ships --parallel 2)
 make bench PARALLEL=1 # single-slot run
 make context-sweep   # context-length sweep on top of the batch
 ```
@@ -52,9 +52,11 @@ ansible-playbook ansible/benchmark.yml -e @ansible/secrets.yml
 ansible-playbook ansible/benchmark.yml -e @ansible/secrets.yml -e parallel=1
 ```
 
-Useful extra vars: `parallel`, `reload_model=false` (skip the model reload),
-`runtime_label=<name>` (force a separate results folder), or override the
-`benchmarks` list.
+Useful extra vars: `parallel` (benchmark concurrency, default 4), `restore_parallel`
+(what CT 120 is reloaded to when the run finishes, default 2 = the operational
+`--parallel`; decoupled from `parallel` so a benchmark never leaves prod downgraded),
+`reload_model=false` (skip the model reload), `runtime_label=<name>` (force a separate
+results folder), or override the `benchmarks` list.
 
 ### Optional: context-length sweep
 
