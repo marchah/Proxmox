@@ -75,9 +75,9 @@ This script is deliberately narrow:
 - Repository: `unsloth/Qwen3.6-35B-A3B-GGUF`
 - File: `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, single file)
 - Identifier (`--alias`): `qwen3.6-35b-a3b`
-- Context length: `262144` (`--ctx-size`; the model's ~256k native max, 64k per slot at `--parallel 4` — KV cache is cheap on this MoE)
+- Context length: `262144` (`--ctx-size`; the model's ~256k native max, 128k per slot at `--parallel 2` — KV cache is cheap on this MoE)
 - GPU offload: `--n-gpu-layers 99` (all layers, including MoE experts)
-- Parallel slots: `--parallel 4` (continuous batching, on by default)
+- Parallel slots: `--parallel 2` (continuous batching, on by default; see "Context length and parallel slots" for why 2 not 4)
 - Attention / batch: `--flash-attn on --batch-size 4096 --ubatch-size 1024` (tuned — see Benchmarks → Tuning)
 - Tool calling: `--jinja` — uses the model's chat template so OpenAI `tool_calls` parse correctly (**required for agents**; without it llama-server won't emit tool calls)
 - API bind: `0.0.0.0:1234`
@@ -124,8 +124,8 @@ and blocks until `/health` is ready):
 pct exec 120 -- llamacpp-reload <context-length> <parallel>
 ```
 
-The `262144` / `--parallel 4` default is the model's **~256k native maximum**,
-split across 4 continuous-batching slots (**64k each**). This MoE's KV cache is
+The `262144` / `--parallel 2` default is the model's **~256k native maximum**,
+split across 2 continuous-batching slots (**128k each**). This MoE's KV cache is
 cheap (~20 KB/token), so even 256k fits the V620 at Q5 ~29.8 GiB used of ~30 GiB
 usable (the card exposes 30704 MiB, not a full 32) — only ~0.2 GiB real margin,
 stress-verified (a 4-concurrent prefill held) but with no safety buffer. A larger
@@ -133,10 +133,21 @@ stress-verified (a 4-concurrent prefill held) but with no safety buffer. A large
 over actual length), so this ceiling is free for normal traffic — but *using*
 large contexts decodes slower (see [Multi-agent capacity](#multi-agent-capacity-4--32k)).
 
+**Why 2 slots, not 4.** qwen3.6 is a *thinking* model and llama-server serves it
+with no output cap (`n_predict -1`), so its reasoning generates until the slot's
+context physically fills. On a 64k slot (the old `--parallel 4`) a heavy request —
+e.g. a Hermes KB-ingestion skill — could spend the entire slot on `<think>` and
+return `finish_reason='length'` with no visible answer (surfaced as **"Thinking
+Budget Exhausted"**). 128k/slot leaves comfortable room for the reasoning *and* the
+answer. If you need 4-way concurrency back for a genuinely multi-client burst,
+reload to `262144 4` — just expect heavy reasoning to risk the same ceiling.
+
 **Per-slot context = total ÷ parallel.** Switch modes live for the workload:
 
 ```bash
-# Daytime — ~4 concurrent agents, 64k each (the default):
+# Default — ~2 concurrent agents, 128k each:
+pct exec 120 -- llamacpp-reload 262144 2
+# Higher concurrency — ~4 agents, 64k each (watch for thinking-budget exhaustion):
 pct exec 120 -- llamacpp-reload 262144 4
 # Overnight — ONE agent needs the full 256k window (single slot, no concurrency):
 pct exec 120 -- llamacpp-reload 262144 1

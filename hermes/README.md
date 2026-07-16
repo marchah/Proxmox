@@ -46,14 +46,17 @@ model:
   provider: custom
   base_url: http://llamacpp:1234/v1   # TARGET_HOSTNAME; falls back to http://<CT120-IP>:1234/v1
   api_key: ""                     # CT 120 is keyless
-  context_length: 65536           # one CT 120 slot (262144 / --parallel 4)
+  context_length: 65536           # half a CT 120 slot (slot = 262144 / --parallel 2 = 131072)
 terminal:
   backend: local                  # the LXC itself is the sandbox
 ```
 
-`context_length` is pinned to a single CT 120 slot so one request can't exceed a slot and
-get truncated. Concurrent Hermes subagents and external API clients all share CT 120's 4
-slots — on CT 120, `llamacpp-reload <ctx> <parallel>` is the lever if you need to retune.
+`context_length` is deliberately **half** a CT 120 slot (a slot is `262144 / --parallel 2 =
+131072`). Capping the prompt at 65536 leaves the rest of the slot free for the model's
+reasoning + answer — qwen3.6 is a thinking model served with no output cap, so letting the
+prompt fill a whole slot starves the response and trips "Thinking Budget Exhausted."
+Concurrent Hermes subagents and external API clients all share CT 120's 2 slots — on CT 120,
+`llamacpp-reload <ctx> <parallel>` is the lever if you need to retune.
 
 ## Security posture
 

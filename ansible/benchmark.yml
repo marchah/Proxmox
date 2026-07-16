@@ -24,16 +24,18 @@
     # runs llamacpp — the only supported engine here; the prior RX 6700 XT's lmstudio
     # path was removed when that card was decommissioned.
     runtime: llamacpp
-    # Default to 4 slots = the operational CT 120 default, so a plain `make bench`
-    # never downgrades the running model. Override with -e parallel=1 for a
-    # single-slot run.
-    parallel: 4
+    # Default to 2 slots = the operational CT 120 default, so a plain `make bench`
+    # never downgrades the running model (the post-batch restore reloads to
+    # `model_context`/`parallel`, so this MUST track the script default or every
+    # `make bench` silently reverts CT 120). Override with -e parallel=4 (higher
+    # concurrency) or -e parallel=1 (single 256k slot) for a one-off run.
+    parallel: 2
     # Served model id (== llama-server --alias on CT 120). The bench-runner also
     # auto-detects it from /v1/models, but the reload/label/telemetry paths use it.
     model_key: qwen3.6-35b-a3b
     # 256k total — MUST match the CT 120 default. Reloads and the post-batch restore
     # use this value, so a smaller number here silently downgrades production context
-    # on every `make bench`. At parallel 4 that is 64k per slot.
+    # on every `make bench`. At parallel 2 that is 128k per slot.
     model_context: 262144
     reload_model: true
     # Per-engine reload command + labels. The reload command is re-templated by

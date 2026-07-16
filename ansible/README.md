@@ -37,7 +37,7 @@ make help            # list targets
 make ping            # test SSH connectivity to the Proxmox host
 make check           # syntax-check the playbook
 make smoke           # plumbing test (push + reload, no benchmarks)
-make bench           # full batch, --parallel 4 (the operational default)
+make bench           # full batch, --parallel 2 (the operational default)
 make bench PARALLEL=1 # single-slot run
 make context-sweep   # context-length sweep on top of the batch
 ```

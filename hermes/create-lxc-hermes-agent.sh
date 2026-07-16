@@ -46,10 +46,13 @@ TARGET_BASE_URL_FALLBACK=""                     # set by discover_target_base_ur
 # CT 120 serves its model under this --alias (see pro-v620/create-lxc-...sh MODEL_ALIAS);
 # /v1/models reports it and OpenAI requests must set "model" to it. Override if it changes.
 MODEL_IDENTIFIER="${MODEL_IDENTIFIER:-qwen3.6-35b-a3b}"
-# CT 120 runs --ctx-size 262144 with --parallel 4, i.e. 65536 tokens per slot. Matching
-# that here keeps one Hermes request inside one slot (a larger value would let a request
-# exceed a slot and get truncated). Concurrent Hermes subagents + external API clients all
-# draw from CT 120's 4 slots; on CT 120, `llamacpp-reload <ctx> <parallel>` is the lever.
+# CT 120 runs --ctx-size 262144 with --parallel 2, i.e. 131072 tokens per slot. We keep
+# this at 65536 (half a slot) on purpose: it caps a Hermes request's PROMPT to ~half the
+# slot, leaving the rest free for the model's reasoning+answer output. qwen3.6 is a thinking
+# model served with no output cap, so filling a whole slot with prompt starves the response
+# and trips "Thinking Budget Exhausted" (the model spends every remaining token on <think>).
+# Concurrent Hermes subagents + external API clients all draw from CT 120's 2 slots; on
+# CT 120, `llamacpp-reload <ctx> <parallel>` is the lever.
 MODEL_CONTEXT_LENGTH="${MODEL_CONTEXT_LENGTH:-65536}"
 
 # --- Hermes version (pinned + checksum-verified by default) ---
