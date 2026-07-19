@@ -27,8 +27,9 @@ Three containers form the system:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
     (hostname `llamacpp`). This is the current runtime.
   - `pro-v620/create-lxc-llama-swap-gpu2.sh` — **CT 123 `gpu2`** on GPU 2: a `llama-swap` proxy for the
-    autonomous coding loop that hot-swaps between a coder model (Ornith-1.0-35B) and a reviewer model
-    (ThinkingCap-Qwen3.6-27B), one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
+    autonomous coding loop that hot-swaps between a coder model (Qwen3-30B-A3B-Instruct-2507, alias
+    `qwen3-instruct-2507`) and a reviewer model (Qwen3-Coder-30B-A3B-Instruct, alias `qwen3-coder-reviewer`),
+    one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
   - **Prior GPU (`rx-6700-xt/`, kept for reference):** the V620 replaced a Radeon RX 6700 XT
@@ -58,9 +59,11 @@ All run on the Proxmox host as root.
 # Provision the ops LLM-runtime container (CT 120) — GPU 1 of two Radeon Pro V620
 ./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
 # Autonomous coding loop's GPU-2 model server (CT 123 gpu2) — llama-swap on GPU 2
-./pro-v620/create-lxc-llama-swap-gpu2.sh          # Ornith coder + ThinkingCap reviewer, swapped by name (:8080)
+./pro-v620/create-lxc-llama-swap-gpu2.sh          # Qwen3-Instruct-2507 coder + Qwen3-Coder-30B reviewer, swapped by name (:8080)
 # The loop's execution sandbox (CT 122 coder-runner; runs npm/build/tests, needs CT 121's ssh pubkey)
 CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./coder-runner/create-lxc-coder-runner.sh
+# The loop/orchestrator config that runs INSIDE CT 121 (profiles/skills/plugins/timers) — run from within CT 121
+pct exec 121 -- bash -lc 'cd /path/to/Proxmox/hermes/config && ./install.sh'  # see hermes/config/README.md
 # Prior GPU (RX 6700 XT) — kept for reference; pick ONE engine (mutually exclusive)
 ./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
 ./rx-6700-xt/create-lxc-llamacpp-qwen3.5-9b.sh    # llama.cpp (llama-server)
@@ -250,7 +253,8 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, pinned to GPU 1 of two V620s; the
     prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the Hermes Agent that
     consumes CT 120's API. CT 122 `coder-runner` — the coding loop's execution sandbox; CT 123 `gpu2` —
-    a `llama-swap` server on GPU 2 for the loop (Ornith coder + ThinkingCap reviewer, swapped one at a time))
+    a `llama-swap` server on GPU 2 for the loop (Qwen3-Instruct-2507 coder + Qwen3-Coder-30B reviewer,
+    swapped one at a time))
   - `140-159` — databases
   - `200+` — test / temporary (CT 200 `bench-runner` — disposable benchmark LXC)
 - **Autonomous coding loop / execution isolation (`coder-runner/`, CT 122).** The homelab runs a
@@ -258,14 +262,21 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   in an isolated git worktree/branch, PR-gated (no auto-merge to public `main`). The loop's design rule is
   that **untrusted project code executes only on a separate, generic, disposable LXC — CT 122
   `coder-runner`** (Node + git + toolchain, holds no secrets), never inside the Hermes LXC. CT 121 drives
-  it over **ssh+rsync** via `checks-on-runner`/`run-on-runner`/`verify-and-commit` helpers (installed into
-  the coder/reviewer profiles, not this repo). Key facts learned the hard way: Hermes does **not**
+  it over **ssh+rsync** via `checks-on-runner`/`run-on-runner`/`verify-and-commit` helpers (committed under
+  `hermes/config/bin/` and deployed into CT 121 by `hermes/config/install.sh`). Key facts learned the hard
+  way: Hermes does **not**
   auto-commit managed worktrees and the local model won't reliably run `git`, so commits are made
   deterministically by `verify-and-commit` (checks on CT 122 → commit on the CT 121 host on green); a fix
   task must use `--workspace worktree:<absolute-repo-path>` (plain `worktree`+`--project` fails when created
   from inside a worker); keep worktrees out of the repo tree to avoid `git add -A` swallowing them as
   gitlinks. `coder-runner/create-lxc-coder-runner.sh` provisions CT 122 (once; repo-agnostic — add repos via
   `hermes project`, never a new LXC). See `coder-runner/README.md` and the `autonomous-coding-loop` memory.
+  The loop's CT-121-side config (coder/reviewer profiles, the loop helper scripts under `hermes/config/bin/`,
+  the `codex-review`/`completion-gate` plugins, the loop's `scope-and-plan`/`review-pr` skills, and the
+  `loop-watchdog`/`backlog-tick`/`pr-revise-tick` systemd timers) is committed under **`hermes/config/`**
+  (loop/orchestrator only — the box's unrelated KB/homelab automations are not tracked) with an idempotent
+  `install.sh` — run it inside CT 121 to (re)deploy. Private Slack channel IDs are parameterized to env vars
+  sourced from `/root/.hermes/.env` (see `hermes/config/hermes.env.example`); never commit the real `.env`.
 - Keep downloaded model weights and generated results out of git (already covered by
   `.gitignore`: `models/`, `results/`, `artifacts/`, `bench-results*.tgz`, `.env*`).
 - Container model storage (`/models`) uses `backup=0` — weights are large and

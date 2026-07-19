@@ -10,8 +10,8 @@ the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 > only GPU 1's `/dev/dri` render node (via the udev-stable `by-path` symlink — the only
 > reboot-stable way to pin one of two *identical* cards; see `configure_gpu_passthrough` in the
 > script). **GPU 2 now runs CT 123 `gpu2`** — a `llama-swap` server for the autonomous coding loop's
-> coder/reviewer split (`create-lxc-llama-swap-gpu2.sh`; Ornith coder + ThinkingCap reviewer, swapped
-> one at a time on `0.0.0.0:8080`). GPU 2 stays amdgpu-bound, so the host services manage both cards:
+> coder/reviewer split (`create-lxc-llama-swap-gpu2.sh`; Qwen3-Instruct-2507 coder + Qwen3-Coder-30B
+> reviewer, swapped one at a time on `0.0.0.0:8080`). GPU 2 stays amdgpu-bound, so the host services manage both cards:
 > both are undervolted −100 mV (`undervolt/` applies to every V620), and **cooling is one NF-F12
 > iPPC-3000 in a shared shroud** driven by a single `gpu-fan-control@shroud` instance whose curve
 > tracks the **hotter** card — now GPU 1 under load (see [`fan-control/`](fan-control/) and
@@ -40,8 +40,19 @@ the chosen engine, per the 6700 XT comparison), one per V620:
   under the identifier `qwen3.6-35b-a3b`.
 - `create-lxc-llama-swap-gpu2.sh` — **GPU 2 (CT 123 `gpu2`)**, the autonomous
   coding loop: a `llama-swap` proxy on `0.0.0.0:8080` that hot-swaps a coder model
-  (Ornith-1.0-35B) and a reviewer model (ThinkingCap-Qwen3.6-27B), one resident at
-  a time. See the callout above and `create-lxc-llama-swap-gpu2.sh --help`.
+  and a reviewer model, one resident at a time. See the callout above and
+  `create-lxc-llama-swap-gpu2.sh --help`.
+
+  **GPU-2 loop models** (both MoE ~3B active, ~21.7 GB each, so only one fits on the 32 GB card at a time;
+  both non-thinking, `--ctx-size 65536`, `--n-predict 8192`, `--parallel 1`, pick by alias):
+
+  | Role     | Alias                  | Model / GGUF |
+  |----------|------------------------|--------------|
+  | coder    | `qwen3-instruct-2507`  | Qwen3-30B-A3B-Instruct-2507 — `unsloth/…-GGUF`, `Qwen3-30B-A3B-Instruct-2507-Q5_K_M.gguf` |
+  | reviewer | `qwen3-coder-reviewer` | Qwen3-Coder-30B-A3B-Instruct — `unsloth/…-GGUF`, `Qwen3-Coder-30B-A3B-Instruct-UD-Q5_K_XL.gguf` |
+
+  (Replaced the original Ornith-1.0-35B coder + ThinkingCap-Qwen3.6-27B reviewer, which false-completed /
+  ran away; the reviewer is now non-thinking so it can't exhaust its reasoning budget.)
 
 ## Model choice: Qwen3.6-35B-A3B (MoE)
 
