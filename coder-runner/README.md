@@ -70,12 +70,13 @@ pct destroy 122 --purge
 
 ## How the loop uses it
 
-Helper scripts live in the Hermes coder/reviewer profiles on CT 121 (not in this repo):
+Helper scripts run on CT 121 (installed to `/usr/local/bin`); they are committed under **`hermes/config/bin/`**
+and deployed by `hermes/config/install.sh`:
 
-- `run-on-runner.sh <worktree> <cmd>` — rsync the worktree to `coder-runner:/build/<hash>/` and run `<cmd>`
+- `run-on-runner <worktree> <cmd>` — rsync the worktree to `coder-runner:/build/<hash>/` and run `<cmd>`
   there over ssh, streaming output and propagating the exit code.
-- `checks-on-runner.sh <worktree>` — detect the repo type (`package.json` → `npm ci && npm run typecheck &&
-  npm run lint`; `pyproject.toml` → ruff/mypy/pytest) and run the right checks via `run-on-runner.sh`.
+- `checks-on-runner <worktree>` — detect the repo type (`package.json` → `npm ci && npm run typecheck &&
+  npm run lint`; `pyproject.toml` → ruff/mypy/pytest) and run the right checks via `run-on-runner`.
 - `verify-and-commit <worktree>` (coder only) — runs `checks-on-runner`, and **on green, commits the
   worktree on the CT 121 host**. This is the required final step: **Hermes does NOT auto-commit** managed
   worktrees and the local model won't reliably run `git`, so a task's commit is created here.

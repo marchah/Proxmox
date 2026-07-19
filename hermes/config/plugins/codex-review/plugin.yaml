@@ -1,0 +1,4 @@
+name: codex-review
+version: 1.0.0
+description: "Slash command /codex-review <pr#> [repo] — run an on-demand Codex (ChatGPT) review of a PR (default repo mealdeal) via the codex_app_server runtime; the verdict posts to #coding."
+author: "homelab"

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# CODER ONLY. Regenerate committed artifacts + run the repo's checks on the coder-runner LXC (CT 122);
+# if GREEN, commit the worktree's changes here on the host, then auto-file the reviewer task for the branch.
+# The coder never runs git itself and Hermes does not auto-commit managed worktrees, so this is where a
+# completed task's commit is created. (git here is a text-only op; untrusted build runs on CT 122.)
+# Usage: verify-and-commit [worktree-dir] [commit-message]
+set -euo pipefail
+WT="${1:-.}"; MSG="${2:-}"
+WT="$(cd "$WT" && pwd)"
+/usr/local/bin/regen-on-runner "$WT"         # refresh SDL + gql.tada types (pnpm repos); no-op otherwise
+/usr/local/bin/checks-on-runner "$WT"        # streams output; non-zero => red => stop, no commit
+if [ -n "$(git -C "$WT" status --porcelain)" ]; then
+  [ -n "$MSG" ] || MSG="coder: ${HERMES_KANBAN_TASK:-change} — checks green on coder-runner"
+  git -C "$WT" add -A
+  ALLOW_COMMIT=1 git -C "$WT" -c user.email=coder@homelab -c user.name=hermes-coder commit -q -m "$MSG"
+  echo "[verify-and-commit] committed $(git -C "$WT" rev-parse --short HEAD) on $(git -C "$WT" rev-parse --abbrev-ref HEAD)"
+else
+  echo "[verify-and-commit] checks green; working tree clean (nothing to commit)"
+fi
+# Auto-chain coder→reviewer: file the reviewer task for this branch.
+# (no-op outside a Hermes worker or when the branch has no commits ahead of main)
+/usr/local/bin/request-review "$WT"

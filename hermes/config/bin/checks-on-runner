@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Run a project's checks for the given worktree ON the coder-runner LXC (CT 122).
+# Auto-detects the stack. Usage: checks-on-runner [worktree-dir]  (defaults to cwd)
+set -euo pipefail
+WT="${1:-.}"
+WT="$(cd "$WT" && pwd)"
+# Cached-install prefix (pnpm): skip `pnpm install` when the lockfile is unchanged (pnpm's node_modules
+# marker is newer than pnpm-lock.yaml). regen-on-runner (coder path) usually installed already; this makes
+# the standalone reviewer path fast too. rsync -a preserves mtimes, so an untouched lockfile => cache hit.
+PNPM_INSTALL='{ if [ -f node_modules/.modules.yaml ] && [ node_modules/.modules.yaml -nt pnpm-lock.yaml ]; then echo "[deps] cached (lockfile unchanged)"; else pnpm install --frozen-lockfile --prefer-offline; fi; }'
+if [ -f "$WT/pnpm-workspace.yaml" ] || grep -q '"packageManager"[[:space:]]*:[[:space:]]*"pnpm' "$WT/package.json" 2>/dev/null; then
+  # pnpm monorepo: gate = typecheck + ESLint (layer boundaries) + prettier + unit vitest + schema/codegen
+  # drift (pnpm check), then the integration suite (--if-present: no-op in repos without that script).
+  CMD="$PNPM_INSTALL && pnpm check && pnpm run --if-present test:integration"
+elif [ -f "$WT/package.json" ]; then
+  CMD='if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi && npm run --if-present typecheck && npm run --if-present lint'
+elif [ -f "$WT/pyproject.toml" ]; then
+  CMD='python3 -m pip install -q -e . 2>/dev/null || true; ruff check . && (command -v mypy >/dev/null && mypy . || true) && pytest -q'
+else
+  echo "[checks-on-runner] no pnpm/npm/python project in $WT — no checks to run" >&2
+  exit 0
+fi
+exec /usr/local/bin/run-on-runner "$WT" "$CMD"

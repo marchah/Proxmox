@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# PR review-comment poller. For each open mealdeal PR labeled `loop:revise` with unresolved review threads,
+# file ONE coder task on its branch to address them, then remove the label. The coder addresses -> its
+# auto-chained reviewer verifies and (on PASS) runs resolve-pr-comments. Run by a systemd timer.
+set -uo pipefail
+export PATH="/usr/local/bin:/usr/local/lib/hermes-agent/venv/bin:/usr/bin:/bin"
+[ -z "${MEALDEAL_GITHUB_TOKEN:-}" ] && [ -r /root/.hermes/.env ] && { set -a; . /root/.hermes/.env; set +a; }
+export GH_TOKEN="${MEALDEAL_GITHUB_TOKEN:-}"
+RP=/root/repos/mealdeal
+SLUG="$(git -C "$RP" remote get-url origin | sed -E 's#^[a-z]+://[^@]*@#https://#; s#^.*github\.com[:/]##; s#\.git$##')"
+LABEL=loop:revise
+gh pr list --repo "$SLUG" --label "$LABEL" --state open --json number,headRefName \
+  --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null | while IFS=$'\t' read -r N BRANCH; do
+  [ -n "$N" ] || continue
+  # If a revise task for this branch is already in flight (e.g. a prior tick's create SUCCEEDED but its
+  # response was lost, so the label wasn't cleared), do NOT free the branch or re-create — freeing would
+  # yank a running worker's worktree. The work is tracked, so just clear the label and move on.
+  # FAIL CLOSED: if we cannot determine the board state (list command fails, or its output isn't a number),
+  # we can't rule out an in-flight task, so preserve the label and retry next tick rather than risk the free.
+  if ! TASKS_JSON="$(hermes kanban --board mealdeal list --json 2>/dev/null)"; then
+    echo "[pr-revise-tick] PR #$N ($BRANCH): kanban list failed — can't rule out an in-flight task; keeping $LABEL, will retry" >&2
+    continue
+  fi
+  INFLIGHT="$(printf '%s' "$TASKS_JSON" | jq -r --arg b "$BRANCH" '[.[] | select(.branch_name==$b and (.status|IN("done","archived")|not))] | length' 2>/dev/null)"
+  if ! [[ "$INFLIGHT" =~ ^[0-9]+$ ]]; then
+    echo "[pr-revise-tick] PR #$N ($BRANCH): kanban list unparseable — can't rule out an in-flight task; keeping $LABEL, will retry" >&2
+    continue
+  fi
+  if [ "$INFLIGHT" -ge 1 ]; then
+    echo "[pr-revise-tick] PR #$N ($BRANCH): a revise task is already in flight — clearing $LABEL, skipping"
+    gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+    continue
+  fi
+  # A transient GitHub/token failure must NOT be read as "no threads" (which would clear the label and
+  # discard the human's review request). pr-comments exits non-zero on API/parse failure — keep the label.
+  if ! THREADS="$(pr-comments "$N" --json 2>/dev/null)"; then
+    echo "[pr-revise-tick] PR #$N: pr-comments failed (GitHub/token transient?) — keeping $LABEL, will retry" >&2
+    continue
+  fi
+  CNT="$(printf '%s' "$THREADS" | jq 'length' 2>/dev/null || echo 0)"
+  if [ "${CNT:-0}" -lt 1 ]; then
+    # No unresolved inline review threads — fall back to a Codex (final-review) verdict comment, if any.
+    # (codex-review posts a plain PR comment marked "## 🤖 Codex review", not inline threads.)
+    if ! PRCJSON="$(gh pr view "$N" --repo "$SLUG" --json comments 2>/dev/null)"; then
+      echo "[pr-revise-tick] PR #$N: gh pr view failed (GitHub transient?) — keeping $LABEL, will retry" >&2
+      continue
+    fi
+    CODEX="$(printf '%s' "$PRCJSON" | jq -c 'last(.comments[] | select(.body | contains("Codex review"))) // empty' 2>/dev/null)"
+    if [ -z "$CODEX" ]; then
+      echo "[pr-revise-tick] PR #$N: no unresolved threads and no Codex verdict — removing label"
+      gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+      continue
+    fi
+    CBODY="$(printf '%s' "$CODEX" | jq -r '.body')"
+    CID="$(printf '%s' "$CODEX" | jq -r '.url' | sed -E 's/.*issuecomment-([0-9]+).*/\1/')"
+    if ! printf '%s' "$CBODY" | grep -qi "REQUEST CHANGES"; then
+      echo "[pr-revise-tick] PR #$N: Codex verdict APPROVE / no changes requested — removing label"
+      gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+      continue
+    fi
+    echo "[pr-revise-tick] PR #$N ($BRANCH): Codex REQUEST CHANGES — filing coder task (key revise:$N:codex-$CID)"
+    ( cd "$RP" && free-feature-branch "$BRANCH" ) >/dev/null 2>&1 || true
+    CX_BODY="Address this Codex final-review verdict on branch \`$BRANCH\` (PR #$N). Make the code changes on this branch, then run \`verify-and-commit .\`. Do NOT resolve anything yourself — a re-review runs after.
+
+$CBODY"
+    NEWID="$(hermes kanban create "Address Codex review — $BRANCH (PR #$N)" \
+      --assignee coder --project mealdeal --workspace "worktree:$RP" --branch "$BRANCH" \
+      --skill implement-and-verify --max-runtime 3600 --max-retries 2 \
+      --idempotency-key "revise:$N:codex-$CID" --body "$CX_BODY" --json 2>/dev/null | jq -r '.id // empty')"
+    if [ -n "$NEWID" ]; then
+      echo "  filed $NEWID — removing $LABEL"
+      gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+    else
+      # Keep the label so the next tick retries — the idempotency-key makes a re-file a no-op if it did land.
+      echo "  [pr-revise-tick] PR #$N: coder-task creation FAILED — keeping $LABEL for the next tick" >&2
+    fi
+    continue
+  fi
+  MAXID="$(printf '%s' "$THREADS" | jq '[.[].maxCommentId] | max')"
+  echo "[pr-revise-tick] PR #$N ($BRANCH): $CNT unresolved thread(s) — filing coder task (key revise:$N:$MAXID)"
+  ( cd "$RP" && free-feature-branch "$BRANCH" ) >/dev/null 2>&1 || true
+  BODY="Address these unresolved review comments on branch \`$BRANCH\` (PR #$N). Make the code changes on this branch, then run \`verify-and-commit .\`. Do NOT resolve the comment threads yourself — the reviewer resolves them after verifying.
+
+$(pr-comments "$N")"
+  NEWID="$(hermes kanban create "Address review comments — $BRANCH (PR #$N)" \
+    --assignee coder --project mealdeal --workspace "worktree:$RP" --branch "$BRANCH" \
+    --skill implement-and-verify --max-runtime 3600 --max-retries 2 \
+    --idempotency-key "revise:$N:$MAXID" --body "$BODY" --json 2>/dev/null | jq -r '.id // empty')"
+  if [ -n "$NEWID" ]; then
+    echo "  filed $NEWID — removing $LABEL"
+    gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+  else
+    # Keep the label so the next tick retries — the idempotency-key makes a re-file a no-op if it did land.
+    echo "  [pr-revise-tick] PR #$N: coder-task creation FAILED — keeping $LABEL for the next tick" >&2
+  fi
+done

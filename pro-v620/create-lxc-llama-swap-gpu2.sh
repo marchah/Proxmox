@@ -5,12 +5,12 @@ set -Eeuo pipefail
 # This script is intentionally specific (like its CT-120 sibling). It stands up a
 # SECOND Radeon Pro V620 service on GPU 2 for the autonomous coding loop: a
 # `llama-swap` proxy that hot-swaps between the loop's models — a dedicated coder
-# (Ornith-1.0-35B) and a reasoning reviewer/planner (ThinkingCap-Qwen3.6-27B) —
+# (Qwen3-30B-A3B-Instruct-2507) and a reviewer (Qwen3-Coder-30B-A3B-Instruct) —
 # one resident at a time (both can't co-reside on one 32 GB card). CT 120's
 # qwen3.6 on GPU 1 stays the untouched ops server; the loop's dispatcher is
 # serialized to one task at a time so the swap only fires at coder<->reviewer
 # handoffs. Serves an OpenAI-compatible API at 0.0.0.0:8080; clients pick the
-# model by name ("ornith" / "thinkingcap-27b").
+# model by name ("qwen3-instruct-2507" / "qwen3-coder-reviewer").
 readonly GPU_NAME="Radeon Pro V620"
 # This container is pinned to GPU 2 (PCIe-3/chipset slot). GPU 1 (0000:2d:00.0)
 # runs CT 120 (qwen3.6 ops). Passthrough binds ONLY GPU 2's DRM nodes — the only
@@ -34,24 +34,27 @@ readonly LLAMASWAP_ASSET="llama-swap_${LLAMASWAP_VERSION}_linux_amd64.tar.gz"
 readonly LLAMASWAP_ASSET_URL="https://github.com/mostlygeek/llama-swap/releases/download/v${LLAMASWAP_VERSION}/${LLAMASWAP_ASSET}"
 readonly LLAMASWAP_SHA256="3e0c3fd2649f2b0eb417ab2bc337da65e3bbb5374fae9769e74ab90bdaa3739c"
 
-# --- Coder model: Ornith-1.0-35B (RL agentic-coding fine-tune of Qwen3.5-35B-A3B;
-# MoE ~3B active, same shape/speed as qwen3.6). Q5_K_M ~24.7 GB. MIT.
-readonly ORNITH_REPO="deepreinforce-ai/Ornith-1.0-35B-GGUF"
-readonly ORNITH_FILE="ornith-1.0-35b-Q5_K_M.gguf"
-readonly ORNITH_SHA256="325b351fc30a4114af5bb21dc2ba7f666ccc90c8f26e6bb36909255d5a449469"
-readonly ORNITH_REVISION="c2e1703039380de4ce6820e97afd185682d3c16c"
-readonly ORNITH_ALIAS="ornith"
-readonly ORNITH_CTX="${ORNITH_CTX:-131072}"   # coder wants a big repo window; MoE KV is cheap
+# --- Coder model: Qwen3-30B-A3B-Instruct-2507 (instruct MoE, ~3B active; strong
+# agentic-coding instruction-follower, non-thinking by design so no runaway <think>
+# chains). Q5_K_M ~21.7 GB. Apache-2.0. Replaced Ornith (false-completed / stalled).
+readonly CODER_REPO="unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF"
+readonly CODER_FILE="Qwen3-30B-A3B-Instruct-2507-Q5_K_M.gguf"
+readonly CODER_SHA256="74cf6e525344a184e59f8dbd1d18e59587f1a03eaff66f6b1fbd0ee3a53a3d68"
+readonly CODER_REVISION="eea7b2be5805a5f151f8847ede8e5f9a9284bf77"
+readonly CODER_ALIAS="qwen3-instruct-2507"
+readonly CODER_CTX="${CODER_CTX:-65536}"          # Hermes requires >=64K; per-slot window at --parallel 1
+readonly CODER_NPREDICT="${CODER_NPREDICT:-8192}" # cap tokens/request (non-thinking, 8k is ample)
 
-# --- Reviewer/planner model: ThinkingCap-Qwen3.6-27B (dense reasoning, ~50% fewer
-# thinking tokens). Q4_K_M ~16.8 GB (only quant that leaves headroom for KV on 32 GB;
-# Q8_0 is 29 GB). Apache-2.0. (Repo ships an mmproj for multimodal; unused here.)
-readonly TC_REPO="bottlecapai/ThinkingCap-Qwen3.6-27B-GGUF"
-readonly TC_FILE="ThinkingCap-Qwen3.6-27B-Q4_K_M.gguf"
-readonly TC_SHA256="b0651e28555bde7d2459ce99f091319b1a547143463e8d49f2aa7f572675fe67"
-readonly TC_REVISION="b1daf4d"
-readonly TC_ALIAS="thinkingcap-27b"
-readonly TC_CTX="${TC_CTX:-65536}"            # reviewer reads a diff + a few files; dense-27B KV is heavier
+# --- Reviewer model: Qwen3-Coder-30B-A3B-Instruct (coder MoE, ~3B active; non-thinking
+# by architecture — cannot emit <think>, so it can't do the unbounded-reasoning budget
+# exhaustion that killed the prior ThinkingCap reviewer). UD-Q5_K_XL ~21.7 GB. Apache-2.0.
+readonly REVIEWER_REPO="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
+readonly REVIEWER_FILE="Qwen3-Coder-30B-A3B-Instruct-UD-Q5_K_XL.gguf"
+readonly REVIEWER_SHA256="eb331a4eee8eb6b5a8eb25f44f96f45c71b8d10f553c0a456190dd590a7ef77d"
+readonly REVIEWER_REVISION="b17cb02dd882d5b6ab62fc777ad2995f19668350"
+readonly REVIEWER_ALIAS="qwen3-coder-reviewer"
+readonly REVIEWER_CTX="${REVIEWER_CTX:-65536}"          # reviewer reads a diff + a few files
+readonly REVIEWER_NPREDICT="${REVIEWER_NPREDICT:-8192}" # cap tokens/request
 
 readonly SWAP_SERVER_BIND="0.0.0.0"
 readonly SWAP_SERVER_PORT="8080"
@@ -63,7 +66,7 @@ TEMPLATE="${TEMPLATE:-ubuntu-24.04-standard_24.04-2_amd64.tar.zst}"
 ROOT_STORAGE="${ROOT_STORAGE:-local-lvm}"
 ROOT_SIZE_GB="${ROOT_SIZE_GB:-32}"
 MODELS_STORAGE="${MODELS_STORAGE:-local-lvm}"
-MODELS_SIZE_GB="${MODELS_SIZE_GB:-150}"   # room for both GGUFs (~42 GB) + a swap-pool add later
+MODELS_SIZE_GB="${MODELS_SIZE_GB:-150}"   # room for both GGUFs (~44 GB) + a swap-pool add later
 MEMORY_MB="${MEMORY_MB:-16384}"
 SWAP_MB="${SWAP_MB:-4096}"
 CORES="${CORES:-8}"
@@ -82,7 +85,7 @@ autonomous coding loop's model server (swaps a coder + a reviewer model).
 Fixed target:
   GPU:    Radeon Pro V620 GPU 2 (0000:06:00.0) — GPU 1 runs CT 120 (qwen3.6 ops)
   Engine: llama-swap (Go proxy) launching llama.cpp llama-server per model
-  Models: ornith (Ornith-1.0-35B, coder) + thinkingcap-27b (ThinkingCap-Qwen3.6-27B, reviewer)
+  Models: qwen3-instruct-2507 (Qwen3-30B-A3B-Instruct-2507, coder) + qwen3-coder-reviewer (Qwen3-Coder-30B-A3B-Instruct, reviewer)
   API:    0.0.0.0:8080 (OpenAI-compatible; pick model by name)
 
 Run this script on the Proxmox host as root. Defaults to VMID 123 / hostname gpu2.
@@ -90,13 +93,13 @@ Run this script on the Proxmox host as root. Defaults to VMID 123 / hostname gpu
 Useful overrides:
   VMID=123 LXC_HOSTNAME=gpu2 ./create-lxc-llama-swap-gpu2.sh
   GPU_PCI_ADDRESS=0000:06:00.0 ./create-lxc-llama-swap-gpu2.sh
-  ORNITH_CTX=262144 TC_CTX=131072 ./create-lxc-llama-swap-gpu2.sh
+  CODER_CTX=131072 REVIEWER_CTX=65536 ./create-lxc-llama-swap-gpu2.sh
 
 Notes:
-  Privileged (GPU passthrough). Only ONE model is resident at a time (Ornith
-  ~24.7 GB + ThinkingCap ~16.8 GB can't co-reside on 32 GB) — a request for a
-  different model swaps it in (~5-30 s cold load). Keep the loop dispatcher at
-  concurrency 1 so the swap only happens at coder<->reviewer handoffs.
+  Privileged (GPU passthrough). Only ONE model is resident at a time (both
+  ~21.7 GB can't co-reside on 32 GB) — a request for a different model swaps it
+  in (~5-30 s cold load). Keep the loop dispatcher at concurrency 1 so the swap
+  only happens at coder<->reviewer handoffs.
 USAGE
 }
 
@@ -196,10 +199,10 @@ run_in_container() { pct exec "${VMID}" -- "$@"; }
 
 install_swap_stack() {
   local models_manifest
-  # repo|file|sha256|revision|ctx|alias  (one line per model)
-  models_manifest="$(printf '%s|%s|%s|%s|%s|%s\n%s|%s|%s|%s|%s|%s\n' \
-    "${ORNITH_REPO}" "${ORNITH_FILE}" "${ORNITH_SHA256}" "${ORNITH_REVISION}" "${ORNITH_CTX}" "${ORNITH_ALIAS}" \
-    "${TC_REPO}" "${TC_FILE}" "${TC_SHA256}" "${TC_REVISION}" "${TC_CTX}" "${TC_ALIAS}")"
+  # repo|file|sha256|revision|ctx|alias|npredict  (one line per model)
+  models_manifest="$(printf '%s|%s|%s|%s|%s|%s|%s\n%s|%s|%s|%s|%s|%s|%s\n' \
+    "${CODER_REPO}" "${CODER_FILE}" "${CODER_SHA256}" "${CODER_REVISION}" "${CODER_CTX}" "${CODER_ALIAS}" "${CODER_NPREDICT}" \
+    "${REVIEWER_REPO}" "${REVIEWER_FILE}" "${REVIEWER_SHA256}" "${REVIEWER_REVISION}" "${REVIEWER_CTX}" "${REVIEWER_ALIAS}" "${REVIEWER_NPREDICT}")"
 
   log "Installing Vulkan deps + llama.cpp ${LLAMACPP_RELEASE_TAG} + llama-swap ${LLAMASWAP_VERSION}"
   run_in_container bash -lc "apt-get update"
@@ -257,7 +260,7 @@ fi
 cat >/usr/local/bin/llamaswap-guarded-serve <<'EOS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-MODEL="$1"; PORT="$2"; CTX="$3"; ALIAS="$4"
+MODEL="$1"; PORT="$2"; CTX="$3"; ALIAS="$4"; NPREDICT="${5:--1}"   # NPREDICT default -1 = unlimited
 LS=/opt/llamacpp/current
 export LD_LIBRARY_PATH="${LS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 # Require the AMD V620 (RADV) SPECIFICALLY — a bare "Vulkan" match would also accept a
@@ -270,9 +273,12 @@ if ! "${LS}/llama-server" --list-devices 2>/dev/null | grep -qiE 'V620|RADV'; th
   echo "/etc/pve/lxc/123.conf and restart the CT." >&2
   exit 1
 fi
+# --n-predict caps tokens generated per request (-1 = unlimited). Bound it (e.g. 8192) so a model that
+# runs away can't fill its whole ctx window and stall the loop; the loop's models are non-thinking so 8k is ample.
 exec "${LS}/llama-server" --model "${MODEL}" --host 127.0.0.1 --port "${PORT}" \
   --n-gpu-layers 99 --ctx-size "${CTX}" --parallel 1 --flash-attn on \
-  --batch-size 4096 --ubatch-size 1024 --jinja --reasoning-format none --alias "${ALIAS}"
+  --batch-size 4096 --ubatch-size 1024 --jinja --reasoning-format none \
+  --n-predict "${NPREDICT}" --alias "${ALIAS}"
 EOS
 chmod 755 /usr/local/bin/llamaswap-guarded-serve
 
@@ -287,7 +293,7 @@ CONFIG=/etc/llama-swap/config.yaml
   printf 'models:\n'
 } > "$CONFIG"
 
-while IFS='|' read -r repo file sha rev ctx alias; do
+while IFS='|' read -r repo file sha rev ctx alias npredict; do
   [[ -n "$repo" ]] || continue
   mp="/models/hf/${file}"
   if [[ ! -f "$mp" ]]; then
@@ -299,7 +305,7 @@ while IFS='|' read -r repo file sha rev ctx alias; do
     printf '    checkEndpoint: /health\n'
     printf '    cmd: |\n'
     # single-quoted format => ${PORT} stays literal for llama-swap to substitute
-    printf '      /usr/local/bin/llamaswap-guarded-serve %s ${PORT} %s %s\n' "$mp" "$ctx" "$alias"
+    printf '      /usr/local/bin/llamaswap-guarded-serve %s ${PORT} %s %s %s\n' "$mp" "$ctx" "$alias" "$npredict"
   } >> "$CONFIG"
 done <<< "$MODELS_MANIFEST"
 
@@ -361,7 +367,7 @@ print_summary() {
   if [[ -n ${ip} ]]; then
     printf 'llama-swap endpoint: http://%s:%s/v1  (also http://%s:%s/v1 by dnsmasq name)\n' "${ip}" "${SWAP_SERVER_PORT}" "${LXC_HOSTNAME}" "${SWAP_SERVER_PORT}"
   fi
-  printf 'Models (pick by name): %s (%s), %s (%s)\n' "${ORNITH_ALIAS}" "${ORNITH_FILE}" "${TC_ALIAS}" "${TC_FILE}"
+  printf 'Models (pick by name): %s (%s), %s (%s)\n' "${CODER_ALIAS}" "${CODER_FILE}" "${REVIEWER_ALIAS}" "${REVIEWER_FILE}"
   printf 'Config: /etc/llama-swap/config.yaml  (edit it, then systemctl restart llama-swap, to retune ctx)\n'
   printf 'Reminder: keep the loop dispatcher at concurrency 1 so swaps fire only at role handoffs.\n'
 }

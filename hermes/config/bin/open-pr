@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# open-pr — reviewer helper: push the feature branch + open a PR against main with a REAL description
+# (summary + changed files + how-to-test), generated from the diff — plus an optional reviewer-written
+# summary from `.pr-body.md` at the repo root (preferred) or a 3rd arg. Token from Hermes .env for THIS
+# invocation only (no gh login / global git helper touched); the loop NEVER merges. Idempotent: an existing
+# PR has its branch + body refreshed. Usage: open-pr <branch> [title] [summary]
+set -euo pipefail
+
+BRANCH="${1:?usage: open-pr <branch> [title] [summary]}"
+TITLE="${2:-$BRANCH}"
+
+if [ -z "${MEALDEAL_GITHUB_TOKEN:-}" ] && [ -r /root/.hermes/.env ]; then
+  set -a; . /root/.hermes/.env; set +a
+fi
+: "${MEALDEAL_GITHUB_TOKEN:?not set — add MEALDEAL_GITHUB_TOKEN to /root/.hermes/.env}"
+
+MAIN="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+[ -n "$MAIN" ] || { echo "open-pr: not inside a git repo" >&2; exit 2; }
+git -C "$MAIN" show-ref --verify --quiet "refs/heads/$BRANCH" \
+  || { echo "open-pr: no local branch refs/heads/$BRANCH" >&2; exit 3; }
+SLUG="$(git -C "$MAIN" remote get-url origin \
+  | sed -E 's#^[a-z]+://[^@]*@#https://#; s#^.*github\.com[:/]##; s#\.git$##')"
+[ -n "$SLUG" ] || { echo "open-pr: cannot parse owner/repo from origin" >&2; exit 4; }
+
+# --- build a real PR body from the diff (+ optional reviewer-written summary) ---
+STAT="$(git -C "$MAIN" diff --stat "main..$BRANCH" 2>/dev/null)"
+COMMITS="$(git -C "$MAIN" log --format='- %s (%h)' "main..$BRANCH" 2>/dev/null)"
+DESC="${3:-}"; PROVIDED=0
+[ -n "$DESC" ] && PROVIDED=1
+if [ "$PROVIDED" = 0 ] && [ -r "$MAIN/.pr-body.md" ]; then DESC="$(cat "$MAIN/.pr-body.md")"; PROVIDED=1; fi
+[ -n "$DESC" ] || DESC="## Summary
+$COMMITS"
+FENCE='```'
+# Only append a generic How-to-test when the reviewer did NOT provide a description (which should carry its
+# own, specific one). Avoids the duplicate section.
+HOWTO=""
+if [ "$PROVIDED" = 0 ]; then
+  HOWTO="
+
+## How to test
+${FENCE}bash
+git fetch origin $BRANCH && git switch $BRANCH
+pnpm install --frozen-lockfile && pnpm check   # types + lint/boundaries + prettier + vitest + schema drift
+pnpm dev                                        # API :4000 + web; exercise the change in the GraphQL playground
+$FENCE"
+fi
+BODY="$DESC
+
+## Changed files
+$FENCE
+$STAT
+$FENCE$HOWTO
+
+---
+Automated by the coder-reviewer loop (task ${HERMES_KANBAN_TASK:-n/a}): pnpm check green on the coder-runner (CT 122) + reviewer PASS. A human reviews and merges — the loop never merges to main."
+rm -f "$MAIN/.pr-body.md" 2>/dev/null || true
+
+echo "[open-pr] pushing $BRANCH -> $SLUG"
+git -C "$MAIN" push "https://marchah:${MEALDEAL_GITHUB_TOKEN}@github.com/${SLUG}.git" \
+  "refs/heads/${BRANCH}:refs/heads/${BRANCH}" 2>&1 \
+  | sed -E 's#marchah:[^@]*@#marchah:<REDACTED>@#g'
+
+export GH_TOKEN="$MEALDEAL_GITHUB_TOKEN"
+existing="$(gh pr list --repo "$SLUG" --head "$BRANCH" --state open --json url --jq '.[0].url // empty' 2>/dev/null || true)"
+if [ -n "$existing" ]; then
+  gh pr edit "$existing" --title "$TITLE" --body "$BODY" >/dev/null 2>&1 || true
+  echo "[open-pr] PR already open (branch + body refreshed): $existing"
+else
+  url="$(gh pr create --repo "$SLUG" --base main --head "$BRANCH" --title "$TITLE" --body "$BODY")"
+  echo "[open-pr] opened PR: $url"
+fi
+
+# --- notify the human that a PR is ready for their final review (deterministic; every reviewer PASS) ---
+# Posts to #coding (${SLACK_CODING_CHANNEL}) via hermes send. Non-fatal on delivery error. New => ready; existing => re-reviewed.
+PR_URL="${existing:-${url:-}}"
+if [ -n "$PR_URL" ]; then
+  PR_NUM="$(printf '%s' "$PR_URL" | sed -E 's#.*/pull/([0-9]+).*#\1#')"
+  if [ -n "${existing:-}" ]; then NPREFIX="🔄 PR updated / re-reviewed"; else NPREFIX="✅ PR ready for your review"; fi
+  NMSG="$NPREFIX: \"$TITLE\" — $PR_URL ($SLUG). Review it, or run  /hermes codex-review ${PR_NUM}  to have Codex review it."
+  hermes send --to slack:${SLACK_CODING_CHANNEL} "$NMSG" >/dev/null 2>&1 || echo "[open-pr] slack notify failed (non-fatal)" >&2
+fi

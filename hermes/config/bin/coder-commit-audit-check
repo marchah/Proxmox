@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Detached checker (spawned by the coder-commit-audit hook). If a COMPLETED coder task's branch has NO
+# commit ahead of main, the "done" is a false completion → re-block it + alert #coding. Runs decoupled
+# from the completion transaction (no SQLite-lock risk).
+set -uo pipefail
+export PATH=/usr/local/bin:/usr/local/lib/hermes-agent/venv/bin:/usr/bin:/bin
+set -a; . /root/.hermes/.env 2>/dev/null; set +a
+TID="${1:?usage: coder-commit-audit-check <task-id>}"
+RP=/root/repos/mealdeal
+sleep 3   # let the completion txn commit + `git worktree remove` finish
+
+j="$(hermes kanban show "$TID" --json 2>/dev/null)" || exit 0
+[ -n "$j" ] || exit 0
+status="$(printf '%s' "$j" | jq -r '.task.status // empty')"
+who="$(printf '%s' "$j" | jq -r '.task.assignee // empty')"
+branch="$(printf '%s' "$j" | jq -r '.task.branch_name // empty')"
+
+[ "$status" = done ] || exit 0        # only audit tasks that are (still) marked done
+[ "$who" = coder ] || exit 0          # reviewers legitimately produce no commit
+[ -n "$branch" ] || exit 0
+git -C "$RP" show-ref --verify --quiet "refs/heads/$branch" || exit 0   # branch gone (merged/cleaned) → skip
+
+ahead="$(git -C "$RP" rev-list --count "main..$branch" 2>/dev/null || echo -1)"
+if [ "$ahead" = "0" ]; then
+  hermes kanban block "$TID" >/dev/null 2>&1 || true
+  hermes send --to "slack:${SLACK_CODING_CHANNEL}" \
+    "⚠️ False completion: coder marked \`$TID\` ($branch) done with ZERO commits ahead of main — re-blocked. verify-and-commit never committed; the coder must actually reach green (it cannot fake done)." >/dev/null 2>&1 || true
+  echo "coder-commit-audit: re-blocked $TID ($branch) — false completion (0 commits ahead of main)" >&2
+fi

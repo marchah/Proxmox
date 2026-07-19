@@ -1,0 +1,23 @@
+model:
+  default: qwen3-coder-reviewer
+  provider: custom
+  base_url: http://gpu2:8080/v1
+  api_key: ''
+  context_length: 65536   # Hermes requires >=64K; matches the served ctx on gpu2
+# Reviewer = Qwen3-Coder-30B-A3B-Instruct (non-thinking by architecture — cannot emit <think> blocks,
+# so it can't do the unbounded-reasoning budget exhaustion that killed the prior ThinkingCap reviewer).
+# No reasoning_effort cap needed. See the thinkingcap-reviewer-candidate memory for why it was replaced.
+timezone: America/New_York
+onboarding:
+  seen:
+    tool_progress_prompt: true
+# Trimmed toolset for the reviewer: review = read a diff + run checks (terminal) + verdict (kanban) +
+# skills; no browser/computer_use/image_gen/web/etc. so it can't wander off-script and drop the
+# kanban_complete call.
+platform_toolsets:
+  cli:
+    - terminal
+    - kanban
+    - skills
+    - file
+    - todo

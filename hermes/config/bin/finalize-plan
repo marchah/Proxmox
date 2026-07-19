@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# PLANNER-side deterministic ceremony. The planner model writes two files under the repo's gitignored
+# .plan/ dir, then runs THIS one command:
+#   .plan/PLAN.md        human-readable scope/design  -> committed as docs/PLAN.md in a plan PR
+#   .plan/backlog.json   {"project","epic_title","features":[{"slug","title","body","deps":[slug..]}...]}
+# It opens the plan PR and files the backlog as BLOCKED coder tasks under an epic, and writes a dependency
+# MANIFEST so the merge-watcher (backlog-tick) can release each feature only once its deps' PRs are merged.
+# Usage: finalize-plan [repo-dir]   (default /root/repos/mealdeal)
+set -euo pipefail
+REPO=/root/repos/mealdeal; TASKS_ONLY=0
+for a in "$@"; do case "$a" in --tasks-only) TASKS_ONLY=1;; *) REPO="$a";; esac; done
+REPO="$(cd "$REPO" && pwd)"
+PLAN="$REPO/.plan/PLAN.md"; BACKLOG="$REPO/.plan/backlog.json"
+[ -f "$PLAN" ]    || { echo "finalize-plan: missing $PLAN (write the plan first)" >&2; exit 1; }
+[ -f "$BACKLOG" ] || { echo "finalize-plan: missing $BACKLOG (write the backlog first)" >&2; exit 1; }
+jq -e . "$BACKLOG" >/dev/null 2>&1 || { echo "finalize-plan: $BACKLOG is not valid JSON" >&2; exit 1; }
+N=$(jq '.features | length' "$BACKLOG")
+[ "$N" -ge 1 ] || { echo "finalize-plan: backlog has 0 features" >&2; exit 1; }
+jq -e '.features | all(has("slug") and has("title") and has("body"))' "$BACKLOG" >/dev/null 2>&1 \
+  || { echo "finalize-plan: every feature needs slug, title, body" >&2; exit 1; }
+# validate deps reference known slugs (and no obvious cycle via a slug depending on itself)
+if ! jq -e '(.features|map(.slug)) as $s | .features | all((.deps//[]) | all(. as $d | ($s|index($d)) != null))' "$BACKLOG" >/dev/null 2>&1; then
+  echo "finalize-plan: a feature dep references an unknown slug" >&2; exit 1
+fi
+# reject a self-dependency (a feature listing its own slug in deps) — it would stay blocked forever
+if ! jq -e '.features | all(.slug as $me | (.deps//[]) | all(. != $me))' "$BACKLOG" >/dev/null 2>&1; then
+  echo "finalize-plan: a feature lists itself in deps (self-dependency → would block forever)" >&2; exit 1
+fi
+PROJECT="$(basename "$REPO")"
+EPIC_TITLE="$(jq -r '.epic_title // ("Plan: " + (.project // "project"))' "$BACKLOG")"
+GH_REPO="$(git -C "$REPO" remote get-url origin | sed -E 's#(git@[^:]+:|https?://[^/]+/)##; s#\.git$##')"
+echo "[finalize-plan] project=$PROJECT  repo=$GH_REPO  features=$N  epic=\"$EPIC_TITLE\""
+
+# --- 1. plan PR: commit .plan/PLAN.md as docs/PLAN.md on wt/plan (off origin/main) ---
+cd "$REPO"
+if [ "$TASKS_ONLY" = "1" ]; then
+  echo "[finalize-plan] --tasks-only: skipping plan PR (plan already merged)"
+else
+  git fetch -q origin
+  git worktree remove --force .worktrees/plan 2>/dev/null || true
+  git branch -D wt/plan 2>/dev/null || true
+  git worktree add -q .worktrees/plan -b wt/plan origin/main
+  mkdir -p .worktrees/plan/docs
+  cp "$PLAN" .worktrees/plan/docs/PLAN.md
+  git -C .worktrees/plan add docs/PLAN.md
+  git -C .worktrees/plan -c user.email=planner@homelab -c user.name=hermes-planner \
+    commit -q -m "docs: project plan — $EPIC_TITLE"
+  PR_URL="$(open-pr wt/plan "docs: project plan — $EPIC_TITLE" 2>&1 | tail -1)"
+  echo "[finalize-plan] plan PR: $PR_URL"
+fi
+
+# --- 2. epic + blocked feature tasks + dependency manifest ---
+EPIC_ID="$(hermes kanban create "$EPIC_TITLE" --project "$PROJECT" --initial-status blocked --json 2>/dev/null | jq -r '.id // empty')"
+[ -n "$EPIC_ID" ] || { echo "finalize-plan: failed to create epic" >&2; exit 1; }
+echo "[finalize-plan] epic: $EPIC_ID"
+MDIR=/root/.hermes/backlogs; mkdir -p "$MDIR"
+TMP="$(mktemp)"
+i=0
+while read -r f; do
+  i=$((i+1))
+  slug=$(jq -r '.slug'  <<<"$f"); title=$(jq -r '.title' <<<"$f"); body=$(jq -r '.body' <<<"$f")
+  deps=$(jq -c '.deps // []' <<<"$f")
+  prio=$(( 1000 - i ))
+  # NOTE: deliberately NOT --parent "$EPIC_ID": a parent link is a hard dependency, and a reconcile loop
+  # demotes any child out of 'ready' while the (never-completing) epic is unsatisfied, so tasks never
+  # dispatch. The epic is a manifest key + board marker only; feature ordering/gating is via deps + priority.
+  # Create the task READY (no --initial-status blocked), then explicitly block it. This ordering matters:
+  # a durable block only "sticks" on a ready->blocked transition; `--initial-status blocked` (or blocking an
+  # already-blocked task) is NOT durable — Hermes's reconcile promotes it back to 'ready' (no native dep,
+  # since we use no --parent). backlog-tick unblocks roots on arm + dependents once their deps' PRs merge.
+  tid=$(hermes kanban create "$title" --assignee coder --project "$PROJECT" \
+        --workspace worktree --branch "wt/$slug" --skill implement-and-verify \
+        --priority "$prio" --max-runtime 3600 --max-retries 2 \
+        --idempotency-key "plan:$EPIC_ID:$slug" --body "$body" --json 2>/dev/null | jq -r '.id // empty')
+  [ -n "$tid" ] && hermes kanban block "$tid" >/dev/null 2>&1
+  jq -nc --arg slug "$slug" --arg tid "$tid" --arg br "wt/$slug" --argjson deps "$deps" \
+     '{slug:$slug, task_id:$tid, branch:$br, deps:$deps}' >> "$TMP"
+  printf '[finalize-plan]  #%d  %-12s  wt/%-24s deps=%s\n' "$i" "${tid:-FAILED}" "$slug" "$deps"
+done < <(jq -c '.features[]' "$BACKLOG")
+jq -s --arg epic "$EPIC_ID" --arg proj "$PROJECT" --arg repo "$GH_REPO" \
+   '{epic:$epic, project:$proj, repo:$repo, armed:false, features:.}' "$TMP" > "$MDIR/$EPIC_ID.json"
+rm -f "$TMP"
+
+echo "[finalize-plan] DONE — $N blocked tasks under epic $EPIC_ID; manifest $MDIR/$EPIC_ID.json"
+echo "[finalize-plan] After review, release with:  release-backlog $EPIC_ID"

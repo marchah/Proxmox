@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the PR review-comment poller every 3 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=3min
+Unit=pr-revise-tick.service
+
+[Install]
+WantedBy=timers.target

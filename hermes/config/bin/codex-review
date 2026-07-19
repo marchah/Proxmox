@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# codex-review <pr#|branch> — on-demand Codex (ChatGPT) FINAL review of a mealdeal PR.
+# Runs the review-pr skill through the codex_app_server runtime (gpt-5.x-codex via the ChatGPT sub),
+# then posts the verdict to Slack #coding AND as a PR comment. This is the review ENGINE — callable from
+# the host, the /codex-review Slack slash-command plugin, or a future button. On-demand only.
+set -euo pipefail
+# Robust PATH: this may be spawned detached from the Hermes gateway (via the /codex-review plugin),
+# whose systemd env can be minimal. Ensure hermes/gh/jq/git/codex resolve.
+export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:${PATH:-}"
+# Load the gateway env EARLY — the detached plugin path has a minimal env, so pull SLACK_CODING_CHANNEL /
+# MEALDEAL_GITHUB_TOKEN from /root/.hermes/.env BEFORE we reference them (else the Slack destination below
+# would be empty / trip `set -u`).
+[ -r /root/.hermes/.env ] && { set -a; . /root/.hermes/.env; set +a; }
+
+# Accept "codex-review <pr> [repo]" OR a single combined first arg — the Slack plugin passes raw_args as
+# ONE token (e.g. "12 otherapp"); re-split a lone first arg into positional params.
+if [ "$#" -eq 1 ]; then set -- $1; fi
+ARG="${1:?usage: codex-review <pr-number|branch|url> [repo]}"
+REPO="${2:-mealdeal}"                                          # loop clones each hermes project to /root/repos/<name>
+REPO_DIR="${CODEX_REVIEW_REPOS_DIR:-/root/repos}/$REPO"
+CODING_CHANNEL="${CODEX_REVIEW_SLACK_CHANNEL:-${SLACK_CODING_CHANNEL:-}}"   # #coding (from .env, sourced above)
+CODEX_MODEL="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
+
+# Single-flight per repo+target: a duplicate invocation (double-send / Slack 3s-ack retry) no-ops.
+LOCK="/tmp/codex-review-$(printf '%s-%s' "$REPO" "$ARG" | tr -c 'A-Za-z0-9._-' '_').lock"
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  echo "codex-review: a review for '$REPO $ARG' is already running — skipping duplicate" >&2
+  exit 0
+fi
+
+if [ -z "${MEALDEAL_GITHUB_TOKEN:-}" ] && [ -r /root/.hermes/.env ]; then
+  set -a; . /root/.hermes/.env; set +a
+fi
+: "${MEALDEAL_GITHUB_TOKEN:?not set — add MEALDEAL_GITHUB_TOKEN to /root/.hermes/.env}"
+export GH_TOKEN="$MEALDEAL_GITHUB_TOKEN"
+
+cd "$REPO_DIR" || { echo "codex-review: no repo at $REPO_DIR" >&2; exit 2; }
+SLUG="$(git remote get-url origin | sed -E 's#^[a-z]+://[^@]*@#https://#; s#^.*github\.com[:/]##; s#\.git$##')"
+
+notify() { printf '%s' "$1" | hermes send --to "slack:$CODING_CHANNEL" ${2:+--subject "$2"} >/dev/null 2>&1 || true; }
+
+# Resolve the PR (accepts a number, branch, or URL).
+JSON="$(gh pr view "$ARG" --repo "$SLUG" --json number,title,url 2>/dev/null || true)"
+if [ -z "$JSON" ]; then
+  notify "⚠️ Codex review: no open PR found for \"$ARG\" in $SLUG."
+  echo "codex-review: no PR for $ARG" >&2; exit 3
+fi
+PR_NUM="$(printf '%s' "$JSON" | jq -r '.number')"
+PR_TITLE="$(printf '%s' "$JSON" | jq -r '.title')"
+PR_URL="$(printf '%s' "$JSON" | jq -r '.url')"
+
+notify "🔎 Codex is reviewing PR #${PR_NUM} — \"${PR_TITLE}\" (${PR_URL})…"
+
+# Gather the PR context locally (host has the token + network) so Codex reviews from a file — no dependency
+# on Codex's sandbox having network/gh. Codex reads docs/PLAN.md + AGENTS.md itself from the checkout (cwd).
+CTX="$(mktemp /tmp/codex-review-${PR_NUM}.XXXXXX.md)"
+# Most-recent PRIOR Codex verdict on this PR (empty on a first review) — for progressive re-reviews:
+# Sol verifies its earlier findings were actually addressed in the current diff.
+PRIOR="$(gh pr view "$PR_NUM" --repo "$SLUG" --json comments \
+  --jq 'last(.comments[] | select(.body | contains("Codex review"))).body // empty' 2>/dev/null)"
+{
+  echo "# PR #${PR_NUM} — ${PR_TITLE}"
+  echo "URL: ${PR_URL}"
+  echo; echo "## PR description"; echo
+  # NB: use --json body (NOT full `gh pr view`, which errors on gh 2.23.0 via the deprecated projectCards field)
+  gh pr view "$PR_NUM" --repo "$SLUG" --json body --jq '.body // "(no description)"' 2>/dev/null
+  echo; echo "## Diff (gh pr diff)"; echo '```diff'
+  gh pr diff "$PR_NUM" --repo "$SLUG" 2>/dev/null
+  echo '```'
+  if [ -n "$PRIOR" ]; then
+    echo; echo "## Your PREVIOUS Codex review of this PR (verify each point is now resolved in the diff above)"; echo
+    printf '%s\n' "$PRIOR"
+  fi
+} > "$CTX"
+
+PROMPT="You are performing the FINAL human-gate review of pull request #${PR_NUM} in ${SLUG}. Apply the review-pr skill's rubric and verdict format exactly. The repo is checked out at ${REPO_DIR}: read docs/PLAN.md (the plan/acceptance criteria) and AGENTS.md (architecture + Definition of Done) from there, and grep it for similar/existing code to flag reuse. The PR description and full diff are in the file ${CTX} — read it. If ${CTX} contains a 'Your PREVIOUS Codex review' section, FIRST re-check each previously-raised point against the current diff and state whether it is now resolved (keep any still-unresolved point as a must-fix), THEN do a fresh pass for regressions and new issues. Then output ONLY the structured verdict: a one-line per-dimension pass, an overall APPROVE or REQUEST CHANGES with a one-line reason, and a must-fix checklist citing file:line. Stay proportionate to this single-user self-hosted app — do not invent enterprise hardening."
+
+set +e
+REVIEW="$(timeout 900 hermes -z "$PROMPT" --provider openai-codex -m "$CODEX_MODEL" --skills review-pr --cli 2>"${CTX}.err")"
+RC=$?
+set -e
+rm -f "$CTX"
+
+if [ "$RC" -ne 0 ] || [ -z "$(printf '%s' "$REVIEW" | tr -d '[:space:]')" ]; then
+  ERR="$(tail -4 "${CTX}.err" 2>/dev/null | tr '\n' ' ')"; rm -f "${CTX}.err"
+  notify "❌ Codex review FAILED for PR #${PR_NUM} (${PR_URL}) rc=${RC}. ${ERR}"
+  echo "codex-review: failed rc=$RC" >&2; exit 1
+fi
+rm -f "${CTX}.err"
+
+# Deliver: full verdict to #coding, and attach it to the PR (durable; can feed the loop:revise flow).
+printf '🤖 *Codex review — PR #%s*: %s\n%s\n\n%s' "$PR_NUM" "$PR_TITLE" "$PR_URL" "$REVIEW" \
+  | hermes send --to "slack:$CODING_CHANNEL" --subject "[Codex] PR #${PR_NUM} review" >/dev/null 2>&1 \
+  || echo "codex-review: slack delivery failed (non-fatal)" >&2
+printf '## 🤖 Codex review\n\n%s\n' "$REVIEW" \
+  | gh pr comment "$PR_NUM" --repo "$SLUG" --body-file - >/dev/null 2>&1 \
+  || echo "codex-review: gh pr comment failed (non-fatal)" >&2
+
+# Auto-gate: REQUEST CHANGES -> add loop:revise (pr-revise-tick then files a coder fix task from this
+# verdict); APPROVE -> clear the label so it always reflects the latest verdict. Never fails the run.
+# NB: label ops go through the REST API (gh api), NOT `gh pr edit` — the latter hits a deprecated
+# projectCards GraphQL error on gh 2.23.0 and silently fails.
+if printf '%s' "$REVIEW" | grep -qi "REQUEST CHANGES"; then
+  gh api -X POST "repos/$SLUG/labels" -f name=loop:revise -f color=FBCA04 \
+    -f description="Codex/human requested changes — coder should address" >/dev/null 2>&1 || true
+  if gh api -X POST "repos/$SLUG/issues/$PR_NUM/labels" -f "labels[]=loop:revise" >/dev/null 2>&1; then
+    echo "codex-review: REQUEST CHANGES -> added loop:revise label"
+  else
+    echo "codex-review: could not add loop:revise label (non-fatal)" >&2
+  fi
+else
+  gh api -X DELETE "repos/$SLUG/issues/$PR_NUM/labels/loop:revise" >/dev/null 2>&1 || true
+  echo "codex-review: APPROVE -> loop:revise cleared"
+fi
+
+echo "codex-review: posted review for PR #${PR_NUM}"

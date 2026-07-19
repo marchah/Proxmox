@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the merge-gated backlog watcher every 3 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=3min
+Unit=backlog-tick.service
+
+[Install]
+WantedBy=timers.target

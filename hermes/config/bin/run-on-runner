@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Offload a command's EXECUTION to the coder-runner LXC (CT 122) over ssh+rsync.
+# The Hermes LXC (CT 121) never runs the untrusted project code itself.
+# Usage: run-on-runner <worktree-dir> <shell-command...>
+set -euo pipefail
+WT="${1:?usage: run-on-runner <worktree-dir> <cmd...>}"; shift
+CMD="$*"
+[ -n "$CMD" ] || { echo "run-on-runner: no command given" >&2; exit 2; }
+WT="$(cd "$WT" && pwd)"
+KEY=/root/.ssh/coder-runner
+SSH="ssh -i $KEY -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+HASH="$(printf '%s' "$WT" | sha1sum | cut -c1-12)"
+DEST="/build/$HASH"
+echo "[run-on-runner] rsync $WT -> coder-runner:$DEST" >&2
+rsync -az --delete --exclude '.git' --exclude 'node_modules' --exclude '.worktrees' \
+  -e "$SSH" "$WT/" "coder-runner:$DEST/"
+echo "[run-on-runner] exec on coder-runner: $CMD" >&2
+# shellcheck disable=SC2086
+$SSH coder-runner "cd $DEST && { $CMD; }"

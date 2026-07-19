@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Remove any git worktree currently holding <branch> in the mealdeal repo, so a
+# fresh Hermes-managed worktree (which auto-commits) can claim the branch.
+# Usage: free-feature-branch <branch>
+set -euo pipefail
+BRANCH="${1:?usage: free-feature-branch <branch>}"
+# primary repo = first entry of `git worktree list` (the main checkout)
+CWD="$(pwd)"
+MAIN="$(git -C "$CWD" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
+[ -n "$MAIN" ] || { echo "free-feature-branch: not in a git repo" >&2; exit 1; }
+git -C "$MAIN" worktree list --porcelain | awk -v b="refs/heads/$BRANCH" '
+  /^worktree /{p=$2}
+  /^branch /{ if ($2==b) print p }
+' | while read -r wt; do
+  [ -n "$wt" ] || continue
+  echo "[free-feature-branch] removing worktree $wt (on $BRANCH)" >&2
+  git -C "$MAIN" worktree remove --force "$wt" || true
+done
+git -C "$MAIN" worktree prune || true

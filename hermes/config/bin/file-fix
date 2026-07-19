@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Reviewer helper: free the branch's worktree, then file a SAME-branch fix task for the coder
+# as a fresh managed worktree (worktree:<repo-root>, which auto-commits via verify-and-commit).
+# Usage: file-fix <branch> <parent-task-id> <project> <body-text>
+set -euo pipefail
+BRANCH="${1:?}"; PARENT="${2:?}"; PROJECT="${3:?}"; BODY="${4:?}"
+REPO="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+[ -n "$REPO" ] || { echo "file-fix: not in a git repo" >&2; exit 1; }
+/usr/local/bin/free-feature-branch "$BRANCH"
+hermes kanban create "Fix: ${BRANCH} review findings" \
+  --assignee coder --project "$PROJECT" \
+  --workspace "worktree:${REPO}" --branch "$BRANCH" \
+  --parent "$PARENT" \
+  --skill implement-and-verify \
+  --body "$BODY"
