@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Shell hook for the `kanban_task_completed` event. Catches a coder marking a task DONE with NO commit
+# ahead of main (false completion — verify-and-commit never committed; the commit guard stops bypass, this
+# stops "claim done without committing at all"). Non-blocking: reads the payload, spawns a DETACHED checker
+# that runs a few seconds later (after the completion txn + workspace cleanup settle), and returns {}.
+export PATH=/usr/local/bin:/usr/local/lib/hermes-agent/venv/bin:/usr/bin:/bin
+payload="$(cat -)"
+tid="$(printf '%s' "$payload" | jq -r '.extra.task_id // .task_id // .extra.id // empty' 2>/dev/null)"
+if [ -n "$tid" ]; then
+  setsid /usr/local/bin/coder-commit-audit-check "$tid" >/dev/null 2>&1 </dev/null &
+fi
+printf '{}\n'

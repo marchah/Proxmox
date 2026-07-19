@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# loop-watchdog — reap stalled/runaway Hermes kanban workers so the autonomous loop self-recovers.
+# PRIMARY signal = INACTIVITY (the worker's log stopped growing => hung/stalled). A worker still making
+# progress (log advancing) is NEVER killed on time alone. A generous per-role HARD CAP is only a backstop
+# for the runaway case (log advancing but looping). On reap: kill the worker + reclaim the task so the
+# dispatcher retries it (Hermes --max-retries is honored).
+set -uo pipefail
+export PATH=/usr/local/bin:/usr/local/lib/hermes-agent/venv/bin:/usr/bin:/bin
+set -a; . /root/.hermes/loop-watchdog.env 2>/dev/null; . /root/.hermes/.env 2>/dev/null; set +a
+
+IDLE_LIMIT="${IDLE_LIMIT:-600}"       # 10 min with no log growth => stalled (primary signal)
+CAP_coder="${CAP_coder:-2700}"        # 45 min hard cap (backstop; a legit big slice ~30 min)
+CAP_reviewer="${CAP_reviewer:-1200}"  # 20 min hard cap (reviews should be <10 min)
+CAP_default="${CAP_default:-2700}"
+SLACK_CH="${WATCHDOG_SLACK_CHANNEL:-${SLACK_AUTOMATION_CHANNEL}}"   # #automation
+WLOG=/var/log/loop-watchdog.log
+now="$(date +%s)"
+me=$$
+
+logline() { echo "$(date -u +%FT%TZ) $*" >> "$WLOG" 2>/dev/null; }
+
+for p in /proc/[0-9]*; do
+  pid="${p#/proc/}"
+  [ "$pid" = "$me" ] && continue
+  cmd="$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)" || continue
+  case "$cmd" in *"work kanban task t_"*) : ;; *) continue ;; esac   # only kanban workers
+  case "$cmd" in *"bash -lc"*|*loop-watchdog*) continue ;; esac       # never our own shell/script
+  tid="$(printf '%s' "$cmd" | grep -oE 'work kanban task (t_[0-9a-f]+)' | awk '{print $NF}')"
+  prof="$(printf '%s' "$cmd" | grep -oE '\-p [a-z0-9_-]+' | head -1 | awk '{print $2}')"
+  [ -n "$tid" ] || continue
+
+  rt="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')"
+  [ -n "$rt" ] || continue
+
+  lf="$(find /root/.hermes/kanban -name "${tid}.log" 2>/dev/null | head -1)"
+  idle=999999; board=default
+  if [ -n "$lf" ]; then
+    mt="$(stat -c %Y "$lf" 2>/dev/null || echo 0)"; idle=$(( now - mt ))
+    case "$lf" in */boards/*/logs/*) board="$(printf '%s' "$lf" | sed -E 's#.*/boards/([^/]+)/logs/.*#\1#')" ;; esac
+  fi
+
+  eval "cap=\${CAP_${prof:-default}:-$CAP_default}"
+  reason=""
+  [ "$idle" -gt "$IDLE_LIMIT" ] && reason="STALLED — no log activity for ${idle}s (> ${IDLE_LIMIT}s)"
+  [ "$rt" -gt "$cap" ] && reason="OVERRAN — ${rt}s runtime > ${cap}s ${prof} hard cap"
+  [ -z "$reason" ] && continue
+
+  logline "REAP $tid pid=$pid prof=$prof board=$board runtime=${rt}s idle=${idle}s :: $reason"
+  kill -9 "$pid" 2>/dev/null
+  sleep 1
+  hermes kanban --board "$board" reclaim "$tid" >/dev/null 2>&1 || true
+  [ -n "${SLACK_CH:-}" ] && hermes send --to "slack:${SLACK_CH}" \
+    "🐕 loop-watchdog reaped ${tid} (${prof}, board ${board}) — ${reason}. Killed + reclaimed (dispatcher will retry per --max-retries)." >/dev/null 2>&1 || true
+done

@@ -1,0 +1,28 @@
+model:
+  default: qwen3-instruct-2507
+  provider: custom
+  base_url: http://gpu2:8080/v1
+  api_key: ''
+  context_length: 65536
+timezone: America/New_York
+onboarding:
+  seen:
+    tool_progress_prompt: true
+# Trimmed toolset: coding = edit files (file) + run checks/commit on CT 122 (terminal) + complete (kanban) +
+# skills + todo. Dropped browser/computer_use/image_gen/vision/tts/web/delegation/etc. so the coder can't
+# wander off-script and stall (the ~1.1h hang on the fat couponType slice, 2026-07-18).
+platform_toolsets:
+  cli:
+    - terminal
+    - kanban
+    - skills
+    - file
+    - todo
+# False-completion guard: when the coder marks a task done, re-block it if its branch has ZERO commits
+# ahead of main (i.e. verify-and-commit never committed — the coder claimed done without a real commit).
+# The commit guard (pre-commit hook) stops BYPASS; this stops "claim done with no commit at all".
+hooks_auto_accept: true
+hooks:
+  kanban_task_completed:
+    - command: "/usr/local/bin/coder-commit-audit"
+      timeout: 15

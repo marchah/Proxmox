@@ -1,0 +1,8 @@
+[Unit]
+Description=Merge-gated backlog watcher — release feature tasks whose deps' PRs are merged
+After=network-online.target hermes.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/backlog-tick

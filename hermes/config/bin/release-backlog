@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Arm a planned backlog: mark its manifest armed, then run one merge-watcher tick so features with no
+# unmet deps release immediately. Dependent features release later (as their deps' PRs merge) via the
+# backlog-tick timer. Usage: release-backlog <epic-task-id>
+set -euo pipefail
+EPIC="${1:?usage: release-backlog <epic-task-id>}"
+MF="/root/.hermes/backlogs/$EPIC.json"
+[ -f "$MF" ] || { echo "release-backlog: no manifest for $EPIC ($MF)" >&2; exit 1; }
+tmp="$(mktemp)"; jq '.armed=true' "$MF" > "$tmp" && mv "$tmp" "$MF"
+echo "release-backlog: armed $EPIC — running an initial merge-watcher tick"
+/usr/local/bin/backlog-tick
+echo "release-backlog: done. Features with no unmet deps are released now; dependent ones release as their deps' PRs merge (the backlog-tick timer checks every few minutes)."

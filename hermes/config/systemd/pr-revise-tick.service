@@ -1,0 +1,8 @@
+[Unit]
+Description=PR review-comment loop — file coder tasks for PRs labeled loop:revise
+After=network-online.target hermes.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pr-revise-tick

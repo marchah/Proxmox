@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Reviewer helper: show a branch's diff vs main and run its checks on the coder-runner LXC.
+# Run from the primary repo checkout. Usage: review-branch <branch>
+set -euo pipefail
+BRANCH="${1:?usage: review-branch <branch>}"
+MAIN="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+WT="$(git -C "$MAIN" worktree list --porcelain | awk -v b="refs/heads/$BRANCH" '/^worktree /{p=$2}/^branch /{if($2==b)print p}')"
+[ -n "$WT" ] || { echo "review-branch: no worktree found on $BRANCH" >&2; exit 3; }
+echo "=== diff main..$BRANCH ==="
+git -C "$MAIN" --no-pager diff "main..$BRANCH" | head -200
+echo "=== checks on coder-runner (worktree $WT) ==="
+exec /usr/local/bin/checks-on-runner "$WT"

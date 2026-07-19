@@ -1,0 +1,3 @@
+description: 'Coder lane: implement ONE task on a git branch in the bound repo via
+  the sandboxed-aider skill. Never merge, never review.'
+description_auto: false

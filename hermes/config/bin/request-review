@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# CODER-side auto-chain: after a green commit, file a reviewer task for the current branch so the loop
+# advances coder→reviewer without a human seeding it. Called by verify-and-commit.
+# Idempotent per coder task (--idempotency-key review:<task>): multiple green verify-and-commit runs within
+# ONE coder task return the same reviewer task; a rework fix is a NEW coder task → a fresh review round.
+# No-op outside a Hermes worker, or when the branch has no commits ahead of main. Usage: request-review [wt]
+set -euo pipefail
+WT="${1:-.}"; WT="$(cd "$WT" && pwd)"
+
+# Only auto-file inside a Hermes worker (skip manual/local verify-and-commit runs).
+[ -n "${HERMES_KANBAN_TASK:-}" ] || { echo "[request-review] not in a Hermes worker — skip" >&2; exit 0; }
+
+BRANCH="$(git -C "$WT" rev-parse --abbrev-ref HEAD)"
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "HEAD" ]; then
+  echo "[request-review] branch is $BRANCH — skip" >&2; exit 0
+fi
+# Only chain when there is committed work to review.
+if [ -z "$(git -C "$WT" log --oneline "main..$BRANCH" 2>/dev/null)" ]; then
+  echo "[request-review] $BRANCH has no commits ahead of main — nothing to review" >&2; exit 0
+fi
+
+SHA="$(git -C "$WT" rev-parse --short HEAD)"
+# The reviewer runs from the PRIMARY checkout (first worktree), never the feature worktree.
+MAIN="$(git -C "$WT" worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+PROJECT="$(hermes kanban show "$HERMES_KANBAN_TASK" --json 2>/dev/null | jq -r '.task.project_id // .project_id // empty')"
+
+BODY="$(cat <<EOF
+Review the feature branch \`$BRANCH\` (auto-filed by the coder at $SHA, from task $HERMES_KANBAN_TASK).
+
+Run \`review-branch $BRANCH\` (prints the diff vs main and runs \`pnpm check\` on the coder-runner). Judge the
+diff for correctness, security, and simplicity AND architecture conformance per AGENTS.md (layer rule, module
+shape, Zod/settings/logger/errors, a spec test present, no stale generated artifacts). On PASS open a PR with
+\`open-pr $BRANCH "<concise title>"\`; on FAIL file a same-branch fix task back to the coder citing the exact
+failing check or rule. Finish by calling the kanban_complete tool.
+EOF
+)"
+
+# Fail-fast: ThinkingCap can occasionally spiral into a very long reasoning chain. A legit review runs
+# ~5 min, so cap at 15 min and allow only ONE retry — a spiral fails fast instead of thrashing 30-min
+# retries (the llama-swap --n-predict cap on ThinkingCap is the primary anti-spiral guard).
+args=(--assignee reviewer --parent "$HERMES_KANBAN_TASK" --workspace "dir:$MAIN"
+      --skill review-and-rework --idempotency-key "review:$HERMES_KANBAN_TASK"
+      --max-runtime 3600 --max-retries 1)
+[ -n "$PROJECT" ] && args+=(--project "$PROJECT")
+
+ID="$(hermes kanban create "Review $BRANCH — $SHA" "${args[@]}" --body "$BODY" --json 2>/dev/null | jq -r '.id // empty')"
+echo "[request-review] filed reviewer task ${ID:-?} for $BRANCH ($SHA)"

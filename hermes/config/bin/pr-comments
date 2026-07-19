@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# List UNRESOLVED review-comment threads on a mealdeal PR.
+# Usage: pr-comments <pr#|branch> [--json]   (default: readable text for a coder task body)
+set -uo pipefail
+export PATH="/usr/local/bin:/usr/local/lib/hermes-agent/venv/bin:/usr/bin:/bin"
+ARG="${1:?usage: pr-comments <pr#|branch> [--json]}"; FMT="${2:-text}"
+[ -z "${MEALDEAL_GITHUB_TOKEN:-}" ] && [ -r /root/.hermes/.env ] && { set -a; . /root/.hermes/.env; set +a; }
+export GH_TOKEN="${MEALDEAL_GITHUB_TOKEN:-}"
+SLUG="$(git -C /root/repos/mealdeal remote get-url origin | sed -E 's#^[a-z]+://[^@]*@#https://#; s#^.*github\.com[:/]##; s#\.git$##')"
+OWNER="${SLUG%%/*}"; REPO="${SLUG##*/}"
+if [[ "$ARG" =~ ^[0-9]+$ ]]; then N="$ARG"; else
+  N="$(gh pr list --repo "$SLUG" --head "$ARG" --state open --json number --jq '.[0].number // empty' 2>/dev/null)"
+fi
+[ -n "$N" ] || { echo "pr-comments: no open PR for '$ARG'" >&2; exit 1; }
+RAW="$(gh api graphql -F o="$OWNER" -F r="$REPO" -F n="$N" -f query='
+query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){ pullRequest(number:$n){
+  reviewThreads(first:100){ nodes{ id isResolved isOutdated
+    comments(first:30){ nodes{ databaseId path line body diffHunk author{login} } } } } } } }' 2>/dev/null)"
+UNRESOLVED="$(printf '%s' "$RAW" | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+  | select(.isResolved==false)
+  | { threadId: .id,
+      firstCommentId: (.comments.nodes[0].databaseId),
+      maxCommentId: ([.comments.nodes[].databaseId] | max),
+      path: (.comments.nodes[0].path),
+      line: (.comments.nodes[0].line),
+      diffHunk: (.comments.nodes[0].diffHunk // ""),
+      body: ([.comments.nodes[] | "@\(.author.login): \(.body)"] | join("\n---\n")) }]' 2>/dev/null)"
+[ -n "$UNRESOLVED" ] || UNRESOLVED='[]'
+if [ "$FMT" = "--json" ]; then printf '%s\n' "$UNRESOLVED"; exit 0; fi
+printf '%s' "$UNRESOLVED" | jq -r '.[] | "### \(.path):\(.line)\n\(.body)\n\ncode context:\n```\n\(.diffHunk)\n```\n"'

@@ -1,0 +1,6 @@
+[Unit]
+Description=Autonomous coding-loop watchdog (reap stalled/runaway Hermes kanban workers)
+After=hermes.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/loop-watchdog

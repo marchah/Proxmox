@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# CODER ONLY. On the coder-runner LXC (CT 122): regenerate committed artifacts (GraphQL SDL + gql.tada +
+# Drizzle migrations) AND auto-format ONLY the files this task changed (+ the generated artifacts), then
+# sync the result back — so the coder can commit and `pnpm check` (drift + prettier) passes WITHOUT ever
+# running pnpm/prettier on this host (there is no toolchain here). Formatting on CT 122 removes the #1 cause
+# of coder retry-thrash (a format:check failure the coder can't fix). We format ONLY changed files, never the
+# whole repo, so a pre-existing unformatted file never becomes PR noise. No-op for non-pnpm repos.
+# Usage: regen-on-runner [worktree-dir]  (defaults to cwd)
+set -euo pipefail
+WT="${1:-.}"
+WT="$(cd "$WT" && pwd)"
+# Only pnpm monorepos carry committed generated artifacts to refresh.
+if [ ! -f "$WT/pnpm-workspace.yaml" ] && ! grep -q '"packageManager"[[:space:]]*:[[:space:]]*"pnpm' "$WT/package.json" 2>/dev/null; then
+  exit 0
+fi
+KEY=/root/.ssh/coder-runner
+SSH="ssh -i $KEY -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+HASH="$(printf '%s' "$WT" | sha1sum | cut -c1-12)"     # same dest hash as run-on-runner → warm node_modules
+DEST="/build/$HASH"
+# The files THIS task touched (tracked-changed + untracked), computed here where .git lives. prettier will
+# format these + the generated artifacts; `--ignore-unknown` skips non-formattable ones (.sql etc.). Repo
+# paths have no spaces, so a space-joined list is safe to pass through ssh.
+CHANGED="$(cd "$WT" && { git diff --name-only HEAD 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u | tr '\n' ' ')"
+echo "[regen-on-runner] rsync $WT -> coder-runner:$DEST" >&2
+rsync -az --delete --exclude '.git' --exclude 'node_modules' --exclude '.worktrees' \
+  -e "$SSH" "$WT/" "coder-runner:$DEST/"
+# Cached install (skip when the lockfile is unchanged: pnpm's .modules.yaml marker newer than the lockfile),
+# then regenerate SDL + gql.tada + drizzle migration (.sql + _journal + snapshot TOGETHER — a hand-written
+# .sql without the journal entry ships an INERT migration that passes locally but fails CI, cf PR #8), then
+# prettier-format ONLY the task's changed files + the generated artifacts. </dev/null so a rename-prompt
+# can't hang the gate; `|| true` on prettier so a not-yet-existing generated file doesn't fail the step.
+echo "[regen-on-runner] install(cached) + pnpm gen + db:generate + format(changed) on coder-runner" >&2
+$SSH coder-runner "cd $DEST && { if [ -f node_modules/.modules.yaml ] && [ node_modules/.modules.yaml -nt pnpm-lock.yaml ]; then echo '[deps] cached (lockfile unchanged)'; else pnpm install --frozen-lockfile --prefer-offline; fi; } && pnpm gen && pnpm run --if-present db:generate </dev/null && { pnpm exec prettier --write --ignore-unknown $CHANGED packages/contract/schema.graphql packages/web/src/graphql-env.d.ts 2>/dev/null || true; }"
+# Sync the formatted + generated tree back (no --delete; CT 122 is a superset of the worktree). rsync only
+# transfers files that actually changed, so this brings back the coder's edits + generated artifacts, nothing
+# spurious.
+echo "[regen-on-runner] <- formatted + generated tree" >&2
+rsync -az --exclude '.git' --exclude 'node_modules' --exclude '.worktrees' \
+  -e "$SSH" "coder-runner:$DEST/" "$WT/"

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Merge-gated backlog watcher + completion auditor. For each ARMED manifest in /root/.hermes/backlogs/:
+#  (1) RELEASE: unblock a feature once ALL its deps' PRs are merged. With no --parent link, `unblock`
+#      goes straight to 'ready' (dispatchable) — no promote needed.
+#  (2) AUDIT: a coder task that is 'done' but has NO commit on its branch AND no PR is a FALSE completion
+#      (the coder skipped/failed verify-and-commit yet called kanban_complete). Reset its branch + re-queue
+#      it so the feature actually gets built (a real completion always has a commit -> a reviewer PR).
+# Run by release-backlog (once) + the systemd timer. Idempotent; tolerant of individual command failures.
+set -uo pipefail
+export PATH="/usr/local/bin:/usr/local/lib/hermes-agent/venv/bin:/usr/bin:/bin"
+DIR=/root/.hermes/backlogs
+[ -d "$DIR" ] || exit 0
+[ -n "${MEALDEAL_GITHUB_TOKEN:-}" ] || { [ -r /root/.hermes/.env ] && { set -a; . /root/.hermes/.env; set +a; }; }
+GHT="${MEALDEAL_GITHUB_TOKEN:-}"
+st(){ hermes kanban show "$1" --json 2>/dev/null | jq -r '.task.status // empty'; }
+
+shopt -s nullglob
+for MF in "$DIR"/*.json; do
+  [ "$(jq -r '.armed // false' "$MF")" = "true" ] || continue
+  repo="$(jq -r '.repo' "$MF")"; proj="$(jq -r '.project' "$MF")"; RP="/root/repos/$proj"
+  while read -r feat; do
+    tid=$(jq -r '.task_id' <<<"$feat"); slug=$(jq -r '.slug' <<<"$feat"); br="wt/$slug"
+    [ -n "$tid" ] || continue
+    case "$(st "$tid")" in
+      blocked)
+        all_merged=true
+        while read -r d; do
+          [ -n "$d" ] || continue
+          db=$(jq -r --arg s "$d" '.features[]|select(.slug==$s)|.branch' "$MF"); [ -n "$db" ] || db="wt/$d"
+          m=$(GH_TOKEN="$GHT" gh pr list --repo "$repo" --head "$db" --state merged --json number --jq 'length' 2>/dev/null || echo 0)
+          [ "${m:-0}" -ge 1 ] || { all_merged=false; break; }
+        done < <(jq -r '.deps[]?' <<<"$feat")
+        if [ "$all_merged" = "true" ]; then
+          hermes kanban unblock "$tid" >/dev/null 2>&1     # no --parent -> straight to 'ready'
+          echo "[backlog-tick] released $tid ($slug) — deps merged"
+        fi
+        ;;
+      done)
+        commits=$(git -C "$RP" log --oneline "main..$br" 2>/dev/null | wc -l | tr -d ' ')
+        pr=$(GH_TOKEN="$GHT" gh pr list --repo "$repo" --head "$br" --state all --json number --jq 'length' 2>/dev/null || echo 0)
+        if [ "${commits:-0}" -eq 0 ] && [ "${pr:-0}" -eq 0 ]; then
+          echo "[backlog-tick] FALSE COMPLETION $tid ($slug) — done, no commit/PR; resetting + re-queueing"
+          git -C "$RP" worktree remove --force ".worktrees/$tid" 2>/dev/null || true
+          git -C "$RP" branch -D "$br" 2>/dev/null || true
+          hermes kanban block "$tid" >/dev/null 2>&1 && hermes kanban unblock "$tid" >/dev/null 2>&1 \
+            && echo "[backlog-tick]   re-queued $tid ($slug)"
+        fi
+        ;;
+    esac
+  done < <(jq -c '.features[]' "$MF")
+done

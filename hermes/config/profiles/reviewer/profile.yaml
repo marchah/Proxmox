@@ -1,0 +1,4 @@
+description: 'Reviewer lane: verify a coder branch (run tests + lint + code review);
+  on FAIL file a linked fix task with findings; on PASS mark ready for PR. Never write
+  features, never merge.'
+description_auto: false

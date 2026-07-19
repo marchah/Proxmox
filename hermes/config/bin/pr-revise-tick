@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# PR review-comment poller. For each open mealdeal PR labeled `loop:revise` with unresolved review threads,
+# file ONE coder task on its branch to address them, then remove the label. The coder addresses -> its
+# auto-chained reviewer verifies and (on PASS) runs resolve-pr-comments. Run by a systemd timer.
+set -uo pipefail
+export PATH="/usr/local/bin:/usr/local/lib/hermes-agent/venv/bin:/usr/bin:/bin"
+[ -z "${MEALDEAL_GITHUB_TOKEN:-}" ] && [ -r /root/.hermes/.env ] && { set -a; . /root/.hermes/.env; set +a; }
+export GH_TOKEN="${MEALDEAL_GITHUB_TOKEN:-}"
+RP=/root/repos/mealdeal
+SLUG="$(git -C "$RP" remote get-url origin | sed -E 's#^[a-z]+://[^@]*@#https://#; s#^.*github\.com[:/]##; s#\.git$##')"
+LABEL=loop:revise
+gh pr list --repo "$SLUG" --label "$LABEL" --state open --json number,headRefName \
+  --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null | while IFS=$'\t' read -r N BRANCH; do
+  [ -n "$N" ] || continue
+  THREADS="$(pr-comments "$N" --json)"
+  CNT="$(printf '%s' "$THREADS" | jq 'length' 2>/dev/null || echo 0)"
+  if [ "${CNT:-0}" -lt 1 ]; then
+    # No unresolved inline review threads — fall back to a Codex (final-review) verdict comment, if any.
+    # (codex-review posts a plain PR comment marked "## 🤖 Codex review", not inline threads.)
+    CODEX="$(gh pr view "$N" --repo "$SLUG" --json comments \
+      --jq 'last(.comments[] | select(.body | contains("Codex review"))) // empty' 2>/dev/null)"
+    if [ -z "$CODEX" ]; then
+      echo "[pr-revise-tick] PR #$N: no unresolved threads and no Codex verdict — removing label"
+      gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+      continue
+    fi
+    CBODY="$(printf '%s' "$CODEX" | jq -r '.body')"
+    CID="$(printf '%s' "$CODEX" | jq -r '.url' | sed -E 's/.*issuecomment-([0-9]+).*/\1/')"
+    if ! printf '%s' "$CBODY" | grep -qi "REQUEST CHANGES"; then
+      echo "[pr-revise-tick] PR #$N: Codex verdict APPROVE / no changes requested — removing label"
+      gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+      continue
+    fi
+    echo "[pr-revise-tick] PR #$N ($BRANCH): Codex REQUEST CHANGES — filing coder task (key revise:$N:codex-$CID)"
+    ( cd "$RP" && free-feature-branch "$BRANCH" ) >/dev/null 2>&1 || true
+    CX_BODY="Address this Codex final-review verdict on branch \`$BRANCH\` (PR #$N). Make the code changes on this branch, then run \`verify-and-commit .\`. Do NOT resolve anything yourself — a re-review runs after.
+
+$CBODY"
+    hermes kanban create "Address Codex review — $BRANCH (PR #$N)" \
+      --assignee coder --project mealdeal --workspace "worktree:$RP" --branch "$BRANCH" \
+      --skill implement-and-verify --max-runtime 3600 --max-retries 2 \
+      --idempotency-key "revise:$N:codex-$CID" --body "$CX_BODY" --json 2>/dev/null | jq -r '"  filed " + (.id // "FAILED")'
+    gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+    continue
+  fi
+  MAXID="$(printf '%s' "$THREADS" | jq '[.[].maxCommentId] | max')"
+  echo "[pr-revise-tick] PR #$N ($BRANCH): $CNT unresolved thread(s) — filing coder task (key revise:$N:$MAXID)"
+  ( cd "$RP" && free-feature-branch "$BRANCH" ) >/dev/null 2>&1 || true
+  BODY="Address these unresolved review comments on branch \`$BRANCH\` (PR #$N). Make the code changes on this branch, then run \`verify-and-commit .\`. Do NOT resolve the comment threads yourself — the reviewer resolves them after verifying.
+
+$(pr-comments "$N")"
+  hermes kanban create "Address review comments — $BRANCH (PR #$N)" \
+    --assignee coder --project mealdeal --workspace "worktree:$RP" --branch "$BRANCH" \
+    --skill implement-and-verify --max-runtime 3600 --max-retries 2 \
+    --idempotency-key "revise:$N:$MAXID" --body "$BODY" --json 2>/dev/null | jq -r '"  filed " + (.id // "FAILED")'
+  gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+done

@@ -1,0 +1,6 @@
+name: completion-gate
+version: "0.1.0"
+description: "Preventive false-completion guard. Blocks a coder task's kanban_complete when its worktree branch has 0 commits ahead of main (i.e. verify-and-commit never committed) — forcing the coder to actually run verify-and-commit + commit before it can mark a task done. Closes the hole the reactive post-completion audit couldn't (you cannot block a done task). Fails OPEN on any uncertainty."
+author: "homelab"
+hooks:
+  - pre_tool_call
