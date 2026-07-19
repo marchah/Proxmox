@@ -7,6 +7,10 @@ set -euo pipefail
 # Robust PATH: this may be spawned detached from the Hermes gateway (via the /codex-review plugin),
 # whose systemd env can be minimal. Ensure hermes/gh/jq/git/codex resolve.
 export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:${PATH:-}"
+# Load the gateway env EARLY — the detached plugin path has a minimal env, so pull SLACK_CODING_CHANNEL /
+# MEALDEAL_GITHUB_TOKEN from /root/.hermes/.env BEFORE we reference them (else the Slack destination below
+# would be empty / trip `set -u`).
+[ -r /root/.hermes/.env ] && { set -a; . /root/.hermes/.env; set +a; }
 
 # Accept "codex-review <pr> [repo]" OR a single combined first arg — the Slack plugin passes raw_args as
 # ONE token (e.g. "12 otherapp"); re-split a lone first arg into positional params.
@@ -14,7 +18,7 @@ if [ "$#" -eq 1 ]; then set -- $1; fi
 ARG="${1:?usage: codex-review <pr-number|branch|url> [repo]}"
 REPO="${2:-mealdeal}"                                          # loop clones each hermes project to /root/repos/<name>
 REPO_DIR="${CODEX_REVIEW_REPOS_DIR:-/root/repos}/$REPO"
-CODING_CHANNEL="${CODEX_REVIEW_SLACK_CHANNEL:-${SLACK_CODING_CHANNEL}}"   # #coding
+CODING_CHANNEL="${CODEX_REVIEW_SLACK_CHANNEL:-${SLACK_CODING_CHANNEL:-}}"   # #coding (from .env, sourced above)
 CODEX_MODEL="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
 
 # Single-flight per repo+target: a duplicate invocation (double-send / Slack 3s-ack retry) no-ops.

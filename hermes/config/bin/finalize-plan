@@ -22,7 +22,10 @@ jq -e '.features | all(has("slug") and has("title") and has("body"))' "$BACKLOG"
 if ! jq -e '(.features|map(.slug)) as $s | .features | all((.deps//[]) | all(. as $d | ($s|index($d)) != null))' "$BACKLOG" >/dev/null 2>&1; then
   echo "finalize-plan: a feature dep references an unknown slug" >&2; exit 1
 fi
-jq -e '.features | all((.deps//[]) | index(.slug|tostring) | not)' "$BACKLOG" >/dev/null 2>&1 || true
+# reject a self-dependency (a feature listing its own slug in deps) — it would stay blocked forever
+if ! jq -e '.features | all(.slug as $me | (.deps//[]) | all(. != $me))' "$BACKLOG" >/dev/null 2>&1; then
+  echo "finalize-plan: a feature lists itself in deps (self-dependency → would block forever)" >&2; exit 1
+fi
 PROJECT="$(basename "$REPO")"
 EPIC_TITLE="$(jq -r '.epic_title // ("Plan: " + (.project // "project"))' "$BACKLOG")"
 GH_REPO="$(git -C "$REPO" remote get-url origin | sed -E 's#(git@[^:]+:|https?://[^/]+/)##; s#\.git$##')"

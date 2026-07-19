@@ -36,11 +36,17 @@ gh pr list --repo "$SLUG" --label "$LABEL" --state open --json number,headRefNam
     CX_BODY="Address this Codex final-review verdict on branch \`$BRANCH\` (PR #$N). Make the code changes on this branch, then run \`verify-and-commit .\`. Do NOT resolve anything yourself — a re-review runs after.
 
 $CBODY"
-    hermes kanban create "Address Codex review — $BRANCH (PR #$N)" \
+    NEWID="$(hermes kanban create "Address Codex review — $BRANCH (PR #$N)" \
       --assignee coder --project mealdeal --workspace "worktree:$RP" --branch "$BRANCH" \
       --skill implement-and-verify --max-runtime 3600 --max-retries 2 \
-      --idempotency-key "revise:$N:codex-$CID" --body "$CX_BODY" --json 2>/dev/null | jq -r '"  filed " + (.id // "FAILED")'
-    gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+      --idempotency-key "revise:$N:codex-$CID" --body "$CX_BODY" --json 2>/dev/null | jq -r '.id // empty')"
+    if [ -n "$NEWID" ]; then
+      echo "  filed $NEWID — removing $LABEL"
+      gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+    else
+      # Keep the label so the next tick retries — the idempotency-key makes a re-file a no-op if it did land.
+      echo "  [pr-revise-tick] PR #$N: coder-task creation FAILED — keeping $LABEL for the next tick" >&2
+    fi
     continue
   fi
   MAXID="$(printf '%s' "$THREADS" | jq '[.[].maxCommentId] | max')"
@@ -49,9 +55,15 @@ $CBODY"
   BODY="Address these unresolved review comments on branch \`$BRANCH\` (PR #$N). Make the code changes on this branch, then run \`verify-and-commit .\`. Do NOT resolve the comment threads yourself — the reviewer resolves them after verifying.
 
 $(pr-comments "$N")"
-  hermes kanban create "Address review comments — $BRANCH (PR #$N)" \
+  NEWID="$(hermes kanban create "Address review comments — $BRANCH (PR #$N)" \
     --assignee coder --project mealdeal --workspace "worktree:$RP" --branch "$BRANCH" \
     --skill implement-and-verify --max-runtime 3600 --max-retries 2 \
-    --idempotency-key "revise:$N:$MAXID" --body "$BODY" --json 2>/dev/null | jq -r '"  filed " + (.id // "FAILED")'
-  gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+    --idempotency-key "revise:$N:$MAXID" --body "$BODY" --json 2>/dev/null | jq -r '.id // empty')"
+  if [ -n "$NEWID" ]; then
+    echo "  filed $NEWID — removing $LABEL"
+    gh api -X DELETE "repos/$SLUG/issues/$N/labels/$LABEL" >/dev/null 2>&1 || true
+  else
+    # Keep the label so the next tick retries — the idempotency-key makes a re-file a no-op if it did land.
+    echo "  [pr-revise-tick] PR #$N: coder-task creation FAILED — keeping $LABEL for the next tick" >&2
+  fi
 done
