@@ -12,10 +12,16 @@ if [[ "$ARG" =~ ^[0-9]+$ ]]; then N="$ARG"; else
   N="$(gh pr list --repo "$SLUG" --head "$ARG" --state open --json number --jq '.[0].number // empty' 2>/dev/null)"
 fi
 [ -n "$N" ] || { echo "pr-comments: no open PR for '$ARG'" >&2; exit 1; }
+# Fail LOUD (exit 2) if the GitHub request or the parse fails — the caller must NOT read a transient
+# outage as "no unresolved threads" and then clear the loop:revise retry label. A genuinely-empty result
+# is the valid JSON `[]`, which is distinct from this failure path.
 RAW="$(gh api graphql -F o="$OWNER" -F r="$REPO" -F n="$N" -f query='
 query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){ pullRequest(number:$n){
   reviewThreads(first:100){ nodes{ id isResolved isOutdated
-    comments(first:30){ nodes{ databaseId path line body diffHunk author{login} } } } } } } }' 2>/dev/null)"
+    comments(first:30){ nodes{ databaseId path line body diffHunk author{login} } } } } } } }' 2>/dev/null)" \
+  || { echo "pr-comments: GitHub API request failed for PR #$N" >&2; exit 2; }
+printf '%s' "$RAW" | jq -e '.data.repository.pullRequest.reviewThreads' >/dev/null 2>&1 \
+  || { echo "pr-comments: unexpected GitHub response for PR #$N (auth/rate-limit?)" >&2; exit 2; }
 UNRESOLVED="$(printf '%s' "$RAW" | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
   | select(.isResolved==false)
   | { threadId: .id,
@@ -24,7 +30,7 @@ UNRESOLVED="$(printf '%s' "$RAW" | jq '[.data.repository.pullRequest.reviewThrea
       path: (.comments.nodes[0].path),
       line: (.comments.nodes[0].line),
       diffHunk: (.comments.nodes[0].diffHunk // ""),
-      body: ([.comments.nodes[] | "@\(.author.login): \(.body)"] | join("\n---\n")) }]' 2>/dev/null)"
-[ -n "$UNRESOLVED" ] || UNRESOLVED='[]'
+      body: ([.comments.nodes[] | "@\(.author.login): \(.body)"] | join("\n---\n")) }]')" \
+  || { echo "pr-comments: failed to parse review threads for PR #$N" >&2; exit 2; }
 if [ "$FMT" = "--json" ]; then printf '%s\n' "$UNRESOLVED"; exit 0; fi
 printf '%s' "$UNRESOLVED" | jq -r '.[] | "### \(.path):\(.line)\n\(.body)\n\ncode context:\n```\n\(.diffHunk)\n```\n"'
