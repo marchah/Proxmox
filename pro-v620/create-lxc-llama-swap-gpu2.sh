@@ -21,10 +21,10 @@ readonly OTHER_GPU_PCI_ADDRESS="${OTHER_GPU_PCI_ADDRESS:-0000:2d:00.0}"  # GPU 1
 # Pinned prebuilt Vulkan llama.cpp release (same as CT 120). llama-swap launches
 # this llama-server per model. Bump TAG + SHA256 together from
 # https://github.com/ggml-org/llama.cpp/releases (asset llama-<tag>-bin-ubuntu-vulkan-x64.tar.gz).
-readonly LLAMACPP_RELEASE_TAG="b9835"
+readonly LLAMACPP_RELEASE_TAG="b10069"
 readonly LLAMACPP_ASSET="llama-${LLAMACPP_RELEASE_TAG}-bin-ubuntu-vulkan-x64.tar.gz"
 readonly LLAMACPP_ASSET_URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMACPP_RELEASE_TAG}/${LLAMACPP_ASSET}"
-readonly LLAMACPP_SHA256="513debc0497ba6936ef037907d48bca5c2b250756cb7700b5111f1ed2a59323f"
+readonly LLAMACPP_SHA256="df7894a0d6bbd140c4b4ab128062f723aed2b4785b19a191e03101c235fac627"
 
 # Pinned llama-swap release (Go proxy). Bump VERSION + SHA256 together from
 # https://github.com/mostlygeek/llama-swap/releases (asset llama-swap_<ver>_linux_amd64.tar.gz;
