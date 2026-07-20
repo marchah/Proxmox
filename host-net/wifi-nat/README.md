@@ -105,6 +105,12 @@ LAN lease again).
 `./install.sh --status` prints the WiFi link, leases, routes, and nft table at any
 time.
 
+To add/remove a port-forward after cutover, edit `PORT_FORWARDS` in `wifi-nat.env`
+and run `./install.sh --reload-nft`. It regenerates `wifinat.nft` from the env and
+reloads only `table ip wifinat` — no dnsmasq stop, no prior-state re-snapshot, no
+routing change (host-inbound SSH and the LXC default routes are untouched; a
+sub-second blip on masquerade/DNAT that established conntrack flows ride through).
+
 ## What it installs / changes
 
 | Path | Purpose |
@@ -131,7 +137,9 @@ LAN except the forwarded ports.
 - `bench-runner` auto-discovery of CT120 still resolves internally (CT200 and
   CT120 share `10.10.10.x`); `make bench` over `ssh pve` is unaffected.
 - From your Mac / the rest of the LAN, reach the container APIs at the host's WiFi
-  IP: `http://<host-ip>:1234/v1/models` (llama.cpp) and `:8642` (Hermes).
+  IP: `http://<host-ip>:1234/v1/models` (llama.cpp CT120), `:8642` (Hermes CT121),
+  and `:8080` (llama-swap GPU-2 model server CT123 — point local OpenCode here
+  instead of an `ssh -L 8080` tunnel; pick the model by name).
 - **Hermes (CT121)** stores CT120's endpoint in `/root/.hermes/config.yaml`, so a CT120
   IP change (like this cutover) breaks it with "model provider failed after retries".
   Point `model.base_url` at the stable name `http://llamacpp:1234/v1` (dnsmasq resolves
