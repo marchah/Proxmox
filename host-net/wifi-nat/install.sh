@@ -17,6 +17,7 @@
 #   ./install.sh --cutover    # arm auto-rollback, flip vmbr0 -> NAT, start services
 #   ./install.sh --confirm    # (after re-connecting) cancel the rollback = make it permanent
 #   ./install.sh --revert     # restore the original ethernet-bridge config
+#   ./install.sh --reload-nft # re-apply the nft table (masq + port-forwards) from wifi-nat.env, live
 #   ./install.sh --status     # show link / leases / routes / nft table
 #
 # The cutover arms a self-rollback (systemd-run timer) that restores the backed-up
@@ -666,6 +667,27 @@ cmd_revert() {
   log "Reboot the CTs to re-pull LAN DHCP:  for c in 120 121 200; do pct reboot \$c; done"
 }
 
+cmd_reload_nft() {
+  require_root
+  load_config
+  # Re-apply ONLY the nftables table (masquerade + port-forwards) from the current
+  # wifi-nat.env — for adding/removing a PORT_FORWARDS entry without the disruptive
+  # stage (which stops dnsmasq / re-snapshots prior state). render_nftables just
+  # rewrites the managed files (stash_file is a no-op for files already recorded);
+  # `try-restart` reloads the table only if wifinat is already running (the unit's
+  # add-then-delete-then-load is idempotent and touches only table ip wifinat, so
+  # host-inbound SSH and the LXC default routes are unaffected — a sub-second blip
+  # on masquerade/DNAT that established conntrack flows ride through).
+  render_nftables
+  systemctl daemon-reload
+  if systemctl is-active --quiet wifinat; then
+    systemctl try-restart wifinat && log "reloaded table ip wifinat from wifi-nat.env"
+    nft list chain ip wifinat prerouting 2>/dev/null | sed 's/^/    /' || true
+  else
+    log "regenerated $NFT_FILE; wifinat not active — it loads on next start/cutover."
+  fi
+}
+
 cmd_status() {
   load_config
   echo "== $WAN_IF (WAN) =="; iw dev "$WAN_IF" link 2>/dev/null || true; ip -4 -br addr show "$WAN_IF" 2>/dev/null || true
@@ -687,6 +709,7 @@ main() {
     --cutover)    cmd_cutover ;;
     --confirm)    cmd_confirm ;;
     --revert)     cmd_revert ;;
+    --reload-nft) cmd_reload_nft ;;
     --status)     cmd_status ;;
     -h|--help)    usage ;;
     *)            die "unknown argument: $1 (try --help)" ;;
