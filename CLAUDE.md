@@ -28,7 +28,7 @@ Three containers form the system:
     (hostname `llamacpp`). This is the current runtime.
   - `pro-v620/create-lxc-llama-swap-gpu2.sh` — **CT 123 `gpu2`** on GPU 2: a `llama-swap` proxy for the
     autonomous coding loop that hot-swaps between a coder model (Qwen3-30B-A3B-Instruct-2507, alias
-    `qwen3-instruct-2507`) and a reviewer model (Qwen3-Coder-30B-A3B-Instruct, alias `qwen3-coder-reviewer`),
+    `qwen3-instruct-2507`) and a reviewer model (Qwen3-Coder-30B-A3B-Instruct, alias `qwen3-coder-30b-a3b`),
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.

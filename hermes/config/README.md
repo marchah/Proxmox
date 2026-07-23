@@ -26,7 +26,7 @@ the Proxmox host — run `install.sh` inside the container (`git clone` the repo
    │      ⇢ completion-gate blocks "done" if the branch has 0 commits ahead of main
    │      ⇢ coder-commit-audit hook re-checks after completion
    ▼
-   reviewer profile (qwen3-coder-reviewer) ── run tests+lint+review a coder branch
+   reviewer profile (qwen3-coder-30b-a3b) ── run tests+lint+review a coder branch
           PASS ⇒ open-pr (PR-ready notice to #coding)   FAIL ⇒ file a linked fix task with findings
                                             │
              /codex-review <pr#> ── on-demand Codex (ChatGPT) review; verdict → #coding + the PR
@@ -59,7 +59,7 @@ bin/                  Loop helpers → /usr/local/bin. Execution offload (run-on
                       loop-watchdog.
 profiles/coder/       coder lane: config.yaml (model qwen3-instruct-2507, trimmed toolset, audit hook),
                       profile.yaml, .no-bundled-skills, SOUL.md, skills/implement-and-verify/.
-profiles/reviewer/    reviewer lane: config.yaml (model qwen3-coder-reviewer), profile.yaml, .no-bundled-skills,
+profiles/reviewer/    reviewer lane: config.yaml (model qwen3-coder-30b-a3b), profile.yaml, .no-bundled-skills,
                       SOUL.md, skills/review-and-rework/.
 skills/               The loop's custom skills: scope-and-plan (planner), review-pr (reviewer).
 plugins/              completion-gate (pre_tool_call false-completion guard), codex-review (/codex-review command).

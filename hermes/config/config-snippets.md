@@ -67,7 +67,7 @@ For reference — `install.sh` deploys these, no hand-merge needed. Both point a
 | Profile  | `model.default`        | ctx     | Notes |
 |----------|------------------------|---------|-------|
 | coder    | `qwen3-instruct-2507`  | 65536   | Qwen3-30B-A3B-Instruct-2507; trimmed toolset (terminal/kanban/skills/file/todo) |
-| reviewer | `qwen3-coder-reviewer` | 65536   | Qwen3-Coder-30B-A3B-Instruct; non-thinking, so no runaway-reasoning budget exhaustion |
+| reviewer | `qwen3-coder-30b-a3b` | 65536   | Qwen3-Coder-30B-A3B-Instruct; non-thinking, so no runaway-reasoning budget exhaustion |
 | planner  | (default ops model)    | —       | runs the `scope-and-plan` skill in the planning channel; no dedicated profile |
 
 The coder profile also wires the false-completion audit hook (`kanban_task_completed → coder-commit-audit`) and the

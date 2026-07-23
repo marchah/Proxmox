@@ -10,7 +10,7 @@ set -Eeuo pipefail
 # qwen3.6 on GPU 1 stays the untouched ops server; the loop's dispatcher is
 # serialized to one task at a time so the swap only fires at coder<->reviewer
 # handoffs. Serves an OpenAI-compatible API at 0.0.0.0:8080; clients pick the
-# model by name ("qwen3-instruct-2507" / "qwen3-coder-reviewer").
+# model by name ("qwen3-instruct-2507" / "qwen3-coder-30b-a3b").
 readonly GPU_NAME="Radeon Pro V620"
 # This container is pinned to GPU 2 (PCIe-3/chipset slot). GPU 1 (0000:2d:00.0)
 # runs CT 120 (qwen3.6 ops). Passthrough binds ONLY GPU 2's DRM nodes — the only
@@ -52,7 +52,7 @@ readonly REVIEWER_REPO="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
 readonly REVIEWER_FILE="Qwen3-Coder-30B-A3B-Instruct-UD-Q5_K_XL.gguf"
 readonly REVIEWER_SHA256="eb331a4eee8eb6b5a8eb25f44f96f45c71b8d10f553c0a456190dd590a7ef77d"
 readonly REVIEWER_REVISION="b17cb02dd882d5b6ab62fc777ad2995f19668350"
-readonly REVIEWER_ALIAS="qwen3-coder-reviewer"
+readonly REVIEWER_ALIAS="qwen3-coder-30b-a3b"
 readonly REVIEWER_CTX="${REVIEWER_CTX:-65536}"          # reviewer reads a diff + a few files
 readonly REVIEWER_NPREDICT="${REVIEWER_NPREDICT:-8192}" # cap tokens/request
 
@@ -85,7 +85,7 @@ autonomous coding loop's model server (swaps a coder + a reviewer model).
 Fixed target:
   GPU:    Radeon Pro V620 GPU 2 (0000:06:00.0) — GPU 1 runs CT 120 (qwen3.6 ops)
   Engine: llama-swap (Go proxy) launching llama.cpp llama-server per model
-  Models: qwen3-instruct-2507 (Qwen3-30B-A3B-Instruct-2507, coder) + qwen3-coder-reviewer (Qwen3-Coder-30B-A3B-Instruct, reviewer)
+  Models: qwen3-instruct-2507 (Qwen3-30B-A3B-Instruct-2507, coder) + qwen3-coder-30b-a3b (Qwen3-Coder-30B-A3B-Instruct, reviewer)
   API:    0.0.0.0:8080 (OpenAI-compatible; pick model by name)
 
 Run this script on the Proxmox host as root. Defaults to VMID 123 / hostname gpu2.

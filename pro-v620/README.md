@@ -49,7 +49,7 @@ the chosen engine, per the 6700 XT comparison), one per V620:
   | Role     | Alias                  | Model / GGUF |
   |----------|------------------------|--------------|
   | coder    | `qwen3-instruct-2507`  | Qwen3-30B-A3B-Instruct-2507 — `unsloth/…-GGUF`, `Qwen3-30B-A3B-Instruct-2507-Q5_K_M.gguf` |
-  | reviewer | `qwen3-coder-reviewer` | Qwen3-Coder-30B-A3B-Instruct — `unsloth/…-GGUF`, `Qwen3-Coder-30B-A3B-Instruct-UD-Q5_K_XL.gguf` |
+  | reviewer | `qwen3-coder-30b-a3b` | Qwen3-Coder-30B-A3B-Instruct — `unsloth/…-GGUF`, `Qwen3-Coder-30B-A3B-Instruct-UD-Q5_K_XL.gguf` |
 
   (Replaced the original Ornith-1.0-35B coder + ThinkingCap-Qwen3.6-27B reviewer, which false-completed /
   ran away; the reviewer is now non-thinking so it can't exhaust its reasoning budget.)
