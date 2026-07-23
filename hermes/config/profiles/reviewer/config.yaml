@@ -1,5 +1,5 @@
 model:
-  default: qwen3-coder-reviewer
+  default: qwen3-coder-30b-a3b
   provider: custom
   base_url: http://gpu2:8080/v1
   api_key: ''
