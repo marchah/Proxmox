@@ -10,6 +10,10 @@ Utilities for creating and operating local Proxmox LXCs and VMs.
 - `bench-runner/`: disposable LXC for OpenAI-compatible LLM benchmarks.
 - `hermes/`: persistent LXC running NousResearch's Hermes Agent (the agent that
   consumes the LLM runtime's API).
+- `coder-runner/`: disposable execution sandbox for the autonomous coding loop.
+- `kb-rag/`: knowledge-base retrieval service (hybrid search over the Markdown KB).
+- `mealdeal/`: the MealDeal grocery-deal app — a plain app service LXC that consumes
+  the LLM runtime's API for deal extraction.
 - `host-net/`: host-side networking that runs on the Proxmox host itself (not in an
   LXC). `host-net/wifi-nat/` turns the host into a WiFi-uplink NAT gateway so it can
   run with no ethernet.
@@ -30,11 +34,21 @@ Containers are allocated VMIDs by role:
 | 140-159 | Databases         |
 | 200+    | Test / temporary  |
 
-Current containers: CT `120` (the AI/LLM runtime — pinned to **one of two Radeon Pro
-V620s** (GPU 1; GPU 2 left idle/free); provisioned by `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`), CT `121`
-(`hermes`, the Hermes Agent that consumes CT 120's API) and CT `200`
-(`bench-runner`, disposable). Each creation script defaults its `VMID` to the
-matching range and accepts a `VMID=` override.
+Current containers:
+
+| CT | Name | What |
+| --- | --- | --- |
+| `110` | `mealdeal` | MealDeal grocery-deal app (SPA + GraphQL on `:4000`); extracts deals via CT 120 |
+| `120` | `llamacpp` | The AI/LLM runtime — pinned to **GPU 1** of two Radeon Pro V620s |
+| `121` | `hermes` | Hermes Agent; consumes CT 120's API and drives the coding loop |
+| `122` | `coder-runner` | Disposable execution sandbox for the coding loop (no secrets) |
+| `123` | `gpu2` | `llama-swap` model server on **GPU 2** (several models, swapped by name) |
+| `140` | `kb-rag` | Knowledge-base search API (REST + MCP) over the Markdown KB |
+| `200` | `bench-runner` | Disposable benchmark LXC |
+
+Each creation script defaults its `VMID` to the matching range and accepts a `VMID=` override.
+Note CT 110 sits in the infra/services range, not the AI range: like Hermes, MealDeal only
+*consumes* the model API — it does not serve a model.
 
 ## Current Scripts
 
@@ -89,6 +103,23 @@ Run directly on the Proxmox host without cloning the repo:
 
 ```bash
 bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/hermes/create-lxc-hermes-agent.sh)"
+```
+
+### MealDeal App LXC
+
+Creates an unprivileged Debian LXC running [MealDeal](https://github.com/marchah/mealdeal) — a
+self-hosted grocery-deal tracker. One Node process serves the built React SPA, the GraphQL API
+at `/graphql`, and the ingest cron in-process; deal extraction runs against CT 120, so no cloud
+API key is involved. Defaults to CT `110` on port `4000`. See [mealdeal/README.md](mealdeal/README.md).
+
+The app ships a Dockerfile, but this homelab runs no Docker, so the build is replayed natively
+(pinned Node + pnpm) into release directories behind a `current` symlink. Updates are a single
+command that builds, health-checks, and **rolls back automatically** if the new release fails:
+
+```bash
+./mealdeal/create-lxc-mealdeal.sh                    # provision (ingest starts disabled)
+pct exec 110 -- bash -lc 'mealdeal-update'           # deploy latest main, or roll back on failure
+pct exec 110 -- bash -lc 'mealdeal-status'           # release, commit, health, ingest, DB size
 ```
 
 ### Host WiFi-NAT Gateway (runs on the host, not in an LXC)

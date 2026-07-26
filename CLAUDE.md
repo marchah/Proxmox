@@ -10,7 +10,7 @@ suite to run — the "product" is the scripts themselves, executed **on the Prox
 root**. macOS is only the authoring/editing environment; the scripts run remotely against
 `pct`/`pveam`.
 
-Three containers form the system:
+These containers form the system:
 
 - **CT 120** (`pro-v620/`): a *privileged* Ubuntu LXC — the **LLM runtime** — serving
   `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, 35B total / ~3B active) via Vulkan, exposing an
@@ -48,6 +48,19 @@ Three containers form the system:
   that endpoint. It auto-discovers CT 120's IP at provisioning time. It lives in the
   `200+` test/temporary range because it is disposable — destroy it when done. The suite is
   engine-neutral (it speaks OpenAI `/v1`), so it benchmarks either engine unchanged.
+- **CT 110 `mealdeal`** (`mealdeal/`): an *unprivileged* Debian LXC running
+  **[MealDeal](https://github.com/marchah/mealdeal)** — the self-hosted grocery-deal tracker the
+  local AI codes features for. One Node process serves the built React SPA, the GraphQL API at
+  `/graphql` (`0.0.0.0:4000`), and the IMAP ingest cron in-process; extraction calls CT 120
+  (`llamacpp:1234`), so it is an API *consumer* like Hermes — hence the `100-119`
+  infra/services range, NOT the AI range. The app ships a Dockerfile but this homelab runs no
+  Docker, so `mealdeal/create-lxc-mealdeal.sh` replays that build natively (pinned Node +
+  pnpm) into `/opt/mealdeal/releases/<sha>` behind a `current` symlink. ⚠️ Because the build
+  pipeline is *replayed* rather than read from the Dockerfile, a change to mealdeal's
+  Dockerfile stages / `packageManager` pnpm version / runtime layout must be mirrored in
+  `mealdeal-update` and the script's `NODE_VERSION`/`PNPM_VERSION`. Updates are **manual by
+  design** (`mealdeal-update`): it builds, flips the symlink, health-checks `/graphql`, and
+  **restores the previous release** if the new one fails. See `mealdeal/README.md`.
 
 VMIDs `120`/`121`/`122`/`123`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
 
@@ -67,6 +80,17 @@ pct exec 121 -- bash -lc 'cd /path/to/Proxmox/hermes/config && ./install.sh'  # 
 # Prior GPU (RX 6700 XT) — kept for reference; pick ONE engine (mutually exclusive)
 ./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
 ./rx-6700-xt/create-lxc-llamacpp-qwen3.5-9b.sh    # llama.cpp (llama-server)
+
+# Provision the MealDeal app (CT 110); extracts deals via CT 120. Ingest starts DISABLED
+# unless IMAP creds are passed (see mealdeal/README.md).
+./mealdeal/create-lxc-mealdeal.sh
+# Operate it — NOTE the `bash -lc` wrapper: these live in /usr/local/bin, which a bare
+# `pct exec` PATH omits (same gotcha as the llm-bench-* wrappers).
+pct exec 110 -- bash -lc 'mealdeal-status'           # release, commit, health, ingest, DB size
+pct exec 110 -- bash -lc 'mealdeal-update'           # build latest main; auto-rolls back on failure
+pct exec 110 -- bash -lc 'mealdeal-update --check'   # report only; exit 10 if an update is available
+pct exec 110 -- bash -lc 'mealdeal-rollback'         # activate the previous release, no rebuild
+pct exec 110 -- bash -lc 'mealdeal-ingest'           # run one ingest pass now, print the counts
 
 # Provision the benchmark runner (CT 200); auto-targets CT 120's API
 ./bench-runner/create-lxc-bench-runner.sh
@@ -249,7 +273,8 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
 
 - **VMID allocation** (homelab-wide scheme — pick a new script's default `VMID` from the
   matching range):
-  - `100-119` — infra / services
+  - `100-119` — infra / services (CT 110 `mealdeal` — the MealDeal grocery-deal app; an API
+    *consumer* of CT 120, not an AI container)
   - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, pinned to GPU 1 of two V620s; the
     prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the Hermes Agent that
     consumes CT 120's API. CT 122 `coder-runner` — the coding loop's execution sandbox; CT 123 `gpu2` —
@@ -281,6 +306,14 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   `.gitignore`: `models/`, `results/`, `artifacts/`, `bench-results*.tgz`, `.env*`).
 - Container model storage (`/models`) uses `backup=0` — weights are large and
   re-downloadable; back up container config / service files / small state separately.
+- ⚠️ **`backup=` works on MOUNT POINTS only, never on `rootfs`.** PVE rejects it outright
+  (`rootfs.backup: property is not defined in schema`) — a container's root disk cannot be
+  excluded from `vzdump`. Several scripts here append `backup=0` to the `rootfs` line behind a
+  `>/dev/null 2>&1 || true`, so that step is a **silent no-op** (verified on pve-manager 9.2.3);
+  don't trust the comment above such a line. Note the defaults are inverted: `rootfs` is always
+  backed up, while a mount point defaults to `backup=0` and needs `backup=1` set explicitly (as
+  CT 110's DB volume does). To keep a big rootfs out of backups, exclude paths in the backup job
+  instead: `vzdump <vmid> --exclude-path /opt/<bulk>`.
 - The GPUs are driven via **Vulkan** (mesa RADV). The host now runs **two Radeon Pro V620s**
   (Navi 21/gfx1030); the prior RX 6700 XT (Navi 22/gfx1031) is kept only for reference. The
   container installs the Vulkan userspace (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and

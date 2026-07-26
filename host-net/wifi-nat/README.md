@@ -111,6 +111,14 @@ reloads only `table ip wifinat` — no dnsmasq stop, no prior-state re-snapshot,
 routing change (host-inbound SSH and the LXC default routes are untouched; a
 sub-second blip on masquerade/DNAT that established conntrack flows ride through).
 
+Its counterpart for a **new container** is `./install.sh --reload-dns`: edit
+`RESERVATIONS` in `wifi-nat.env`, then reload to regenerate `/etc/dnsmasq.d/wifinat.conf`
+and restart dnsmasq (a sub-second DHCP/DNS gap; existing leases survive in
+`/var/lib/misc/dnsmasq.leases`). A container already holding a **pool** lease keeps it
+until expiry — `pct reboot <vmid>` to take its reserved address immediately. A new
+container typically needs both reloads: `--reload-dns` for the stable address and
+`--reload-nft` for the inbound port-forward.
+
 ## What it installs / changes
 
 | Path | Purpose |
