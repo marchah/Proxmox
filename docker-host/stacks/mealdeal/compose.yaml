@@ -1,0 +1,96 @@
+# MealDeal — grocery-deal tracker (SPA + GraphQL + in-process ingest cron, one container).
+#
+# Deployed as a Portainer GIT STACK from this repo, so the file on disk here is the source of
+# truth and "update the app" is a Portainer redeploy (or a webhook/poll):
+#   Portainer -> Stacks -> Add stack -> Repository
+#     Repository URL:  https://github.com/marchah/Proxmox
+#     Reference:       refs/heads/main
+#     Compose path:    docker-host/stacks/mealdeal/compose.yaml
+#
+# SECRETS DO NOT LIVE HERE. IMAP_USER/IMAP_PASSWORD are supplied as Portainer stack
+# environment variables (Portainer stores them; this repo is public). Everything below either
+# has a safe default or resolves to empty, and an empty IMAP_USER/IMAP_PASSWORD makes the app
+# disable ingest entirely rather than crash — so the stack comes up clean before you add them.
+#
+# ── IMAGE SOURCE ─────────────────────────────────────────────────────────────────────────────
+# Today this BUILDS from mealdeal's git repo (BuildKit accepts a git URL as the build context),
+# because marchah/mealdeal publishes no image yet — its GitHub Actions are billing-locked.
+# Each redeploy therefore rebuilds (a few minutes).
+#
+# Once the publish-image workflow is live in that repo, switch to pulling — a two-line edit:
+#   1. delete the `build:` block below
+#   2. change `pull_policy: build` to `pull_policy: always`
+# Updates then become a ~10 s image pull, and rollback is pinning a previous tag
+# (e.g. image: ghcr.io/marchah/mealdeal:sha-abc1234).
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+
+services:
+  mealdeal:
+    image: ghcr.io/marchah/mealdeal:main
+    build:
+      context: https://github.com/marchah/mealdeal.git#main
+    pull_policy: build
+    container_name: mealdeal
+    restart: unless-stopped
+    ports:
+      - '${MEALDEAL_PORT:-4000}:4000'
+    volumes:
+      # The ONLY precious state: the SQLite database. Back this volume up.
+      - mealdeal-data:/data
+    environment:
+      DATABASE_URL: file:/data/mealdeal.db
+
+      # Deal extraction runs on the homelab's own LLM runtime (CT 120), reached by its dnsmasq
+      # name on the NAT LAN. If Docker's embedded DNS ever fails to resolve it, substitute the
+      # address directly: http://10.10.10.120:1234/v1
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://llamacpp:1234/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-not-needed}
+      OPENAI_MODEL: ${OPENAI_MODEL:-qwen3.6-35b-a3b}
+
+      # Mailbox to ingest. Set IMAP_USER + IMAP_PASSWORD (a Gmail APP password) as Portainer
+      # stack env vars, then set INGEST_INLINE=1 and redeploy. Leaving them empty is safe.
+      IMAP_HOST: ${IMAP_HOST:-imap.gmail.com}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_SECURE: ${IMAP_SECURE:-true}
+      IMAP_USER: ${IMAP_USER:-}
+      IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+      IMAP_MAILBOX: ${IMAP_MAILBOX:-INBOX}
+
+      # "0" is the only value that disables the in-process ingest scheduler.
+      INGEST_INLINE: ${INGEST_INLINE:-0}
+      INGEST_CRON: ${INGEST_CRON:-*/30 * * * *}
+      INGEST_BATCH: ${INGEST_BATCH:-25}
+      INGEST_SOURCE: ${INGEST_SOURCE:-imap}
+      # Bearer token guarding the manual trigger POST /internal/ingest.
+      INGEST_TOKEN: ${INGEST_TOKEN:-}
+
+      # Merchant address geocoding. The public Nominatim default is capped at ~4 req/min and
+      # receives any address the newsletters state — point it at a self-hosted geocoder to keep
+      # addresses internal.
+      GEOCODER_BASE_URL: ${GEOCODER_BASE_URL:-https://nominatim.openstreetmap.org}
+      GEOCODER_USER_AGENT: ${GEOCODER_USER_AGENT:-MealDeal/0.1 (+https://github.com/marchah/mealdeal)}
+
+      # Optional five-digit US ZIP for near-me features.
+      USER_LOCATION: ${USER_LOCATION:-}
+    # The app exposes no /health route, so probe GraphQL: a `{__typename}` reply proves the HTTP
+    # server is up, the schema built, and the startup migrations ran.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "fetch('http://127.0.0.1:4000/graphql',{method:'POST',
+          headers:{'content-type':'application/json'},
+          body:JSON.stringify({query:'{__typename}'})})
+          .then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+
+volumes:
+  mealdeal-data:

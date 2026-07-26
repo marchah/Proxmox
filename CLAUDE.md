@@ -48,19 +48,29 @@ These containers form the system:
   that endpoint. It auto-discovers CT 120's IP at provisioning time. It lives in the
   `200+` test/temporary range because it is disposable — destroy it when done. The suite is
   engine-neutral (it speaks OpenAI `/v1`), so it benchmarks either engine unchanged.
-- **CT 110 `mealdeal`** (`mealdeal/`): an *unprivileged* Debian LXC running
-  **[MealDeal](https://github.com/marchah/mealdeal)** — the self-hosted grocery-deal tracker the
-  local AI codes features for. One Node process serves the built React SPA, the GraphQL API at
-  `/graphql` (`0.0.0.0:4000`), and the IMAP ingest cron in-process; extraction calls CT 120
-  (`llamacpp:1234`), so it is an API *consumer* like Hermes — hence the `100-119`
-  infra/services range, NOT the AI range. The app ships a Dockerfile but this homelab runs no
-  Docker, so `mealdeal/create-lxc-mealdeal.sh` replays that build natively (pinned Node +
-  pnpm) into `/opt/mealdeal/releases/<sha>` behind a `current` symlink. ⚠️ Because the build
-  pipeline is *replayed* rather than read from the Dockerfile, a change to mealdeal's
-  Dockerfile stages / `packageManager` pnpm version / runtime layout must be mirrored in
-  `mealdeal-update` and the script's `NODE_VERSION`/`PNPM_VERSION`. Updates are **manual by
-  design** (`mealdeal-update`): it builds, flips the symlink, health-checks `/graphql`, and
-  **restores the previous release** if the new one fails. See `mealdeal/README.md`.
+- **VM 300 `docker-host`** (`docker-host/`): a Debian **VM** (the *only* VM here, deliberately)
+  running **Docker + Compose + Portainer CE**, which hosts the homelab's small self-contained web
+  apps as Compose stacks — currently **MealDeal**
+  ([github.com/marchah/mealdeal](https://github.com/marchah/mealdeal), the grocery-deal tracker
+  the local AI codes features for), live on `:4000`. Apps here **do not consume a VMID each** —
+  they are containers inside this VM, so a new project costs a compose file
+  (`docker-host/stacks/<project>/compose.yaml`) plus a Portainer git stack, not a bespoke
+  provisioning script. Stack secrets (e.g. `IMAP_PASSWORD`) are **Portainer stack env vars**,
+  never in this public repo. ⚠️ **Why a VM when everything else is an LXC:** Proxmox recommends
+  Docker in a VM; Docker-in-LXC needs `nesting=1`+`keyctl=1` (often privileged), puts `overlay2`
+  on a container filesystem, tends to break after Proxmox kernel bumps, and shares a kernel with
+  this host's hand-rolled nftables NAT that Docker also writes rules into. The GPU/LLM containers
+  stay native LXCs — they need device passthrough and gain nothing here. ⚠️ MealDeal currently
+  **builds from git** on each redeploy (its Actions are billing-locked so no image is published);
+  once `marchah/mealdeal` publishes to GHCR, switch the stack to `pull_policy: always` and drop
+  the `build:` block — updates become a ~10 s pull and rollback is pinning a `sha-` tag. ⚠️ Unlike
+  the retired per-app LXC, **Portainer has no health-gated auto-rollback** — a broken deploy stays
+  broken until acted on (the compose healthcheck makes it *visible*, not self-healing). See
+  `docker-host/README.md`.
+  - **Superseded:** `mealdeal/create-lxc-mealdeal.sh` (a native per-app LXC, CT 110) was built
+    and verified first, then removed — one bespoke 870-line script per app doesn't scale to a
+    fleet of small projects, which was the whole point of the pivot. Its genuinely reusable
+    findings are retained below (the `pct exec` PATH gotcha, the `rootfs` `backup=` no-op).
 
 VMIDs `120`/`121`/`122`/`123`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
 
@@ -81,16 +91,15 @@ pct exec 121 -- bash -lc 'cd /path/to/Proxmox/hermes/config && ./install.sh'  # 
 ./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
 ./rx-6700-xt/create-lxc-llamacpp-qwen3.5-9b.sh    # llama.cpp (llama-server)
 
-# Provision the MealDeal app (CT 110); extracts deals via CT 120. Ingest starts DISABLED
-# unless IMAP creds are passed (see mealdeal/README.md).
-./mealdeal/create-lxc-mealdeal.sh
-# Operate it — NOTE the `bash -lc` wrapper: these live in /usr/local/bin, which a bare
-# `pct exec` PATH omits (same gotcha as the llm-bench-* wrappers).
-pct exec 110 -- bash -lc 'mealdeal-status'           # release, commit, health, ingest, DB size
-pct exec 110 -- bash -lc 'mealdeal-update'           # build latest main; auto-rolls back on failure
-pct exec 110 -- bash -lc 'mealdeal-update --check'   # report only; exit 10 if an update is available
-pct exec 110 -- bash -lc 'mealdeal-rollback'         # activate the previous release, no rebuild
-pct exec 110 -- bash -lc 'mealdeal-ingest'           # run one ingest pass now, print the counts
+# Provision the Docker app-stack host (VM 300): Docker + Compose + Portainer CE.
+# Hosts MealDeal and future small projects as compose stacks. Portainer UI on :9443.
+./docker-host/create-vm-docker-host.sh
+./docker-host/create-vm-docker-host.sh --reinstall-docker   # re-run ONLY the in-guest install
+# Operate the app stacks — prefer the Portainer UI (https://192.168.1.93:9443); by CLI:
+ssh pve 'ssh -i /root/.ssh/docker-host debian@10.10.10.100'   # into the VM (host holds the key)
+#   docker ps
+#   docker compose -f /opt/stacks/mealdeal/compose.yaml logs -f
+#   docker compose -f /opt/stacks/mealdeal/compose.yaml up -d --build
 
 # Provision the benchmark runner (CT 200); auto-targets CT 120's API
 ./bench-runner/create-lxc-bench-runner.sh
@@ -273,8 +282,8 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
 
 - **VMID allocation** (homelab-wide scheme — pick a new script's default `VMID` from the
   matching range):
-  - `100-119` — infra / services (CT 110 `mealdeal` — the MealDeal grocery-deal app; an API
-    *consumer* of CT 120, not an AI container)
+  - `100-119` — infra / services (currently empty; CT 110 `mealdeal` lived here until the app
+    moved into the Docker host — small web apps are now containers on VM 300, not LXCs)
   - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, pinned to GPU 1 of two V620s; the
     prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the Hermes Agent that
     consumes CT 120's API. CT 122 `coder-runner` — the coding loop's execution sandbox; CT 123 `gpu2` —
@@ -282,6 +291,9 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
     swapped one at a time))
   - `140-159` — databases
   - `200+` — test / temporary (CT 200 `bench-runner` — disposable benchmark LXC)
+  - `300+` — **VMs** (VM 300 `docker-host`). The ranges above allocate *containers*; VMs get their
+    own range so `pct`/`qm` ids never collide. Apps running as Docker containers on VM 300 do not
+    take a VMID at all.
 - **Autonomous coding loop / execution isolation (`coder-runner/`, CT 122).** The homelab runs a
   self-driving coder↔reviewer loop on **Hermes kanban** (CT 121): coder/reviewer *profiles* work each task
   in an isolated git worktree/branch, PR-gated (no auto-merge to public `main`). The loop's design rule is
@@ -311,9 +323,14 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   excluded from `vzdump`. Several scripts here append `backup=0` to the `rootfs` line behind a
   `>/dev/null 2>&1 || true`, so that step is a **silent no-op** (verified on pve-manager 9.2.3);
   don't trust the comment above such a line. Note the defaults are inverted: `rootfs` is always
-  backed up, while a mount point defaults to `backup=0` and needs `backup=1` set explicitly (as
-  CT 110's DB volume does). To keep a big rootfs out of backups, exclude paths in the backup job
-  instead: `vzdump <vmid> --exclude-path /opt/<bulk>`.
+  backed up, while a mount point defaults to `backup=0` and needs `backup=1` set explicitly. To
+  keep a big rootfs out of backups, exclude paths in the backup job instead:
+  `vzdump <vmid> --exclude-path /opt/<bulk>`.
+- ⚠️ **Scheduled backups are currently going nowhere:** both NFS stores on the Synology
+  (`Synology-Backup`, `Synology`) are `inactive` with `mount.nfs: access denied by server`, so
+  `vzdump` has no destination. Pre-existing and affects every guest — fix before relying on any
+  of the backup notes above. The Docker host's precious state is its volumes
+  (`portainer_data`, `mealdeal_mealdeal-data`), not the VM disk — see `docker-host/README.md`.
 - The GPUs are driven via **Vulkan** (mesa RADV). The host now runs **two Radeon Pro V620s**
   (Navi 21/gfx1030); the prior RX 6700 XT (Navi 22/gfx1031) is kept only for reference. The
   container installs the Vulkan userspace (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and

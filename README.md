@@ -12,8 +12,9 @@ Utilities for creating and operating local Proxmox LXCs and VMs.
   consumes the LLM runtime's API).
 - `coder-runner/`: disposable execution sandbox for the autonomous coding loop.
 - `kb-rag/`: knowledge-base retrieval service (hybrid search over the Markdown KB).
-- `mealdeal/`: the MealDeal grocery-deal app — a plain app service LXC that consumes
-  the LLM runtime's API for deal extraction.
+- `docker-host/`: the app-stack host — a Debian **VM** with Docker + Compose + Portainer,
+  where the small self-contained web apps (MealDeal, and future projects) run as Compose
+  stacks. Includes their compose files under `docker-host/stacks/`.
 - `host-net/`: host-side networking that runs on the Proxmox host itself (not in an
   LXC). `host-net/wifi-nat/` turns the host into a WiFi-uplink NAT gateway so it can
   run with no ethernet.
@@ -27,18 +28,22 @@ a universal model launcher.
 
 Containers are allocated VMIDs by role:
 
-| Range   | Purpose           |
-| ------- | ----------------- |
-| 100-119 | Infra / services  |
-| 120-139 | AI/LLM containers |
-| 140-159 | Databases         |
-| 200+    | Test / temporary  |
+| Range   | Purpose                        |
+| ------- | ------------------------------ |
+| 100-119 | Infra / services               |
+| 120-139 | AI/LLM containers              |
+| 140-159 | Databases                      |
+| 200+    | Test / temporary               |
+| 300+    | **VMs** (own range, see below) |
 
-Current containers:
+The first four ranges allocate **containers**; VMs get `300+` so `pct` and `qm` ids never
+collide. Apps that run as Docker containers on the Docker host don't take a VMID at all.
 
-| CT | Name | What |
+Current guests:
+
+| ID | Name | What |
 | --- | --- | --- |
-| `110` | `mealdeal` | MealDeal grocery-deal app (SPA + GraphQL on `:4000`); extracts deals via CT 120 |
+| VM `300` | `docker-host` | Docker + Compose + **Portainer** — hosts the small web apps as stacks (MealDeal on `:4000`, Portainer UI on `:9443`) |
 | `120` | `llamacpp` | The AI/LLM runtime — pinned to **GPU 1** of two Radeon Pro V620s |
 | `121` | `hermes` | Hermes Agent; consumes CT 120's API and drives the coding loop |
 | `122` | `coder-runner` | Disposable execution sandbox for the coding loop (no secrets) |
@@ -47,8 +52,6 @@ Current containers:
 | `200` | `bench-runner` | Disposable benchmark LXC |
 
 Each creation script defaults its `VMID` to the matching range and accepts a `VMID=` override.
-Note CT 110 sits in the infra/services range, not the AI range: like Hermes, MealDeal only
-*consumes* the model API — it does not serve a model.
 
 ## Current Scripts
 
@@ -105,22 +108,32 @@ Run directly on the Proxmox host without cloning the repo:
 bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/hermes/create-lxc-hermes-agent.sh)"
 ```
 
-### MealDeal App LXC
+### Docker App-Stack Host (VM 300)
 
-Creates an unprivileged Debian LXC running [MealDeal](https://github.com/marchah/mealdeal) — a
-self-hosted grocery-deal tracker. One Node process serves the built React SPA, the GraphQL API
-at `/graphql`, and the ingest cron in-process; deal extraction runs against CT 120, so no cloud
-API key is involved. Defaults to CT `110` on port `4000`. See [mealdeal/README.md](mealdeal/README.md).
-
-The app ships a Dockerfile, but this homelab runs no Docker, so the build is replayed natively
-(pinned Node + pnpm) into release directories behind a `current` symlink. Updates are a single
-command that builds, health-checks, and **rolls back automatically** if the new release fails:
+Creates a Debian **VM** running Docker + Compose + **Portainer CE** — the home for the homelab's
+small self-contained web apps, which run as Compose stacks rather than one LXC each. First
+tenant: [MealDeal](https://github.com/marchah/mealdeal), a self-hosted grocery-deal tracker whose
+deal extraction runs against CT 120 (no cloud API key). See
+[docker-host/README.md](docker-host/README.md).
 
 ```bash
-./mealdeal/create-lxc-mealdeal.sh                    # provision (ingest starts disabled)
-pct exec 110 -- bash -lc 'mealdeal-update'           # deploy latest main, or roll back on failure
-pct exec 110 -- bash -lc 'mealdeal-status'           # release, commit, health, ingest, DB size
+./docker-host/create-vm-docker-host.sh   # pinned Debian cloud image, Docker, Compose, Portainer
 ```
+
+Then open `https://192.168.1.93:9443`, create the Portainer admin user, and add a project as a
+**git stack** (Repository URL = this repo, compose path =
+`docker-host/stacks/<project>/compose.yaml`) with secrets as stack env vars. Portainer can
+auto-redeploy on a new commit via polling or a webhook.
+
+**This is the only VM in the repo, on purpose.** Proxmox recommends Docker in a VM, and
+Docker-in-LXC needs `nesting=1` + `keyctl=1` (often privileged), stacks `overlay2` on a container
+filesystem, tends to break after Proxmox kernel bumps, and shares a kernel with this host's
+hand-rolled nftables NAT that Docker also writes rules into. The GPU/LLM containers stay native
+LXCs — they need device passthrough and gain nothing from Docker.
+
+> A per-app native LXC (`mealdeal/create-lxc-mealdeal.sh`, CT 110) was built and verified first,
+> then retired: one bespoke ~870-line script per app doesn't scale to a fleet of small projects.
+> Its reusable findings are recorded in CLAUDE.md.
 
 ### Host WiFi-NAT Gateway (runs on the host, not in an LXC)
 
