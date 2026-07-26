@@ -326,11 +326,31 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   backed up, while a mount point defaults to `backup=0` and needs `backup=1` set explicitly. To
   keep a big rootfs out of backups, exclude paths in the backup job instead:
   `vzdump <vmid> --exclude-path /opt/<bulk>`.
-- ⚠️ **Scheduled backups are currently going nowhere:** both NFS stores on the Synology
-  (`Synology-Backup`, `Synology`) are `inactive` with `mount.nfs: access denied by server`, so
-  `vzdump` has no destination. Pre-existing and affects every guest — fix before relying on any
-  of the backup notes above. The Docker host's precious state is its volumes
-  (`portainer_data`, `mealdeal_mealdeal-data`), not the VM disk — see `docker-host/README.md`.
+- **Backups (`Synology-Backup` NFS, weekly job Sundays 01:00, all guests, keep-last=3).** Two
+  traps here, both hit for real on 2026-07-26 after a four-week silent outage:
+  - ⚠️ **The Synology allow-lists NFS clients by IP.** The WiFi-NAT cutover moved the host
+    `192.168.1.50` → `.93`, so every backup from 2026-07-05 on failed with
+    `mount.nfs: access denied by server`. Fixed in DSM (Control Panel → Shared Folder → NFS
+    Permissions). It is allow-listed by the **exact IP**, so *another host IP change breaks
+    backups again* — prefer a `192.168.1.0/24` rule.
+  - ⚠️ **`vzdump` needs `tmpdir: /var/tmp` in `/etc/vzdump.conf`** (set; comment in-file). Its
+    temp dir defaults to the *target storage*, and for an **unprivileged** container `tar` runs
+    under `lxc-usernsexec` as uid 100000+, which this NAS refuses even though the share reports
+    mode 777 (root writes fine). Symptom is a mounted-and-active storage that still fails with
+    `Cannot open: Permission denied`. Only small config files go to tmpdir; archives stream
+    straight to the NAS. Verified across all four paths — stopped CT, running unprivileged CT
+    (snapshot), privileged CT, and QEMU VM.
+  - A container **rootfs cannot be excluded** from these backups (see the `backup=` note above),
+    but a `backup=0` mount point can — which is why CT 120's `/models` is not in its 3 GB archive.
+  - The Docker host's precious state is its **volumes** (`portainer_data`,
+    `mealdeal_mealdeal-data`) — see `docker-host/README.md` for pulling those out separately.
+- **Notifications go to Slack, not just root's mailbox.** The four-week backup outage was silent
+  because Proxmox's builtin `mail-to-root` target delivers to a local mailbox nobody reads. A
+  `slack` webhook endpoint + `slack-all` matcher now forward **every** notification to Slack
+  *alongside* mail-to-root. Provisioned by `host-notifications/setup-slack-notifications.sh`
+  (re-run it to rotate the URL). The webhook URL path is stored as a Proxmox notification
+  **secret** — the API returns only its name, never the value, so it stays out of
+  `notifications.cfg` and out of `pvesh get` output.
 - The GPUs are driven via **Vulkan** (mesa RADV). The host now runs **two Radeon Pro V620s**
   (Navi 21/gfx1030); the prior RX 6700 XT (Navi 22/gfx1031) is kept only for reference. The
   container installs the Vulkan userspace (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and

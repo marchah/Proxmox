@@ -18,6 +18,8 @@ Utilities for creating and operating local Proxmox LXCs and VMs.
 - `host-net/`: host-side networking that runs on the Proxmox host itself (not in an
   LXC). `host-net/wifi-nat/` turns the host into a WiFi-uplink NAT gateway so it can
   run with no ethernet.
+- `host-notifications/`: routes Proxmox notifications (backup failures and friends) to
+  Slack, because the builtin target delivers to a local mailbox nobody reads.
 
 Each GPU folder should own its own model/runtime assumptions. LLM containers tend
 to need GPU-specific environment variables, memory sizing, context settings, and

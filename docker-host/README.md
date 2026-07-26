@@ -161,6 +161,10 @@ ssh pve 'ssh -i /root/.ssh/docker-host debian@10.10.10.100 -- \
   docker run --rm -v mealdeal_mealdeal-data:/d alpine tar -cz -C /d .' > mealdeal-data.tgz
 ```
 
-⚠️ **This host's NFS backup storage is currently failing** (`Synology-Backup` shows `inactive`,
-`mount.nfs: access denied by server`), so scheduled `vzdump` backups are not landing anywhere.
-Worth fixing independently — it affects every guest, not just this VM.
+The weekly `vzdump` job (Sundays 01:00, all guests, keep-last=3 → `Synology-Backup`) covers this
+VM's disk, which is enough to rebuild it — but a VM-disk backup captures the Docker volumes only
+as part of that disk image. For a restore that doesn't involve rolling the whole VM back, keep
+the volume tarballs above.
+
+See the "Backups" note in the repo root `CLAUDE.md` for the `tmpdir` requirement on this host —
+`vzdump` cannot write its temp files to the NFS target for unprivileged containers.
