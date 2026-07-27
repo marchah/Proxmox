@@ -18,6 +18,7 @@
 #   ./install.sh --confirm    # (after re-connecting) cancel the rollback = make it permanent
 #   ./install.sh --revert     # restore the original ethernet-bridge config
 #   ./install.sh --reload-nft # re-apply the nft table (masq + port-forwards) from wifi-nat.env, live
+#   ./install.sh --reload-dns # re-apply dnsmasq DHCP/DNS (RESERVATIONS) from wifi-nat.env, live
 #   ./install.sh --status     # show link / leases / routes / nft table
 #
 # The cutover arms a self-rollback (systemd-run timer) that restores the backed-up
@@ -688,6 +689,27 @@ cmd_reload_nft() {
   fi
 }
 
+cmd_reload_dns() {
+  require_root
+  load_config
+  # Re-apply ONLY the dnsmasq config (DHCP range + RESERVATIONS + DNS) from the current
+  # wifi-nat.env — the --reload-nft counterpart, for adding a RESERVATIONS entry when a new
+  # container lands without the disruptive stage (which stops dnsmasq / re-snapshots prior
+  # state). render_dnsmasq just rewrites the managed file (stash_file is a no-op for files
+  # already recorded); the restart is a sub-second DHCP/DNS gap, and existing leases are
+  # preserved in /var/lib/misc/dnsmasq.leases.
+  #
+  # A container that already holds a POOL lease keeps it until the lease expires — reboot it
+  # (`pct reboot <vmid>`) to pick up its new reserved address immediately.
+  render_dnsmasq
+  if systemctl is-active --quiet dnsmasq; then
+    systemctl restart dnsmasq && log "reloaded $DNSMASQ_CONF from wifi-nat.env"
+    sed -n 's/^dhcp-host=/    reservation: /p' "$DNSMASQ_CONF" || true
+  else
+    log "regenerated $DNSMASQ_CONF; dnsmasq not active — it loads on next start/cutover."
+  fi
+}
+
 cmd_status() {
   load_config
   echo "== $WAN_IF (WAN) =="; iw dev "$WAN_IF" link 2>/dev/null || true; ip -4 -br addr show "$WAN_IF" 2>/dev/null || true
@@ -710,6 +732,7 @@ main() {
     --confirm)    cmd_confirm ;;
     --revert)     cmd_revert ;;
     --reload-nft) cmd_reload_nft ;;
+    --reload-dns) cmd_reload_dns ;;
     --status)     cmd_status ;;
     -h|--help)    usage ;;
     *)            die "unknown argument: $1 (try --help)" ;;

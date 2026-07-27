@@ -10,7 +10,7 @@ suite to run — the "product" is the scripts themselves, executed **on the Prox
 root**. macOS is only the authoring/editing environment; the scripts run remotely against
 `pct`/`pveam`.
 
-Three containers form the system:
+These containers form the system:
 
 - **CT 120** (`pro-v620/`): a *privileged* Ubuntu LXC — the **LLM runtime** — serving
   `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, 35B total / ~3B active) via Vulkan, exposing an
@@ -48,6 +48,36 @@ Three containers form the system:
   that endpoint. It auto-discovers CT 120's IP at provisioning time. It lives in the
   `200+` test/temporary range because it is disposable — destroy it when done. The suite is
   engine-neutral (it speaks OpenAI `/v1`), so it benchmarks either engine unchanged.
+- **VM 300 `docker-host`** (`docker-host/`): a Debian **VM** (the *only* VM here, deliberately)
+  running **Docker + Compose + Portainer CE**, which hosts the homelab's small self-contained web
+  apps as Compose stacks — currently **MealDeal**
+  ([github.com/marchah/mealdeal](https://github.com/marchah/mealdeal), the grocery-deal tracker
+  the local AI codes features for), live on `:4000`. Apps here **do not consume a VMID each** —
+  they are containers inside this VM, so a new project costs a compose file
+  (`docker-host/stacks/<project>/compose.yaml`) plus a Portainer git stack, not a bespoke
+  provisioning script. Stack secrets (e.g. `IMAP_PASSWORD`) are **Portainer stack env vars**,
+  never in this public repo. ⚠️ **Why a VM when everything else is an LXC:** Proxmox recommends
+  Docker in a VM; Docker-in-LXC needs `nesting=1`+`keyctl=1` (often privileged), puts `overlay2`
+  on a container filesystem, tends to break after Proxmox kernel bumps, and shares a kernel with
+  this host's hand-rolled nftables NAT that Docker also writes rules into. The GPU/LLM containers
+  stay native LXCs — they need device passthrough and gain nothing here. MealDeal now **pulls a
+  prebuilt image** — `marchah/mealdeal#36` merged 2026-07-27 and its `Publish image` workflow
+  publishes `ghcr.io/marchah/mealdeal` on every push to `main` (tags `main` + `sha-<short>`, plus
+  semver from `v*`). The package came out **public**, so anonymous pull works and Portainer needs
+  no registry credentials — don't trust the old warning that GHCR always defaults to private.
+  Redeploys are a ~10 s pull; rollback is pinning a `sha-` tag. ⚠️ The stack sets
+  **`pull_policy: always`** deliberately — without it a redeploy can reuse a stale local layer
+  cache and silently keep serving the old build even though `main` moved. (Historical note: this stack built
+  from git for a while, blamed on an "Actions billing-locked" state that **never existed** —
+  verified 2026-07-26, plan `free` with every Actions line item at **$0.00 net**, because
+  public-repo minutes are 100% free. The image had simply never been published.) ⚠️ Unlike
+  the retired per-app LXC, **Portainer has no health-gated auto-rollback** — a broken deploy stays
+  broken until acted on (the compose healthcheck makes it *visible*, not self-healing). See
+  `docker-host/README.md`.
+  - **Superseded:** `mealdeal/create-lxc-mealdeal.sh` (a native per-app LXC, CT 110) was built
+    and verified first, then removed — one bespoke 870-line script per app doesn't scale to a
+    fleet of small projects, which was the whole point of the pivot. Its genuinely reusable
+    findings are retained below (the `pct exec` PATH gotcha, the `rootfs` `backup=` no-op).
 
 VMIDs `120`/`121`/`122`/`123`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
 
@@ -67,6 +97,16 @@ pct exec 121 -- bash -lc 'cd /path/to/Proxmox/hermes/config && ./install.sh'  # 
 # Prior GPU (RX 6700 XT) — kept for reference; pick ONE engine (mutually exclusive)
 ./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
 ./rx-6700-xt/create-lxc-llamacpp-qwen3.5-9b.sh    # llama.cpp (llama-server)
+
+# Provision the Docker app-stack host (VM 300): Docker + Compose + Portainer CE.
+# Hosts MealDeal and future small projects as compose stacks. Portainer UI on :9443.
+./docker-host/create-vm-docker-host.sh
+./docker-host/create-vm-docker-host.sh --reinstall-docker   # re-run ONLY the in-guest install
+# Operate the app stacks — prefer the Portainer UI (https://192.168.1.93:9443); by CLI:
+ssh pve 'ssh -i /root/.ssh/docker-host debian@10.10.10.100'   # into the VM (host holds the key)
+#   docker ps
+#   docker compose -f /opt/stacks/mealdeal/compose.yaml logs -f
+#   docker compose -f /opt/stacks/mealdeal/compose.yaml up -d --build
 
 # Provision the benchmark runner (CT 200); auto-targets CT 120's API
 ./bench-runner/create-lxc-bench-runner.sh
@@ -249,7 +289,8 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
 
 - **VMID allocation** (homelab-wide scheme — pick a new script's default `VMID` from the
   matching range):
-  - `100-119` — infra / services
+  - `100-119` — infra / services (currently empty; CT 110 `mealdeal` lived here until the app
+    moved into the Docker host — small web apps are now containers on VM 300, not LXCs)
   - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, pinned to GPU 1 of two V620s; the
     prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the Hermes Agent that
     consumes CT 120's API. CT 122 `coder-runner` — the coding loop's execution sandbox; CT 123 `gpu2` —
@@ -257,6 +298,9 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
     swapped one at a time))
   - `140-159` — databases
   - `200+` — test / temporary (CT 200 `bench-runner` — disposable benchmark LXC)
+  - `300+` — **VMs** (VM 300 `docker-host`). The ranges above allocate *containers*; VMs get their
+    own range so `pct`/`qm` ids never collide. Apps running as Docker containers on VM 300 do not
+    take a VMID at all.
 - **Autonomous coding loop / execution isolation (`coder-runner/`, CT 122).** The homelab runs a
   self-driving coder↔reviewer loop on **Hermes kanban** (CT 121): coder/reviewer *profiles* work each task
   in an isolated git worktree/branch, PR-gated (no auto-merge to public `main`). The loop's design rule is
@@ -281,6 +325,49 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   `.gitignore`: `models/`, `results/`, `artifacts/`, `bench-results*.tgz`, `.env*`).
 - Container model storage (`/models`) uses `backup=0` — weights are large and
   re-downloadable; back up container config / service files / small state separately.
+- ⚠️ **`backup=` works on MOUNT POINTS only, never on `rootfs`.** PVE rejects it outright
+  (`rootfs.backup: property is not defined in schema`) — a container's root disk cannot be
+  excluded from `vzdump`. Several scripts here append `backup=0` to the `rootfs` line behind a
+  `>/dev/null 2>&1 || true`, so that step is a **silent no-op** (verified on pve-manager 9.2.3);
+  don't trust the comment above such a line. Note the defaults are inverted: `rootfs` is always
+  backed up, while a mount point defaults to `backup=0` and needs `backup=1` set explicitly. To
+  keep a big rootfs out of backups, exclude paths in the backup job instead:
+  `vzdump <vmid> --exclude-path /opt/<bulk>`.
+- **Backups (`Synology-Backup` NFS, weekly job Sundays 01:00, all guests, keep-last=3).** Two
+  traps here, both hit for real on 2026-07-26 after a four-week silent outage:
+  - ⚠️ **The Synology allow-lists NFS clients by IP.** The WiFi-NAT cutover moved the host
+    `192.168.1.50` → `.93`, so every backup from 2026-07-05 on failed with
+    `mount.nfs: access denied by server`. Fixed in DSM (Control Panel → Shared Folder → NFS
+    Permissions). It is allow-listed by the **exact IP**, so *another host IP change breaks
+    backups again* — prefer a `192.168.1.0/24` rule.
+  - ⚠️ **`vzdump` needs `tmpdir: /var/tmp` in `/etc/vzdump.conf`** (set; comment in-file). Its
+    temp dir defaults to the *target storage*, and for an **unprivileged** container `tar` runs
+    under `lxc-usernsexec` as uid 100000+, which this NAS refuses even though the share reports
+    mode 777 (root writes fine). Symptom is a mounted-and-active storage that still fails with
+    `Cannot open: Permission denied`. Only small config files go to tmpdir; archives stream
+    straight to the NAS. Verified across all four paths — stopped CT, running unprivileged CT
+    (snapshot), privileged CT, and QEMU VM.
+  - A container **rootfs cannot be excluded** from these backups (see the `backup=` note above),
+    but a `backup=0` mount point can — which is why CT 120's `/models` is not in its 3 GB archive.
+  - `Synology-Backup` is now the **only** NFS storage. A second one (`Synology`, export
+    `/volume1/Plex`) was **removed 2026-07-26**: it declared `content rootdir`, i.e. the Plex
+    *media* share registered as a place to put container root disks — unused, and a trap (LXC
+    rootfs over NFS is slow and hits the uid-mapping problem above, and it carried no `backup`
+    content type). To give a future Plex container its media, **bind-mount the path instead of
+    adding a storage**: `pct set <vmid> --mp0 /mnt/pve/<mount>,mp=/media`. That share also held
+    **13 GB of vzdump archives from June 2023** (CT 100/101/103, all long gone) in a `dump/` dir
+    left over from when it carried `backup` content — **deleted 2026-07-26**, reclaiming 13 GB.
+    Both exports live on the same Synology volume, so that space benefits `Synology-Backup` too
+    (601 GB → 614 GB free), which matters as keep-last=3 across seven guests accumulates.
+  - The Docker host's precious state is its **volumes** (`portainer_data`,
+    `mealdeal_mealdeal-data`) — see `docker-host/README.md` for pulling those out separately.
+- **Notifications go to Slack, not just root's mailbox.** The four-week backup outage was silent
+  because Proxmox's builtin `mail-to-root` target delivers to a local mailbox nobody reads. A
+  `slack` webhook endpoint + `slack-all` matcher now forward **every** notification to Slack
+  *alongside* mail-to-root. Provisioned by `host-notifications/setup-slack-notifications.sh`
+  (re-run it to rotate the URL). The webhook URL path is stored as a Proxmox notification
+  **secret** — the API returns only its name, never the value, so it stays out of
+  `notifications.cfg` and out of `pvesh get` output.
 - The GPUs are driven via **Vulkan** (mesa RADV). The host now runs **two Radeon Pro V620s**
   (Navi 21/gfx1030); the prior RX 6700 XT (Navi 22/gfx1031) is kept only for reference. The
   container installs the Vulkan userspace (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and
