@@ -305,7 +305,7 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   self-driving coder↔reviewer loop on **Hermes kanban** (CT 121): coder/reviewer *profiles* work each task
   in an isolated git worktree/branch, PR-gated (no auto-merge to public `main`). The loop's design rule is
   that **untrusted project code executes only on a separate, generic, disposable LXC — CT 122
-  `coder-runner`** (Node + git + toolchain, holds no secrets), never inside the Hermes LXC. CT 121 drives
+  `coder-runner`** (Node + pnpm + git + toolchain, holds no secrets), never inside the Hermes LXC. CT 121 drives
   it over **ssh+rsync** via `checks-on-runner`/`run-on-runner`/`verify-and-commit` helpers (committed under
   `hermes/config/bin/` and deployed into CT 121 by `hermes/config/install.sh`). Key facts learned the hard
   way: Hermes does **not**

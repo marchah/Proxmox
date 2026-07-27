@@ -26,6 +26,16 @@ START_ON_BOOT="${START_ON_BOOT:-1}"
 NODE_VERSION="${NODE_VERSION:-v26.5.0}"
 NODE_SHA256="${NODE_SHA256:-9f619528f1db5ddc41dccf54211066fb42228d69a156733c69cb9d6cc92e358c}"
 
+# pnpm — mealdeal is a pnpm monorepo, so the runner needs it to run `pnpm ci`/build/tests.
+# Installed from the npm registry (which verifies its own package integrity hashes), NOT via
+# corepack: corepack is no longer bundled with Node (gone from Node core as of 25), so the
+# `corepack enable` this script used to rely on was a silent no-op on Node 26 and pnpm was
+# never actually installed — it had to be added by hand on CT 122. Default `latest` avoids a
+# stale pin; set an explicit version for a reproducible rebuild.
+# ⚠️ Do NOT pin 11.13.1-11.16.0: those tarballs shipped without most of their compiled files
+# (pnpm#13164) and were republished as 11.17.0.
+PNPM_VERSION="${PNPM_VERSION:-latest}"
+
 # Public key of the caller (CT 121 hermes) that will drive this runner over ssh.
 # Get it on CT 121 with:  cat /root/.ssh/coder-runner.pub
 # If empty, the container is still created; add the key later to
@@ -51,12 +61,13 @@ Useful overrides:
   VMID=122 LXC_HOSTNAME=coder-runner ./create-lxc-coder-runner.sh
   CODER_SSH_PUBKEY="$(ssh pve pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./create-lxc-coder-runner.sh
   NODE_VERSION=v26.5.0 NODE_SHA256=<linux-x64 sha> ./create-lxc-coder-runner.sh
+  PNPM_VERSION=11.17.0 ./create-lxc-coder-runner.sh     # else the newest pnpm
   INSTALL_AIDER=1 ./create-lxc-coder-runner.sh
   MEMORY_MB=8192 CORES=6 ./create-lxc-coder-runner.sh
 
-Creates an unprivileged Debian LXC with: pinned Node (NODE_VERSION), git, build toolchain,
-rsync, and sshd (authorizing CODER_SSH_PUBKEY). It holds NO secrets and is
-disposable — rebuild any time with:  pct destroy 122 --purge  &&  re-run this.
+Creates an unprivileged Debian LXC with: pinned Node (NODE_VERSION), pnpm (PNPM_VERSION),
+git, build toolchain, rsync, and sshd (authorizing CODER_SSH_PUBKEY). It holds NO secrets
+and is disposable — rebuild any time with:  pct destroy 122 --purge  &&  re-run this.
 USAGE
 }
 
@@ -179,10 +190,10 @@ install_toolchain() {
   run_in_container bash -lc "apt-get update"
   run_in_container bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git jq build-essential python3 python3-venv rsync openssh-server pipx procps xz-utils"
 
-  log "Installing pinned Node ${NODE_VERSION} (official tarball, SHA-256 verified)"
-  pct exec "${VMID}" -- bash -s -- "${NODE_VERSION}" "${NODE_SHA256}" <<'CONTAINER_SCRIPT'
+  log "Installing pinned Node ${NODE_VERSION} (official tarball, SHA-256 verified) + pnpm ${PNPM_VERSION}"
+  pct exec "${VMID}" -- bash -s -- "${NODE_VERSION}" "${NODE_SHA256}" "${PNPM_VERSION}" <<'CONTAINER_SCRIPT'
 set -euo pipefail
-NODE_VERSION="$1"; NODE_SHA256="$2"
+NODE_VERSION="$1"; NODE_SHA256="$2"; PNPM_VERSION="$3"
 
 if [ "$(node -v 2>/dev/null || true)" != "${NODE_VERSION}" ]; then
   arch="$(uname -m)"
@@ -203,9 +214,17 @@ if [ "$(node -v 2>/dev/null || true)" != "${NODE_VERSION}" ]; then
   rm -f "/tmp/${tarball}"
 fi
 
-corepack enable 2>/dev/null || true
-echo "node: $(node -v)  npm: $(npm -v)"
 [ "$(node -v 2>/dev/null || true)" = "${NODE_VERSION}" ] || { echo "Node ${NODE_VERSION} install failed" >&2; exit 1; }
+
+# pnpm, installed globally with npm (goes to npm's own prefix, so it lands on PATH alongside
+# node). Idempotent: skip when the requested version is already what's installed.
+have_pnpm="$(pnpm -v 2>/dev/null || true)"
+if [ -z "${have_pnpm}" ] || { [ "${PNPM_VERSION}" != "latest" ] && [ "${have_pnpm}" != "${PNPM_VERSION}" ]; }; then
+  npm install -g "pnpm@${PNPM_VERSION}"
+fi
+command -v pnpm >/dev/null 2>&1 || { echo "pnpm install failed (pnpm not on PATH)" >&2; exit 1; }
+
+echo "node: $(node -v)  npm: $(npm -v)  pnpm: $(pnpm -v)"
 CONTAINER_SCRIPT
 }
 

@@ -10,7 +10,7 @@ created **once** — new repos are added purely on CT 121 via `hermes project`, 
 
 ```
 CT 121 hermes (10.10.10.121)                 CT 122 coder-runner (10.10.10.122, NO secrets)
-  gateway + kanban dispatcher                  node 26 + git + build toolchain (+aider optional)
+  gateway + kanban dispatcher                  node 26 + pnpm + git + build toolchain (+aider optional)
   git repos + managed worktrees + token  ── rsync worktree + ssh 'npm ci && checks' ──▶ runs ALL execution
   coder's native TEXT edits only               /build/<task>/ per task · disposable
   ← coder commits via verify-and-commit (Hermes does NOT auto-commit)
@@ -52,7 +52,8 @@ pct exec 121 -- ssh -i /root/.ssh/coder-runner -o StrictHostKeyChecking=accept-n
 | `VMID` | `122` | container id (120–139 AI range) |
 | `LXC_HOSTNAME` | `coder-runner` | hostname / dnsmasq name |
 | `MAC` | `BC:24:11:C0:DE:22` | fixed MAC for a deterministic DHCP reservation |
-| `NODE_MAJOR` | `26` | Node major (NodeSource, tarball fallback) |
+| `NODE_VERSION` / `NODE_SHA256` | `v26.5.0` / *(pinned)* | Node, from the official prebuilt tarball verified by SHA-256 (deliberately **not** NodeSource `curl \| bash`); bump both together from `https://nodejs.org/dist/<VERSION>/SHASUMS256.txt` |
+| `PNPM_VERSION` | `latest` | pnpm, via `npm install -g` (mealdeal is a pnpm monorepo). Set an explicit version for a reproducible rebuild — but **never** `11.13.1`–`11.16.0`, whose tarballs shipped without most of their compiled files ([pnpm#13164](https://github.com/pnpm/pnpm/issues/13164)) and were republished as `11.17.0` |
 | `CODER_SSH_PUBKEY` | *(empty)* | CT 121 pubkey to authorize (required for the loop) |
 | `INSTALL_AIDER` | `0` | also install aider (talks to CT 120); off by default |
 | `CORES` / `MEMORY_MB` / `ROOT_SIZE_GB` | `4` / `4096` / `24` | sizing |
