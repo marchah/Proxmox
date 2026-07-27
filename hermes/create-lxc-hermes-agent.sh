@@ -61,20 +61,26 @@ MODEL_CONTEXT_LENGTH="${MODEL_CONTEXT_LENGTH:-65536}"
 # this bare-custom llamacpp endpoint (a mismatched key silently falls back to the 600s default).
 MODEL_REQUEST_TIMEOUT_SECONDS="${MODEL_REQUEST_TIMEOUT_SECONDS:-1800}"
 
-# --- Hermes version (pinned + checksum-verified by default) ---
-# The install is pinned to an immutable git tag: the container fetches scripts/install.sh
-# from that tag's raw URL, verifies its SHA-256 against HERMES_INSTALLER_SHA256, then runs
-# it with `--branch <tag>` so the checked-out code matches the verified installer. This
-# follows the repo's "pin a tag + verify SHA-256" idiom and stops a mutated upstream
-# installer from running as root. Bump BOTH together from
-# https://github.com/NousResearch/hermes-agent/releases — use the GIT TAG (e.g. v2026.6.19),
-# NOT the "v0.17.0" marketing title shown on the release page (that is not a valid git ref).
-# Recompute the checksum after bumping the tag:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/<tag>/scripts/install.sh | sha256sum
-# Set HERMES_VERSION=latest to instead stream the mutable upstream installer (tracks main
-# HEAD) — UNVERIFIED: no checksum, no pin. For testing only.
-HERMES_VERSION="${HERMES_VERSION:-v2026.6.19}"
-HERMES_INSTALLER_SHA256="${HERMES_INSTALLER_SHA256:-dbd9d555ed4ac67bd1fc71ba6a39b410cf2af0ebcfd8f4889e086af78c9ddcaa}"
+# --- Hermes version (newest release tag by default) ---
+# Default `latest` resolves the newest published RELEASE TAG from the GitHub releases API at
+# run time, so there is no pin to maintain. A hardcoded pin here goes stale silently and a
+# rebuild then DOWNGRADES the box: this script sat on v2026.6.19 while CT 121 ran v2026.7.7.2
+# (three releases newer) until 2026-07-27. Resolving keeps the rest of the safety idiom: the
+# installer is still fetched from that tag's IMMUTABLE raw URL and run with `--branch <tag>`,
+# so the installer and the checked-out code are the same tagged commit.
+#
+# HERMES_VERSION=<tag>  pin an explicit release for a reproducible rebuild (e.g. v2026.7.20).
+#                       Use the GIT TAG, NOT the "v0.19.0" marketing title on the release
+#                       page — that is not a valid git ref.
+# HERMES_INSTALLER_SHA256=<sha>
+#                       optional, and only meaningful with an explicit tag: verify that tag's
+#                       installer before running it as root. Cannot be pre-known for `latest`.
+#                         curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/<tag>/scripts/install.sh | sha256sum
+# HERMES_VERSION=head   stream the mutable upstream installer at main HEAD — UNVERIFIED (no
+#                       checksum, and no release gate on a repo that lands ~2k commits per
+#                       release). Testing only.
+HERMES_VERSION="${HERMES_VERSION:-latest}"
+HERMES_INSTALLER_SHA256="${HERMES_INSTALLER_SHA256:-}"
 
 # --- Hermes OpenAI-compatible API server ---
 # The API server gives FULL access to Hermes's toolset, INCLUDING terminal commands, so a
@@ -105,8 +111,10 @@ Useful overrides:
   TARGET_HOSTNAME=llamacpp ./create-lxc-hermes-agent.sh   # CT 120's name; preferred over its IP (survives address changes)
   TARGET_BASE_URL=http://<ct120-ip>:1234/v1 ./create-lxc-hermes-agent.sh  # pin an exact endpoint (skips discovery)
   MODEL_IDENTIFIER=qwen3.6-35b-a3b ./create-lxc-hermes-agent.sh
-  HERMES_VERSION=v2026.6.19 ./create-lxc-hermes-agent.sh  # pin a different release (GIT TAG, not the v0.x.y title)
-  HERMES_VERSION=latest ./create-lxc-hermes-agent.sh      # track main HEAD, UNVERIFIED (no checksum/pin)
+  # Default installs the NEWEST release tag (resolved at run time). Override to:
+  HERMES_VERSION=v2026.7.20 ./create-lxc-hermes-agent.sh  # pin a release (GIT TAG, not the v0.x.y title)
+  HERMES_VERSION=v2026.7.20 HERMES_INSTALLER_SHA256=<sha> ./create-lxc-hermes-agent.sh  # + verify its installer
+  HERMES_VERSION=head ./create-lxc-hermes-agent.sh        # track main HEAD, UNVERIFIED (no checksum/pin)
   INSTALL_BROWSER=0 ./create-lxc-hermes-agent.sh        # skip Playwright Chromium + readability extractor (leaner)
   API_SERVER_KEY=my-secret ./create-lxc-hermes-agent.sh # else auto-generated and printed
 
@@ -130,6 +138,39 @@ require_root() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+# Turn HERMES_VERSION=latest into a concrete release tag, on the HOST, before anything is
+# pushed into the container — so the resolved tag is logged, appears in the summary, and the
+# container-side script only ever sees a concrete tag (or `head`). Resolving here also means
+# a GitHub API hiccup fails loudly at the start instead of halfway through an install.
+#
+# Deliberately the newest *release* tag, not main HEAD: this repo lands ~2k commits between
+# releases, and the container installs it as root with full terminal access.
+resolve_hermes_version() {
+  [[ ${HERMES_VERSION} == "latest" ]] || return 0
+
+  local api="https://api.github.com/repos/NousResearch/hermes-agent/releases/latest"
+  local body tag
+  body="$(curl -fsSL --max-time 30 -H 'Accept: application/vnd.github+json' "${api}" 2>/dev/null)" \
+    || die "could not reach the GitHub releases API to resolve HERMES_VERSION=latest; set HERMES_VERSION=<tag> explicitly"
+
+  # No jq dependency on the host (the repo only requires pct/pveam/openssl) — pull tag_name
+  # out with sed. The field is a plain JSON string, so this is safe enough for one key.
+  tag="$(printf '%s' "${body}" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  [[ -n ${tag} ]] || die "could not parse tag_name from the GitHub releases API; set HERMES_VERSION=<tag> explicitly"
+
+  # Guard against a garbage/HTML response silently becoming a "tag": tags look like v2026.7.20.
+  [[ ${tag} =~ ^v[0-9][0-9A-Za-z._-]*$ ]] \
+    || die "resolved an implausible Hermes tag '${tag}'; set HERMES_VERSION=<tag> explicitly"
+
+  log "Resolved HERMES_VERSION=latest -> ${tag} (newest release)"
+  HERMES_VERSION="${tag}"
+
+  # An explicit checksum cannot apply to a tag we only just learned. Refuse rather than
+  # silently checking the wrong tag's installer against it.
+  [[ -z ${HERMES_INSTALLER_SHA256} ]] \
+    || die "HERMES_INSTALLER_SHA256 is set but HERMES_VERSION=latest resolved to ${tag}; pin HERMES_VERSION=${tag} explicitly to use a checksum"
 }
 
 resolve_template() {
@@ -329,34 +370,43 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y ca-certificates curl git build-essential python3 jq
 
-# 2. Install Hermes — pinned + checksum-verified by default. Fetch scripts/install.sh from
-# the pinned git tag's raw URL (immutable), verify its SHA-256, then run it with
-# `--branch <tag>` so the checked-out code matches the verified installer. This stops a
-# mutated upstream installer from running as root. HERMES_VERSION=latest opts out: it
-# streams the mutable upstream installer (no checksum, no pin) — for testing only.
+# 2. Install Hermes. HERMES_VERSION arrives here as a CONCRETE release tag — the host already
+# resolved `latest` to the newest release (resolve_hermes_version). Fetch scripts/install.sh
+# from that tag's raw URL (immutable), optionally verify its SHA-256, then run it with
+# `--branch <tag>` so the installer and the checked-out code are the same tagged commit.
+# A checksum is only pre-knowable for an explicitly pinned tag, so it is enforced when set
+# and skipped when empty — the immutable per-tag raw URL is the baseline protection either
+# way. `head` opts out entirely: it streams the mutable upstream installer at main HEAD.
 installer="$(mktemp)"
-if [[ "${HERMES_VERSION}" == "latest" ]]; then
-  printf 'warning: HERMES_VERSION=latest — installing UNPINNED main HEAD with NO checksum verification\n' >&2
+if [[ "${HERMES_VERSION}" == "head" ]]; then
+  printf 'warning: HERMES_VERSION=head — installing UNPINNED main HEAD with NO checksum verification\n' >&2
   curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o "${installer}"
 else
-  curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_VERSION}/scripts/install.sh" -o "${installer}"
-  if [[ -z "${HERMES_INSTALLER_SHA256}" ]]; then
-    printf 'error: HERMES_INSTALLER_SHA256 is empty; refusing to run an unverified pinned installer\n' >&2
-    exit 1
-  fi
-  if ! printf '%s  %s\n' "${HERMES_INSTALLER_SHA256}" "${installer}" | sha256sum -c - >/dev/null 2>&1; then
-    printf 'error: installer SHA-256 mismatch for tag %s\n' "${HERMES_VERSION}" >&2
-    printf '  expected: %s\n' "${HERMES_INSTALLER_SHA256}" >&2
-    printf '  actual:   %s\n' "$(sha256sum "${installer}" | awk '{print $1}')" >&2
-    exit 1
+  curl -fsSL "https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_VERSION}/scripts/install.sh" -o "${installer}" \
+    || { printf 'error: could not fetch the installer for tag %s (does that tag exist?)\n' "${HERMES_VERSION}" >&2; exit 1; }
+  if [[ -n "${HERMES_INSTALLER_SHA256}" ]]; then
+    if ! printf '%s  %s\n' "${HERMES_INSTALLER_SHA256}" "${installer}" | sha256sum -c - >/dev/null 2>&1; then
+      printf 'error: installer SHA-256 mismatch for tag %s\n' "${HERMES_VERSION}" >&2
+      printf '  expected: %s\n' "${HERMES_INSTALLER_SHA256}" >&2
+      printf '  actual:   %s\n' "$(sha256sum "${installer}" | awk '{print $1}')" >&2
+      exit 1
+    fi
+    printf 'installer SHA-256 verified for tag %s\n' "${HERMES_VERSION}"
+  else
+    printf 'note: no HERMES_INSTALLER_SHA256 set; installer taken from the immutable raw URL for tag %s\n' "${HERMES_VERSION}"
   fi
 fi
 
 # --non-interactive is mandatory (no TTY under `pct exec`); --skip-setup skips the config
 # wizard because we write config.yaml/.env ourselves below. --branch <tag> pins the
 # checkout (git clone --branch accepts tags and detaches HEAD at the tagged commit).
+# NOTE: --branch <tag> only resolves unaided on a FRESH clone, which is all this script does.
+# Re-running the installer over an EXISTING install (i.e. an upgrade) fails with
+# "pathspec '<tag>' did not match any file(s) known to git", because that checkout is shallow
+# and carries no tag refs; fix it there with
+#   git -C /usr/local/lib/hermes-agent fetch --depth 1 origin tag <tag>
 install_args=(--non-interactive --skip-setup)
-if [[ "${HERMES_VERSION}" != "latest" ]]; then
+if [[ "${HERMES_VERSION}" != "head" ]]; then
   install_args+=(--branch "${HERMES_VERSION}")
 fi
 if [[ "${INSTALL_BROWSER}" != "1" ]]; then
@@ -545,7 +595,9 @@ main() {
   require_command pct
   require_command pveam
   require_command openssl
+  require_command curl          # resolve_hermes_version hits the GitHub releases API
   assert_vmid_available
+  resolve_hermes_version        # HERMES_VERSION=latest -> concrete tag, before any work
   resolve_template
   download_template_if_missing
   discover_target_base_url

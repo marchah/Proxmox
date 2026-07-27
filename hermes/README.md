@@ -97,25 +97,39 @@ user allowlist (without an allowlist Hermes denies all incoming users).
 | `MODEL_IDENTIFIER` | `qwen3.6-35b-a3b` | served model id (CT 120's `--alias`) |
 | `MODEL_CONTEXT_LENGTH` | `65536` | per-request context written into config.yaml |
 | `MODEL_REQUEST_TIMEOUT_SECONDS` | `1800` | main model-call timeout (s) → `providers.custom.request_timeout_seconds`; keeps a queued request (CT 120 `--parallel 2`) from tripping the OpenAI SDK's 600s default |
-| `HERMES_VERSION` | `v2026.6.19` | pinned git tag (installer fetched from the tag + SHA-256 verified); `latest` = main HEAD, **unverified** |
-| `HERMES_INSTALLER_SHA256` | _(pinned)_ | expected SHA-256 of the tag's `scripts/install.sh`; bump together with the tag |
+| `HERMES_VERSION` | `latest` | `latest` = newest **release tag**, resolved at run time; or an explicit tag to pin; `head` = main HEAD, **unverified** |
+| `HERMES_INSTALLER_SHA256` | _(empty)_ | optional, explicit-tag only: expected SHA-256 of that tag's `scripts/install.sh` |
 | `API_SERVER_KEY` | _(generated)_ | bearer key for the API server |
 | `API_SERVER_PORT` | `8642` | API server port |
 | `INSTALL_BROWSER` | `1` | `0` skips Playwright Chromium (leaner container) |
 
 ## Notes
 
-- **Pinned by default.** The provisioner fetches `scripts/install.sh` from the pinned git
-  tag's raw URL (`HERMES_VERSION`, default `v2026.6.19`), verifies its SHA-256 against
-  `HERMES_INSTALLER_SHA256`, then runs it with `--branch <tag>` so the checked-out code
-  matches the verified installer — the repo's "pin a tag + verify SHA-256" idiom, so a
-  mutated upstream installer can't run as root. Bump both from the
-  [releases page](https://github.com/NousResearch/hermes-agent/releases) using the **git
-  tag** (e.g. `v2026.6.19`), **not** the `v0.17.0` marketing title (it is not a valid git
-  ref); recompute the checksum with
-  `curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/<tag>/scripts/install.sh | sha256sum`.
-  `HERMES_VERSION=latest` opts out: it streams the mutable upstream installer (main HEAD),
-  **unverified** — for testing only.
+- **Newest release by default, no pin to maintain.** `HERMES_VERSION=latest` (the default)
+  resolves the newest **release tag** from the GitHub releases API before any work starts,
+  then fetches `scripts/install.sh` from that tag's **immutable** raw URL and runs it with
+  `--branch <tag>`, so the installer and the checked-out code are the same tagged commit. A
+  hardcoded pin here went stale silently and made a rebuild a *downgrade*: the script sat on
+  `v2026.6.19` while CT 121 ran `v2026.7.7.2` until 2026-07-27. Note it resolves the newest
+  *release*, **not** main HEAD — upstream lands ~2k commits between releases and this
+  container installs it as root with full terminal access.
+  - Pin an explicit tag for a reproducible rebuild (`HERMES_VERSION=v2026.7.20`), using the
+    **git tag**, **not** the `v0.19.0` marketing title (it is not a valid git ref). Only then
+    can you also set `HERMES_INSTALLER_SHA256` to verify that tag's installer — a checksum
+    can't be pre-known for `latest`, so setting both is refused rather than silently ignored.
+    Compute it with
+    `curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/<tag>/scripts/install.sh | sha256sum`.
+  - `HERMES_VERSION=head` opts out entirely: it streams the mutable upstream installer at
+    main HEAD, **unverified** — for testing only.
+- ⚠️ **Upgrading an existing CT 121 is not a re-run of this script** (it refuses while the
+  container exists). Re-running the upstream installer over the existing install fails with
+  `pathspec '<tag>' did not match any file(s) known to git`, because `/usr/local/lib/hermes-agent`
+  is a **shallow clone with no tag refs**. Create the ref first, then run the installer:
+  `git -C /usr/local/lib/hermes-agent fetch --depth 1 origin tag <tag>`. Stop the
+  `backlog-tick`/`pr-revise-tick`/`loop-watchdog` timers and `hermes`/`hermes-dashboard`
+  first, `hermes gateway stop` to clear the gateway lock, and snapshot the CT. `/root/.hermes`
+  (config, skills, crons, sessions) lives outside the install dir and is preserved. Do **not**
+  run `hermes gateway install` — it would clobber the hand-built unit and Slack manifest.
 - **CT 120 IP drift:** using `TARGET_HOSTNAME` (`llamacpp`, the default) makes `base_url`
   robust to CT 120 changing address, as long as a shared resolver maps the name to CT 120
   (the host WiFi-NAT dnsmasq does this via CT 120's reservation). If the provisioner had to
