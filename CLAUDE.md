@@ -60,13 +60,17 @@ These containers form the system:
   Docker in a VM; Docker-in-LXC needs `nesting=1`+`keyctl=1` (often privileged), puts `overlay2`
   on a container filesystem, tends to break after Proxmox kernel bumps, and shares a kernel with
   this host's hand-rolled nftables NAT that Docker also writes rules into. The GPU/LLM containers
-  stay native LXCs — they need device passthrough and gain nothing here. ⚠️ MealDeal currently
-  **builds from git** on each redeploy because nothing has been published to GHCR yet — **not** a
-  billing problem (verified 2026-07-26: account is plan `free`, every Actions line item is
-  discounted to a **$0.00 net**, since public-repo minutes are 100% free; an earlier
-  "Actions billing-locked" note here was wrong). The publish workflow is
-  **PR marchah/mealdeal#36**, open and green; once it merges and publishes,
-  switch the stack to `pull_policy: always` and drop the `build:` block — updates become a ~10 s pull and rollback is pinning a `sha-` tag. ⚠️ Unlike
+  stay native LXCs — they need device passthrough and gain nothing here. MealDeal now **pulls a
+  prebuilt image** — `marchah/mealdeal#36` merged 2026-07-27 and its `Publish image` workflow
+  publishes `ghcr.io/marchah/mealdeal` on every push to `main` (tags `main` + `sha-<short>`, plus
+  semver from `v*`). The package came out **public**, so anonymous pull works and Portainer needs
+  no registry credentials — don't trust the old warning that GHCR always defaults to private.
+  Redeploys are a ~10 s pull; rollback is pinning a `sha-` tag. ⚠️ The stack sets
+  **`pull_policy: always`** deliberately — without it a redeploy can reuse a stale local layer
+  cache and silently keep serving the old build even though `main` moved. (Historical note: this stack built
+  from git for a while, blamed on an "Actions billing-locked" state that **never existed** —
+  verified 2026-07-26, plan `free` with every Actions line item at **$0.00 net**, because
+  public-repo minutes are 100% free. The image had simply never been published.) ⚠️ Unlike
   the retired per-app LXC, **Portainer has no health-gated auto-rollback** — a broken deploy stays
   broken until acted on (the compose healthcheck makes it *visible*, not self-healing). See
   `docker-host/README.md`.

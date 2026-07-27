@@ -117,32 +117,41 @@ docker exec mealdeal sh -c 'wget -qO- --post-data="" \
   --header="x-ingest-token: $INGEST_TOKEN" http://127.0.0.1:4000/internal/ingest'
 ```
 
-### Image source — build now, pull later
+### Image source — pulls a published image
 
-The stack currently **builds from mealdeal's git repo** (BuildKit takes a git URL as build
-context) because that repo publishes no image yet. Every redeploy therefore rebuilds, a few
-minutes each. (An earlier note here blamed a GitHub Actions billing lock — that was wrong.
-Verified 2026-07-26: the account is plan `free` and every Actions line item nets **$0.00**,
-because public repos get unlimited free minutes on standard runners. The image is simply
-unpublished, nothing is blocked.)
+Since 2026-07-26 the stack **pulls a prebuilt image** from GHCR, published by mealdeal's
+`Publish image` workflow ([marchah/mealdeal#36](https://github.com/marchah/mealdeal/pull/36),
+merged). The package is **public**, so anonymous pull works and Portainer needs no registry
+credentials. Nothing is built on this host — a redeploy is a ~10 s pull.
 
-Once [marchah/mealdeal#36](https://github.com/marchah/mealdeal/pull/36) is merged and publishing,
-switch to pulling — a two-line edit in the compose file:
+| Tag | Use |
+| --- | --- |
+| `ghcr.io/marchah/mealdeal:main` | what the stack tracks; follows the app's default branch |
+| `ghcr.io/marchah/mealdeal:sha-<short>` | immutable per-commit — **pin this to roll back** |
+| semver tags | from `v*` releases |
 
-1. delete the `build:` block
-2. change `pull_policy: build` → `pull_policy: always`
+`pull_policy: always` matters: without it a redeploy can reuse a stale local layer cache instead
+of fetching the new `main`.
 
-Updates then take ~10 s, and rollback is pinning a previous immutable tag
-(`image: ghcr.io/marchah/mealdeal:sha-abc1234`). Note the GHCR package is created **private** by
-default — flip it to public after the first publish, or give Portainer a `read:packages` token.
+**To roll back**, edit the compose `image:` to a known-good `sha-` tag and redeploy:
+
+```yaml
+image: ghcr.io/marchah/mealdeal:sha-b63ad81
+```
+
+> It previously built from the git repo with `build:` + `pull_policy: build`, because no image was
+> published yet. (An earlier note here blamed a GitHub Actions billing lock — that was wrong; the
+> account is plan `free` and public repos get free minutes, so every line item nets $0.00. The
+> image was merely unpublished.)
 
 ## What you give up versus the old per-app LXC
 
 The retired `mealdeal/create-lxc-mealdeal.sh` health-checked each new release and
 **automatically restored the previous one** on failure. Portainer has no health-gated rollback: a
-broken deploy leaves a broken stack until you act. With published image tags that's a ~10 s fix
-(redeploy pinning the previous `sha-` tag); while still building from git it means changing the
-ref. That was a conscious trade for not maintaining one bespoke script per app.
+broken deploy leaves a broken stack until you act. Now that the stack pulls published tags, acting
+is a ~10 s redeploy pinning the previous `sha-` tag — which is why publishing images was worth
+doing. Still, nothing rolls back *by itself*; that was the conscious trade for not maintaining one
+bespoke provisioning script per app.
 
 The compose file does define a healthcheck (a GraphQL `{__typename}` probe, since the app has no
 `/health` route), so a wedged container is at least *visible* as unhealthy in `docker ps` and in

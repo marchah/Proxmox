@@ -13,24 +13,23 @@
 # disable ingest entirely rather than crash — so the stack comes up clean before you add them.
 #
 # ── IMAGE SOURCE ─────────────────────────────────────────────────────────────────────────────
-# Today this BUILDS from mealdeal's git repo (BuildKit accepts a git URL as the build context),
-# because marchah/mealdeal publishes no image yet (PR #36 adds the publish workflow). NOT a
-# billing lock — an earlier comment here said so and was wrong; Actions run free on that public repo.
-# Each redeploy therefore rebuilds (a few minutes).
+# PULLS a prebuilt image published by marchah/mealdeal's `Publish image` workflow (GHCR, public
+# package — anonymous pull works, no registry credentials needed here). Nothing is built on the
+# Docker host, so a redeploy is a ~10 s pull instead of a multi-minute rebuild.
 #
-# Once the publish-image workflow is live in that repo, switch to pulling — a two-line edit:
-#   1. delete the `build:` block below
-#   2. change `pull_policy: build` to `pull_policy: always`
-# Updates then become a ~10 s image pull, and rollback is pinning a previous tag
-# (e.g. image: ghcr.io/marchah/mealdeal:sha-abc1234).
+# `main` is the moving tag that follows the app's default branch. `pull_policy: always` means a
+# Portainer redeploy (or a git-stack auto-update) actually fetches it rather than reusing a stale
+# local layer cache.
+#
+# TO ROLL BACK: pin the immutable tag of a known-good build and redeploy —
+#   image: ghcr.io/marchah/mealdeal:sha-b63ad81
+# Available tags: `main`, `sha-<short>` per commit, plus semver from `v*` releases.
 # ─────────────────────────────────────────────────────────────────────────────────────────────
 
 services:
   mealdeal:
     image: ghcr.io/marchah/mealdeal:main
-    build:
-      context: https://github.com/marchah/mealdeal.git#main
-    pull_policy: build
+    pull_policy: always
     container_name: mealdeal
     restart: unless-stopped
     ports:
