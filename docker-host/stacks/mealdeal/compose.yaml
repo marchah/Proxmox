@@ -14,7 +14,8 @@
 #
 # ── IMAGE SOURCE ─────────────────────────────────────────────────────────────────────────────
 # Today this BUILDS from mealdeal's git repo (BuildKit accepts a git URL as the build context),
-# because marchah/mealdeal publishes no image yet — its GitHub Actions are billing-locked.
+# because marchah/mealdeal publishes no image yet (PR #36 adds the publish workflow). NOT a
+# billing lock — an earlier comment here said so and was wrong; Actions run free on that public repo.
 # Each redeploy therefore rebuilds (a few minutes).
 #
 # Once the publish-image workflow is live in that repo, switch to pulling — a two-line edit:

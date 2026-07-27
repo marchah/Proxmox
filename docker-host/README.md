@@ -120,11 +120,14 @@ docker exec mealdeal sh -c 'wget -qO- --post-data="" \
 ### Image source — build now, pull later
 
 The stack currently **builds from mealdeal's git repo** (BuildKit takes a git URL as build
-context) because that repo publishes no image yet — its GitHub Actions are billing-locked. Every
-redeploy therefore rebuilds, a few minutes each.
+context) because that repo publishes no image yet. Every redeploy therefore rebuilds, a few
+minutes each. (An earlier note here blamed a GitHub Actions billing lock — that was wrong.
+Verified 2026-07-26: the account is plan `free` and every Actions line item nets **$0.00**,
+because public repos get unlimited free minutes on standard runners. The image is simply
+unpublished, nothing is blocked.)
 
-Once [marchah/mealdeal#36](https://github.com/marchah/mealdeal/pull/36) is merged and billing is
-unlocked, switch to pulling — a two-line edit in the compose file:
+Once [marchah/mealdeal#36](https://github.com/marchah/mealdeal/pull/36) is merged and publishing,
+switch to pulling — a two-line edit in the compose file:
 
 1. delete the `build:` block
 2. change `pull_policy: build` → `pull_policy: always`

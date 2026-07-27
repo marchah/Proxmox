@@ -61,9 +61,12 @@ These containers form the system:
   on a container filesystem, tends to break after Proxmox kernel bumps, and shares a kernel with
   this host's hand-rolled nftables NAT that Docker also writes rules into. The GPU/LLM containers
   stay native LXCs — they need device passthrough and gain nothing here. ⚠️ MealDeal currently
-  **builds from git** on each redeploy (its Actions are billing-locked so no image is published);
-  once `marchah/mealdeal` publishes to GHCR, switch the stack to `pull_policy: always` and drop
-  the `build:` block — updates become a ~10 s pull and rollback is pinning a `sha-` tag. ⚠️ Unlike
+  **builds from git** on each redeploy because nothing has been published to GHCR yet — **not** a
+  billing problem (verified 2026-07-26: account is plan `free`, every Actions line item is
+  discounted to a **$0.00 net**, since public-repo minutes are 100% free; an earlier
+  "Actions billing-locked" note here was wrong). The publish workflow is
+  **PR marchah/mealdeal#36**, open and green; once it merges and publishes,
+  switch the stack to `pull_policy: always` and drop the `build:` block — updates become a ~10 s pull and rollback is pinning a `sha-` tag. ⚠️ Unlike
   the retired per-app LXC, **Portainer has no health-gated auto-rollback** — a broken deploy stays
   broken until acted on (the compose healthcheck makes it *visible*, not self-healing). See
   `docker-host/README.md`.
@@ -347,9 +350,11 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
     *media* share registered as a place to put container root disks — unused, and a trap (LXC
     rootfs over NFS is slow and hits the uid-mapping problem above, and it carried no `backup`
     content type). To give a future Plex container its media, **bind-mount the path instead of
-    adding a storage**: `pct set <vmid> --mp0 /mnt/pve/<mount>,mp=/media`. ⚠️ That share still
-    holds **~13 GB of vzdump archives from June 2023** (CT 100/101, long gone) — untouched by the
-    storage removal, deletable from the NAS whenever you want the space back.
+    adding a storage**: `pct set <vmid> --mp0 /mnt/pve/<mount>,mp=/media`. That share also held
+    **13 GB of vzdump archives from June 2023** (CT 100/101/103, all long gone) in a `dump/` dir
+    left over from when it carried `backup` content — **deleted 2026-07-26**, reclaiming 13 GB.
+    Both exports live on the same Synology volume, so that space benefits `Synology-Backup` too
+    (601 GB → 614 GB free), which matters as keep-last=3 across seven guests accumulates.
   - The Docker host's precious state is its **volumes** (`portainer_data`,
     `mealdeal_mealdeal-data`) — see `docker-host/README.md` for pulling those out separately.
 - **Notifications go to Slack, not just root's mailbox.** The four-week backup outage was silent
