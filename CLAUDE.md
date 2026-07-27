@@ -342,6 +342,14 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
     (snapshot), privileged CT, and QEMU VM.
   - A container **rootfs cannot be excluded** from these backups (see the `backup=` note above),
     but a `backup=0` mount point can — which is why CT 120's `/models` is not in its 3 GB archive.
+  - `Synology-Backup` is now the **only** NFS storage. A second one (`Synology`, export
+    `/volume1/Plex`) was **removed 2026-07-26**: it declared `content rootdir`, i.e. the Plex
+    *media* share registered as a place to put container root disks — unused, and a trap (LXC
+    rootfs over NFS is slow and hits the uid-mapping problem above, and it carried no `backup`
+    content type). To give a future Plex container its media, **bind-mount the path instead of
+    adding a storage**: `pct set <vmid> --mp0 /mnt/pve/<mount>,mp=/media`. ⚠️ That share still
+    holds **~13 GB of vzdump archives from June 2023** (CT 100/101, long gone) — untouched by the
+    storage removal, deletable from the NAS whenever you want the space back.
   - The Docker host's precious state is its **volumes** (`portainer_data`,
     `mealdeal_mealdeal-data`) — see `docker-host/README.md` for pulling those out separately.
 - **Notifications go to Slack, not just root's mailbox.** The four-week backup outage was silent
