@@ -32,6 +32,12 @@ services:
     pull_policy: always
     container_name: mealdeal
     restart: unless-stopped
+    # Query dnsmasq directly. On a compose (user-defined) network Docker hands the container its
+    # embedded resolver at 127.0.0.11, whose upstream is the VM's systemd-resolved stub — and that
+    # refuses single-label names, so `gpu2` and `llamacpp` never resolve. Verified: the same
+    # container resolves them with this set and times out without it.
+    dns:
+      - 10.10.10.1
     ports:
       - '${MEALDEAL_PORT:-4000}:4000'
     volumes:
@@ -40,12 +46,13 @@ services:
     environment:
       DATABASE_URL: file:/data/mealdeal.db
 
-      # Deal extraction runs on the homelab's own LLM runtime (CT 120), reached by its dnsmasq
-      # name on the NAT LAN. If Docker's embedded DNS ever fails to resolve it, substitute the
-      # address directly: http://10.10.10.120:1234/v1
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://llamacpp:1234/v1}
+      # Extraction runs on CT 123 (llama-swap, GPU 2) against an INSTRUCT model. Not CT 120's
+      # qwen3.6: that model reasons unprompted and spends its whole token budget inside <think>,
+      # returning finish_reason=length with no answer, so every extraction hit the client's
+      # 10-minute timeout. qwen3-instruct-2507 answers the same prompt in ~0.9s.
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://gpu2:8080/v1}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-not-needed}
-      OPENAI_MODEL: ${OPENAI_MODEL:-qwen3.6-35b-a3b}
+      OPENAI_MODEL: ${OPENAI_MODEL:-qwen3-instruct-2507}
 
       # Mailbox to ingest. Set IMAP_USER + IMAP_PASSWORD (a Gmail APP password) as Portainer
       # stack env vars, then set INGEST_INLINE=1 and redeploy. Leaving them empty is safe.
