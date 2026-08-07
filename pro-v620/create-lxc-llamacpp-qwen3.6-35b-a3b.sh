@@ -430,6 +430,20 @@ EOF
 # flag every request as invalid_output. (An agent client that can't handle inline
 # reasoning should instead disable thinking via chat-template kwargs — see
 # pro-v620/README.md.)
+# --cache-ram 0 DISABLES llama-server's prompt cache (default 8192 MiB). On
+# b10152 that cache served KV state that did not match the request's prompt: the
+# model then decoded a wall of '/' to the 65,536-token generation cap, ~17 min of
+# GPU per request, and every KB ingestion came back empty. Proven by replaying one
+# failing prompt — 7/7 garbage warm, clean 6/6 after a restart cleared the cache,
+# and clean with 25 chars prepended (a different prefix). A host reboot fixed it
+# until LRU churn re-poisoned it. Upstream has several open prompt-cache bugs in
+# this window (ggml-org/llama.cpp#25755 is Qwen3.6-on-Vulkan, #26207 is the same
+# silent-contamination shape via lora) and #26529 names --cache-ram 0 as the
+# workaround; no merged fix for slot-similarity reuse was found, so the b10308
+# bump alone is not trusted to have cured it. Cost: a cold slot re-evaluates the
+# whole prompt (~5 s for 6k tokens at ~1.1k tok/s) — within-conversation slot KV
+# reuse is unaffected, so multi-turn sessions still get incremental eval.
+# REMOVE THIS once those tickets are fixed and the fix is in the pinned build.
 cat >/usr/local/bin/llamacpp-serve <<'EOS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -463,6 +477,7 @@ exec "${LLAMACPP_DIR}/llama-server" \
   --ubatch-size 1024 \
   --jinja \
   --reasoning-format none \
+  --cache-ram 0 \
   --alias "${MODEL_ALIAS}"
 EOS
 chmod 755 /usr/local/bin/llamacpp-serve
