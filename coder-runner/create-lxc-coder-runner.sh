@@ -23,8 +23,8 @@ START_ON_BOOT="${START_ON_BOOT:-1}"
 # NodeSource `curl | bash`; matches the repo's llama.cpp/llama-swap pinning). Bump
 # VERSION + SHA256 together from https://nodejs.org/dist/<VERSION>/SHASUMS256.txt
 # (the `node-<VERSION>-linux-x64.tar.xz` line). mealdeal + the agent repos need >= 26.
-NODE_VERSION="${NODE_VERSION:-v26.5.0}"
-NODE_SHA256="${NODE_SHA256:-9f619528f1db5ddc41dccf54211066fb42228d69a156733c69cb9d6cc92e358c}"
+NODE_VERSION="${NODE_VERSION:-v26.7.0}"
+NODE_SHA256="${NODE_SHA256:-982aa24dd8be4c889c6a8ab337ddff3b0896645b20f4239356e80552c16277ee}"
 
 # pnpm — mealdeal is a pnpm monorepo, so the runner needs it to run `pnpm ci`/build/tests.
 # Installed from the npm registry (which verifies its own package integrity hashes), NOT via
