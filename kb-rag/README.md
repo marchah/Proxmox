@@ -5,9 +5,15 @@ serves hybrid (keyword + semantic) search to every agent on the server over one 
 REST **and** MCP-over-HTTP. See [`SPEC.md`](SPEC.md) for the full design and rationale.
 
 **Markdown-in-git stays the source of truth.** This container holds only a derived,
-rebuildable index (`sqlite-vec` + FTS5); the rootfs is `backup=0` and a wipe + reindex
-reconstructs everything. Embeddings run on **CPU** (`fastembed`/ONNX) — no GPU, no load on
-CT 120.
+rebuildable index (`sqlite-vec` + FTS5), so a wipe + reindex reconstructs everything — back up
+the CognitiveStack repo, not this container. Embeddings run on **CPU** (`fastembed`/ONNX) — no
+GPU, no load on CT 120.
+
+⚠️ The script *tries* to set `backup=0` on the rootfs, but **PVE silently rejects `backup=` on
+`rootfs`** (it is a mount-point-only property — verified on pve-manager 9.2.3), so this CT **is**
+in the weekly `vzdump` despite being fully rebuildable. Low stakes (~1.8 GB), but if you want the
+bulk out of the archive, exclude it in the backup job instead:
+`vzdump 140 --exclude-path /opt/kb-rag`.
 
 ## Provision (on the Proxmox host, as root)
 
@@ -42,10 +48,13 @@ vector dimension must match the stored index.
 
 ## Operate
 
+The `kb-*` wrappers live in `/usr/local/bin`, which a bare `pct exec` PATH omits — wrap them in
+`bash -lc '…'` or they fail with `Failed to exec "kb-reindex"`.
+
 ```bash
-pct exec 140 -- kb-reindex          # git pull + incremental reindex now
-pct exec 140 -- kb-reindex --full   # drop + rebuild (after a model change)
-pct exec 140 -- kb-stats            # index commit, embed model, chunk/doc counts
+pct exec 140 -- bash -lc 'kb-reindex'          # git pull + incremental reindex now
+pct exec 140 -- bash -lc 'kb-reindex --full'   # drop + rebuild (after a model change)
+pct exec 140 -- bash -lc 'kb-stats'            # index commit, embed model, chunk/doc counts
 pct exec 140 -- systemctl status kb-rag
 pct exec 140 -- journalctl -u kb-rag -n 100 --no-pager
 pct exec 140 -- systemctl list-timers kb-reindex.timer
@@ -81,6 +90,10 @@ curl -s http://kb-rag:8770/health   # no auth
 Register `http://kb-rag:8770/mcp/` (trailing slash — `/mcp` 307-redirects to it) as a
 streamable-HTTP MCP server, header `Authorization: Bearer <key>`. Tools: `kb_search`, `kb_get`,
 `kb_stats`.
+
+⚠️ **No agent is wired to it yet** (as of 2026-08-07 CT 121's `/root/.hermes/config.yaml` has no
+`mcp:` block), so the service is live but unused. This registration is the step that makes it do
+anything.
 
 ## Layout
 

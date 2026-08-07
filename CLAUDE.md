@@ -44,6 +44,46 @@ These containers form the system:
   `hermes gateway run` service = messaging gateway + Hermes's own OpenAI-compatible API server
   on `0.0.0.0:8642`. Persistent (`120-139` AI range, starts on boot); full Playwright browser
   tools; installs + runs as root inside the unprivileged LXC. `hermes/create-lxc-hermes-agent.sh`.
+- **CT 140 `kb-rag`** (`kb-rag/`): an *unprivileged* Debian LXC that indexes the private
+  **CognitiveStack** Markdown knowledge base and serves **hybrid search** — FTS5 **BM25**
+  (keyword/exact) ⊕ `sqlite-vec` **KNN** (semantic), merged by **Reciprocal Rank Fusion** (k=60)
+  — to every agent on the box over one port: **REST *and* MCP-over-HTTP** on `0.0.0.0:8770`
+  (`/v1/search`, `/v1/doc`, `/v1/stats`, plus an unauthenticated `/health`; MCP at `/mcp/` —
+  trailing slash, `/mcp` 307-redirects — exposing `kb_search`/`kb_get`/`kb_stats`). It sits in the
+  `140-159` **databases** range because the durable artifact is a vector+FTS database, even though
+  agents are the consumers. Live since 2026-07-04 (PR #14); ~3.6k chunks / ~456 docs as of
+  2026-08-07. `kb-rag/create-lxc-kb-rag.sh`; full design rationale in `kb-rag/SPEC.md`.
+  - **Markdown-in-git stays the source of truth** — this CT holds only a *derived, rebuildable*
+    index, so wiping `/opt/kb-rag/data` + `kb-reindex --full` reconstructs everything. Back up the
+    CognitiveStack repo, not this container. If the vector store ever becomes where knowledge
+    *lives*, that's a regression.
+  - Embeddings are **CPU-only** (`fastembed`/ONNX, `BAAI/bge-small-en-v1.5`, 384-dim) —
+    deliberately **no GPU passthrough and no load on CT 120**: embedding one short query is
+    milliseconds on CPU and batch indexing is offline. A `kb-reindex.timer` pulls + reindexes every
+    10 min, incrementally (only chunks whose `content_hash` changed are re-embedded) and stamps the
+    source commit into the index. Corpus selection is glob-driven in `app/index.config.yaml`
+    (include `**/*.md`, exclude `personal/**` + nav/meta), not hardcoded — a new topic folder is
+    picked up automatically.
+  - Security: a **read-only deploy key** for the KB repo is **mandatory** (`DEPLOY_KEY_FILE=`, the
+    container can only pull), and every data endpoint is gated by a bearer key auto-generated at
+    provision and stored mode-600 in `/etc/kb-rag.env`. Secrets are pushed as mode-600 files and
+    the host copies removed (the hermes idiom). **No nft port-forward by default** — reachable only
+    inside the `10.10.10.0/24` NAT LAN, by hostname.
+  - ⚠️ Changing `EMBED_MODEL`/`EMBED_DIM` later requires `kb-reindex --full` — the stored
+    `sqlite-vec` vector dimension must match.
+  - ⚠️ **Nothing consumes it yet.** Verified 2026-08-07: CT 121's `/root/.hermes/config.yaml` has
+    no `mcp:` block and no `kb-rag`/`8770` reference, so this is a live-but-*unwired* service.
+    Registering `http://kb-rag:8770/mcp/` (header `Authorization: Bearer <key>`) on Hermes is the
+    step that makes it useful.
+  - ⚠️ Its `rootfs` `backup=0` is one of the **silent no-ops** described under Conventions —
+    verified 2026-08-07, CT 140's line is a bare `local-lvm:vm-140-disk-0,size=12G` with no
+    `backup=`, so this entirely rebuildable container **is** in the weekly vzdump, contrary to what
+    `kb-rag/README.md` and `SPEC.md` claim. Low stakes in practice (1.8 GB used: 278 MB venv,
+    154 MB index+checkout, 78 MB ONNX cache), but don't believe the "not backed up" comments. To
+    actually skip the bulk: `vzdump 140 --exclude-path /opt/kb-rag`.
+  - ⚠️ Its `kb-reindex`/`kb-stats` wrappers live in `/usr/local/bin`, so they hit the **`pct exec`
+    PATH gotcha**: `pct exec 140 -- kb-stats` fails with `Failed to exec "kb-stats"` (verified
+    2026-08-07). Wrap in `bash -lc '…'` — `kb-rag/README.md`'s bare examples do not work.
 - **CT 200 `bench-runner`** (`bench-runner/`): an *unprivileged* Debian LXC that benchmarks
   that endpoint. It auto-discovers CT 120's IP at provisioning time. It lives in the
   `200+` test/temporary range because it is disposable — destroy it when done. The suite is
@@ -79,7 +119,7 @@ These containers form the system:
     fleet of small projects, which was the whole point of the pivot. Its genuinely reusable
     findings are retained below (the `pct exec` PATH gotcha, the `rootfs` `backup=` no-op).
 
-VMIDs `120`/`121`/`122`/`123`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
+VMIDs `120`/`121`/`122`/`123`/`140`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
 
 ## Common commands
 
@@ -94,6 +134,8 @@ All run on the Proxmox host as root.
 CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./coder-runner/create-lxc-coder-runner.sh
 # The loop/orchestrator config that runs INSIDE CT 121 (profiles/skills/plugins/timers) — run from within CT 121
 pct exec 121 -- bash -lc 'cd /path/to/Proxmox/hermes/config && ./install.sh'  # see hermes/config/README.md
+# The knowledge-base retrieval service (CT 140 kb-rag) — a read-only KB deploy key is REQUIRED
+DEPLOY_KEY_FILE=./cognitivestack-deploy ./kb-rag/create-lxc-kb-rag.sh
 # Prior GPU (RX 6700 XT) — kept for reference; pick ONE engine (mutually exclusive)
 ./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
 ./rx-6700-xt/create-lxc-llamacpp-qwen3.5-9b.sh    # llama.cpp (llama-server)
@@ -107,6 +149,12 @@ ssh pve 'ssh -i /root/.ssh/docker-host debian@10.10.10.100'   # into the VM (hos
 #   docker ps
 #   docker compose -f /opt/stacks/mealdeal/compose.yaml logs -f
 #   docker compose -f /opt/stacks/mealdeal/compose.yaml up -d --build
+
+# Operate the KB retrieval service (CT 140). Same `bash -lc` PATH rule as the bench wrappers.
+pct exec 140 -- bash -lc 'kb-stats'            # index commit, embed model, chunk/doc counts
+pct exec 140 -- bash -lc 'kb-reindex'          # git pull + incremental reindex now
+pct exec 140 -- bash -lc 'kb-reindex --full'   # drop + rebuild (required after an embed-model change)
+pct exec 140 -- systemctl status kb-rag        # and: journalctl -u kb-rag / list-timers kb-reindex.timer
 
 # Provision the benchmark runner (CT 200); auto-targets CT 120's API
 ./bench-runner/create-lxc-bench-runner.sh
@@ -193,6 +241,11 @@ Engine differences that matter when extending the llama.cpp script:
 ⚠️ When you add or rename a file under `bench-runner/scripts/` or `bench-runner/config/`,
 you MUST also add it to the hardcoded `files=( ... )` array in `download_benchmark_suite`,
 or the standalone install path will silently ship an incomplete suite.
+
+`kb-rag/create-lxc-kb-rag.sh` mirrors this idiom for `kb-rag/app/` — same two paths, same trap,
+different array name: **`APP_FILES=( ... )`** near the top of the script (alongside
+`REPO_RAW_BASE`). Adding or renaming anything under `kb-rag/app/` without updating it ships a
+broken service on the standalone path.
 
 ### Benchmark orchestration
 
@@ -296,7 +349,9 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
     consumes CT 120's API. CT 122 `coder-runner` — the coding loop's execution sandbox; CT 123 `gpu2` —
     a `llama-swap` server on GPU 2 for the loop (Qwen3-Instruct-2507 coder + Qwen3-Coder-30B reviewer,
     swapped one at a time))
-  - `140-159` — databases
+  - `140-159` — databases (CT 140 `kb-rag` — the CognitiveStack hybrid-search API; it lives here
+    rather than in the AI range because the durable artifact is a vector+FTS **database**, even
+    though its consumers are agents)
   - `200+` — test / temporary (CT 200 `bench-runner` — disposable benchmark LXC)
   - `300+` — **VMs** (VM 300 `docker-host`). The ranges above allocate *containers*; VMs get their
     own range so `pct`/`qm` ids never collide. Apps running as Docker containers on VM 300 do not
