@@ -29,10 +29,10 @@ readonly LLAMACPP_SHA256="06eb0d62006b4a253954058286163edd0ea33ccf0ba56a9ee2cd52
 # Pinned llama-swap release (Go proxy). Bump VERSION + SHA256 together from
 # https://github.com/mostlygeek/llama-swap/releases (asset llama-swap_<ver>_linux_amd64.tar.gz;
 # SHA-256 is in llama-swap_<ver>_checksums.txt).
-readonly LLAMASWAP_VERSION="243"
+readonly LLAMASWAP_VERSION="247"
 readonly LLAMASWAP_ASSET="llama-swap_${LLAMASWAP_VERSION}_linux_amd64.tar.gz"
 readonly LLAMASWAP_ASSET_URL="https://github.com/mostlygeek/llama-swap/releases/download/v${LLAMASWAP_VERSION}/${LLAMASWAP_ASSET}"
-readonly LLAMASWAP_SHA256="1bb27ccbdaff0c4e42ef2356e2e7b5c693073dd57f9dcecf6c35ae6847f0b140"
+readonly LLAMASWAP_SHA256="4001a068dc1dd154513919a31cc009d4f544426d2040bd02fbf33d90240c17df"
 
 # --- Coder model: Qwen3-30B-A3B-Instruct-2507 (instruct MoE, ~3B active; strong
 # agentic-coding instruction-follower, non-thinking by design so no runaway <think>
