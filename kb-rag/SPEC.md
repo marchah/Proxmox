@@ -15,8 +15,9 @@ reconstructs it from the git repo. This keeps the KB diffable, reviewable, and g
 git, and lets us swap embedding models / re-chunk / re-rank without touching the agents that
 consume it. If the vector store ever becomes the place where knowledge lives, we've regressed.
 
-Consequence: the whole service is disposable. The rootfs uses `backup=0` — back up the
-CognitiveStack git repo, not this container.
+Consequence: the whole service is disposable — back up the CognitiveStack git repo, not this
+container. (The *intent* was a `backup=0` rootfs; PVE doesn't allow that — see the Backup row
+below.)
 
 ## Identity & placement
 
@@ -32,7 +33,7 @@ CognitiveStack git repo, not this container.
 | Root size | `12` GB | venv + ONNX model cache + git checkout + sqlite index. All rebuildable. |
 | Net | `vmbr0`, `ip=dhcp` | Gets `10.10.10.140` behind the host WiFi-NAT; agents reach it by hostname. |
 | On boot | yes | Persistent service. |
-| Backup | rootfs `backup=0` | Index is rebuildable from git. |
+| Backup | **in `vzdump` anyway** | Intent was rootfs `backup=0` (the index is rebuildable from git), but ⚠️ PVE rejects `backup=` on `rootfs` — it is mount-point-only (verified pve-manager 9.2.3), so the script's `pct set` is a silent no-op and this CT lands in the weekly backup. To skip the bulk: `vzdump 140 --exclude-path /opt/kb-rag`. |
 
 ## Corpus policy (include / exclude)
 
@@ -284,10 +285,10 @@ kb-reindex.timer    OnBootSec=2min  OnUnitActiveSec=${REINDEX_INTERVAL}
 ## Operations & consumption
 
 ```bash
-# On the Proxmox host
-pct exec 140 -- kb-reindex            # pull + reindex now
-pct exec 140 -- kb-reindex --full     # rebuild from scratch (after a model change)
-pct exec 140 -- kb-stats              # index commit, model, chunk count
+# On the Proxmox host (wrappers are in /usr/local/bin, which a bare `pct exec` PATH omits)
+pct exec 140 -- bash -lc 'kb-reindex'          # pull + reindex now
+pct exec 140 -- bash -lc 'kb-reindex --full'   # rebuild from scratch (after a model change)
+pct exec 140 -- bash -lc 'kb-stats'            # index commit, model, chunk count
 
 # From any agent container (curl)
 curl -s http://kb-rag:8770/v1/search -H "Authorization: Bearer $KB_API_KEY" \

@@ -7,8 +7,9 @@ set -Eeuo pipefail
 # endpoint — REST and MCP-over-HTTP. See kb-rag/SPEC.md for the full design.
 #
 # Markdown-in-git stays the single source of truth; this container holds only a derived,
-# rebuildable index (sqlite-vec + FTS5), so the rootfs uses backup=0 and a wipe + reindex
-# reconstructs everything. Embeddings run on CPU (fastembed/ONNX) — no GPU, no load on CT 120.
+# rebuildable index (sqlite-vec + FTS5), so a wipe + reindex reconstructs everything — back up the
+# KB repo, not this container. (It still lands in vzdump: PVE won't take backup=0 on a rootfs —
+# see create_container.) Embeddings run on CPU (fastembed/ONNX) — no GPU, no load on CT 120.
 #
 # It syncs the KB with a read-only deploy key and reindexes on a 10-minute timer.
 #
@@ -182,8 +183,12 @@ create_container() {
 
   pct set "${VMID}" --tags kb-rag >/dev/null 2>&1 || true
 
-  # Index/model cache are rebuildable — keep the rootfs out of backups (repo convention).
-  # Append backup=0 to the ACTUAL allocated volume line (same size => no resize).
+  # Index/model cache are rebuildable, so we'd like the rootfs out of backups (repo convention).
+  # ⚠️ THIS IS A KNOWN NO-OP, kept only to mirror the other scripts: PVE rejects `backup=` on
+  # `rootfs` (`rootfs.backup: property is not defined in schema` — mount points only; verified on
+  # pve-manager 9.2.3), and the error is swallowed below. A container rootfs CANNOT be excluded
+  # from vzdump; to skip the bulk, exclude paths in the backup job instead:
+  #   vzdump 140 --exclude-path /opt/kb-rag
   local rootfs_line
   rootfs_line="$(pct config "${VMID}" | sed -n 's/^rootfs: //p')"
   if [[ -n ${rootfs_line} && ${rootfs_line} != *backup=* ]]; then
