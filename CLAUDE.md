@@ -385,9 +385,22 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   weekly pricing job can read it). Query with `pct exec 121 -- bash -lc 'token-usage-report --month
   YYYY-MM'`. Same idempotent `install.sh` + systemd + `.env` idiom as the `pro-v620/` host services, but
   it runs **inside CT 121**, not on the host. ⚠️ Every total is a **floor** — tokens served between the
-  last scrape and a restart are unrecoverable. ⚠️ **CT 123 (`gpu2`) is deliberately not covered**:
+  last scrape and a restart are unrecoverable.
+  It collects **two sources with different semantics, which must never be summed**:
+  - `endpoint` — the `/metrics` scrape above. Covers **every** client of CT 120 (including OpenCode on
+    the Mac), no attribution, resets on llama-server restart.
+  - `hermes_accounted` — Hermes' own `session_model_usage` table in `state.db`, keyed by
+    `session_id|model|billing_provider|task` (unique). Covers only what **Hermes** spent, attributed per
+    model, exact, never resets, and carries cache-read/reasoning/call counts. This is the **only** place
+    cloud usage appears — a model reached over `openai-codex` (the weekly pricing cron runs on
+    `gpt-5.6-terra`) never touches CT 120. Codex rows come back `cost_status: included`, i.e. free at
+    the margin under the ChatGPT plan, so they are not "spend" the way metered API tokens are.
+    ⚠️ `TOKEN_USAGE_DB_PROVIDERS` must **exclude** `custom`/`auto`/empty — those are CT 120 traffic the
+    endpoint source already counts, so including them doubles every local token.
+  ⚠️ **CT 123 (`gpu2`) is deliberately not covered** for non-Hermes traffic:
   llama-swap's `:8080/metrics` is host telemetry (CPU/memory/swap) with no token counters, and it
-  unloads/reloads models on demand so per-model counters would reset on every swap.
+  unloads/reloads models on demand so per-model counters would reset on every swap. (Anything *Hermes*
+  sends to a cloud provider is captured regardless of host, via the second source.)
 - Keep downloaded model weights and generated results out of git (already covered by
   `.gitignore`: `models/`, `results/`, `artifacts/`, `bench-results*.tgz`, `.env*`).
 - Container model storage (`/models`) uses `backup=0` — weights are large and
