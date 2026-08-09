@@ -1,0 +1,18 @@
+[Unit]
+Description=Scrape llama.cpp token counters every 5 minutes
+Documentation=https://github.com/marchah/Proxmox/tree/main/hermes/token-usage-collector
+
+[Timer]
+# Every 5 minutes. The interval is the data-loss bound, not a performance knob:
+# tokens served between the last scrape and a llama-server restart cannot be
+# recovered, so a shorter interval loses less. 5 minutes costs one trivial HTTP
+# GET per tick and caps the loss at ~5 minutes of traffic per restart.
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+# Catch up after the container was down, so a reboot does not silently leave a
+# gap that looks like idle time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

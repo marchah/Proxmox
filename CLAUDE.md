@@ -376,6 +376,18 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   (loop/orchestrator only — the box's unrelated KB/homelab automations are not tracked) with an idempotent
   `install.sh` — run it inside CT 121 to (re)deploy. Private Slack channel IDs are parameterized to env vars
   sourced from `/root/.hermes/.env` (see `hermes/config/hermes.env.example`); never commit the real `.env`.
+- **Token accounting (`hermes/token-usage-collector/`, CT 121).** llama.cpp exposes
+  `llamacpp:prompt_tokens_total`/`llamacpp:tokens_predicted_total` at `/metrics` (CT 120 runs
+  `--metrics`; without it that route 501s), but they are **counters since process start** and reset on
+  every restart — and restarting is the prompt-cache-corruption remedy, so it happens. A 5-minute
+  systemd timer inside CT 121 folds each scrape's delta into a durable daily ledger at
+  `/root/.hermes/token-usage/` (under the Hermes home so `backup-automations.sh` picks it up, and so the
+  weekly pricing job can read it). Query with `pct exec 121 -- bash -lc 'token-usage-report --month
+  YYYY-MM'`. Same idempotent `install.sh` + systemd + `.env` idiom as the `pro-v620/` host services, but
+  it runs **inside CT 121**, not on the host. ⚠️ Every total is a **floor** — tokens served between the
+  last scrape and a restart are unrecoverable. ⚠️ **CT 123 (`gpu2`) is deliberately not covered**:
+  llama-swap's `:8080/metrics` is host telemetry (CPU/memory/swap) with no token counters, and it
+  unloads/reloads models on demand so per-model counters would reset on every swap.
 - Keep downloaded model weights and generated results out of git (already covered by
   `.gitignore`: `models/`, `results/`, `artifacts/`, `bench-results*.tgz`, `.env*`).
 - Container model storage (`/models`) uses `backup=0` — weights are large and
