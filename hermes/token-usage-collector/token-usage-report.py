@@ -78,27 +78,46 @@ def main() -> int:
             continue
         days_seen += 1
         for source, bucket in daily[date].items():
-            acc = per_source.setdefault(source, {"prompt": 0, "predicted": 0, "resets": 0})
-            acc["prompt"] += bucket.get("prompt", 0)
-            acc["predicted"] += bucket.get("predicted", 0)
-            acc["resets"] += bucket.get("resets", 0)
+            acc = per_source.setdefault(source, {"prompt": 0, "predicted": 0, "resets": 0,
+                                                 "cache_read": 0, "reasoning": 0, "calls": 0})
+            for f in ("prompt", "predicted", "resets", "cache_read", "reasoning", "calls"):
+                acc[f] += bucket.get(f, 0)
 
-    total = sum(v["prompt"] + v["predicted"] for v in per_source.values())
+    # A source name containing "/" is `<billing_provider>/<model>` from Hermes'
+    # accounting table; anything else is a scraped endpoint. The two count
+    # overlapping populations (see token-usage.env), so they are never summed into
+    # one figure — only within a family.
+    def family(name: str) -> str:
+        return "hermes_accounted" if "/" in name else "endpoint"
+
+    fam_totals = {"endpoint": 0, "hermes_accounted": 0}
+    for name, v in per_source.items():
+        fam_totals[family(name)] += v["prompt"] + v["predicted"]
+
     payload = {
         "period": {"label": label, "since": since, "until": until, "days_with_data": days_seen},
         "sources": {
             name: {
+                "family": family(name),
                 "prompt_tokens": v["prompt"],
                 "predicted_tokens": v["predicted"],
                 "total_tokens": v["prompt"] + v["predicted"],
                 "counter_resets": v["resets"],
+                **({"cache_read_tokens": v["cache_read"]} if v["cache_read"] else {}),
+                **({"reasoning_tokens": v["reasoning"]} if v["reasoning"] else {}),
+                **({"api_calls": v["calls"]} if v["calls"] else {}),
             }
             for name, v in sorted(per_source.items())
         },
-        "total_tokens": total,
+        "family_totals": fam_totals,
+        "total_tokens": fam_totals["endpoint"] + fam_totals["hermes_accounted"],
         "caveat": (
             "floor, not an exact count: tokens served between the last scrape and a "
-            "llama-server restart are unrecoverable"
+            "llama-server restart are unrecoverable. 'endpoint' counts everything "
+            "hitting that server (any client); 'hermes_accounted' counts what Hermes "
+            "itself spent per model. They overlap for local models, so total_tokens is "
+            "only meaningful when the two families cover disjoint model sets — which "
+            "is the shipped default (endpoint=CT 120, accounted=cloud providers only)."
         ),
     }
 
@@ -113,15 +132,31 @@ def main() -> int:
         for name, entry in sorted(first.items()):
             print(f"  {name}: collector first saw this source at {entry.get('first_seen') or 'never'}")
         return 0
-    for name, v in sorted(per_source.items()):
-        tot = v["prompt"] + v["predicted"]
-        print(
-            f"  {name:12s} prompt {v['prompt']:>14,}  predicted {v['predicted']:>14,}"
-            f"  total {tot:>14,}"
-            + (f"  ({v['resets']} counter reset(s))" if v["resets"] else "")
-        )
-    print(f"  {'TOTAL':12s} {total:>60,}")
-    print("  floor, not exact — a restart between scrapes loses the tokens since the last scrape")
+    width = max(len(n) for n in per_source) + 1
+    for fam, title in (("endpoint", "Server endpoints (all clients of that server)"),
+                       ("hermes_accounted", "Hermes-accounted per model (incl. cloud providers)")):
+        members = {n: v for n, v in per_source.items() if family(n) == fam}
+        if not members:
+            continue
+        print(f"\n  {title}")
+        for name, v in sorted(members.items()):
+            tot = v["prompt"] + v["predicted"]
+            extra = ""
+            if v["cache_read"]:
+                extra += f"  cache_read {v['cache_read']:,}"
+            if v["reasoning"]:
+                extra += f"  reasoning {v['reasoning']:,}"
+            if v["calls"]:
+                extra += f"  calls {v['calls']:,}"
+            if v["resets"]:
+                extra += f"  ({v['resets']} counter reset(s))"
+            print(f"    {name:{width}s} in {v['prompt']:>12,}  out {v['predicted']:>10,}"
+                  f"  total {tot:>12,}{extra}")
+        print(f"    {'subtotal':{width}s} {fam_totals[fam]:>44,}")
+
+    print("\n  floor, not exact — a restart between scrapes loses the tokens since the last scrape")
+    print("  the two families count overlapping populations for local models and are not summed")
+    print("  here; by default they are disjoint (endpoint = CT 120, accounted = cloud only).")
     return 0
 
 

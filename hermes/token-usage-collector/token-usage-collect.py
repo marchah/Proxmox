@@ -43,6 +43,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import urllib.error
@@ -117,14 +118,61 @@ def scrape(url: str, timeout: float) -> dict[str, int]:
     return found
 
 
+def read_db_usage(db_path: str, providers: set[str]) -> dict[str, dict]:
+    """Per-row cumulative usage from Hermes' own `session_model_usage` table.
+
+    This is the only place cloud-provider usage exists: a model reached over
+    `openai-codex` never touches CT 120, so the /metrics scrape above cannot see
+    it. Hermes records every call here regardless of provider.
+
+    Returned keys are `session_id|model|billing_provider|task`, which is unique
+    across the table (verified: 0 duplicate groups in 972 rows, where the
+    3-tuple without `task` has 39). `task` separates the sub-calls Hermes makes
+    on its own account — `title_generation`, `compression`, `approval` — from the
+    main conversation, so they are attributed rather than silently folded in.
+
+    Read-only (`mode=ro`): the gateway is writing this database concurrently.
+    """
+    usage: dict[str, dict] = {}
+    uri = f"file:{db_path}?mode=ro"
+    con = sqlite3.connect(uri, uri=True, timeout=5.0)
+    try:
+        rows = con.execute("""
+            SELECT session_id, model, billing_provider, task,
+                   COALESCE(input_tokens,0)       AS input_tokens,
+                   COALESCE(output_tokens,0)      AS output_tokens,
+                   COALESCE(cache_read_tokens,0)  AS cache_read_tokens,
+                   COALESCE(reasoning_tokens,0)   AS reasoning_tokens,
+                   COALESCE(api_call_count,0)     AS api_call_count
+            FROM session_model_usage
+        """).fetchall()
+    finally:
+        con.close()
+
+    for sid, model, provider, task, inp, out, cread, reas, calls in rows:
+        if (provider or "") not in providers:
+            continue
+        key = f"{sid}|{model}|{provider}|{task or ''}"
+        usage[key] = {
+            "series": f"{provider}/{model}",
+            "prompt": int(inp),
+            "predicted": int(out),
+            "cache_read": int(cread),
+            "reasoning": int(reas),
+            "calls": int(calls),
+        }
+    return usage
+
+
 def load_state(path: str) -> dict:
     if not os.path.exists(path):
-        return {"version": STATE_VERSION, "sources": {}, "daily": {}}
+        return {"version": STATE_VERSION, "sources": {}, "daily": {}, "db_rows": {}}
     with open(path, encoding="utf-8") as fh:
         state = json.load(fh)
     state.setdefault("version", STATE_VERSION)
     state.setdefault("sources", {})
     state.setdefault("daily", {})
+    state.setdefault("db_rows", {})
     return state
 
 
@@ -148,7 +196,7 @@ def render_daily_jsonl(state: dict) -> str:
     for date in sorted(state["daily"]):
         for source in sorted(state["daily"][date]):
             bucket = state["daily"][date][source]
-            lines.append(json.dumps({
+            row = {
                 "date": date,
                 "source": source,
                 "prompt_tokens": bucket.get("prompt", 0),
@@ -156,7 +204,12 @@ def render_daily_jsonl(state: dict) -> str:
                 "total_tokens": bucket.get("prompt", 0) + bucket.get("predicted", 0),
                 "samples": bucket.get("samples", 0),
                 "resets": bucket.get("resets", 0),
-            }, sort_keys=True))
+            }
+            # Only the DB source carries these, so emit them only where real.
+            for extra in ("cache_read", "reasoning", "calls"):
+                if extra in bucket:
+                    row[f"{extra}_tokens" if extra != "calls" else "api_calls"] = bucket[extra]
+            lines.append(json.dumps(row, sort_keys=True))
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -165,9 +218,11 @@ def main() -> int:
     sources = parse_sources(env("TOKEN_USAGE_SOURCES", "llamacpp=http://llamacpp:1234/metrics"))
     timeout = float(env("TOKEN_USAGE_TIMEOUT", "5"))
     tz_name = env("TOKEN_USAGE_TZ", "America/New_York")
+    db_path = env("TOKEN_USAGE_DB", "/root/.hermes/state.db")
+    db_providers = {p for p in env("TOKEN_USAGE_DB_PROVIDERS", "openai-codex").split() if p}
 
-    if not sources:
-        log("no sources configured (TOKEN_USAGE_SOURCES); nothing to do")
+    if not sources and not db_providers:
+        log("nothing configured (TOKEN_USAGE_SOURCES / TOKEN_USAGE_DB_PROVIDERS)")
         return 2
 
     tz = ZoneInfo(tz_name) if ZoneInfo else None
@@ -246,6 +301,56 @@ def main() -> int:
 
             note = " (counter reset detected)" if reset else ""
             log(f"{name}: +{delta['prompt']} prompt, +{delta['predicted']} predicted{note}")
+
+        # ── Cloud/provider usage from Hermes' own accounting ─────────────────
+        # Separate mechanism, separate semantics: these are per-row cumulative
+        # totals, not a process counter, so a DECREASE means the session row was
+        # pruned (sessions cascade-delete), NOT a restart. Deltas are therefore
+        # clamped at zero — never re-attributed like an endpoint reset.
+        if db_providers:
+            try:
+                current = read_db_usage(db_path, db_providers)
+            except (sqlite3.Error, OSError) as exc:
+                log(f"db: read failed: {exc}")
+                current = None
+            if current is not None:
+                seen = state["db_rows"]
+                # First pass ever: record cursors for everything already in the table
+                # and attribute NOTHING. Those calls happened before the collector
+                # existed — the endpoint source baselines the same way. Without this,
+                # day one absorbs the entire history (the initial run attributed
+                # 216k gpt-5.6-terra tokens dating back to 2026-07-18 to that day).
+                baseline = not state.get("db_baselined")
+                totals: dict[str, dict[str, int]] = {}
+                for key, row in current.items():
+                    prev = seen.get(key) or {}
+                    if not baseline:
+                        acc = totals.setdefault(row["series"], {})
+                        for field in ("prompt", "predicted", "cache_read", "reasoning", "calls"):
+                            delta = row[field] - int(prev.get(field, 0))
+                            if delta > 0:
+                                acc[field] = acc.get(field, 0) + delta
+                    seen[key] = {k: row[k] for k in
+                                 ("prompt", "predicted", "cache_read", "reasoning", "calls")}
+                if baseline:
+                    state["db_baselined"] = True
+                    log(f"db: baselined {len(current)} existing row(s); "
+                        "pre-existing history not attributed to today")
+                # A pruned row simply stops contributing; drop its cursor so the
+                # state file does not grow without bound.
+                for stale in set(seen) - set(current):
+                    del seen[stale]
+
+                for series, acc in sorted(totals.items()):
+                    if not any(acc.values()):
+                        continue
+                    bucket = state["daily"].setdefault(today, {}).setdefault(
+                        series, {"prompt": 0, "predicted": 0, "samples": 0, "resets": 0})
+                    for field, value in acc.items():
+                        bucket[field] = bucket.get(field, 0) + value
+                    bucket["samples"] += 1
+                    log(f"{series}: +{acc.get('prompt', 0)} in, +{acc.get('predicted', 0)} out"
+                        f" ({acc.get('calls', 0)} call(s))")
 
         write_atomic(state_path, json.dumps(state, indent=2, sort_keys=True) + "\n")
         write_atomic(daily_path, render_daily_jsonl(state))

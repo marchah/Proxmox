@@ -4,6 +4,13 @@ A systemd timer inside **CT 121** that turns llama.cpp's resettable Prometheus
 counters into a durable daily series, so "how many tokens did we spend last month"
 finally has an answer.
 
+It reads **two** sources, kept deliberately separate: CT 120's `/metrics` endpoint
+(all clients, resets on restart) and Hermes' own `session_model_usage` accounting
+(per model and provider, exact, never resets) — the latter being the only place
+cloud usage such as `gpt-5.6-terra` over `openai-codex` appears at all. See
+[Cloud / Codex usage](#cloud--codex-usage--a-second-different-source) for why they
+must never be summed.
+
 Runs **inside the Hermes LXC**, not on the Proxmox host — unlike the `pro-v620/`
 services. It scrapes over HTTP (no `pct` needed) and writes where the weekly
 online-model-pricing job can read it without extra plumbing.
@@ -43,7 +50,7 @@ pct exec 121 -- bash -lc 'tar -xzf /tmp/tuc.tgz -C /tmp && cd /tmp/token-usage-c
 ## Use
 
 ```bash
-pct exec 121 -- bash -lc 'token-usage-report'                 # last 30 days
+pct exec 121 -- bash -lc 'token-usage-report'                 # last 30 days, both families
 pct exec 121 -- bash -lc 'token-usage-report --month 2026-08'
 pct exec 121 -- bash -lc 'token-usage-report --days 7 --json'
 pct exec 121 -- systemctl list-timers token-usage-collect.timer
@@ -87,6 +94,46 @@ Read this before quoting a number.
 So the series is a lower bound. Good enough to answer "are we above or below the
 ~18M tokens/month hosted break-even", which is what it exists for; not an
 accounting record.
+
+## Cloud / Codex usage — a second, different source
+
+A model reached over `openai-codex` (the weekly pricing cron now runs on
+`gpt-5.6-terra`) never touches CT 120, so `/metrics` cannot see it. Hermes records
+every call it makes — any provider — in `state.db`'s **`session_model_usage`**
+table, so the collector reads that too, filtered to the providers named in
+`TOKEN_USAGE_DB_PROVIDERS` (default `openai-codex`).
+
+Different mechanism, different semantics, and better behaved than the counters:
+
+- **Exact per-row deltas.** Keyed by `session_id|model|billing_provider|task`,
+  which is unique across the table (verified: 0 duplicate groups in 972 rows —
+  the 3-tuple without `task` has 39). `task` separates Hermes' own overhead calls
+  (`title_generation`, `compression`, `approval`) from the conversation.
+- **No reset problem.** Rows only grow. A *decrease* means the session row was
+  pruned (`session_model_usage` cascade-deletes with its session), not a restart,
+  so deltas are clamped at zero and never re-attributed.
+- **Richer.** Carries `cache_read_tokens`, `reasoning_tokens` and `api_call_count`.
+  Codex rows come back `billing_mode: subscription_included` /
+  `cost_status: included` — i.e. free at the margin under the ChatGPT plan, which
+  is exactly what the local-vs-hosted comparison needs to know.
+- **First pass attributes nothing**, same as the endpoint source. Rows already in
+  the table predate the collector. (Learned the hard way: the initial run booked
+  216k `gpt-5.6-terra` tokens dating to 2026-07-18 into a single day.)
+
+⚠️ **Do not add `custom`, `auto`, or the empty provider to
+`TOKEN_USAGE_DB_PROVIDERS`.** That is CT 120 traffic, which the `llamacpp`
+endpoint already counts — you would double every local token. The two sources
+measure deliberately different populations:
+
+| Family | Covers | Attribution | Resets |
+| --- | --- | --- | --- |
+| `endpoint` (`/metrics`) | **all** clients of that server, incl. OpenCode on the Mac | none | on llama-server restart |
+| `hermes_accounted` (`provider/model`) | only what **Hermes** spent | per model + provider | never |
+
+`token-usage-report` prints them as separate families with separate subtotals and
+never merges them into one headline number. `total_tokens` in the JSON is only
+meaningful because the shipped default keeps the families disjoint (endpoint =
+CT 120, accounted = cloud only).
 
 ## Why CT 123 (`gpu2`) is absent
 
