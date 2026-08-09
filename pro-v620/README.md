@@ -176,6 +176,31 @@ pct exec 120 -- journalctl -u llamacpp.service -n 100 --no-pager   # shows the c
 curl http://<container-ip>:1234/v1/models                          # id == qwen3.6-35b-a3b
 ```
 
+### Token accounting (`/metrics`)
+
+The service runs with `--metrics`, so `GET /metrics` serves Prometheus counters
+(without the flag that route returns **501**):
+
+```bash
+pct exec 120 -- bash -lc 'curl -s http://127.0.0.1:1234/metrics | grep -E "prompt_tokens_total|tokens_predicted_total"'
+```
+
+`llamacpp:prompt_tokens_total` and `llamacpp:tokens_predicted_total` are the only
+place this homelab produces a usable token count — llama.cpp returns a per-response
+`usage` object, but nothing persists it, which is why "what do we actually spend
+per month" has been unanswerable.
+
+> ⚠️ **These are counters since process start and reset on every restart** —
+> including the restarts used to clear the prompt-cache corruption. One scrape is
+> "tokens since `<uptime>`", *never* a monthly total. Getting a real monthly figure
+> needs something that accumulates deltas over time; that does not exist yet.
+> Pair a reading with `systemctl show llamacpp -p ActiveEnterTimestamp --value`.
+
+**CT 123 (`gpu2`) cannot do this.** Its `:8080/metrics` is llama-swap's *own*
+process telemetry (CPU, memory, swap) with no token counters, and because
+llama-swap unloads and reloads models on demand, per-model llama.cpp counters
+would reset on every swap. Token accounting there needs a different mechanism.
+
 ### Reasoning / thinking (important for agents)
 
 Qwen3.6 "medium" models (including this MoE) have **thinking ON by default**. The

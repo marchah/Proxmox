@@ -1,0 +1,22 @@
+[Unit]
+Description=Accumulate llama.cpp token counters into a restart-proof ledger
+Documentation=https://github.com/marchah/Proxmox/tree/main/hermes/token-usage-collector
+# Network-bound but not network-critical: a missed sample is normal, so this does
+# not gate on network-online.target and does not retry.
+After=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/token-usage.env
+ExecStart=/usr/local/bin/token-usage-collect
+Nice=10
+# Only ever writes under the Hermes home. ReadWritePaths names the PARENT rather
+# than the ledger dir itself on purpose: systemd fails the unit with a confusing
+# 226/NAMESPACE error if a ReadWritePaths entry does not exist, and the ledger dir
+# is created by the collector on first run.
+# ⚠️ If you point TOKEN_USAGE_DIR outside /root/.hermes, add that path here too or
+# the service will fail to start.
+ProtectSystem=strict
+ReadWritePaths=/root/.hermes
+PrivateTmp=yes
+NoNewPrivileges=yes

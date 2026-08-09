@@ -444,6 +444,17 @@ EOF
 # whole prompt (~5 s for 6k tokens at ~1.1k tok/s) — within-conversation slot KV
 # reuse is unaffected, so multi-turn sessions still get incremental eval.
 # REMOVE THIS once those tickets are fixed and the fix is in the pinned build.
+# --metrics exposes Prometheus counters at GET /metrics (without it that route
+# returns 501). The ones that matter here are llamacpp:prompt_tokens_total and
+# llamacpp:tokens_predicted_total, which is the only place this homelab produces
+# a token count: llama.cpp returns a per-response `usage` object, but nothing
+# persists it, so "what do we actually spend per month" was unanswerable — see
+# the local-vs-hosted note in the CognitiveStack online-ai-models category, which
+# is blocked on exactly this number. Cost is a counter increment per request.
+# ⚠️ These are counters SINCE PROCESS START, and they reset on every restart —
+# including the restarts used to clear the prompt-cache corruption above. A single
+# scrape is "tokens since <uptime>", never a monthly total; accumulating deltas
+# over time is a separate job that does not exist yet.
 cat >/usr/local/bin/llamacpp-serve <<'EOS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -478,6 +489,7 @@ exec "${LLAMACPP_DIR}/llama-server" \
   --jinja \
   --reasoning-format none \
   --cache-ram 0 \
+  --metrics \
   --alias "${MODEL_ALIAS}"
 EOS
 chmod 755 /usr/local/bin/llamacpp-serve
