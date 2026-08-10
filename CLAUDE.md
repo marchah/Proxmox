@@ -32,6 +32,37 @@ These containers form the system:
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
+    - **DFlash speculative decoding is live on the `qwen3.6-27b-dflash` entry** (live-only config, not
+      baked into the script — like every other model here). Measured 2026-08-10 on GPU 2 with
+      llama.cpp b10308: **17.6 → 43.8 tok/s, a 2.49× speedup** on the dense 27B, output unchanged.
+      `llamaswap-guarded-serve` gained two backward-compatible env hooks for this: `LLAMACPP_DIR`
+      (pin ONE entry to a different llama.cpp build without moving the shared
+      `/opt/llamacpp/current` symlink) and `EXTRA_ARGS` (extra `llama-server` flags).
+      Flags: `--spec-type draft-dflash --spec-draft-model /models/hf/Qwen3.6-27B-DFlash-Q8_0.gguf
+      --spec-draft-n-max 4 --spec-draft-ngl 99`.
+      - ⚠️ **`--spec-draft-n-max` is tuned to 4 and must stay ≤ 6.** Sweep on this hardware:
+        n=2 → 2.06×, n=3 → 2.40×, **n=4 → 2.49×**, n=6 → 2.54×, **n=8 → 0.97×**, n=16 → 1.07×.
+        There is a **cliff** between 6 and 8, not a gradual falloff — and it is not an acceptance
+        problem (accepted-tokens-per-target-pass keeps *rising* at n=8/16), so each forward pass is
+        getting ~4.5× more expensive past n=6. Looks like a backend threshold, not a hardware limit.
+        **Do NOT set this from the drafter GGUF's `dflash.block_size` (16)** — that is the worst
+        value tested.
+      - ⚠️ **TODO at the next llama.cpp bump on CT 123: re-run the n-max sweep.** The n≥8 cliff may
+        well be a fixable Vulkan/backend bug; if it lifts, the optimum moves and 6+ becomes worth
+        using. Sweep script idiom: rewrite the `--spec-draft-n-max` value in
+        `/etc/llama-swap/config.yaml`, `systemctl restart llama-swap`, re-run the 3-prompt A/B and
+        compare `predicted_per_second` plus `draft_n`/`draft_n_accepted`. (Pairs with the existing
+        bump TODO to re-check `--cache-ram 0` on CT 120.)
+      - ⚠️ **The drafter GGUF must declare `general.architecture = dflash`, not `dflash-draft`.**
+        Upstream registers `dflash`; several community repos ship the fork's name and fail to load
+        with `unknown model architecture` (llama.cpp #25116). Known good: `williamliao/…`,
+        `Anbeeld/…`. Known bad: `spiritbuun/…`, `Lucebox/…`, `Ardenzard/…`. Check before downloading
+        gigabytes: `curl -fsSL -r 0-1023 <url> | tr -c '[:print:]' '\n' | grep -aoE 'dflash[a-z-]*' | head -1`.
+      - **Speculation is a dense-model lever, not a universal one.** Same GPU, same build, same
+        prompts: dense 27B 17.6 → 43.8 with DFlash, but the **3B-active MoE `qwen3.6-35b-a3b` runs
+        63.1 tok/s with no speculation at all**. A 3B-active MoE's decode is already cheap, so
+        draft/verify overhead dominates and there is nothing to win — an earlier separate-draft-model
+        test on the MoE was completely inert. Reach for DFlash on dense targets only.
   - **Prior GPU (`rx-6700-xt/`, kept for reference):** the V620 replaced a Radeon RX 6700 XT
     (12 GiB) that served `Qwen3.5-9B-Q4_K_M.gguf` (id `qwen3.5-9b`) via two interchangeable
     engine scripts — `create-lxc-lmstudio-qwen3.5-9b.sh` (LM Studio `lms`) and
