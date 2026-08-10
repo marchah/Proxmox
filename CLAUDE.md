@@ -381,11 +381,16 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   `--metrics`; without it that route 501s), but they are **counters since process start** and reset on
   every restart — and restarting is the prompt-cache-corruption remedy, so it happens. A 5-minute
   systemd timer inside CT 121 folds each scrape's delta into a durable daily ledger at
-  `/root/.hermes/token-usage/` (under the Hermes home so `backup-automations.sh` picks it up, and so the
-  weekly pricing job can read it). Query with `pct exec 121 -- bash -lc 'token-usage-report --month
+  `/root/.hermes/token-usage/` (under the Hermes home so the weekly pricing job can read it).
+  Query with `pct exec 121 -- bash -lc 'token-usage-report --month
   YYYY-MM'`. Same idempotent `install.sh` + systemd + `.env` idiom as the `pro-v620/` host services, but
   it runs **inside CT 121**, not on the host. ⚠️ Every total is a **floor** — tokens served between the
   last scrape and a restart are unrecoverable.
+  ⚠️ **The ledger is deliberately NOT in the git config backup** (excluded 2026-08-10, commit `48b8eee`
+  in `marchah/hermes-agent-backup`): `daily.jsonl` gains a row and `state.json` is rewritten on *every*
+  5-minute scrape, so they churned the diff on every single run, and that backup is meant to show what
+  Hermes *changed*, not operational counters. Its only off-box copy is therefore the **weekly Sunday
+  vzdump of CT 121** — a ledger loss between vzdumps is unrecoverable, on top of the floor caveat above.
   It collects **two sources with different semantics, which must never be summed**:
   - `endpoint` — the `/metrics` scrape above. Covers **every** client of CT 120 (including OpenCode on
     the Mac), no attribution, resets on llama-server restart.
