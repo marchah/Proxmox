@@ -82,6 +82,13 @@ readonly MODEL_GPU_LAYERS="99"
 # reasoning AND the answer. The MoE activates only ~3B params/token so it still
 # batches cheaply; go back to 4 (or down to 1 for a single 256k agent) via
 # `llamacpp-reload <ctx> <parallel>`. Continuous batching is on by default.
+# ⚠️ STALE PREMISE, KEPT FOR HISTORY: thinking is now OFF (`--reasoning off`, see
+# the flag comment below), so nothing generates a <think> block that could overrun
+# a 64k slot. That means **4 is viable again** and would double concurrency. 2 is
+# still shipped because it is the long-verified production setting and the 4-way
+# behaviour has NOT been re-measured since thinking was disabled — raise it as a
+# deliberate benchmarked step, not a free win. Re-read this note if you ever
+# re-enable thinking, because then the original reasoning applies again.
 readonly MODEL_PARALLEL="2"
 readonly MODEL_SERVER_BIND="0.0.0.0"
 readonly MODEL_SERVER_PORT="1234"
