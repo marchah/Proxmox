@@ -26,6 +26,30 @@ These containers form the system:
   fan/undervolt/watchdog services manage both. Both cards are undervolted −100 mV:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
     (hostname `llamacpp`). This is the current runtime.
+    - ⚠️ **Thinking is DISABLED — `--reasoning off` in `/usr/local/bin/llamacpp-serve`**
+      (live-only since 2026-08-11; **not** in the provisioning script, so a CT 120 rebuild loses
+      it). Because Hermes' default provider `custom` points here, **this is also the Hermes
+      default**. Measured on the same prompt, before → after: 76.4 s / 6,000 tokens (hit the cap) /
+      12,262 chars of reasoning / **470-char answer** → 26.0 s / 2,045 tokens / **0** reasoning /
+      **4,930-char answer**. Thinking was consuming the whole budget and returning a truncated
+      reply — that is the `Thinking Budget Exhausted` failure, on demand.
+      - Rationale: on KB ingestion (the only real Hermes consumer now; the daily reports moved to
+        an OpenAI subscription) reasoning was ~80 % of the token spend and produced a *shorter*
+        entry — 5× faster at the same 6/6 template sections. It removes the thinking-budget failure
+        structurally instead of sizing slots around it.
+      - ⚠️ **`--reasoning off` ≠ `--reasoning-format none`** (both now present). The latter only
+        decides *where* thought tags go; it does not stop them being generated.
+      - ⚠️ **Do not try to do this from Hermes.** `hermes --reasoning none` does **not** reach a
+        bare `custom` OpenAI endpoint — measured 2,845 → 2,656 output tokens (~7 %), versus ~3.5×
+        when thinking is genuinely off — and it does not even reject an invalid level. Hermes'
+        reasoning-effort abstraction targets providers with a native parameter. Server-side or
+        nothing.
+      - ⚠️ The flag lives in the **serve script**, not `/etc/llamacpp.env`, so it survives
+        `llamacpp-reload` (which rewrites only ctx/parallel).
+      - **Two knobs are now over-provisioned** (deliberately left alone): `MODEL_PARALLEL=2`
+        (131k/slot) was chosen *because* reasoning filled slots, so `4` (65k/slot) is viable again
+        for 2× concurrency; and Hermes `context_length: 65536` was set to deliberately half a slot
+        so the prompt could not crowd out reasoning output, which no longer applies.
   - `pro-v620/create-lxc-llama-swap-gpu2.sh` — **CT 123 `gpu2`** on GPU 2: a `llama-swap` proxy for the
     autonomous coding loop that hot-swaps between a coder model (Qwen3-30B-A3B-Instruct-2507, alias
     `qwen3-instruct-2507`) and a reviewer model (Qwen3-Coder-30B-A3B-Instruct, alias `qwen3-coder-30b-a3b`),
