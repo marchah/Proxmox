@@ -82,6 +82,13 @@ readonly MODEL_GPU_LAYERS="99"
 # reasoning AND the answer. The MoE activates only ~3B params/token so it still
 # batches cheaply; go back to 4 (or down to 1 for a single 256k agent) via
 # `llamacpp-reload <ctx> <parallel>`. Continuous batching is on by default.
+# ⚠️ STALE PREMISE, KEPT FOR HISTORY: thinking is now OFF (`--reasoning off`, see
+# the flag comment below), so nothing generates a <think> block that could overrun
+# a 64k slot. That means **4 is viable again** and would double concurrency. 2 is
+# still shipped because it is the long-verified production setting and the 4-way
+# behaviour has NOT been re-measured since thinking was disabled — raise it as a
+# deliberate benchmarked step, not a free win. Re-read this note if you ever
+# re-enable thinking, because then the original reasoning applies again.
 readonly MODEL_PARALLEL="2"
 readonly MODEL_SERVER_BIND="0.0.0.0"
 readonly MODEL_SERVER_PORT="1234"
@@ -427,9 +434,27 @@ EOF
 # OpenAI-compatible benchmark counts every generated token and measures TTFT at
 # the true first token. Qwen3.6 "medium" (incl. this MoE) has thinking ON by
 # default, so without this the `content` stream is empty and the benchmark would
-# flag every request as invalid_output. (An agent client that can't handle inline
-# reasoning should instead disable thinking via chat-template kwargs — see
-# pro-v620/README.md.)
+# flag every request as invalid_output.
+# --reasoning off DISABLES thinking outright. It is a DIFFERENT flag from
+# --reasoning-format none: that one only decides *where* thought tags go, it does
+# not stop them being generated. Measured on this model, same prompt, on/off:
+# 76.4s / 6000 tokens (HIT the output cap) / 12262 chars of reasoning / a
+# 470-char answer  ->  26.0s / 2045 tokens / 0 reasoning / a 4930-char answer.
+# The "on" column is the `Thinking Budget Exhausted` failure reproduced on demand:
+# reasoning consumed the whole budget and returned a truncated reply. On this
+# box's actual workload (KB ingestion via Hermes) reasoning was ~80% of the token
+# spend and produced a *shorter* entry — 5x faster at identical template section
+# coverage. Turning it off removes that failure mode structurally instead of
+# sizing per-slot context around it.
+# NOTE this is also the Hermes default, because CT 121's default provider
+# (`custom`) points at this endpoint — there is no separate Hermes setting.
+# Do NOT try to do this from the client: `hermes --reasoning none` does NOT reach
+# a bare custom OpenAI endpoint (measured 2845 -> 2656 output tokens, ~7%, versus
+# ~3.5x here) and does not even reject an invalid level. Server-side or nothing.
+# Per-request override for a caller that DOES want thinking:
+# `chat_template_kwargs: {"enable_thinking": true}`.
+# ⚠️ If you re-enable thinking, revisit MODEL_PARALLEL: 2 (131k/slot) was chosen
+# *because* reasoning filled 65k slots. With thinking off, 4 is viable again.
 # --cache-ram 0 DISABLES llama-server's prompt cache (default 8192 MiB). On
 # b10152 that cache served KV state that did not match the request's prompt: the
 # model then decoded a wall of '/' to the 65,536-token generation cap, ~17 min of
@@ -488,6 +513,7 @@ exec "${LLAMACPP_DIR}/llama-server" \
   --ubatch-size 1024 \
   --jinja \
   --reasoning-format none \
+  --reasoning off \
   --cache-ram 0 \
   --metrics \
   --alias "${MODEL_ALIAS}"
