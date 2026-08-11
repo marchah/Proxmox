@@ -56,6 +56,33 @@ These containers form the system:
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
+    - ⚠️ **It now serves EIGHT models, not two** — the coder/reviewer pair above plus general and
+      evaluation models, all **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked
+      into the script** (they change as models are trialled). As of 2026-08-11:
+      `qwen3-instruct-2507`, `qwen3-coder-30b-a3b` (loop pair) · `qwen3.6-35b-a3b`, `qwen3.6-27b`,
+      `thinkingcap-27b`, `ornith` (general) · `qwen3.6-27b-dflash`, `muse-glimmer-30b` (DFlash).
+      A rebuild from the script yields **none** of them — re-add by hand.
+    - **`muse-glimmer-30b`** — Meta Superintelligence Lab, dense 28B + 2B perception encoder,
+      Apache-2.0. Deployed quant is Meta's own **`muse-glimmer-30B-kquant-dynamic.gguf`**
+      (19.65 GB, ~5.64 bpw effective despite the "4-bit" label — it is mixed-precision), plus
+      Meta's **`dflash-kquant.gguf`** drafter (1.63 GB). Chosen over Unsloth's ladder because it
+      is the **only** Muse Glimmer quant with a published degradation figure (Meta: 0.2 % average
+      over 15 benchmarks; their 17 GB build is 1.0 %). Unsloth publishes no accuracy numbers for
+      any of its Muse quants, so a switch would trade a measured build for an unmeasured one.
+      Three settings are **required**, each found the hard way:
+      - `--reasoning-format auto`. With `none` (the wrapper default) the model's channel format
+        (`to=<recipient>`, `<|message|>`) leaks raw into `content` and the reply is unusable.
+      - `--spec-draft-n-max 3`. Measured optimum **for this drafter**: 2 → 37.4, **3 → 41.8**,
+        4 → 41.0, 6 → 39.4 tok/s. `qwen3.6-27b-dflash`'s optimum is **4** — the value does not
+        transfer between models, so sweep any new drafter.
+      - A generous client `max_tokens`. It reasons before answering: at 300 the reply comes back
+        with `content` **completely empty** and everything in `reasoning_content`. At 2500 it used
+        465 and finished cleanly. A low cap yields empty responses, not errors.
+      - Without DFlash it runs **18.8 tok/s**; with it, **41.8** (2.2×, reproducing Meta's own
+        2.21 × claim). For scale, the 3B-active MoE `qwen3.6-35b-a3b` does 63.1 tok/s unaccelerated
+        — dense-vs-sparse dominates, and speculation narrows that gap without closing it.
+      - ⚠️ DFlash and **vision are mutually exclusive** upstream (llama.cpp #26108, still open), so
+        the `mmproj` projector is not deployed.
     - **DFlash speculative decoding is live on the `qwen3.6-27b-dflash` entry** (live-only config, not
       baked into the script — like every other model here). Measured 2026-08-10 on GPU 2 with
       llama.cpp: **17.6 → 43.8 tok/s, a 2.49× speedup** on the dense 27B, output unchanged.
