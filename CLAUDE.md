@@ -58,7 +58,7 @@ These containers form the system:
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
     - **DFlash speculative decoding is live on the `qwen3.6-27b-dflash` entry** (live-only config, not
       baked into the script — like every other model here). Measured 2026-08-10 on GPU 2 with
-      llama.cpp b10308: **17.6 → 43.8 tok/s, a 2.49× speedup** on the dense 27B, output unchanged.
+      llama.cpp: **17.6 → 43.8 tok/s, a 2.49× speedup** on the dense 27B, output unchanged.
       `llamaswap-guarded-serve` gained two backward-compatible env hooks for this: `LLAMACPP_DIR`
       (pin ONE entry to a different llama.cpp build without moving the shared
       `/opt/llamacpp/current` symlink) and `EXTRA_ARGS` (extra `llama-server` flags).
@@ -76,7 +76,10 @@ These containers form the system:
         using. Sweep script idiom: rewrite the `--spec-draft-n-max` value in
         `/etc/llama-swap/config.yaml`, `systemctl restart llama-swap`, re-run the 3-prompt A/B and
         compare `predicted_per_second` plus `draft_n`/`draft_n_accepted`. (Pairs with the existing
-        bump TODO to re-check `--cache-ram 0` on CT 120.)
+        bump TODO to re-check `--cache-ram 0` on CT 120.) **Re-checked at the b10308 → b10361
+        bump on 2026-08-11: the cliff did NOT lift** — n=6 45.1 tok/s → n=8 17.6, essentially
+        unchanged. So it is not a transient upstream bug; keep n-max ≤ 6 and re-check again only
+        if a release notes Vulkan batching work.
       - ⚠️ **The drafter GGUF must declare `general.architecture = dflash`, not `dflash-draft`.**
         Upstream registers `dflash`; several community repos ship the fork's name and fail to load
         with `unknown model architecture` (llama.cpp #25116). Known good: `williamliao/…`,
