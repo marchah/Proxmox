@@ -26,10 +26,10 @@ These containers form the system:
   fan/undervolt/watchdog services manage both. Both cards are undervolted −100 mV:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
     (hostname `llamacpp`). This is the current runtime.
-    - ⚠️ **Thinking is DISABLED — `--reasoning off` in `/usr/local/bin/llamacpp-serve`**
-      (live-only since 2026-08-11; **not** in the provisioning script, so a CT 120 rebuild loses
-      it). Because Hermes' default provider `custom` points here, **this is also the Hermes
-      default**. Measured on the same prompt, before → after: 76.4 s / 6,000 tokens (hit the cap) /
+    - ⚠️ **Thinking is DISABLED — `--reasoning off`** in `/usr/local/bin/llamacpp-serve`, baked
+      into the provisioning script (so a rebuild keeps it) and applied live on 2026-08-11.
+      Because Hermes' default provider `custom` points here, **this is also the Hermes default** —
+      there is no separate Hermes setting. Measured on the same prompt, before → after: 76.4 s / 6,000 tokens (hit the cap) /
       12,262 chars of reasoning / **470-char answer** → 26.0 s / 2,045 tokens / **0** reasoning /
       **4,930-char answer**. Thinking was consuming the whole budget and returning a truncated
       reply — that is the `Thinking Budget Exhausted` failure, on demand.

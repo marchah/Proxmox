@@ -153,6 +153,14 @@ Budget Exhausted"**). 128k/slot leaves comfortable room for the reasoning *and* 
 answer. If you need 4-way concurrency back for a genuinely multi-client burst,
 reload to `262144 4` — just expect heavy reasoning to risk the same ceiling.
 
+⚠️ **This reasoning applies only while thinking is ON, and it is now OFF** by default
+(`--reasoning off`, see [Reasoning / thinking](#reasoning--thinking-important-for-agents)).
+With no `<think>` block there is nothing to overrun a 64k slot, so **`--parallel 4`
+is viable again** and would double concurrency. `2` is kept as the shipped default
+because it has been the verified production setting and nobody has yet measured the
+4-way behaviour post-change — treat raising it as a deliberate, benchmarked step, not
+a free win.
+
 **Per-slot context = total ÷ parallel.** Switch modes live for the workload:
 
 ```bash
@@ -203,22 +211,41 @@ would reset on every swap. Token accounting there needs a different mechanism.
 
 ### Reasoning / thinking (important for agents)
 
-Qwen3.6 "medium" models (including this MoE) have **thinking ON by default**. The
-service runs with `--reasoning-format none`, which keeps the model's `<think>`
-block **inline** in the OpenAI `content` stream (rather than splitting it into
-`reasoning_content`). That is what the benchmark suite wants (it counts every
-token and measures true TTFT).
+Qwen3.6 "medium" models (including this MoE) have thinking ON by default, but
+**this service disables it: `--reasoning off`** (since 2026-08-11, baked into the
+provisioning script). Because CT 121's default Hermes provider (`custom`) points
+here, **that is also the Hermes default** — there is no separate Hermes setting.
 
-For an **agent**, decide how your client handles reasoning:
+Two flags, often confused, both present:
 
-- If the agent framework can parse/strip `<think>…</think>` (or you want the model
-  to plan), leave it as-is.
-- If the framework expects a clean tool-call response and **won't** strip
-  reasoning, disable thinking — add
-  `--chat-template-kwargs '{"enable_thinking": false}'` to `llamacpp-serve`
-  (`/usr/local/bin/llamacpp-serve` in the container, and the heredoc in this
-  script). A client can still re-enable it per request with
+| flag | what it does |
+| --- | --- |
+| `--reasoning off` | stops thinking being generated **at all** |
+| `--reasoning-format none` | only decides *where* thought tags go — inline in `content` rather than split into `reasoning_content`. It does **not** suppress them. |
+
+**Why off.** Measured on this model, same prompt, on → off:
+
+| | wall | completion tokens | reasoning | answer |
+| --- | ---: | ---: | ---: | ---: |
+| thinking on | 76.4 s | **6,000 (hit the cap)** | 12,262 ch | **470 ch** |
+| thinking off | 26.0 s | 2,045 | **0** | **4,930 ch** |
+
+The "on" row is the **"Thinking Budget Exhausted"** failure reproduced on demand —
+reasoning consumed the entire output budget and returned a truncated reply. On this
+box's real workload (KB ingestion via Hermes) reasoning was ~80 % of the token spend
+and produced a *shorter* entry: 5× faster at identical template coverage. Disabling
+it removes that failure structurally rather than sizing per-slot context around it
+(see [Why 2 slots, not 4](#context-window--concurrency), which that failure drove).
+
+- **To re-enable per request** (a client that wants the model to plan):
   `{"chat_template_kwargs": {"enable_thinking": true}}`.
+- ⚠️ **Do not try to disable it from the client.** `hermes --reasoning none` does
+  **not** reach a bare custom OpenAI endpoint — measured 2,845 → 2,656 output tokens
+  (~7 %), versus ~3.5× when thinking is genuinely off — and it does not even reject
+  an invalid level. Hermes' reasoning-effort abstraction targets providers with a
+  native parameter. Server-side or nothing.
+- ⚠️ The flag lives in the **serve script**, not `/etc/llamacpp.env`, so it survives
+  `llamacpp-reload` (which rewrites only ctx/parallel).
 
 ## Storage
 
