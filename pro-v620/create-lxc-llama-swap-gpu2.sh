@@ -42,8 +42,21 @@ readonly CODER_FILE="Qwen3-30B-A3B-Instruct-2507-Q5_K_M.gguf"
 readonly CODER_SHA256="74cf6e525344a184e59f8dbd1d18e59587f1a03eaff66f6b1fbd0ee3a53a3d68"
 readonly CODER_REVISION="eea7b2be5805a5f151f8847ede8e5f9a9284bf77"
 readonly CODER_ALIAS="qwen3-instruct-2507"
-readonly CODER_CTX="${CODER_CTX:-65536}"          # Hermes requires >=64K; per-slot window at --parallel 1
+readonly CODER_CTX="${CODER_CTX:-auto}"            # auto = llama.cpp --fit sizes it to free VRAM
 readonly CODER_NPREDICT="${CODER_NPREDICT:-8192}" # cap tokens/request (non-thinking, 8k is ample)
+
+# CTX defaults to `auto`, which makes llamaswap-guarded-serve omit --ctx-size so
+# llama-server loads the model's NATIVE maximum and then uses --fit to shrink it to
+# whatever fits free VRAM. That is "the largest context this model can actually have
+# on this card", recomputed at every load, instead of a hand-picked number that is
+# either wasteful or an OOM.
+# Measured on a 32 GB V620 when this was adopted (2026-08-13): ornith reached its full
+# 262144, thinkingcap 217088, qwen3.6-35b-a3b 212224, qwen3.6-27b 167936, and the two
+# Instruct MoEs 93696 — the last two are KV-heavy (48 layers x 4 KV heads x 128 head
+# dim ~= 98 KiB/token measured), so their native 262144 would need ~45 GB and is simply
+# unreachable here. Do NOT "fix" that by forcing a bigger number; it will OOM.
+# --fit only adjusts arguments the user did NOT set, which is why `auto` must omit
+# --ctx-size rather than pass 0. Set CODER_CTX/REVIEWER_CTX to an integer to pin one.
 
 # --- Reviewer model: Qwen3-Coder-30B-A3B-Instruct (coder MoE, ~3B active; non-thinking
 # by architecture — cannot emit <think>, so it can't do the unbounded-reasoning budget
@@ -53,7 +66,7 @@ readonly REVIEWER_FILE="Qwen3-Coder-30B-A3B-Instruct-UD-Q5_K_XL.gguf"
 readonly REVIEWER_SHA256="eb331a4eee8eb6b5a8eb25f44f96f45c71b8d10f553c0a456190dd590a7ef77d"
 readonly REVIEWER_REVISION="b17cb02dd882d5b6ab62fc777ad2995f19668350"
 readonly REVIEWER_ALIAS="qwen3-coder-30b-a3b"
-readonly REVIEWER_CTX="${REVIEWER_CTX:-65536}"          # reviewer reads a diff + a few files
+readonly REVIEWER_CTX="${REVIEWER_CTX:-auto}"            # auto = llama.cpp --fit sizes it to free VRAM
 readonly REVIEWER_NPREDICT="${REVIEWER_NPREDICT:-8192}" # cap tokens/request
 
 readonly SWAP_SERVER_BIND="0.0.0.0"
@@ -261,8 +274,21 @@ cat >/usr/local/bin/llamaswap-guarded-serve <<'EOS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 MODEL="$1"; PORT="$2"; CTX="$3"; ALIAS="$4"; NPREDICT="${5:--1}"   # NPREDICT default -1 = unlimited
-LS=/opt/llamacpp/current
-export LD_LIBRARY_PATH="${LS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+# LLAMACPP_DIR pins ONE model entry to a different llama.cpp build without moving the
+# /opt/llamacpp/current symlink that every other entry shares. Set it per-model with
+# `env LLAMACPP_DIR=... ` in the llama-swap cmd. Needed when a model's architecture landed
+# upstream after the pinned build (e.g. muse_glimmer, merged in b10342 — b10308 cannot load it).
+# LD_LIBRARY_PATH is set to exactly that dir rather than prepended to the unit's inherited
+# value, so a newer build never resolves a .so from the older one.
+LS="${LLAMACPP_DIR:-/opt/llamacpp/current}"
+export LD_LIBRARY_PATH="${LS}"
+
+# EXTRA_ARGS appends extra llama-server flags (e.g. --model-draft for speculative decoding).
+# Deliberately word-split via read -ra so a multi-flag string works.
+EXTRA=()
+if [[ -n "${EXTRA_ARGS:-}" ]]; then read -ra EXTRA <<< "${EXTRA_ARGS}"; fi
+
 # Require the AMD V620 (RADV) SPECIFICALLY — a bare "Vulkan" match would also accept a
 # software device (llvmpipe/lavapipe) and defeat the guard. Belt-and-suspenders with the
 # unit's RADV-only VK_ICD_FILENAMES.
@@ -275,10 +301,18 @@ if ! "${LS}/llama-server" --list-devices 2>/dev/null | grep -qiE 'V620|RADV'; th
 fi
 # --n-predict caps tokens generated per request (-1 = unlimited). Bound it (e.g. 8192) so a model that
 # runs away can't fill its whole ctx window and stall the loop; the loop's models are non-thinking so 8k is ample.
+# CTX=auto omits --ctx-size so llama.cpp loads the model's native maximum, then uses
+# --fit to shrink it to whatever actually fits device memory. That is "the biggest
+# context possible" computed per model at load time, instead of a hand-picked number
+# that is either wasteful or an OOM. --fit only adjusts arguments the user did NOT
+# set, which is why --ctx-size has to be absent rather than 0.
+CTX_ARGS=(--ctx-size "${CTX}")
+if [[ "${CTX}" == "auto" ]]; then CTX_ARGS=(--fit on); fi
+
 exec "${LS}/llama-server" --model "${MODEL}" --host 127.0.0.1 --port "${PORT}" \
-  --n-gpu-layers 99 --ctx-size "${CTX}" --parallel 1 --flash-attn on \
+  --n-gpu-layers 99 "${CTX_ARGS[@]}" --parallel 1 --flash-attn on \
   --batch-size 4096 --ubatch-size 1024 --jinja --reasoning-format none \
-  --n-predict "${NPREDICT}" --alias "${ALIAS}"
+  --n-predict "${NPREDICT}" --alias "${ALIAS}" ${EXTRA[@]+"${EXTRA[@]}"}
 EOS
 chmod 755 /usr/local/bin/llamaswap-guarded-serve
 
