@@ -51,17 +51,20 @@ These containers form the system:
         for 2× concurrency; and Hermes `context_length: 65536` was set to deliberately half a slot
         so the prompt could not crowd out reasoning output, which no longer applies.
   - `pro-v620/create-lxc-llama-swap-gpu2.sh` — **CT 123 `gpu2`** on GPU 2: a `llama-swap` proxy for the
-    autonomous coding loop that hot-swaps between a coder model (Qwen3-30B-A3B-Instruct-2507, alias
-    `qwen3-instruct-2507`) and a reviewer model (Qwen3-Coder-30B-A3B-Instruct, alias `qwen3-coder-30b-a3b`),
+    autonomous coding loop that hot-swaps between a coder model (Qwen3.8-27B, alias
+    `qwen3.8-27b-dflash`) and a reviewer model (ThinkingCap-Qwen3.6-27B, alias `thinkingcap-27b`),
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
     - ⚠️ **It now serves EIGHT models, not two** — the coder/reviewer pair above plus general and
       evaluation models, all **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked
       into the script** (they change as models are trialled). As of 2026-08-11:
-      `qwen3-instruct-2507`, `qwen3-coder-30b-a3b` (loop pair) · `qwen3.6-35b-a3b`, `qwen3.6-27b`,
-      `thinkingcap-27b`, `ornith` (general) · `qwen3.6-27b-dflash`, `muse-glimmer-30b` (DFlash).
-      A rebuild from the script yields **none** of them — re-add by hand.
+      `qwen3.8-27b-dflash` (coder), `thinkingcap-27b` (reviewer) · `qwen3.8-27b`, `qwen3.6-27b`,
+      `qwen3.6-35b-a3b`, `ornith` (general) · `qwen3.6-27b-dflash`, `muse-glimmer-30b` (DFlash).
+      A rebuild from the script yields only the bootstrap pair — re-add the rest by hand.
+      ⚠️ **`qwen3-instruct-2507` and `qwen3-coder-30b-a3b` were RETIRED 2026-08-14** and their
+      GGUFs deleted, freeing 43.47 GB. Neither had a capability case left — the latter scores
+      14 on the AA index against 32/35/38 for its peers, with no vendor benchmarks at its size.
     - **`muse-glimmer-30b`** — Meta Superintelligence Lab, dense 28B + 2B perception encoder,
       Apache-2.0. Deployed quant is Meta's own **`muse-glimmer-30B-kquant-dynamic.gguf`**
       (19.65 GB, ~5.64 bpw effective despite the "4-bit" label — it is mixed-precision), plus

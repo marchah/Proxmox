@@ -5,12 +5,16 @@ set -Eeuo pipefail
 # This script is intentionally specific (like its CT-120 sibling). It stands up a
 # SECOND Radeon Pro V620 service on GPU 2 for the autonomous coding loop: a
 # `llama-swap` proxy that hot-swaps between the loop's models — a dedicated coder
-# (Qwen3-30B-A3B-Instruct-2507) and a reviewer (Qwen3-Coder-30B-A3B-Instruct) —
-# one resident at a time (both can't co-reside on one 32 GB card). CT 120's
-# qwen3.6 on GPU 1 stays the untouched ops server; the loop's dispatcher is
-# serialized to one task at a time so the swap only fires at coder<->reviewer
-# handoffs. Serves an OpenAI-compatible API at 0.0.0.0:8080; clients pick the
-# model by name ("qwen3-instruct-2507" / "qwen3-coder-30b-a3b").
+# (Qwen3.8-27B) and a reviewer (ThinkingCap-Qwen3.6-27B) — one resident at a time
+# (both can't co-reside on one 32 GB card). CT 120's qwen3.6 on GPU 1 stays the
+# untouched ops server; the loop's dispatcher is serialized to one task at a time
+# so the swap only fires at coder<->reviewer handoffs. Serves an OpenAI-compatible
+# API at 0.0.0.0:8080; clients pick the model by name ("qwen3.8-27b" /
+# "thinkingcap-27b").
+#
+# This pair is only the BOOTSTRAP. The live container serves eight models, all
+# added by hand to /etc/llama-swap/config.yaml and deliberately not baked here —
+# see the note in CLAUDE.md. A rebuild gives you these two and nothing else.
 readonly GPU_NAME="Radeon Pro V620"
 # This container is pinned to GPU 2 (PCIe-3/chipset slot). GPU 1 (0000:2d:00.0)
 # runs CT 120 (qwen3.6 ops). Passthrough binds ONLY GPU 2's DRM nodes — the only
@@ -34,40 +38,54 @@ readonly LLAMASWAP_ASSET="llama-swap_${LLAMASWAP_VERSION}_linux_amd64.tar.gz"
 readonly LLAMASWAP_ASSET_URL="https://github.com/mostlygeek/llama-swap/releases/download/v${LLAMASWAP_VERSION}/${LLAMASWAP_ASSET}"
 readonly LLAMASWAP_SHA256="4001a068dc1dd154513919a31cc009d4f544426d2040bd02fbf33d90240c17df"
 
-# --- Coder model: Qwen3-30B-A3B-Instruct-2507 (instruct MoE, ~3B active; strong
-# agentic-coding instruction-follower, non-thinking by design so no runaway <think>
-# chains). Q5_K_M ~21.7 GB. Apache-2.0. Replaced Ornith (false-completed / stalled).
-readonly CODER_REPO="unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF"
-readonly CODER_FILE="Qwen3-30B-A3B-Instruct-2507-Q5_K_M.gguf"
-readonly CODER_SHA256="74cf6e525344a184e59f8dbd1d18e59587f1a03eaff66f6b1fbd0ee3a53a3d68"
-readonly CODER_REVISION="eea7b2be5805a5f151f8847ede8e5f9a9284bf77"
-readonly CODER_ALIAS="qwen3-instruct-2507"
+# --- Coder model: Qwen3.8-27B (dense 27B, multimodal, thinking). Released 2026-08-14
+# and adopted the same day: SWE-bench Pro 61.7 vs 53.5 for Qwen3.6-27B, on the one
+# SWE-bench variant that covers TS/JS. UD-Q5_K_XL ~20.2 GB. Apache-2.0.
+# Architecturally IDENTICAL to Qwen3.6-27B (same config.json), so it is a drop-in:
+# same KV cost, same footprint, and llama.cpp already supported it on release day.
+# ⚠️ Qwen ships NO DFlash drafter for it. Borrowing Qwen3.6-27B's works but only
+# partially — acceptance roughly halves and the gain is ~1.34x on code, versus 2.5x
+# for a matched pair. That drafter is a live-only addition, not provisioned here:
+# its provenance could not be established (the local file matches no published repo).
+readonly CODER_REPO="unsloth/Qwen3.8-27B-GGUF"
+readonly CODER_FILE="Qwen3.8-27B-UD-Q5_K_XL.gguf"
+readonly CODER_SHA256="176a6a3f034e9cdc447c10cd00329fc9b31002e6589b9295f2ad4f1eefe0f6ab"
+readonly CODER_REVISION="fdd03b8bbd279c1694563650e79d85a2373d9934"
+readonly CODER_ALIAS="qwen3.8-27b"
 readonly CODER_CTX="${CODER_CTX:-auto}"            # auto = llama.cpp --fit sizes it to free VRAM
-readonly CODER_NPREDICT="${CODER_NPREDICT:-8192}" # cap tokens/request (non-thinking, 8k is ample)
+readonly CODER_NPREDICT="${CODER_NPREDICT:-32768}" # thinking model — 8k truncates mid-reason
 
 # CTX defaults to `auto`, which makes llamaswap-guarded-serve omit --ctx-size so
 # llama-server loads the model's NATIVE maximum and then uses --fit to shrink it to
 # whatever fits free VRAM. That is "the largest context this model can actually have
 # on this card", recomputed at every load, instead of a hand-picked number that is
 # either wasteful or an OOM.
-# Measured on a 32 GB V620 when this was adopted (2026-08-13): ornith reached its full
-# 262144, thinkingcap 217088, qwen3.6-35b-a3b 212224, qwen3.6-27b 167936, and the two
-# Instruct MoEs 93696 — the last two are KV-heavy (48 layers x 4 KV heads x 128 head
-# dim ~= 98 KiB/token measured), so their native 262144 would need ~45 GB and is simply
-# unreachable here. Do NOT "fix" that by forcing a bigger number; it will OOM.
+# Measured on a 32 GB V620 (2026-08-13, refreshed 2026-08-14): ornith reaches its full
+# 262144, thinkingcap 217088, qwen3.6-35b-a3b 212224, qwen3.8-27b 170240, qwen3.6-27b
+# 167936, qwen3.8-27b-dflash 156416, qwen3.6-27b-dflash 149248, muse-glimmer 131072.
+# The two retired Instruct MoEs reached only 93696 — they were KV-heavy (48 layers x
+# 4 KV heads x 128 head dim ~= 98 KiB/token measured), so their native 262144 needed
+# ~45 GB. Do NOT "fix" a low number by forcing a bigger one; it will OOM.
+# Note a DFlash entry always resolves LOWER than its plain twin, because the drafter
+# weights occupy VRAM the KV cache would otherwise get.
 # --fit only adjusts arguments the user did NOT set, which is why `auto` must omit
 # --ctx-size rather than pass 0. Set CODER_CTX/REVIEWER_CTX to an integer to pin one.
 
-# --- Reviewer model: Qwen3-Coder-30B-A3B-Instruct (coder MoE, ~3B active; non-thinking
-# by architecture — cannot emit <think>, so it can't do the unbounded-reasoning budget
-# exhaustion that killed the prior ThinkingCap reviewer). UD-Q5_K_XL ~21.7 GB. Apache-2.0.
-readonly REVIEWER_REPO="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
-readonly REVIEWER_FILE="Qwen3-Coder-30B-A3B-Instruct-UD-Q5_K_XL.gguf"
-readonly REVIEWER_SHA256="eb331a4eee8eb6b5a8eb25f44f96f45c71b8d10f553c0a456190dd590a7ef77d"
-readonly REVIEWER_REVISION="b17cb02dd882d5b6ab62fc777ad2995f19668350"
-readonly REVIEWER_ALIAS="qwen3-coder-30b-a3b"
+# --- Reviewer model: ThinkingCap-Qwen3.6-27B — a Qwen3.6-27B fine-tune that cuts
+# thinking tokens ~46% out-of-domain for -0.8 points of macro accuracy, evaluated with
+# 5 seeds and 95% CIs against the base model under identical settings. Q4_K_M ~16.8 GB.
+# Apache-2.0. Reasoning-per-token is what a reviewer is paid for.
+# ⚠️ This model was previously dropped from the loop for "running away". That was
+# measured inside a loop with NO coding harness and an uncapped output; its own
+# headline result is that thinking-trace truncation falls 2.9% -> 0.4%. It is
+# reinstated deliberately, with --n-predict capped below.
+readonly REVIEWER_REPO="bottlecapai/ThinkingCap-Qwen3.6-27B-GGUF"
+readonly REVIEWER_FILE="ThinkingCap-Qwen3.6-27B-Q4_K_M.gguf"
+readonly REVIEWER_SHA256="b0651e28555bde7d2459ce99f091319b1a547143463e8d49f2aa7f572675fe67"
+readonly REVIEWER_REVISION="2ea7e9b3495fefff365b3e1d23fa79cd5f74e7ee"
+readonly REVIEWER_ALIAS="thinkingcap-27b"
 readonly REVIEWER_CTX="${REVIEWER_CTX:-auto}"            # auto = llama.cpp --fit sizes it to free VRAM
-readonly REVIEWER_NPREDICT="${REVIEWER_NPREDICT:-8192}" # cap tokens/request
+readonly REVIEWER_NPREDICT="${REVIEWER_NPREDICT:-32768}" # thinking model — 8k truncates mid-reason
 
 readonly SWAP_SERVER_BIND="0.0.0.0"
 readonly SWAP_SERVER_PORT="8080"
@@ -98,7 +116,8 @@ autonomous coding loop's model server (swaps a coder + a reviewer model).
 Fixed target:
   GPU:    Radeon Pro V620 GPU 2 (0000:06:00.0) — GPU 1 runs CT 120 (qwen3.6 ops)
   Engine: llama-swap (Go proxy) launching llama.cpp llama-server per model
-  Models: qwen3-instruct-2507 (Qwen3-30B-A3B-Instruct-2507, coder) + qwen3-coder-30b-a3b (Qwen3-Coder-30B-A3B-Instruct, reviewer)
+  Models: qwen3.8-27b (Qwen3.8-27B, coder) + thinkingcap-27b (ThinkingCap-Qwen3.6-27B, reviewer)
+          — bootstrap pair only; the live container serves eight, added by hand
   API:    0.0.0.0:8080 (OpenAI-compatible; pick model by name)
 
 Run this script on the Proxmox host as root. Defaults to VMID 123 / hostname gpu2.

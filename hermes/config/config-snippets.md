@@ -66,8 +66,8 @@ For reference — `install.sh` deploys these, no hand-merge needed. Both point a
 
 | Profile  | `model.default`        | ctx     | Notes |
 |----------|------------------------|---------|-------|
-| coder    | `qwen3-instruct-2507`  | 65536   | Qwen3-30B-A3B-Instruct-2507; trimmed toolset (terminal/kanban/skills/file/todo) |
-| reviewer | `qwen3-coder-30b-a3b` | 65536   | Qwen3-Coder-30B-A3B-Instruct; non-thinking, so no runaway-reasoning budget exhaustion |
+| coder    | `qwen3.8-27b-dflash`   | 65536   | Qwen3.8-27B; +8.2 SWE-bench Pro over 3.6-27B. Trimmed toolset (terminal/kanban/skills/file/todo) |
+| reviewer | `thinkingcap-27b`      | 65536   | ThinkingCap-Qwen3.6-27B; ~46% fewer thinking tokens at -0.8 macro accuracy, bounded by `--n-predict 32768` |
 | planner  | (default ops model)    | —       | runs the `scope-and-plan` skill in the planning channel; no dedicated profile |
 
 The coder profile also wires the false-completion audit hook (`kanban_task_completed → coder-commit-audit`) and the
