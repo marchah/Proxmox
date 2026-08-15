@@ -48,7 +48,7 @@ the chosen engine, per the 6700 XT comparison), one per V620:
 
   | Role     | Alias                 | Model / GGUF |
   |----------|-----------------------|--------------|
-  | coder    | `qwen3.8-27b-dflash`  | Qwen3.8-27B — `unsloth/Qwen3.8-27B-GGUF`, `Qwen3.8-27B-UD-Q5_K_XL.gguf` |
+  | coder    | `qwen3.8-27b-mtp`     | Qwen3.8-27B — `unsloth/Qwen3.8-27B-GGUF`, `Qwen3.8-27B-UD-Q5_K_XL.gguf`, drafted by its own MTP head (`a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, Q8_0) |
   | reviewer | `thinkingcap-27b`     | ThinkingCap-Qwen3.6-27B — `bottlecapai/…-GGUF`, `ThinkingCap-Qwen3.6-27B-Q4_K_M.gguf` |
 
   Both were chosen on measured evidence rather than reputation. The coder gains **+8.2 SWE-bench Pro**

@@ -1,5 +1,12 @@
 model:
-  default: qwen3.8-27b-dflash
+  # qwen3.8-27b-mtp — the SAME Qwen3.8-27B weights as the old qwen3.8-27b-dflash entry;
+  # only the speculative drafter differs. That entry borrowed Qwen3.6-27B's DFlash head
+  # because Qwen ships no DFlash drafter for 3.8, and the borrow transfers only partly.
+  # Qwen3.8 has its own native MTP head, so it now drafts for itself. Measured on CT 123
+  # 2026-08-15, all at ctx 65536: no speculation 17.55 tok/s, borrowed DFlash 23.68
+  # (28.8% acceptance), own MTP 27.73 (61.7%). Same window, same output quality — the
+  # target weights are identical and speculation is verified against them.
+  default: qwen3.8-27b-mtp
   provider: custom
   base_url: http://gpu2:8080/v1
   api_key: ''

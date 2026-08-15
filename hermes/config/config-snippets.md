@@ -66,7 +66,7 @@ For reference — `install.sh` deploys these, no hand-merge needed. Both point a
 
 | Profile  | `model.default`        | ctx     | Notes |
 |----------|------------------------|---------|-------|
-| coder    | `qwen3.8-27b-dflash`   | 65536   | Qwen3.8-27B; +8.2 SWE-bench Pro over 3.6-27B. Trimmed toolset (terminal/kanban/skills/file/todo) |
+| coder    | `qwen3.8-27b-mtp`      | 65536   | Qwen3.8-27B; +8.2 SWE-bench Pro over 3.6-27B. Drafts with its OWN MTP head (27.7 tok/s / 61.7% acceptance) rather than the borrowed Qwen3.6 DFlash head it replaced (23.7 / 28.8%). Trimmed toolset (terminal/kanban/skills/file/todo) |
 | reviewer | `thinkingcap-27b`      | 65536   | ThinkingCap-Qwen3.6-27B; ~46% fewer thinking tokens at -0.8 macro accuracy, bounded by `--n-predict 32768` |
 | planner  | (default ops model)    | —       | runs the `scope-and-plan` skill in the planning channel; no dedicated profile |
 
