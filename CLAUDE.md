@@ -92,11 +92,28 @@ These containers form the system:
       - `--spec-draft-n-max 3`. Measured optimum **for this drafter**: 2 → 37.4, **3 → 41.8**,
         4 → 41.0, 6 → 39.4 tok/s. `qwen3.6-27b-dflash`'s optimum is **4** — the value does not
         transfer between models, so sweep any new drafter.
+        ⚠️ Those absolutes are **prompt-specific** (as is every speculative tok/s figure here); a
+        re-sweep on a prose prompt gave 2 → 31.7, **3 → 35.8**, 4 → 34.1, 6 → 29.3. Compare the
+        *shape*, not the numbers, across sweeps — the shape reproduced and **3 is still optimal**.
       - A generous client `max_tokens`. It reasons before answering: at 300 the reply comes back
         with `content` **completely empty** and everything in `reasoning_content`. At 2500 it used
         465 and finished cleanly. A low cap yields empty responses, not errors.
-      - Without DFlash it runs **18.8 tok/s**; with it, **41.8** (2.2×, reproducing Meta's own
-        2.21 × claim). For scale, the 3B-active MoE `qwen3.6-35b-a3b` does 63.1 tok/s unaccelerated
+      - Without DFlash it runs **18.8 tok/s**; with it, **33–44 tok/s depending on the prompt** —
+        a range, not a number (see the prompt-dependence rule below). Re-verified 2026-08-15 at
+        n-max 3, fan pinned, from a cold card:
+        | prompt class | tok/s | draft acceptance |
+        |---|---:|---:|
+        | free-form prose (a TCP explainer) | 32.9 | 44.8 % |
+        | structured list (the OSI layers) | 39.6 | 59.2 % |
+        | verbatim repetition | 43.0 | 67.1 % |
+        | **code** (a small Python function) | **44.3** | **71.0 %** |
+        The earlier headline **41.8** sits inside that range, so it is confirmed rather than
+        contradicted — it just describes drafter-friendly content, not prose. Code is the workload
+        this model would actually serve, and there it is the fastest of the four. Meta's 2.21×
+        claim reproduces at the top of the range (44.3/18.8 = 2.36×) and not at the bottom
+        (32.9/18.8 = 1.75×). n-max re-swept the same day: 2 → 31.7, **3 → 35.8**, 4 → 34.1,
+        6 → 29.3 — same shape as the original sweep, so **3 is still the optimum**.
+        For scale, the 3B-active MoE `qwen3.6-35b-a3b` does 63.1 tok/s unaccelerated
         — dense-vs-sparse dominates, and speculation narrows that gap without closing it.
       - ⚠️ DFlash and **vision are mutually exclusive** upstream (llama.cpp #26108, still open), so
         the `mmproj` projector is not deployed.
@@ -110,6 +127,30 @@ These containers form the system:
       `/opt/llamacpp/current` symlink) and `EXTRA_ARGS` (extra `llama-server` flags).
       Flags: `--spec-type draft-dflash --spec-draft-model /models/hf/Qwen3.6-27B-DFlash-Q8_0.gguf
       --spec-draft-n-max 4 --spec-draft-ngl 99`.
+      - ⚠️ **A SPECULATIVE MODEL HAS NO SINGLE tok/s — throughput is PROMPT-DEPENDENT.** Speculation
+        only pays when the drafter guesses right, so decode speed tracks **draft acceptance**, and
+        acceptance depends on how predictable the output text is. Measured on `muse-glimmer-30b`
+        (2026-08-15, identical model/flags/load, only the prompt changed): free-form prose 32.9 tok/s
+        at 44.8 % acceptance → code **44.3 tok/s at 71.0 %**. That is a **35 % spread from prompt
+        choice alone**, wider than most of the differences these notes are used to argue about.
+        Consequences, all learned by nearly mis-reporting a regression:
+        - **Quote a range and name the prompt class**, never a bare number. A single figure invites
+          a false alarm: re-running muse's documented 41.8 on a prose prompt returns 33 and looks
+          like a 20 % regression, when nothing has changed.
+        - **Never A/B two models or two settings on different prompts.** The prompt difference can
+          exceed the effect being measured. The `qwen3.8-27b` / DFlash / MTP comparison above is
+          valid *because* all three ran the same prompt at the same ctx on the same day — that is
+          the bar for any speculation claim here.
+        - **Judge a regression by acceptance, not tok/s.** `draft_n` / `draft_n_accepted` come back
+          in every response's `timings` block. If acceptance is unchanged, the model is unchanged
+          and only the workload moved.
+        - Non-speculative entries are immune: `qwen3.8-27b` at 17.55 tok/s reproduced its documented
+          17.6 exactly, on a different prompt. The whole effect is a speculation artifact.
+      - ⚠️ **Pin the shroud fan to 100 % before benchmarking GPU 2**, or a sweep will trip the
+        102 °C watchdog and leave llama-swap down (see `gpu-thermal-watchdog/`). `systemctl stop
+        gpu-fan-control@shroud`, write `255` to the `nct6687` hwmon's `pwm3`, and restore the
+        service in a `trap ... EXIT`. A missed restore leaves the fan loud, which is the safe
+        direction. Peaks measured: **92 °C on the curve vs 65-74 °C pinned** for the same work.
       - ⚠️ **`--spec-draft-n-max` is tuned to 4 and must stay ≤ 6.** Sweep on this hardware:
         n=2 → 2.06×, n=3 → 2.40×, **n=4 → 2.49×**, n=6 → 2.54×, **n=8 → 0.97×**, n=16 → 1.07×.
         There is a **cliff** between 6 and 8, not a gradual falloff — and it is not an acceptance
