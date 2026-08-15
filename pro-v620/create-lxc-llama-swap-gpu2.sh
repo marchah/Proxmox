@@ -341,9 +341,21 @@ fi
 CTX_ARGS=(--ctx-size "${CTX}")
 if [[ "${CTX}" == "auto" ]]; then CTX_ARGS=(--fit on); fi
 
+# --metrics exposes Prometheus counters at GET /metrics on the UPSTREAM port (without it
+# that route returns 501, which is what /upstream/<model>/metrics answered before). CT 120
+# has carried this since it was built; GPU 2 did not, so this box could report throughput
+# only by timing a synthetic request. That is how the --fit GTT spill above went unnoticed
+# for a day — prompt_per_second / predicted_per_second is exactly the signal that would
+# have shown 2 tok/s, and nothing was collecting it.
+# ⚠️ Same caveats as CT 120: these are counters SINCE PROCESS START. On this host they are
+# even less durable, because llama-swap unloads and reloads models on demand — every swap
+# resets them. Treat a scrape as "since this model was last loaded", never as a total, and
+# do NOT wire it into CT 121's token ledger (the `hermes_accounted` source already covers
+# anything Hermes sends here; see the token-accounting note in CLAUDE.md).
 exec "${LS}/llama-server" --model "${MODEL}" --host 127.0.0.1 --port "${PORT}" \
   --n-gpu-layers 99 "${CTX_ARGS[@]}" --parallel 1 --flash-attn on \
   --batch-size 4096 --ubatch-size 1024 --jinja --reasoning-format none \
+  --metrics \
   --n-predict "${NPREDICT}" --alias "${ALIAS}" ${EXTRA[@]+"${EXTRA[@]}"}
 EOS
 chmod 755 /usr/local/bin/llamaswap-guarded-serve
