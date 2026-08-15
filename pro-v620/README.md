@@ -67,11 +67,41 @@ the chosen engine, per the 6700 XT comparison), one per V620:
 
   **The coder drafts with its OWN MTP head** (`a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, Q8_0) rather than a
   borrowed DFlash one. Qwen ships no DFlash drafter for 3.8, and the Qwen3.6 head that was used
-  instead transferred only partially. Measured 2026-08-15 at ctx 65536: no speculation **17.55**
-  tok/s · borrowed DFlash **23.68** (28.8 % acceptance) · **own MTP 27.73 (61.7 %)**.
+  instead transferred only partially. Measured 2026-08-15 at ctx 65536, **all three on the same
+  prompt** (which is what makes them comparable — see the prompt-dependence warning below):
+  no speculation **17.55** tok/s · borrowed DFlash **23.68** (28.8 % acceptance) ·
+  **own MTP 27.73 (61.7 %)**.
   ⚠️ `--spec-draft-n-max` is **2** here, and the sweep is *not* flat — 2 → 27.77, 3 → 26.36,
   4 → 26.87, 6 → 20.49, 8 → 8.80. Acceptance falls as n-max rises, so drafting more is strictly
   worse. Never carry an n-max across drafters.
+
+  ⚠️ **A speculative tok/s figure is a RANGE, not a number — it depends on the prompt.** Speculation
+  pays only when the drafter guesses right, so decode speed tracks **draft acceptance**, and
+  acceptance depends on how predictable the output is. On `muse-glimmer-30b`, changing nothing but
+  the prompt moved throughput **32.9 → 44.3 tok/s** (acceptance 44.8 % → 71.0 %) — free-form prose
+  at the bottom, code at the top, a 35 % spread:
+
+  | prompt class | tok/s | draft acceptance |
+  |--------------|------:|-----------------:|
+  | free-form prose | 32.9 | 44.8 % |
+  | structured list | 39.6 | 59.2 % |
+  | verbatim repetition | 43.0 | 67.1 % |
+  | **code** | **44.3** | **71.0 %** |
+
+  So: always name the prompt class next to the number, never A/B two models on different prompts
+  (the prompt gap can exceed the effect you are measuring), and judge a suspected regression by
+  `draft_n_accepted`/`draft_n` from the response `timings` rather than by tok/s. Non-speculative
+  entries are unaffected — `qwen3.8-27b` reproduced its documented 17.6 tok/s exactly on a different
+  prompt, so this is purely a speculation artifact.
+
+  ⚠️ **Pin the shroud fan to 100 % before benchmarking GPU 2.** These runs otherwise trip the 102 °C
+  watchdog, which leaves `llama-swap` **down** (an in-flight request returns a 502 that mimics a
+  model crash). `systemctl stop gpu-fan-control@shroud`, write `255` to the `nct6687` hwmon's
+  `pwm3`, and restore the service from a `trap ... EXIT` — a missed restore leaves the fan loud,
+  which is the safe direction. Same work measured **92 °C on the curve vs 65-74 °C pinned**.
+  ⚠️ `pwm3=255` with the curve running is usually *not* a stuck pin: the curve tracks the **hotter
+  of the two cards** and overrides to 100 % at ≥80 °C hotspot, so CT 120 working GPU 1 legitimately
+  holds the shared shroud at full speed. Check both cards before suspecting the fan control.
 
 ## Model choice: Qwen3.6-35B-A3B (MoE)
 
