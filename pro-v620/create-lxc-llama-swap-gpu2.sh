@@ -52,24 +52,36 @@ readonly CODER_FILE="Qwen3.8-27B-UD-Q5_K_XL.gguf"
 readonly CODER_SHA256="176a6a3f034e9cdc447c10cd00329fc9b31002e6589b9295f2ad4f1eefe0f6ab"
 readonly CODER_REVISION="fdd03b8bbd279c1694563650e79d85a2373d9934"
 readonly CODER_ALIAS="qwen3.8-27b"
-readonly CODER_CTX="${CODER_CTX:-auto}"            # auto = llama.cpp --fit sizes it to free VRAM
+readonly CODER_CTX="${CODER_CTX:-65536}"           # explicit — `auto`/--fit over-commits, see below
 readonly CODER_NPREDICT="${CODER_NPREDICT:-32768}" # thinking model — 8k truncates mid-reason
 
-# CTX defaults to `auto`, which makes llamaswap-guarded-serve omit --ctx-size so
-# llama-server loads the model's NATIVE maximum and then uses --fit to shrink it to
-# whatever fits free VRAM. That is "the largest context this model can actually have
-# on this card", recomputed at every load, instead of a hand-picked number that is
-# either wasteful or an OOM.
-# Measured on a 32 GB V620 (2026-08-13, refreshed 2026-08-14): ornith reaches its full
-# 262144, thinkingcap 217088, qwen3.6-35b-a3b 212224, qwen3.8-27b 170240, qwen3.6-27b
-# 167936, qwen3.8-27b-dflash 156416, qwen3.6-27b-dflash 149248, muse-glimmer 131072.
-# The two retired Instruct MoEs reached only 93696 — they were KV-heavy (48 layers x
-# 4 KV heads x 128 head dim ~= 98 KiB/token measured), so their native 262144 needed
-# ~45 GB. Do NOT "fix" a low number by forcing a bigger one; it will OOM.
-# Note a DFlash entry always resolves LOWER than its plain twin, because the drafter
-# weights occupy VRAM the KV cache would otherwise get.
-# --fit only adjusts arguments the user did NOT set, which is why `auto` must omit
-# --ctx-size rather than pass 0. Set CODER_CTX/REVIEWER_CTX to an integer to pin one.
+# ⚠️ DO NOT SET CTX BACK TO `auto`. `auto` makes llamaswap-guarded-serve pass `--fit on`
+# instead of --ctx-size, so llama-server loads the model's native maximum and shrinks it
+# to what it *calculates* will fit. On RADV/Vulkan that calculation OVER-COMMITS, and the
+# excess does not fail — amdgpu silently places it in GTT (host RAM reached over PCIe).
+# The result is a server that starts clean, passes /health, reports a huge n_ctx, and
+# then runs an order of magnitude slow because every token streams weights/KV across the
+# bus. GPU 2 sits in the chipset x4 slot, which makes it worse.
+# Measured on CT 123, 2026-08-15, qwen3.8-27b-dflash, same box same day:
+#            --fit on (n_ctx 156416)   ctx 65536      ratio
+#   prefill      41.9 tok/s             294.0 tok/s    7.0x
+#   decode        2.0 tok/s              23.7 tok/s   11.8x
+#   VRAM/GTT   28.93 GiB + 5.83 GiB    25.66 GiB + 0.33 GiB
+# It ran that way in production for a day: coding-loop requests in the journal took
+# 25-45 MINUTES each. The plain twin at ctx 65536 gives 321.2 / 17.55 tok/s, and that
+# 17.55 reproduces the 17.6 recorded for this model unaccelerated — i.e. 65536 restores
+# exactly the documented behaviour, and DFlash is worth 1.35x decode on top of it.
+# The earlier note here listed the values --fit RESOLVED to (ornith 262144, thinkingcap
+# 217088, qwen3.6-35b-a3b 212224, qwen3.8-27b 170240, qwen3.6-27b 167936,
+# qwen3.8-27b-dflash 156416, qwen3.6-27b-dflash 149248, muse-glimmer 131072). Those were
+# never verified to FIT — they are what the broken calculation returned. Treat them as a
+# record of the bug, not as targets.
+# ⚠️ The llamaswap-guarded-serve guard does NOT catch this. It only fails loudly when the
+# GPU is missing entirely (CPU/software fallback). A GTT spill keeps every layer nominally
+# "on GPU", so the guard passes. Verify a new ctx by hand after loading the model:
+#   cat /sys/bus/pci/devices/0000:06:00.0/mem_info_{vram_used,gtt_used}
+# gtt_used must stay small (~0.3 GiB is normal host-visible scratch); hundreds of MB is
+# fine, GiB means the context is too big for this card. Raise ctx only with that check.
 
 # --- Reviewer model: ThinkingCap-Qwen3.6-27B — a Qwen3.6-27B fine-tune that cuts
 # thinking tokens ~46% out-of-domain for -0.8 points of macro accuracy, evaluated with
@@ -84,7 +96,7 @@ readonly REVIEWER_FILE="ThinkingCap-Qwen3.6-27B-Q4_K_M.gguf"
 readonly REVIEWER_SHA256="b0651e28555bde7d2459ce99f091319b1a547143463e8d49f2aa7f572675fe67"
 readonly REVIEWER_REVISION="2ea7e9b3495fefff365b3e1d23fa79cd5f74e7ee"
 readonly REVIEWER_ALIAS="thinkingcap-27b"
-readonly REVIEWER_CTX="${REVIEWER_CTX:-auto}"            # auto = llama.cpp --fit sizes it to free VRAM
+readonly REVIEWER_CTX="${REVIEWER_CTX:-65536}"           # explicit — see the --fit over-commit note above
 readonly REVIEWER_NPREDICT="${REVIEWER_NPREDICT:-32768}" # thinking model — 8k truncates mid-reason
 
 readonly SWAP_SERVER_BIND="0.0.0.0"
@@ -320,17 +332,30 @@ if ! "${LS}/llama-server" --list-devices 2>/dev/null | grep -qiE 'V620|RADV'; th
 fi
 # --n-predict caps tokens generated per request (-1 = unlimited). Bound it (e.g. 8192) so a model that
 # runs away can't fill its whole ctx window and stall the loop; the loop's models are non-thinking so 8k is ample.
-# CTX=auto omits --ctx-size so llama.cpp loads the model's native maximum, then uses
-# --fit to shrink it to whatever actually fits device memory. That is "the biggest
-# context possible" computed per model at load time, instead of a hand-picked number
-# that is either wasteful or an OOM. --fit only adjusts arguments the user did NOT
-# set, which is why --ctx-size has to be absent rather than 0.
+# CTX=auto omits --ctx-size so llama.cpp sizes the window itself via --fit. ⚠️ Kept only
+# for A/B testing — it is NOT a safe default on this card. --fit over-commits on
+# RADV/Vulkan and the overflow lands silently in GTT (host RAM over PCIe), costing ~7x
+# prefill and ~12x decode with no error anywhere. Pass an explicit integer instead, and
+# confirm mem_info_gtt_used stays small after the model loads. Full measurements and the
+# verification recipe are in the CODER_CTX block near the top of this script.
 CTX_ARGS=(--ctx-size "${CTX}")
 if [[ "${CTX}" == "auto" ]]; then CTX_ARGS=(--fit on); fi
 
+# --metrics exposes Prometheus counters at GET /metrics on the UPSTREAM port (without it
+# that route returns 501, which is what /upstream/<model>/metrics answered before). CT 120
+# has carried this since it was built; GPU 2 did not, so this box could report throughput
+# only by timing a synthetic request. That is how the --fit GTT spill above went unnoticed
+# for a day — prompt_per_second / predicted_per_second is exactly the signal that would
+# have shown 2 tok/s, and nothing was collecting it.
+# ⚠️ Same caveats as CT 120: these are counters SINCE PROCESS START. On this host they are
+# even less durable, because llama-swap unloads and reloads models on demand — every swap
+# resets them. Treat a scrape as "since this model was last loaded", never as a total, and
+# do NOT wire it into CT 121's token ledger (the `hermes_accounted` source already covers
+# anything Hermes sends here; see the token-accounting note in CLAUDE.md).
 exec "${LS}/llama-server" --model "${MODEL}" --host 127.0.0.1 --port "${PORT}" \
   --n-gpu-layers 99 "${CTX_ARGS[@]}" --parallel 1 --flash-attn on \
   --batch-size 4096 --ubatch-size 1024 --jinja --reasoning-format none \
+  --metrics \
   --n-predict "${NPREDICT}" --alias "${ALIAS}" ${EXTRA[@]+"${EXTRA[@]}"}
 EOS
 chmod 755 /usr/local/bin/llamaswap-guarded-serve
