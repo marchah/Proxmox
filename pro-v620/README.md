@@ -10,7 +10,7 @@ the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 > only GPU 1's `/dev/dri` render node (via the udev-stable `by-path` symlink — the only
 > reboot-stable way to pin one of two *identical* cards; see `configure_gpu_passthrough` in the
 > script). **GPU 2 now runs CT 123 `gpu2`** — a `llama-swap` server for the autonomous coding loop's
-> coder/reviewer split (`create-lxc-llama-swap-gpu2.sh`; Qwen3-Instruct-2507 coder + Qwen3-Coder-30B
+> coder/reviewer split (`create-lxc-llama-swap-gpu2.sh`; `qwen3.8-27b-mtp` coder + `thinkingcap-27b`
 > reviewer, swapped one at a time on `0.0.0.0:8080`). GPU 2 stays amdgpu-bound, so the host services manage both cards:
 > both are undervolted −100 mV (`undervolt/` applies to every V620), and **cooling is one NF-F12
 > iPPC-3000 in a shared shroud** driven by a single `gpu-fan-control@shroud` instance whose curve
@@ -24,7 +24,12 @@ the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 > little headroom (still under the 100 °C hardware throttle and the 102 °C watchdog trip). This is
 > the deliberate cost of not splitting the model (GPU 2 is reserved for CT 123's own service); the
 > [`gpu-thermal-watchdog/`](gpu-thermal-watchdog/) stops the LLM server at 102 °C as the last-resort net
-> (⚠️ it currently only stops CT 120's service — GPU 2/CT 123 coverage is a pending fix). (History: GPU 2's original 2× Arctic
+> (it maps a trip to that card's **owning workload**: GPU 1 → CT 120 `llamacpp`, GPU 2 → CT 123
+> `llama-swap`. GPU 2 coverage is live, not pending — it fired on CT 123 on 2026-08-14 and twice on
+> 2026-08-15. ⚠️ It leaves the stopped service **down** by design, so the symptom from outside is a
+> plain connection-refused on `:8080` with the container still running; an in-flight request sees a
+> **502**, which looks exactly like a model crash. Check `journalctl -u gpu-thermal-watchdog` on the
+> **host** — EDT, while container journals are UTC — before blaming the model). (History: GPU 2's original 2× Arctic
 > S4028-6K cooler was ~14 °C worse than a blower and a full solo load overheated it — junction
 > **106 °C** at 250 W, throttling — so the NF-F12 shroud replaced the Arctic pair. Per-cooler
 > thermals + 3D-print mounts: [`fan-control/README.md`](fan-control/README.md).) To go back to
@@ -43,8 +48,8 @@ the chosen engine, per the 6700 XT comparison), one per V620:
   and a reviewer model, one resident at a time. See the callout above and
   `create-lxc-llama-swap-gpu2.sh --help`.
 
-  **GPU-2 loop models** (updated 2026-08-14; both dense 27B, only one fits the 32 GB card at a time;
-  both thinking, `CTX=auto`, `--n-predict 32768`, `--parallel 1`, pick by alias):
+  **GPU-2 loop models** (updated 2026-08-15; both dense 27B, only one fits the 32 GB card at a time;
+  both thinking, ctx **65536**, `--n-predict 32768`, `--parallel 1`, pick by alias):
 
   | Role     | Alias                 | Model / GGUF |
   |----------|-----------------------|--------------|
@@ -60,11 +65,13 @@ the chosen engine, per the 6700 XT comparison), one per V620:
   happened inside a loop with no coding harness and an uncapped output. Its own headline result is that
   thinking-trace truncation falls 2.9 % → 0.4 %. `--n-predict 32768` now bounds it explicitly.
 
-  ⚠️ **The coder runs a MISMATCHED DFlash drafter** (Qwen3.6-27B's — Qwen ships none for the 3.8).
-  Measured: 17.6 → 26.2 tok/s, ~1.34x on code prompts, against 43.8 for the matched 3.6 pair. Tuning
-  `--spec-draft-n-max` does not help (2/3/4 are flat) because acceptance rises as fast as n-max falls.
-
-  (Both replaced `qwen3-instruct-2507` + `qwen3-coder-30b-a3b`, retired 2026-08-14 and deleted.)
+  **The coder drafts with its OWN MTP head** (`a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, Q8_0) rather than a
+  borrowed DFlash one. Qwen ships no DFlash drafter for 3.8, and the Qwen3.6 head that was used
+  instead transferred only partially. Measured 2026-08-15 at ctx 65536: no speculation **17.55**
+  tok/s · borrowed DFlash **23.68** (28.8 % acceptance) · **own MTP 27.73 (61.7 %)**.
+  ⚠️ `--spec-draft-n-max` is **2** here, and the sweep is *not* flat — 2 → 27.77, 3 → 26.36,
+  4 → 26.87, 6 → 20.49, 8 → 8.80. Acceptance falls as n-max rises, so drafting more is strictly
+  worse. Never carry an n-max across drafters.
 
 ## Model choice: Qwen3.6-35B-A3B (MoE)
 
