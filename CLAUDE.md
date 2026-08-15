@@ -56,20 +56,22 @@ These containers form the system:
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
-    - ⚠️ **It now serves EIGHT models, not two** — the coder/reviewer pair above plus general and
-      evaluation models, all **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked
-      into the script** (they change as models are trialled). As of 2026-08-15 there are NINE:
+    - ⚠️ **It serves more than the coder/reviewer pair** — plus general and evaluation models, all
+      **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked into the script** (they
+      change as models are trialled). As of 2026-08-15 there are SEVEN:
       `qwen3.8-27b-mtp` (coder), `thinkingcap-27b` (reviewer) · `qwen3.8-27b`, `qwen3.6-27b`,
-      `qwen3.6-35b-a3b`, `ornith` (general) · `qwen3.8-27b-dflash`, `qwen3.6-27b-dflash`,
-      `muse-glimmer-30b` (speculative).
+      `qwen3.6-35b-a3b`, `ornith` (general) · `muse-glimmer-30b` (speculative).
       A rebuild from the script yields only the bootstrap pair — re-add the rest by hand.
+      That list is the served set; treat anything absent from it as not available.
       - ⚠️ **A MATCHED drafter beats a borrowed one — search HF for `MTP` too, not just `DFlash`.**
         Qwen ships no DFlash drafter for Qwen3.8, so the coder borrowed Qwen3.6-27B's head. Qwen3.8
         has its own native **MTP** head (`a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, Q8_0, 4.19 GB) and the
         pinned b10361 already lists `draft-mtp` under `--spec-type` — no build bump needed. Measured
         2026-08-15, all at ctx 65536: no speculation **17.55** tok/s · borrowed DFlash **23.68**
         (28.8 % acceptance) · own MTP **27.73** (61.7 %). The coder moved to `qwen3.8-27b-mtp`
-        2026-08-15; `qwen3.8-27b-dflash` is kept as the A/B control.
+        2026-08-15. The unaccelerated `qwen3.8-27b` entry is the A/B control for any speculation
+        claim here (and the thermal fallback) — the DFlash-drafted entries were dropped, since a
+        borrowed head had no capability case left once the matched one existed.
         ⚠️ **n-max 2 is the optimum and the sweep is NOT flat** — 2 → 27.77, 3 → 26.36, 4 → 26.87,
         6 → 20.49, **8 → 8.80**. Acceptance falls as n-max rises, so drafting *more* is strictly
         worse. Same cliff shape as DFlash's n≥8, i.e. the backend threshold, not an MTP property.
@@ -98,9 +100,11 @@ These containers form the system:
         — dense-vs-sparse dominates, and speculation narrows that gap without closing it.
       - ⚠️ DFlash and **vision are mutually exclusive** upstream (llama.cpp #26108, still open), so
         the `mmproj` projector is not deployed.
-    - **DFlash speculative decoding is live on the `qwen3.6-27b-dflash` entry** (live-only config, not
-      baked into the script — like every other model here). Measured 2026-08-10 on GPU 2 with
-      llama.cpp: **17.6 → 43.8 tok/s, a 2.49× speedup** on the dense 27B, output unchanged.
+    - **DFlash speculative decoding on a dense 27B — the finding that made speculation viable here.**
+      Measured 2026-08-10 on GPU 2 on the (since-removed) `qwen3.6-27b-dflash` entry:
+      **17.6 → 43.8 tok/s, a 2.49× speedup**, output unchanged. That entry is gone — Qwen3.6 is a
+      generation behind and `qwen3.8-27b-mtp` supersedes it — but every mechanism note below still
+      applies to any speculative entry, `muse-glimmer-30b` included.
       `llamaswap-guarded-serve` gained two backward-compatible env hooks for this: `LLAMACPP_DIR`
       (pin ONE entry to a different llama.cpp build without moving the shared
       `/opt/llamacpp/current` symlink) and `EXTRA_ARGS` (extra `llama-server` flags).

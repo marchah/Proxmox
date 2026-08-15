@@ -43,8 +43,8 @@ the chosen engine, per the 6700 XT comparison), one per V620:
   and a reviewer model, one resident at a time. See the callout above and
   `create-lxc-llama-swap-gpu2.sh --help`.
 
-  **GPU-2 loop models** (updated 2026-08-14; both dense 27B, only one fits the 32 GB card at a time;
-  both thinking, `CTX=auto`, `--n-predict 32768`, `--parallel 1`, pick by alias):
+  **GPU-2 loop models** (updated 2026-08-15; both dense 27B, only one fits the 32 GB card at a time;
+  both thinking, ctx **65536**, `--n-predict 32768`, `--parallel 1`, pick by alias):
 
   | Role     | Alias                 | Model / GGUF |
   |----------|-----------------------|--------------|
