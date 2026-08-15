@@ -52,16 +52,28 @@ These containers form the system:
         so the prompt could not crowd out reasoning output, which no longer applies.
   - `pro-v620/create-lxc-llama-swap-gpu2.sh` — **CT 123 `gpu2`** on GPU 2: a `llama-swap` proxy for the
     autonomous coding loop that hot-swaps between a coder model (Qwen3.8-27B, alias
-    `qwen3.8-27b-dflash`) and a reviewer model (ThinkingCap-Qwen3.6-27B, alias `thinkingcap-27b`),
+    `qwen3.8-27b-mtp`) and a reviewer model (ThinkingCap-Qwen3.6-27B, alias `thinkingcap-27b`),
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
     - ⚠️ **It now serves EIGHT models, not two** — the coder/reviewer pair above plus general and
       evaluation models, all **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked
-      into the script** (they change as models are trialled). As of 2026-08-11:
-      `qwen3.8-27b-dflash` (coder), `thinkingcap-27b` (reviewer) · `qwen3.8-27b`, `qwen3.6-27b`,
-      `qwen3.6-35b-a3b`, `ornith` (general) · `qwen3.6-27b-dflash`, `muse-glimmer-30b` (DFlash).
+      into the script** (they change as models are trialled). As of 2026-08-15 there are NINE:
+      `qwen3.8-27b-mtp` (coder), `thinkingcap-27b` (reviewer) · `qwen3.8-27b`, `qwen3.6-27b`,
+      `qwen3.6-35b-a3b`, `ornith` (general) · `qwen3.8-27b-dflash`, `qwen3.6-27b-dflash`,
+      `muse-glimmer-30b` (speculative).
       A rebuild from the script yields only the bootstrap pair — re-add the rest by hand.
+      - ⚠️ **A MATCHED drafter beats a borrowed one — search HF for `MTP` too, not just `DFlash`.**
+        Qwen ships no DFlash drafter for Qwen3.8, so the coder borrowed Qwen3.6-27B's head. Qwen3.8
+        has its own native **MTP** head (`a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, Q8_0, 4.19 GB) and the
+        pinned b10361 already lists `draft-mtp` under `--spec-type` — no build bump needed. Measured
+        2026-08-15, all at ctx 65536: no speculation **17.55** tok/s · borrowed DFlash **23.68**
+        (28.8 % acceptance) · own MTP **27.73** (61.7 %). The coder moved to `qwen3.8-27b-mtp`
+        2026-08-15; `qwen3.8-27b-dflash` is kept as the A/B control.
+        ⚠️ **n-max 2 is the optimum and the sweep is NOT flat** — 2 → 27.77, 3 → 26.36, 4 → 26.87,
+        6 → 20.49, **8 → 8.80**. Acceptance falls as n-max rises, so drafting *more* is strictly
+        worse. Same cliff shape as DFlash's n≥8, i.e. the backend threshold, not an MTP property.
+        Never copy an n-max between drafters.
       ⚠️ **`qwen3-instruct-2507` and `qwen3-coder-30b-a3b` were RETIRED 2026-08-14** and their
       GGUFs deleted, freeing 43.47 GB. Neither had a capability case left — the latter scores
       14 on the AA index against 32/35/38 for its peers, with no vendor benchmarks at its size.
