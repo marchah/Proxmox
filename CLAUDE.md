@@ -233,7 +233,7 @@ All run on the Proxmox host as root.
 # Provision the ops LLM-runtime container (CT 120) — GPU 1 of two Radeon Pro V620
 ./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
 # Autonomous coding loop's GPU-2 model server (CT 123 gpu2) — llama-swap on GPU 2
-./pro-v620/create-lxc-llama-swap-gpu2.sh          # Qwen3-Instruct-2507 coder + Qwen3-Coder-30B reviewer, swapped by name (:8080)
+./pro-v620/create-lxc-llama-swap-gpu2.sh          # qwen3.8-27b-mtp coder + thinkingcap-27b reviewer, swapped by name (:8080)
 # The loop's execution sandbox (CT 122 coder-runner; runs npm/build/tests, needs CT 121's ssh pubkey)
 CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./coder-runner/create-lxc-coder-runner.sh
 # The loop/orchestrator config that runs INSIDE CT 121 (profiles/skills/plugins/timers) — run from within CT 121
@@ -451,7 +451,7 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, pinned to GPU 1 of two V620s; the
     prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the Hermes Agent that
     consumes CT 120's API. CT 122 `coder-runner` — the coding loop's execution sandbox; CT 123 `gpu2` —
-    a `llama-swap` server on GPU 2 for the loop (Qwen3-Instruct-2507 coder + Qwen3-Coder-30B reviewer,
+    a `llama-swap` server on GPU 2 for the loop (`qwen3.8-27b-mtp` coder + `thinkingcap-27b` reviewer,
     swapped one at a time))
   - `140-159` — databases (CT 140 `kb-rag` — the CognitiveStack hybrid-search API; it lives here
     rather than in the AI range because the durable artifact is a vector+FTS **database**, even
