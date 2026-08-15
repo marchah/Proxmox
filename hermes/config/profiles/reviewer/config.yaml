@@ -1,12 +1,18 @@
 model:
-  default: qwen3-coder-30b-a3b
+  default: thinkingcap-27b
   provider: custom
   base_url: http://gpu2:8080/v1
   api_key: ''
-  context_length: 65536   # Hermes requires >=64K; matches the served ctx on gpu2
-# Reviewer = Qwen3-Coder-30B-A3B-Instruct (non-thinking by architecture — cannot emit <think> blocks,
-# so it can't do the unbounded-reasoning budget exhaustion that killed the prior ThinkingCap reviewer).
-# No reasoning_effort cap needed. See the thinkingcap-reviewer-candidate memory for why it was replaced.
+  context_length: 65536   # Hermes requires >=64K. NOTE: no longer "matches the served ctx" —
+                          # thinkingcap-27b serves 217,088 under CTX=auto, so this is a
+                          # deliberate floor, not a mirror of the server.
+# Reviewer = ThinkingCap-Qwen3.6-27B (reinstated 2026-08-14). This REVERSES the previous rationale,
+# which chose a non-thinking reviewer specifically to prevent the runaway that ThinkingCap was blamed
+# for. That blame was confounded: the runaway happened inside a loop with NO coding harness and an
+# uncapped output, and ThinkingCap's own headline result is that thinking-trace truncation falls
+# 2.9% -> 0.4% with 5 seeds and 95% CIs. Reasoning is now an ASSET for review, and it is bounded two
+# ways: --n-predict 32768 on the server, and --reasoning-format auto so thought tokens land in
+# reasoning_content instead of leaking into content.
 timezone: America/New_York
 onboarding:
   seen:

@@ -20,13 +20,13 @@ the Proxmox host — run `install.sh` inside the container (`git clone` the repo
         backlog-tick (timer, 3 min) ── releases a feature task once its deps' PRs are merged
                                             │
                                             ▼
-   ┌── coder profile (qwen3-instruct-2507) ── implement ONE task on a branch
+   ┌── coder profile (qwen3.8-27b-dflash) ── implement ONE task on a branch
    │      edits locally on CT 121, runs checks/build/tests on CT 122 over ssh+rsync (run-on-runner/checks-on-runner)
    │      commits deterministically via verify-and-commit (Hermes won't auto-commit; the model won't run git)
    │      ⇢ completion-gate blocks "done" if the branch has 0 commits ahead of main
    │      ⇢ coder-commit-audit hook re-checks after completion
    ▼
-   reviewer profile (qwen3-coder-30b-a3b) ── run tests+lint+review a coder branch
+   reviewer profile (thinkingcap-27b) ── run tests+lint+review a coder branch
           PASS ⇒ open-pr (PR-ready notice to #coding)   FAIL ⇒ file a linked fix task with findings
                                             │
              /codex-review <pr#> ── on-demand Codex (ChatGPT) review; verdict → #coding + the PR
@@ -57,9 +57,9 @@ bin/                  Loop helpers → /usr/local/bin. Execution offload (run-on
                       codex-review), planning/backlog (finalize-plan, release-backlog, backlog-tick,
                       free-feature-branch, file-fix), the tick drivers (backlog-tick, pr-revise-tick) and
                       loop-watchdog.
-profiles/coder/       coder lane: config.yaml (model qwen3-instruct-2507, trimmed toolset, audit hook),
+profiles/coder/       coder lane: config.yaml (model qwen3.8-27b-dflash, trimmed toolset, audit hook),
                       profile.yaml, .no-bundled-skills, SOUL.md, skills/implement-and-verify/.
-profiles/reviewer/    reviewer lane: config.yaml (model qwen3-coder-30b-a3b), profile.yaml, .no-bundled-skills,
+profiles/reviewer/    reviewer lane: config.yaml (model thinkingcap-27b), profile.yaml, .no-bundled-skills,
                       SOUL.md, skills/review-and-rework/.
 skills/               The loop's custom skills: scope-and-plan (planner), review-pr (reviewer).
 plugins/              completion-gate (pre_tool_call false-completion guard), codex-review (/codex-review command).

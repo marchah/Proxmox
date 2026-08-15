@@ -138,8 +138,23 @@ create_container() {
 
   log "Creating coder-runner LXC ${VMID} (${LXC_HOSTNAME}) mac=${MAC}"
 
-  # Unprivileged, no nesting/keyctl needed — there is no docker inside; execution
-  # is native Node/git on this container's own userspace.
+  # Unprivileged. nesting=1 is REQUIRED and the reason is not Docker — there is no
+  # Docker here, which is exactly why an earlier version of this script omitted it.
+  #
+  # Debian's systemd 252 inside an unprivileged container cannot start
+  # systemd-logind without nesting. `pct start` warns about this ("Systemd 252
+  # detected. You may need to enable nesting.") and the failure is silent
+  # afterwards: logind reports failed, everything still boots, Node/git/pnpm all
+  # work, so the container looks healthy.
+  #
+  # The damage shows up only over ssh. pam_systemd.so sits in
+  # /etc/pam.d/common-session and calls logind over D-Bus on every login; with
+  # logind dead that call blocks for the D-Bus default timeout — 25 SECONDS — then
+  # continues (it is `optional`, so it never errors). Measured 2026-08-14 on CT 122:
+  # a bare `ssh coder-runner true` took 25,000 ms without nesting and 210 ms with it.
+  #
+  # Since ssh+rsync is how CT 121 drives this container, that penalty landed on
+  # EVERY checks-on-runner / run-on-runner / verify-and-commit call in the loop.
   create_args=(
     "${VMID}"
     "${ostemplate}"
@@ -150,6 +165,7 @@ create_container() {
     --rootfs "${rootfs}"
     --net0 "${net0}"
     --unprivileged 1
+    --features "nesting=1"
     --onboot "${START_ON_BOOT}"
     --ostype debian
   )

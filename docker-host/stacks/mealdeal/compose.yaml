@@ -46,13 +46,20 @@ services:
     environment:
       DATABASE_URL: file:/data/mealdeal.db
 
-      # Extraction runs on CT 123 (llama-swap, GPU 2) against an INSTRUCT model. Not CT 120's
-      # qwen3.6: that model reasons unprompted and spends its whole token budget inside <think>,
-      # returning finish_reason=length with no answer, so every extraction hit the client's
-      # 10-minute timeout. qwen3-instruct-2507 answers the same prompt in ~0.9s.
+      # Extraction runs on CT 123 (llama-swap, GPU 2). It used to target qwen3-instruct-2507,
+      # chosen because CT 120's qwen3.6 reasoned unprompted, spent its whole budget inside
+      # <think>, and returned finish_reason=length with no answer — every extraction hit the
+      # client's 10-minute timeout.
+      # ⚠️ CHANGED 2026-08-14: qwen3-instruct-2507 was RETIRED and its GGUF deleted, so this
+      # default pointed at a model that no longer exists. Now qwen3.6-35b-a3b — the fastest
+      # model on CT 123 (63.1 tok/s, 3B active). The original <think> failure no longer
+      # applies: every CT 123 entry now runs --reasoning-format auto, so reasoning lands in
+      # reasoning_content and `content` comes back clean. It DOES still spend tokens
+      # reasoning, so watch extraction latency; if that bites, the cheapest fix is adding a
+      # non-thinking model back to CT 123 rather than reverting this.
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://gpu2:8080/v1}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-not-needed}
-      OPENAI_MODEL: ${OPENAI_MODEL:-qwen3-instruct-2507}
+      OPENAI_MODEL: ${OPENAI_MODEL:-qwen3.6-35b-a3b}
 
       # Mailbox to ingest. Set IMAP_USER + IMAP_PASSWORD (a Gmail APP password) as Portainer
       # stack env vars, then set INGEST_INLINE=1 and redeploy. Leaving them empty is safe.

@@ -43,16 +43,28 @@ the chosen engine, per the 6700 XT comparison), one per V620:
   and a reviewer model, one resident at a time. See the callout above and
   `create-lxc-llama-swap-gpu2.sh --help`.
 
-  **GPU-2 loop models** (both MoE ~3B active, ~21.7 GB each, so only one fits on the 32 GB card at a time;
-  both non-thinking, `--ctx-size 65536`, `--n-predict 8192`, `--parallel 1`, pick by alias):
+  **GPU-2 loop models** (updated 2026-08-14; both dense 27B, only one fits the 32 GB card at a time;
+  both thinking, `CTX=auto`, `--n-predict 32768`, `--parallel 1`, pick by alias):
 
-  | Role     | Alias                  | Model / GGUF |
-  |----------|------------------------|--------------|
-  | coder    | `qwen3-instruct-2507`  | Qwen3-30B-A3B-Instruct-2507 — `unsloth/…-GGUF`, `Qwen3-30B-A3B-Instruct-2507-Q5_K_M.gguf` |
-  | reviewer | `qwen3-coder-30b-a3b` | Qwen3-Coder-30B-A3B-Instruct — `unsloth/…-GGUF`, `Qwen3-Coder-30B-A3B-Instruct-UD-Q5_K_XL.gguf` |
+  | Role     | Alias                 | Model / GGUF |
+  |----------|-----------------------|--------------|
+  | coder    | `qwen3.8-27b-dflash`  | Qwen3.8-27B — `unsloth/Qwen3.8-27B-GGUF`, `Qwen3.8-27B-UD-Q5_K_XL.gguf` |
+  | reviewer | `thinkingcap-27b`     | ThinkingCap-Qwen3.6-27B — `bottlecapai/…-GGUF`, `ThinkingCap-Qwen3.6-27B-Q4_K_M.gguf` |
 
-  (Replaced the original Ornith-1.0-35B coder + ThinkingCap-Qwen3.6-27B reviewer, which false-completed /
-  ran away; the reviewer is now non-thinking so it can't exhaust its reasoning budget.)
+  Both were chosen on measured evidence rather than reputation. The coder gains **+8.2 SWE-bench Pro**
+  over Qwen3.6-27B on the only SWE-bench variant covering TS/JS. The reviewer is the only model in the
+  set whose numbers come from a controlled experiment — 5 seeds, 95 % CIs, base model under identical
+  settings.
+
+  ⚠️ **ThinkingCap was previously dropped for "running away"**, and that judgement was confounded: it
+  happened inside a loop with no coding harness and an uncapped output. Its own headline result is that
+  thinking-trace truncation falls 2.9 % → 0.4 %. `--n-predict 32768` now bounds it explicitly.
+
+  ⚠️ **The coder runs a MISMATCHED DFlash drafter** (Qwen3.6-27B's — Qwen ships none for the 3.8).
+  Measured: 17.6 → 26.2 tok/s, ~1.34x on code prompts, against 43.8 for the matched 3.6 pair. Tuning
+  `--spec-draft-n-max` does not help (2/3/4 are flat) because acceptance rises as fast as n-max falls.
+
+  (Both replaced `qwen3-instruct-2507` + `qwen3-coder-30b-a3b`, retired 2026-08-14 and deleted.)
 
 ## Model choice: Qwen3.6-35B-A3B (MoE)
 
