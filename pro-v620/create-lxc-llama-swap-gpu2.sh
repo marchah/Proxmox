@@ -25,22 +25,25 @@ readonly OTHER_GPU_PCI_ADDRESS="${OTHER_GPU_PCI_ADDRESS:-0000:2d:00.0}"  # GPU 1
 # Pinned prebuilt Vulkan llama.cpp release (same as CT 120). llama-swap launches
 # this llama-server per model. Bump TAG + SHA256 together from
 # https://github.com/ggml-org/llama.cpp/releases (asset llama-<tag>-bin-ubuntu-vulkan-x64.tar.gz).
-readonly LLAMACPP_RELEASE_TAG="b10361"
+readonly LLAMACPP_RELEASE_TAG="b10587"
 readonly LLAMACPP_ASSET="llama-${LLAMACPP_RELEASE_TAG}-bin-ubuntu-vulkan-x64.tar.gz"
 readonly LLAMACPP_ASSET_URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMACPP_RELEASE_TAG}/${LLAMACPP_ASSET}"
-readonly LLAMACPP_SHA256="f98377a3a3ae7a541894aa512ab0610fdf6d1735a1ad13d9474e67b80d130e9a"
+readonly LLAMACPP_SHA256="1fd5c5edb76e05fa21067c17796ea938cd410500e2cbe18b6483ca031d1fd7cb"
 
 # Pinned llama-swap release (Go proxy). Bump VERSION + SHA256 together from
 # https://github.com/mostlygeek/llama-swap/releases (asset llama-swap_<ver>_linux_amd64.tar.gz;
 # SHA-256 is in llama-swap_<ver>_checksums.txt).
-readonly LLAMASWAP_VERSION="247"
+readonly LLAMASWAP_VERSION="250"
 readonly LLAMASWAP_ASSET="llama-swap_${LLAMASWAP_VERSION}_linux_amd64.tar.gz"
 readonly LLAMASWAP_ASSET_URL="https://github.com/mostlygeek/llama-swap/releases/download/v${LLAMASWAP_VERSION}/${LLAMASWAP_ASSET}"
-readonly LLAMASWAP_SHA256="4001a068dc1dd154513919a31cc009d4f544426d2040bd02fbf33d90240c17df"
+readonly LLAMASWAP_SHA256="1675b0bcdb0791f6172d22993ab22a8097c25a0adda4bb8467d2c31871fb77a0"
 
 # --- Coder model: Qwen3.8-27B (dense 27B, multimodal, thinking). Released 2026-08-14
 # and adopted the same day: SWE-bench Pro 61.7 vs 53.5 for Qwen3.6-27B, on the one
-# SWE-bench variant that covers TS/JS. UD-Q5_K_XL ~20.2 GB. Apache-2.0.
+# SWE-bench variant that covers TS/JS. UD-Q5_K_XL ~20.9 GB. Apache-2.0.
+# ⚠️ unsloth REQUANTISED this file on 2026-08-20 (20.2 -> 20.9 GB); the pin below moved
+# from revision fdd03b8b to 4ca72078 on 2026-08-22. The chat template is byte-identical
+# between the two (sha 12827f24b742ea4e), so only tensor quantisation changed.
 # Architecturally IDENTICAL to Qwen3.6-27B (same config.json), so it is a drop-in:
 # same KV cost, same footprint, and llama.cpp already supported it on release day.
 # ⚠️ Qwen ships NO DFlash drafter for it. Borrowing Qwen3.6-27B's works but only
@@ -49,8 +52,8 @@ readonly LLAMASWAP_SHA256="4001a068dc1dd154513919a31cc009d4f544426d2040bd02fbf33
 # its provenance could not be established (the local file matches no published repo).
 readonly CODER_REPO="unsloth/Qwen3.8-27B-GGUF"
 readonly CODER_FILE="Qwen3.8-27B-UD-Q5_K_XL.gguf"
-readonly CODER_SHA256="176a6a3f034e9cdc447c10cd00329fc9b31002e6589b9295f2ad4f1eefe0f6ab"
-readonly CODER_REVISION="fdd03b8bbd279c1694563650e79d85a2373d9934"
+readonly CODER_SHA256="8601193d3d5760c37fb8ce1b43afebc69df5fb24e1fbc5a547c32e2200305276"
+readonly CODER_REVISION="4ca720788d1e01f1bff70c033e0d0028fd02e502"
 readonly CODER_ALIAS="qwen3.8-27b"
 readonly CODER_CTX="${CODER_CTX:-65536}"           # explicit — `auto`/--fit over-commits, see below
 readonly CODER_NPREDICT="${CODER_NPREDICT:-32768}" # thinking model — 8k truncates mid-reason
@@ -331,7 +334,13 @@ if ! "${LS}/llama-server" --list-devices 2>/dev/null | grep -qiE 'V620|RADV'; th
   exit 1
 fi
 # --n-predict caps tokens generated per request (-1 = unlimited). Bound it (e.g. 8192) so a model that
-# runs away can't fill its whole ctx window and stall the loop; the loop's models are non-thinking so 8k is ample.
+# runs away can't fill its whole ctx window and stall the loop.
+# ⚠️ CORRECTED 2026-08-22: this used to claim "the loop's models are non-thinking so 8k is
+# ample", which contradicted CODER_NPREDICT's own comment above and is simply false.
+# Qwen3.8-27B IS a thinking model and its default effort runs away: measured 8000 tokens /
+# 32,901 chars of reasoning with `content` STILL EMPTY. The bound below is a backstop, not a
+# fix — reasoning is controlled per-request by the client (see the reasoning matrix in
+# CLAUDE.md) or server-side via --reasoning-budget.
 # CTX=auto omits --ctx-size so llama.cpp sizes the window itself via --fit. ⚠️ Kept only
 # for A/B testing — it is NOT a safe default on this card. --fit over-commits on
 # RADV/Vulkan and the overflow lands silently in GTT (host RAM over PCIe), costing ~7x

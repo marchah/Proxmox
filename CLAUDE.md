@@ -61,6 +61,38 @@ These containers form the system:
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
+    - 🔴 **The coder is a THINKING model whose default effort NEVER ANSWERS, and no entry sets a
+      `--reasoning` flag.** `llama-server`'s `--reasoning` defaults to `auto` (detect from template),
+      so Qwen3.8-27B reasons without bound: measured 2026-08-22 at 8000 tokens / **32,901 chars of
+      reasoning with `content` still empty**, `finish_reason: length`. `--n-predict 32768` is the
+      only bound, so a request can burn 32k tokens and return nothing — the same "Thinking Budget
+      Exhausted" failure CT 120 fixed with `--reasoning off`. Reproduced identically on b10361, and
+      the chat template is byte-identical across the 2026-08-20 requant (`12827f24b742ea4e`), so this
+      is long-standing behaviour, not a regression from either bump.
+    - ✅ **Reasoning is controllable BY THE CLIENT, per request — which is better than a global
+      server flag, because the loop can pick per task.** Measured against `qwen3.8-27b-mtp`:
+
+      | client-side parameter | effect |
+      | --- | --- |
+      | `chat_template_kwargs: {"enable_thinking": false}` | **works** — 746 tok, `stop`, 2,659-char answer, reasoning 0 |
+      | `reasoning_effort: "low"` | **works** — 1770 tok, 3,945 ch reasoning, 3,158 ch answer |
+      | `reasoning_effort: "medium"` | **works** — 2240 tok, 4,664 ch reasoning, 4,219 ch answer |
+      | `reasoning_effort: "high"` / unset | runs away — 18,112 / 17,306 ch reasoning, **no answer** |
+      | `reasoning_budget: N` | ⚠️ **silently ignored** (byte-identical to control) — server-only |
+      | `chat_template_kwargs: {"thinking_budget": N}` | ⚠️ silently ignored, same |
+      | `/no_think` prompt suffix | ⚠️ ignored |
+      | `reasoning_effort: "minimal"` | ⚠️ **HTTP 500** — an invalid level crashes the request rather than being rejected |
+
+      - **Unset behaves like `high`**, which is why the default never answers. `low`/`medium` both
+        complete cleanly *and* run slightly faster (32.2 / 31.3 vs 28.5 tok/s).
+      - **On/off and effort are client-side; BUDGET is server-side only.** The robust shape is both:
+        clients send `reasoning_effort` per task, and the server sets `--reasoning-budget N` as a
+        floor so a client that sends nothing cannot run away. Hard-coding `--reasoning off` would
+        work but takes the choice away from the loop.
+      - ⚠️ **This may retire the "Server-side or nothing" rule for Hermes/CT 120** recorded above:
+        that rule assumed llama.cpp had no native reasoning-effort parameter, and it demonstrably
+        does now. Whether Hermes' own `--reasoning` abstraction actually reaches through has NOT
+        been retested — verify before relying on it.
     - ⚠️ **It serves more than the coder/reviewer pair** — plus general and evaluation models, all
       **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked into the script** (they
       change as models are trialled). As of 2026-08-15 there are SEVEN:
@@ -367,6 +399,16 @@ Engine differences that matter when extending the llama.cpp script:
   flat `llama-<tag>/` dir and symlinks `/opt/llamacpp/current`. It also installs the
   **libglvnd/EGL stack** (`libglvnd0 libgl1 libglx0 libegl1`) on top of `mesa-vulkan-drivers`
   — without it the Mesa ICD loader can silently report **zero** Vulkan devices in the container.
+  - **Current pins, all bumped 2026-08-22:** llama.cpp **`b10587`** (from `b10361`; llama.cpp now
+    also self-reports a semver, `0.2.0-dev (build 10587, commit 3f545becc)`), llama-swap **`v250`**
+    (from `v247`), and the coder GGUF moved to revision `4ca72078` after unsloth requantised it
+    (20.2 → 20.9 GB; chat template byte-identical, so tensors only). Prior builds are left in
+    `/opt/llamacpp/` and the previous llama-swap binary as `llama-swap.v247.bak`, so rollback is a
+    symlink flip / file copy. Verified after the bump: both cards' RADV init (the loud-guard passes),
+    CT 120 serving at 68.7 tok/s, all 7 llama-swap models registered, and MTP speculation still
+    active on the coder (65.5 % acceptance, 27.7 tok/s).
+    ⚠️ **The standing "re-run the n-max sweep at the next llama.cpp bump" TODO below is now DUE
+    again** — the sweep recorded here was measured on b10361, i.e. pre-bump. Harness: `pro-v620/gpu-ab-bench/spec-sweep.sh`.
 - LM Studio hot-reloads context/parallel via `lms load`; **llama.cpp sets them as start-time
   flags**, so its container ships a `llamacpp-reload <ctx> <parallel>` helper (rewrites
   `/etc/llamacpp.env` + `systemctl restart`) and a `Type=simple` service running

@@ -30,10 +30,10 @@ GPU2_PCI_ADDRESS="${GPU2_PCI_ADDRESS:-}"
 # both on https://github.com/ggml-org/llama.cpp/releases (the asset is
 # llama-<tag>-bin-ubuntu-vulkan-x64.tar.gz; the SHA-256 is the release asset's
 # digest). The prebuilt is preferred over a source build for reproducibility.
-readonly LLAMACPP_RELEASE_TAG="b10361"
+readonly LLAMACPP_RELEASE_TAG="b10587"
 readonly LLAMACPP_ASSET="llama-${LLAMACPP_RELEASE_TAG}-bin-ubuntu-vulkan-x64.tar.gz"
 readonly LLAMACPP_ASSET_URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMACPP_RELEASE_TAG}/${LLAMACPP_ASSET}"
-readonly LLAMACPP_SHA256="f98377a3a3ae7a541894aa512ab0610fdf6d1735a1ad13d9474e67b80d130e9a"
+readonly LLAMACPP_SHA256="1fd5c5edb76e05fa21067c17796ea938cd410500e2cbe18b6483ca031d1fd7cb"
 # Qwen3.6-35B-A3B is a Mixture-of-Experts model: 35B total params, ~3B active per
 # token, so it runs far faster than a dense 27B/32B while keeping high capability
 # — the best capability-per-second on this card for an interactive agent. It is
