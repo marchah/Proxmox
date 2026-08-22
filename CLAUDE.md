@@ -651,6 +651,11 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
     `8.0GT/s, x4` on GPU 2. Closing the gap needs slot bifurcation in BIOS, still blocked by the
     host having no video output — so that headless-BIOS problem now gates ~22 % of MoE decode on
     GPU 2, not merely C-states.
+  - Harness: **`pro-v620/gpu-ab-bench/`** (host-side, NOT a service — no `install.sh`/unit). Read
+    its README before re-running: it carries the interleaving method, the "verify every control"
+    checklist, the ⚠️ **revert `ct123-dual-gpu.sh` before production returns** rule, the fact that
+    `gpu-thermal-watchdog` cannot protect a hand-driven `llama-bench`, and the output-sanity gate
+    that stops a speculative sweep reporting a degenerate-repetition artifact as a speedup.
 - **V620 host-side GPU services live under `pro-v620/` and run on the Proxmox host (NOT in the
   LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`. `pro-v620/fan-control/`
   runs one `gpu-fan-control@<instance>` per **controllable fan channel** (out-of-tree `nct6687`) —

@@ -444,6 +444,16 @@ Reproduction gotchas (if retried in a VM):
 
 ## Benchmarks
 
+> **Comparing the two cards against each other** is a different job from benchmarking the served
+> endpoint, and `make bench` cannot do it (CT 200 has no GPU passthrough and talks to one endpoint).
+> Use **[`gpu-ab-bench/`](gpu-ab-bench/README.md)** — a host-side, non-service harness that runs
+> `llama-bench` inside each card's own container over interleaved rounds. It established that the
+> two V620s are **not** equivalent: GPU 2 wins every prefill test yet loses ~20 % of decode, because
+> its Gen 3 x4 chipset slot costs a fixed ~3.45 ms per decoded token. Read that README before
+> re-running it — it carries the mandatory `ct123-dual-gpu.sh` revert step, the reason
+> `gpu-thermal-watchdog` cannot protect a hand-driven run, and the output-sanity gate for
+> speculative sweeps.
+
 Run the suite from the repo root with `make bench` (the defaults are now
 `RUNTIME=llamacpp`, `model_key=qwen3.6-35b-a3b`, `model_context=262144`, so no
 overrides are needed). Results land in `pro-v620/results/llamacpp/parallel-<n>/`.
