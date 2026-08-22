@@ -642,10 +642,29 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
     is the signature of an interconnect round-trip, not weaker silicon. Prefill batches 4096 tokens
     per submission and amortises it away; decode issues one token at a time and pays it every token.
   - **So the tax hurts FAST models most**, which is what decides placement: ~4 ms on this MoE's
-    12 ms token is −22 %, but on a dense 27B's 53 ms token only −7 % (measured: `Qwen3.8-27B`
-    19.00 → 17.65 tok/s, −7.1 %; `Qwen3.6-27B` 18.82 → 17.57, −6.6 %). **Never move
+    12 ms token is −22 %, but on a dense 27B's 53 ms token only −7 %. **Never move
     `qwen3.6-35b-a3b` to GPU 2** — it would surrender ~22 % of decode. The dense loop models on
     CT 123 are correctly placed and barely notice.
+  - **The fixed-tax model was then confirmed on a second architecture.** `Qwen3.8-27B` (dense) run
+    through the same 3-interleaved-round harness, both cards driven from one container via
+    `--device`:
+
+    | test | GPU 1 | GPU 2 | Δ |
+    | --- | ---: | ---: | ---: |
+    | pp512 | 322.3 | **330.8** | +2.6 % |
+    | pp4096 | 358.2 | **370.1** | +3.3 % |
+    | pp512 @d8192 | 261.3 | **271.7** | +4.0 % |
+    | pp512 @d32768 | 125.5 | **130.5** | +4.0 % |
+    | tg128 | **19.15** | 17.76 | **−7.2 %** |
+    | tg128 @d8192 | **18.40** | 17.14 | −6.8 % |
+    | tg128 @d32768 | **17.09** | 16.00 | −6.3 % |
+
+    Same prefill-favours-GPU-2 / decode-favours-GPU-1 split, and the per-token penalty is again
+    **constant**: 52.22 → 56.31 ms at depth 0 (4.09 ms), 54.35 → 58.34 at 8k (3.99 ms), 58.51 →
+    62.50 at 32k (3.99 ms). ~4 ms on both architectures, but −7 % here versus −22 % on the MoE
+    purely because a dense token is 4× slower to produce. Independently corroborated by the
+    speculation sweep's unaccelerated baselines (19.00 → 17.65 tok/s, −7.1 %; `Qwen3.6-27B`
+    18.82 → 17.57, −6.6 %).
   - ⚠️ **`current_link_speed` / `current_link_width` LIE** — both report `16.0 GT/s PCIe x16` for
     *both* cards. Ground truth is the starred line of `pp_dpm_pcie`: `16.0GT/s, x16` on GPU 1 vs
     `8.0GT/s, x4` on GPU 2. Closing the gap needs slot bifurcation in BIOS, still blocked by the
@@ -693,10 +712,21 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   2026-08-14/15 were all under the earlier shared-shroud cooling, which ran a full load with its
   fan maxed. With a blower per card, both saturated simultaneously settle at 62/73 °C — so treat a
   trip now as a real fault (a seized blower, a detached hub lead), not as normal saturation.
-  Independently re-validated 2026-08-22 over a 3.3 h / 6015-sample benchmark session on the
-  **production fan curve untouched**: three consecutive 32768-token prefills per card (the hottest
-  workload on this box) peaked at junction **73 °C** on GPU 1 and **74 °C** on GPU 2, fan ≤ 50 %,
-  clocks flat throughout (no throttling), zero trips.
+  Independently re-validated 2026-08-22 across a benchmark session on the **production fan curve
+  untouched**, with **zero trips** and clocks flat throughout (no throttling) in every case.
+  ⚠️ **A DENSE model, not big-context MoE prefill, is the thermal worst case** — because a dense
+  27B pins the firmware-locked 250 W cap while the 3B-active MoE is memory-bound and never reaches
+  it:
+
+  | workload | peak junction G1 / G2 | power under load | fan |
+  | --- | --- | ---: | ---: |
+  | `qwen3.6-35b-a3b` MoE, 3× 32768-tok prefill | 73 / 74 °C | ~220 W | ≤ 50 % |
+  | **`Qwen3.8-27B` dense, prefill + decode** | **84 / 88 °C** | **250 W (at the cap)** | 61 % |
+
+  So margin to the 102 °C trip is ~28 °C on the MoE but only **~14 °C on a dense model** — still
+  safe, and with fan headroom left, but do not quote the MoE figure as the worst case. This also
+  explains the pre-blower trip history: every firing was a *dense* model (the qwen3.6-27b coding
+  harness, dense-28B muse-glimmer), never the MoE.
   ⚠️ **It CANNOT protect a hand-driven load.** It stops the CT's model *service*
   (`systemctl stop llamacpp` / `llama-swap`), which is a no-op against a `llama-bench` or
   `llama-server` you launched yourself — the 105 °C hardware MODE1 reset then becomes the only
