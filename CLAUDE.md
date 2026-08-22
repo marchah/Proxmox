@@ -23,7 +23,10 @@ These containers form the system:
   ~29 °C of margin to the watchdog trip — thermals are not a constraint on this box. CT 120 is **pinned to GPU 1 alone** (`0000:2d:00.0`): its
   container bind-mounts only that card's `/dev/dri` render node (via the udev-stable `by-path`
   symlink — the reboot-stable way to pin one of two identical cards), so llama.cpp sees a single
-  Vulkan device and runs the whole ~26.6 GB model on it. **GPU 2 (`0000:06:00.0`) runs CT 123 `gpu2`**
+  Vulkan device and runs the whole ~26.6 GB model on it. ⚠️ **This card assignment is not
+  arbitrary** — GPU 2's chipset slot costs a fixed ~3.45 ms per decoded token, i.e. −22 % on this
+  MoE, so the model belongs on GPU 1 (see the two-slot benchmark under Conventions).
+  **GPU 2 (`0000:06:00.0`) runs CT 123 `gpu2`**
   (a `llama-swap` server for the autonomous coding loop — see below); it stays amdgpu-bound so the host
   fan/undervolt/watchdog services manage both. Both cards are undervolted −100 mV:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
@@ -612,6 +615,42 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   two entries + restart the CT — see the README "Recovering after a DRM renumber" recipe; a
   plain re-run is rejected while the CT exists). The `llamacpp-serve` guard turns the
   otherwise-silent CPU fallback into a loud startup failure.
+- ⚠️ **The two PCIe slots are NOT equivalent — GPU 2 pays a fixed per-token decode tax.**
+  Measured 2026-08-22 with `llama-bench` run inside each card's own container, 3 interleaved rounds
+  in alternating order, every other variable verified rather than assumed: same GGUF (`25233af7…`,
+  hash-matched across both containers *and* upstream HF), same build `b10361 (14e78ddef)`, same
+  flags (`-ngl 99 -fa 1 -b 4096 -ub 1024`), both cards −100 mV (read live from
+  `pp_od_clk_voltage`), both `power1_cap` 250 W. Variance under **0.1 %** across rounds.
+  Model: `Qwen3.6-35B-A3B-UD-Q5_K_XL`.
+
+  | test | GPU 1 — `2d:00.0` Gen4 x16 | GPU 2 — `06:00.0` Gen3 x4 | Δ |
+  | --- | ---: | ---: | ---: |
+  | pp512 | 969.4 | 976.8 | +0.8 % |
+  | pp4096 | 1573.6 | **1614.0** | **+2.6 %** |
+  | pp512 @d8192 | 863.0 | **890.3** | +3.2 % |
+  | pp512 @d32768 | 349.1 | **362.9** | +3.9 % |
+  | pp32768 | 621.8 | **642.9** | +3.4 % |
+  | tg128 | **83.9** | 65.1 | **−22.4 %** |
+  | tg128 @d8192 | **77.8** | 61.3 | −21.2 % |
+  | tg128 @d32768 | **70.3** | 56.4 | −19.7 % |
+
+  - **GPU 2 is the *stronger* card.** It wins every prefill test, sustains ~130 MHz higher clocks
+    (2462 vs 2333) and draws more power under the same offset and cap — yet loses ~20 % of decode.
+    A physical slot swap is therefore unnecessary to rank the two cards; prefill already answers it.
+  - **The penalty is a FIXED ~3.45 ms/token, not a percentage.** 11.92 → 15.36 ms/tok at depth 0,
+    12.86 → 16.31 at 8k, 14.24 → 17.73 at 32k — constant while per-token compute grows ~20 %. That
+    is the signature of an interconnect round-trip, not weaker silicon. Prefill batches 4096 tokens
+    per submission and amortises it away; decode issues one token at a time and pays it every token.
+  - **So the tax hurts FAST models most**, which is what decides placement: ~4 ms on this MoE's
+    12 ms token is −22 %, but on a dense 27B's 53 ms token only −7 % (measured: `Qwen3.8-27B`
+    19.00 → 17.65 tok/s, −7.1 %; `Qwen3.6-27B` 18.82 → 17.57, −6.6 %). **Never move
+    `qwen3.6-35b-a3b` to GPU 2** — it would surrender ~22 % of decode. The dense loop models on
+    CT 123 are correctly placed and barely notice.
+  - ⚠️ **`current_link_speed` / `current_link_width` LIE** — both report `16.0 GT/s PCIe x16` for
+    *both* cards. Ground truth is the starred line of `pp_dpm_pcie`: `16.0GT/s, x16` on GPU 1 vs
+    `8.0GT/s, x4` on GPU 2. Closing the gap needs slot bifurcation in BIOS, still blocked by the
+    host having no video output — so that headless-BIOS problem now gates ~22 % of MoE decode on
+    GPU 2, not merely C-states.
 - **V620 host-side GPU services live under `pro-v620/` and run on the Proxmox host (NOT in the
   LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`. `pro-v620/fan-control/`
   runs one `gpu-fan-control@<instance>` per **controllable fan channel** (out-of-tree `nct6687`) —
@@ -649,6 +688,15 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   2026-08-14/15 were all under the earlier shared-shroud cooling, which ran a full load with its
   fan maxed. With a blower per card, both saturated simultaneously settle at 62/73 °C — so treat a
   trip now as a real fault (a seized blower, a detached hub lead), not as normal saturation.
+  Independently re-validated 2026-08-22 over a 3.3 h / 6015-sample benchmark session on the
+  **production fan curve untouched**: three consecutive 32768-token prefills per card (the hottest
+  workload on this box) peaked at junction **73 °C** on GPU 1 and **74 °C** on GPU 2, fan ≤ 50 %,
+  clocks flat throughout (no throttling), zero trips.
+  ⚠️ **It CANNOT protect a hand-driven load.** It stops the CT's model *service*
+  (`systemctl stop llamacpp` / `llama-swap`), which is a no-op against a `llama-bench` or
+  `llama-server` you launched yourself — the 105 °C hardware MODE1 reset then becomes the only
+  backstop. Run an independent guard alongside any manual benchmark: poll `temp2_input` on both
+  cards every 2 s and `pkill -f llama-bench` at ~100 °C.
 - **Non-GPU host networking lives under `host-net/`** (also host-side, NOT in an LXC).
   `host-net/wifi-nat/` lets the host run with **no ethernet**: onboard WiFi (`wlo1`) becomes the
   routed WAN and `vmbr0` becomes an internal NAT'd LAN (`10.10.10.0/24`) the LXCs sit behind
