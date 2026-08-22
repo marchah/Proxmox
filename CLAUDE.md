@@ -49,6 +49,10 @@ These containers form the system:
         when thinking is genuinely off — and it does not even reject an invalid level. Hermes'
         reasoning-effort abstraction targets providers with a native parameter. Server-side or
         nothing.
+        ⚠️ **This was measured on b10361 and is now BUILD-DEPENDENT.** b10587 (deployed 2026-08-22)
+        *does* accept a native per-request `reasoning_effort`, verified against b10361 which ignored
+        it byte-identically. So the premise of this rule no longer holds — see the reasoning matrix
+        under CT 123. Whether `hermes --reasoning` now reaches through has NOT been retested.
       - ⚠️ The flag lives in the **serve script**, not `/etc/llamacpp.env`, so it survives
         `llamacpp-reload` (which rewrites only ctx/parallel).
       - **Two knobs are now over-provisioned** (deliberately left alone): `MODEL_PARALLEL=2`
@@ -89,10 +93,17 @@ These containers form the system:
         clients send `reasoning_effort` per task, and the server sets `--reasoning-budget N` as a
         floor so a client that sends nothing cannot run away. Hard-coding `--reasoning off` would
         work but takes the choice away from the loop.
-      - ⚠️ **This may retire the "Server-side or nothing" rule for Hermes/CT 120** recorded above:
-        that rule assumed llama.cpp had no native reasoning-effort parameter, and it demonstrably
-        does now. Whether Hermes' own `--reasoning` abstraction actually reaches through has NOT
-        been retested — verify before relying on it.
+      - ✅ **`reasoning_effort` support is NEW in b10587 — b10361 silently ignored it.** Verified by
+        running the identical request set against b10361 with the same model/drafter/flags: `unset`,
+        `low` and `medium` all returned **byte-identical** output (17,333 reasoning chars each, zero
+        content). At temperature 0 identical output proves the parameter had literally no effect. On
+        b10587 the same three give 17,306 / 3,945 / 4,664 chars. So the bump did not just ship fixes
+        — **it unlocked per-request reasoning control that did not exist before.**
+      - ⚠️ **Therefore the "Server-side or nothing" rule under CT 120 above is now BUILD-DEPENDENT
+        and probably obsolete.** It was correct on b10361 (llama.cpp had no native reasoning-effort
+        parameter, so Hermes' abstraction had nothing to target); b10587 has one. Retesting
+        `hermes --reasoning <level>` against CT 120 is now worthwhile — if it reaches through, CT 120
+        could move from the global `--reasoning off` to per-task control. Not yet retested.
     - ⚠️ **It serves more than the coder/reviewer pair** — plus general and evaluation models, all
       **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked into the script** (they
       change as models are trialled). As of 2026-08-15 there are SEVEN:
