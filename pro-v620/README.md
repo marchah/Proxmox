@@ -12,27 +12,37 @@ the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 > script). **GPU 2 now runs CT 123 `gpu2`** — a `llama-swap` server for the autonomous coding loop's
 > coder/reviewer split (`create-lxc-llama-swap-gpu2.sh`; `qwen3.8-27b-mtp` coder + `thinkingcap-27b`
 > reviewer, swapped one at a time on `0.0.0.0:8080`). GPU 2 stays amdgpu-bound, so the host services manage both cards:
-> both are undervolted −100 mV (`undervolt/` applies to every V620), and **cooling is one NF-F12
-> iPPC-3000 in a shared shroud** driven by a single `gpu-fan-control@shroud` instance whose curve
-> tracks the **hotter** card — now GPU 1 under load (see [`fan-control/`](fan-control/) and
-> [`undervolt/`](undervolt/)). The single-card figures below (benchmarks, thermals, undervolt A/B)
-> were measured on **one** V620, which is exactly this configuration.
+> both are undervolted −100 mV (`undervolt/` applies to every V620), and **each card has its own
+> 9733 radial blower**. Both blowers hang off a single SATA-powered PWM hub whose control lead sits
+> on the **PUMP FAN** header, driven by one `gpu-fan-control@hub` instance whose curve tracks the
+> **hotter** card (see [`fan-control/`](fan-control/) and [`undervolt/`](undervolt/)). The
+> single-card figures below (benchmarks, thermals, undervolt A/B) were measured on **one** V620,
+> which is exactly this configuration.
 >
-> **⚠️ Thermal trade-off of running solo on GPU 1.** Concentrating the whole model + all compute on
-> one card runs it hotter than splitting across both did (~56–59 °C). **Load-tested 2026-07-14:** a
-> full solo load maxes the shroud fan and GPU 1 settles at **~91 °C** junction — holding, but with
-> little headroom (still under the 100 °C hardware throttle and the 102 °C watchdog trip). This is
-> the deliberate cost of not splitting the model (GPU 2 is reserved for CT 123's own service); the
-> [`gpu-thermal-watchdog/`](gpu-thermal-watchdog/) stops the LLM server at 102 °C as the last-resort net
-> (it maps a trip to that card's **owning workload**: GPU 1 → CT 120 `llamacpp`, GPU 2 → CT 123
-> `llama-swap`. GPU 2 coverage is live, not pending — it fired on CT 123 on 2026-08-14 and twice on
-> 2026-08-15. ⚠️ It leaves the stopped service **down** by design, so the symptom from outside is a
-> plain connection-refused on `:8080` with the container still running; an in-flight request sees a
-> **502**, which looks exactly like a model crash. Check `journalctl -u gpu-thermal-watchdog` on the
-> **host** — EDT, while container journals are UTC — before blaming the model). (History: GPU 2's original 2× Arctic
-> S4028-6K cooler was ~14 °C worse than a blower and a full solo load overheated it — junction
-> **106 °C** at 250 W, throttling — so the NF-F12 shroud replaced the Arctic pair. Per-cooler
-> thermals + 3D-print mounts: [`fan-control/README.md`](fan-control/README.md).) To go back to
+> **Thermals are comfortable with a blower per card.** Load-tested 2026-08-22 with **both cards
+> driven simultaneously for ~6.7 minutes** — the heaviest case this box can produce, and one the
+> earlier shared-shroud cooling never survived: **GPU 1 settled at 62 °C and GPU 2 at 73 °C with the
+> fan at only 51%**, flat for the final four minutes, **zero thermal-watchdog trips**. That leaves
+> ~29 °C of margin to the 102 °C watchdog trip and half the fan's range unused, so running the whole
+> model solo on one card is no longer a thermal trade-off. (Earlier cooling generations *were*
+> constrained — a shared NF-F12 shroud ran a full load at ~91–97 °C with its fan maxed, and before
+> that GPU 2's 2× Arctic S4028-6K pair overheated outright at 106 °C. Per-cooler history and
+> 3D-print mounts: [`fan-control/README.md`](fan-control/README.md).)
+>
+> ⚠️ **Only `PUMP_FAN1` can control an externally-powered fan on this board** — the `SYS_FAN*`
+> headers are in DC (voltage) mode, so their pin 4 carries no PWM signal and a SATA-powered fan
+> free-runs at 100% there forever. There is no software fix (no `pwm*_mode`, firmware-configured,
+> no video output to reach BIOS). ⚠️ **A tach reading proves nothing about control.** Full detail
+> and the diagnostic procedure: [`fan-control/README.md`](fan-control/README.md).
+>
+> The [`gpu-thermal-watchdog/`](gpu-thermal-watchdog/) remains armed as the last-resort net, stopping
+> the LLM server at 102 °C and mapping a trip to that card's **owning workload** (GPU 1 → CT 120
+> `llamacpp`, GPU 2 → CT 123 `llama-swap`). It has not tripped since the per-card blowers went in;
+> its three 2026-08-14/15 firings were all under the old shared-shroud cooling. ⚠️ It leaves the
+> stopped service **down** by design, so the symptom from outside is a plain connection-refused on
+> `:8080` with the container still running, and an in-flight request sees a **502** that looks exactly
+> like a model crash. Check `journalctl -u gpu-thermal-watchdog` on the **host** — EDT, while
+> container journals are UTC — before blaming the model. To go back to
 > splitting across both cards, pass through all of `/dev/dri` again in `configure_gpu_passthrough`.
 
 With ~2.7× the VRAM of the 6700 XT (32 GB vs 12 GB), each card serves a large

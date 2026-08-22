@@ -78,9 +78,11 @@ Creates a privileged Ubuntu LXC serving a high-parameter Qwen model on the
 
 - GPU: **two Radeon Pro V620s** (32 GB each — replaced the 12 GiB RX 6700 XT), one in
   PCIe-1 (`0000:2d:00.0`) and one in PCIe-3 (`0000:06:00.0`). The ~26.6 GB model fits one
-  card, so **CT 120 is pinned to GPU 1 alone and GPU 2 is left idle/free** for a future
-  service. Both cooled by a single **NF-F12 shroud** (one fan curve tracking the hotter
-  card) and undervolted −100 mV. See [`pro-v620/README.md`](pro-v620/README.md).
+  card, so **CT 120 is pinned to GPU 1 alone**, and **GPU 2 runs CT 123 `gpu2`** (a
+  `llama-swap` server). Each card has its **own 9733 blower**, both driven through a
+  SATA-powered PWM hub on the PUMP FAN header (one curve tracking the hotter card), and both
+  undervolted −100 mV. Both cards saturated at once measure 62/73 °C at 51% fan.
+  See [`pro-v620/README.md`](pro-v620/README.md).
 - Model: `unsloth/Qwen3.6-35B-A3B-GGUF` / `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf`
   (MoE, 35B total / ~3B active — fast, fits 32 GB at Q5)
 - Engine: `create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
