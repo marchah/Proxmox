@@ -31,8 +31,8 @@ see the two-slot benchmark in the root `CLAUDE.md`.
 | `run-q38.sh` | host | Same treatment for the dense `Qwen3.8-27B`, driven from one container via `--device`. |
 | `analyze.py` | host | Joins `llama-bench` results with the per-phase slice of the telemetry and prints the A/B summary. |
 | `ct123-dual-gpu.sh` | host | Temporarily gives CT 123 **both** cards so one container can benchmark either via `--device`. `add` / `revert` / `status`. ⚠️ see below. |
-| `spec-sweep.sh` | host | Speculative-decoding sweep: MTP + DFlash × both GPUs × n-max, each combination in its own server start. `SMOKE=1` runs one config first. |
-| `spec-probe.py` | **in CT** | Fires a fixed prompt set at a `llama-server` and reports decode tok/s + draft acceptance. Pushed in automatically by `spec-sweep.sh`. |
+| `spec-sweep.sh` | host | Speculative-decoding sweep: MTP + DFlash × GPUs × n-max, each combination in its own server start. `SMOKE=1` runs one config first; `GPU_LIST="Vulkan0:gpu2"` sweeps one card only (no dual-GPU setup needed, leaves CT 120 serving). |
+| `spec-probe.py` | **in CT** | Fires a fixed prompt set at a `llama-server` and reports decode tok/s + draft acceptance, **plus a unique-8-gram ratio per prompt** so a repetition-collapse artifact is visible in `results.jsonl` itself (`uniq_8gram_min`, `any_degenerate`). Pushed in automatically by `spec-sweep.sh`. |
 | `spec-probe-text.py` | **in CT** | Same prompts but **saves the generated text** and scores a unique-8-gram ratio. This is the degeneracy gate. |
 | `merge-row.py` | host | Merges one probe result file into `results.jsonl`. |
 
@@ -112,6 +112,20 @@ $BENCH_DIR/
   spec/results.jsonl         # one row per speculative config, incl. placed_on + output hashes
   spec/<tag>.serverlog       # llama-server log for that config
 ```
+
+## Linting
+
+`shellcheck` is the repo's expected linter. All five shell scripts here are **clean at full
+strictness** (no `-S` filter, so info and style findings included) as of 2026-08-22:
+
+```bash
+brew install shellcheck          # macOS
+shellcheck pro-v620/gpu-ab-bench/*.sh
+```
+
+⚠️ Beware a false negative when checking whether it is installed: `cd somewhere && which shellcheck
+&& ... || echo "not installed"` reports "not installed" if the **`cd`** fails, because the failure
+short-circuits the whole `&&` chain into the `||` branch. That misreport cost a round of review here.
 
 Raw telemetry and results are **deliberately not committed** (a 3.3 h session is ~3.5 MB of JSONL,
 and `.gitignore` already excludes `results/`). Keep the scripts here; archive the data with the run.

@@ -48,6 +48,12 @@ def main():
         wall = time.time() - t0
         tm = r.get("timings", {})
         dn, da = tm.get("draft_n"), tm.get("draft_n_accepted")
+        # Degeneracy gate: a high n-max can collapse the output into repetition, which
+        # drafts almost perfectly and inflates BOTH acceptance and tok/s. Unique-8-gram
+        # ratio near 0 means the "speedup" is an artifact, not a config win.
+        words = (r.get("content") or "").split()
+        shingles = {" ".join(words[j:j+8]) for j in range(max(0, len(words) - 7))}
+        uniq = round(len(shingles) / max(1, len(words) - 7), 3)
         out.append({
             "prompt": i,
             "wall_s": round(wall, 2),
@@ -58,6 +64,8 @@ def main():
             "draft_n": dn,
             "draft_n_accepted": da,
             "accept_pct": (round(100.0 * da / dn, 1) if dn else None),
+            "uniq_8gram": uniq,
+            "degenerate": uniq < 0.7,
             "content_sha": __import__("hashlib").sha256(
                 (r.get("content") or "").encode()).hexdigest()[:12],
             "stop_reason": ("eos" if r.get("stopped_eos") else
@@ -74,6 +82,8 @@ def main():
         "draft_total": tot_d, "draft_accepted": tot_a,
         "accept_pct_overall": round(100.0 * tot_a / tot_d, 1) if tot_d else None,
         "outputs_sha": [o["content_sha"] for o in out],
+        "uniq_8gram_min": min((o["uniq_8gram"] for o in out), default=None),
+        "any_degenerate": any(o["degenerate"] for o in out),
     }, indent=1))
 
 

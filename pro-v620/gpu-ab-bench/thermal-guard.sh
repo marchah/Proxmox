@@ -6,7 +6,7 @@ set -Eeuo pipefail
 LIMIT="${LIMIT:-100}"
 while :; do
   for pci in 0000:2d:00.0 0000:06:00.0; do
-    for h in /sys/bus/pci/devices/$pci/hwmon/hwmon*; do
+    for h in "/sys/bus/pci/devices/$pci/hwmon/"hwmon*; do
       j=$(( $(cat "$h/temp2_input") / 1000 ))
       if [ "$j" -ge "$LIMIT" ]; then
         echo "$(date -u +%FT%TZ) THERMAL GUARD: $pci junction ${j}C >= ${LIMIT}C — killing llama-bench" \

@@ -112,7 +112,9 @@ main() {
   for entry in "${CONFIGS[@]}"; do
     IFS='|' read -r cfg target drafter stype <<<"$entry"
     echo "=== $cfg : target $(basename "$target") drafter $(basename "$drafter") ==="
-    for pair in "$DEV_GPU1:gpu1" "$DEV_GPU2:gpu2"; do
+    # GPU_LIST selects which cards to sweep, e.g. GPU_LIST="Vulkan0:gpu2" for GPU 2 only
+    # (which needs no dual-GPU setup and leaves CT 120 serving).
+    for pair in ${GPU_LIST:-"$DEV_GPU1:gpu1" "$DEV_GPU2:gpu2"}; do
       IFS=':' read -r dev glabel <<<"$pair"
       run_one "$dev" "$glabel" "$cfg" "$target" "" "" ""       # unaccelerated baseline
       for n in $NMAX_LIST; do
