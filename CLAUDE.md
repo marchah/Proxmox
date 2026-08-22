@@ -16,9 +16,11 @@ These containers form the system:
   `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, 35B total / ~3B active) via Vulkan, exposing an
   OpenAI-compatible API at `0.0.0.0:1234` under the id `qwen3.6-35b-a3b`. The host now has
   **two Radeon Pro V620s** (Navi 21 / gfx1030, 32 GB each): one in the **PCIe-1** (CPU) slot
-  `0000:2d:00.0`, one in the **PCIe-3** (chipset) slot `0000:06:00.0`, both cooled by a single
-  **NF-F12 iPPC-3000** 120 mm fan in a shared shroud (one `gpu-fan-control@shroud` instance whose
-  curve tracks the hotter card). CT 120 is **pinned to GPU 1 alone** (`0000:2d:00.0`): its
+  `0000:2d:00.0`, one in the **PCIe-3** (chipset) slot `0000:06:00.0`, each cooled by its **own
+  9733 radial blower**, both hanging off one SATA-powered PWM hub whose control lead sits on the
+  **PUMP FAN** header (one `gpu-fan-control@hub` instance on pwm2, curve tracks the hotter card).
+  Load-tested 2026-08-22 with both cards saturated at once: GPU 1 62 °C / GPU 2 73 °C at 51 % fan,
+  ~29 °C of margin to the watchdog trip — thermals are not a constraint on this box. CT 120 is **pinned to GPU 1 alone** (`0000:2d:00.0`): its
   container bind-mounts only that card's `/dev/dri` render node (via the udev-stable `by-path`
   symlink — the reboot-stable way to pin one of two identical cards), so llama.cpp sees a single
   Vulkan device and runs the whole ~26.6 GB model on it. **GPU 2 (`0000:06:00.0`) runs CT 123 `gpu2`**
@@ -571,11 +573,22 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   otherwise-silent CPU fallback into a loud startup failure.
 - **V620 host-side GPU services live under `pro-v620/` and run on the Proxmox host (NOT in the
   LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`. `pro-v620/fan-control/`
-  runs one `gpu-fan-control@<instance>` per **cooler** (out-of-tree `nct6687`) — currently a
-  single **`@shroud`→pwm3** driving one NF-F12 iPPC-3000 120 mm fan in a shared shroud that cools
-  **both** cards (curve tracks the hotter card; a required sensor missing on either forces 100%).
-  Prior per-GPU env files (`@blower`→pwm2, `@arctic`→pwm4 for 2× Arctic S4028-6K) are kept in-repo
-  for reference. Each instance pins its GPU(s) by PCI address and is driven off the card temp(s);
+  runs one `gpu-fan-control@<instance>` per **controllable fan channel** (out-of-tree `nct6687`) —
+  currently a single **`@hub`→pwm2** driving BOTH cards' 9733 blowers through a SATA-powered PWM
+  hub on the PUMP FAN header (curve tracks the hotter card; a required sensor missing on either
+  forces 100%). Each card has its own blower, so only the *control signal* is shared.
+  ⚠️ **Only `PUMP_FAN1` can control an externally-powered fan on this board** — the `SYS_FAN*`
+  headers are in DC (voltage) mode, so their pin 4 carries no PWM signal and a SATA-powered fan
+  free-runs at 100 % there forever. No software fix exists (no `pwm*_mode`, firmware-configured,
+  Nuvoton publishes no NCT6687D register map, and this host has no video output to reach BIOS);
+  CoolerControl/`fancontrol` cannot help — they write the same sysfs files. ⚠️ **A tach reading
+  proves NOTHING about control**: a 4-pin fan with no PWM signal reports RPM perfectly while
+  ignoring every duty change, which cost ~2 weeks of misdiagnosis (a fan and a hub were each
+  wrongly declared dead). Confirm control by driving the channel to 0 and checking the fan STOPS.
+  ⚠️ The hub returns a tach from its **RED port only**, so one blower's failure is invisible to the
+  tach watchdog. Retired env files (`@shroud`→pwm3 NF-F12, `@blower`→pwm2, `@arctic`→pwm4) and
+  staged per-card ones (`@gpu1`/`@gpu2`) are kept in-repo for reference.
+  Each instance pins its GPU(s) by PCI address and is driven off the card temp(s);
   `pro-v620/undervolt/` applies a persistent GFX **voltage offset** to **every** V620
   (both at −100 mV). The V620's board power
   is **firmware-locked at 250 W** (`power1_cap` write of any other value → `-EINVAL`) and
@@ -591,8 +604,10 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   reset it (a MODE1 reset corrupts the running inference). Failure philosophy is the **opposite**
   of the fan controller's: stopping the model is disruptive, so a missing sensor is logged and
   skipped rather than treated as over-temp (the 105 °C hardware emergency is the final backstop).
-  It never fires in the split (normal) config (~59 °C) — only a sustained **solo full-load** on
-  one card reaches these temps (which pushes a single card's cooling to its limit).
+  ⚠️ **It has not tripped since the per-card blowers went in** (2026-08-22). Its three firings on
+  2026-08-14/15 were all under the earlier shared-shroud cooling, which ran a full load with its
+  fan maxed. With a blower per card, both saturated simultaneously settle at 62/73 °C — so treat a
+  trip now as a real fault (a seized blower, a detached hub lead), not as normal saturation.
 - **Non-GPU host networking lives under `host-net/`** (also host-side, NOT in an LXC).
   `host-net/wifi-nat/` lets the host run with **no ethernet**: onboard WiFi (`wlo1`) becomes the
   routed WAN and `vmbr0` becomes an internal NAT'd LAN (`10.10.10.0/24`) the LXCs sit behind

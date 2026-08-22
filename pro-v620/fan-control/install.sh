@@ -2,8 +2,8 @@
 #
 # Install GPU-temperature-based fan control for the Radeon Pro V620 cooler(s) on a
 # Proxmox host with an MSI MAG B550 board. Runs one systemd instance per cooler
-# (this host's two V620s share a single NF-F12 iPPC-3000 in a shroud — one @shroud
-# instance cooling both cards, its curve tracking the hotter one), pinned by PCI address.
+# (this host has one 9733 blower per V620; only the PUMP_FAN1 one is PWM-controllable,
+# see the INSTANCES note below), each pinned by PCI address.
 #
 # Run on the Proxmox host as root. Idempotent — safe to re-run.
 #
@@ -39,14 +39,38 @@ readonly BLACKLIST_PATH="/etc/modprobe.d/nct6687.conf"
 readonly MODLOAD_PATH="/etc/modules-load.d/nct6687.conf"
 # Records the driver commit SHA we built, so a bumped NCT6687D_REF triggers a rebuild.
 readonly DRIVER_SHA_FILE="/var/lib/gpu-fan-control.driver-sha"
-# One systemd instance per COOLER; each reads its own /etc/gpu-fan-control-<i>.env
-# (pins the GPU(s) it cools by PCI address + its fan pwm channel). Current hardware:
-# one NF-F12 in a shared shroud cools BOTH V620s (curve = hottest of the two).
-#   shroud -> both V620s (pwm3, FAN1)
-# Reference env files for the prior per-GPU coolers (blower/arctic) are kept in the
-# repo but not installed while INSTANCES lists only 'shroud'. Any enabled instance
-# NOT listed here is retired on install (see install_service).
-readonly INSTANCES=(shroud)
+# One systemd instance per CONTROLLABLE fan; each reads its own
+# /etc/gpu-fan-control-<i>.env (pins the GPU(s) it cools by PCI address + its fan pwm
+# channel). Current hardware: one 9733 blower PER card.
+#   gpu1 -> PCIe-1 V620 0000:2d:00.0 (pwm2, PUMP FAN header)
+#
+# ⚠️ GPU 2 (PCIe-3, 0000:06:00.0, on SYS_FAN1/pwm3 via an EN-Labs PWMHUB10SMG) has NO
+# instance ON PURPOSE: pwm3 controls nothing. It runs at 100% permanently — thermally
+# safe (and the better card to have pinned, since it is the one that trips), but not
+# controllable. A service pointed at pwm3 would report a healthy curve and a healthy
+# tach while changing nothing, which is worse than the honest absence of one.
+#
+# ⚠️ THE pwm3 FAULT IS THE PATH, NOT A FAN — proven by A/B swap 2026-08-22. Exchanging
+# the two blowers moved control WITH THE HEADER, not with the fan: GPU 1's blower is
+# fully controlled on pwm2 (255->4301, 128->3100, 32->1046, 0->0 RPM) while GPU 2's
+# known-good blower is 5128 RPM flat on pwm3 at every duty including 0. Four
+# configurations have now failed on pwm3 while pwm1/2/5/6 all physically drive fans.
+# Do not buy more fans or hubs before reading gpu-fan-control-gpu2.env, which records
+# the remaining candidates and the next test.
+#
+# ⚠️ ESTABLISH THE GPU<->CHANNEL PAIRING BY MEASUREMENT, NOT BY HEADER NAME.
+# It was got wrong three times from the silkscreen alone, and a transposed pair is
+# silently dangerous: each card's fan then answers to the OTHER card's temperature, so
+# loading one GPU cools the idle one. Ground truth is driving a channel to 0 and
+# watching which card heats or which blower stops. ⚠️ Temperature correlation only
+# works on a WARM card: 6-8W into a passive heatsink moved neither card measurably
+# over 3 minutes fanless, but a card already at 50C climbed to 75C in under a minute.
+#
+# Reference env files for the retired coolers (blower/arctic/shroud) are kept in the
+# repo but not installed while INSTANCES omits them. gpu-fan-control-blower.env is
+# superseded by gpu-fan-control-gpu1.env (same card, fan, header and curve).
+# Any enabled instance NOT listed here is retired on install (see install_service).
+readonly INSTANCES=(hub)
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
@@ -215,7 +239,7 @@ install_service() {
   fi
 
   # Retire any enabled instances no longer in INSTANCES (e.g. a previous per-GPU
-  # blower/arctic setup replaced by a single shroud fan) so they don't keep driving
+  # per-card instances replaced by a single hub-driven channel) so they don't keep driving
   # now-empty channels or fight the current instance for the chip.
   local link ename want keep
   for link in /etc/systemd/system/multi-user.target.wants/gpu-fan-control@*.service; do

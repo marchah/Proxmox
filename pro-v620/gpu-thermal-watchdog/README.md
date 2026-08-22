@@ -22,10 +22,18 @@ two protections:
 The 102 °C trip is deliberately **above** the 100 °C throttle (a little throttling is
 fine) and **below** the 105 °C emergency — the last graceful chance before the reset.
 
-In the normal **split** config both GPUs sit ~59 °C, so this never fires. It only
-matters for a sustained **solo full-load** on a single card, which pushes that card's
-cooling to its limit — see [`../fan-control/README.md`](../fan-control/README.md) for
-the per-cooler solo-load thermals.
+**With a 9733 blower per card this does not fire in normal operation.** Load-tested
+2026-08-22 with **both** cards saturated simultaneously — the heaviest case this box
+produces — GPU 1 settled at 62 °C and GPU 2 at 73 °C with the fan at only 51%, ~29 °C
+below the trip. See [`../fan-control/README.md`](../fan-control/README.md) for the
+per-cooler thermals.
+
+⚠️ **So treat a trip as a real fault, not as normal saturation.** Under the earlier
+shared-shroud cooling a full load genuinely ran near the limit and this watchdog fired
+three times (2026-08-14, twice 2026-08-15); that is no longer the expected regime. A trip
+now points at a seized blower, a detached hub control lead, or blocked airflow — and note
+the hub reports a tach for only **one** of the two blowers, so this watchdog is the
+primary detection for a failure of the other.
 
 ## Behaviour
 
