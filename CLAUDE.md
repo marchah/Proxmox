@@ -123,6 +123,25 @@ These containers form the system:
         failure mode is a silent **GTT spill** (~12× decode loss) that the loud-guard does NOT catch.
         Mitigation if it ever bites: `--mmproj-device none` / `--no-mmproj-offload` keeps the
         projector on CPU for zero VRAM, trading one-off image-encode latency.
+      - **GPU vs CPU projector — the documented escape hatch if VRAM gets tight.** Measured
+        2026-08-22 with `cache_prompt: false` so images are genuinely re-encoded:
+
+        | case | GPU offload (default) | `--no-mmproj-offload` | penalty |
+        | --- | ---: | ---: | ---: |
+        | VRAM | 27.85 GiB | **26.75 GiB** | **frees 1.10 GiB** |
+        | text-only | 0.81 s · 27.4 t/s | 0.81 s · 27.3 t/s | **none** |
+        | image 512×512 (283 tok) | **1.69 s** | 5.35 s | **3.2×** |
+        | image 1280×720 (947 tok) | **3.81 s** | 20.36 s | **5.3×** |
+        | decode after the image | 21.1 / 28.5 t/s | 21.1 / 28.4 t/s | **none** |
+
+        Vision stays **correct** on CPU, only slower, and the cost is confined to image encoding —
+        text throughput and post-image decode are unchanged, which also proves the comparison is
+        clean. The penalty **grows with resolution** (~4 ms/image-token on GPU vs ~18-21 on CPU), so
+        downscaling recovers most of it. **Keep GPU offload while the 2.12 GiB headroom holds**; reach
+        for `--no-mmproj-offload` only to reclaim that GiB for a bigger context or a second model.
+        ⚠️ **Set `cache_prompt: false` when timing image requests.** With caching on, repeated
+        identical requests report `prompt_n` of ~4 for a 1280×720 image and every config looks
+        identical at ~0.6 s — you measure cache hits, not encoding. That flaw invalidated a first run.
       - **Why it earns its keep even unused:** without `--mmproj` the server answers
         `image input is not supported` and an agent **keeps working regardless** — a documented
         3-hour run once had a "visual critic" reasoning about screenshots it never received. This
