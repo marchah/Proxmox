@@ -65,6 +65,37 @@ These containers form the system:
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
+    - ✅ **VISION IS ENABLED on the coder (2026-08-22)** via `--mmproj` in its `EXTRA_ARGS`.
+      Qwen3.8-27B is multimodal and the capability had been inert since deployment. No script
+      change was needed — `llamaswap-guarded-serve` word-splits `EXTRA_ARGS` and appends it to
+      `llama-server` verbatim. Projector: `unsloth/Qwen3.8-27B-GGUF` → `mmproj-F16.gguf`, stored as
+      `/models/hf/Qwen3.8-27B-mmproj-F16.gguf`, 927,607,488 B, sha256 `cbb841a9ee0636b2…`
+      (hash-verified against upstream). **Every cost measured, not estimated:**
+
+      | resource | before | after | cost |
+      | --- | ---: | ---: | ---: |
+      | disk | — | — | **884 MiB** (of 84 GB free) |
+      | VRAM | 26.75 GiB | 27.86 GiB | **+1.11 GiB**, 2.12 GiB headroom left |
+      | GTT | 0.44 GiB | 0.44 GiB | **unchanged — no spill** |
+      | text-only decode | 32.2 tok/s | 32.0 tok/s | **−0.6 %, i.e. noise** |
+      | text-only output | — | — | **byte-identical** (sha `f9e39b849b7f` both) |
+
+      - **Verified working**, not assumed: a generated 256×256 PNG of a blue circle on near-white
+        sent as a base64 data URI returned *"There is a blue circle in the image."* Ground truth is
+        unambiguous so the test can actually fail — `pro-v620/gpu-ab-bench/vision-test.py`.
+      - **MTP and vision coexist on Vulkan/b10587**, confirming the Metal/b10450 finding transfers:
+        MTP stayed active *on the image request itself* (6/6 accepted) and text-only acceptance was
+        81.3 %. Worth having verified rather than assumed — `--spec-draft-n-max` proved that backend
+        behaviour does *not* always carry across backends.
+      - ⚠️ **VRAM is the binding constraint, not compatibility.** 2.12 GiB of headroom remains at
+        ctx 65536. If something else needs room the projector is the first thing to drop, and RADV's
+        failure mode is a silent **GTT spill** (~12× decode loss) that the loud-guard does NOT catch.
+        Mitigation if it ever bites: `--mmproj-device none` / `--no-mmproj-offload` keeps the
+        projector on CPU for zero VRAM, trading one-off image-encode latency.
+      - **Why it earns its keep even unused:** without `--mmproj` the server answers
+        `image input is not supported` and an agent **keeps working regardless** — a documented
+        3-hour run once had a "visual critic" reasoning about screenshots it never received. This
+        closes a silent failure mode for 884 MiB and no measurable throughput.
     - 🔴 **The coder is a THINKING model whose default effort NEVER ANSWERS, and no entry sets a
       `--reasoning` flag.** `llama-server`'s `--reasoning` defaults to `auto` (detect from template),
       so Qwen3.8-27B reasons without bound: measured 2026-08-22 at 8000 tokens / **32,901 chars of

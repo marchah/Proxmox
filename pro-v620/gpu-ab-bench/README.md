@@ -35,6 +35,7 @@ see the two-slot benchmark in the root `CLAUDE.md`.
 | `spec-probe.py` | **in CT** | Fires a fixed prompt set at a `llama-server` and reports decode tok/s + draft acceptance, **plus a unique-8-gram ratio per prompt** so a repetition-collapse artifact is visible in `results.jsonl` itself (`uniq_8gram_min`, `any_degenerate`). Pushed in automatically by `spec-sweep.sh`. |
 | `spec-probe-text.py` | **in CT** | Same prompts but **saves the generated text** and scores a unique-8-gram ratio. This is the degeneracy gate. |
 | `merge-row.py` | host | Merges one probe result file into `results.jsonl`. |
+| `vision-test.py` | **in CT** | Asserts a multimodal server can actually SEE: generates a 256×256 PNG of a blue circle (pure-python encoder, no Pillow) and requires the reply to name both colour and shape. Exits non-zero on failure. |
 
 ## Method — what makes the numbers trustworthy
 
@@ -108,6 +109,27 @@ Corollary: **smoke-test the harness on one configuration before launching a long
 Also: `pkill -f 'llama-server.*--port 5999'` from an interactive `ssh pve '...'` one-liner matches
 **the ssh command line itself** and kills your own session (exit 255). Bracket a character —
 `pkill -f 'llama-serve[r].*--port 5999'` — or run it from a script file.
+
+## Verifying vision, when a model has it
+
+A server started without `--mmproj` answers `image input is not supported` **and the caller keeps
+going** — that is how a documented 3-hour agent run reasoned about screenshots it never received.
+So a multimodal entry needs a test whose answer you can check:
+
+```bash
+pct push 123 vision-test.py /root/vision-test.py --perms 755
+pct exec 123 -- python3 /root/vision-test.py http://127.0.0.1:8080 qwen3.8-27b-mtp
+```
+
+⚠️ **A vision test whose answer you cannot verify is not a test.** The blue-circle image has
+unambiguous ground truth, so the assertion can genuinely fail; "the model said something
+plausible about an image" cannot.
+
+Measured on CT 123 (b10587, Vulkan, ctx 65536) when enabling it on `qwen3.8-27b-mtp`: **+1.11 GiB
+VRAM**, GTT unchanged (no spill), text-only decode 32.2 → 32.0 tok/s with **byte-identical output**
+— i.e. the projector is free when no image is sent, and **MTP speculation stays active on image
+requests** (6/6 accepted). VRAM is the binding constraint, not compatibility; `--mmproj-device none`
+trades image-encode latency for zero VRAM if headroom runs out.
 
 ## Output layout
 
