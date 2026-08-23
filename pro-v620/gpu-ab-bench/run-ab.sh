@@ -20,6 +20,17 @@ bench() {  # bench <gpu-label> <phase-name> <extra llama-bench args...>
   local gpu="$1" phase="$2"; shift 2
   local ct; ct="$(ct_of "$gpu")"
   local tag="${phase}.${gpu}"
+  # ⚠️ This A/B needs the SAME model file present on BOTH containers. CT 123's copy of
+  # Qwen3.6-35B-A3B was deleted 2026-08-23 when that alias was retired in favour of
+  # ornith-1.5-35b-a3b, so the gpu2 arm skips until it is restored:
+  #   unsloth/Qwen3.6-35B-A3B-GGUF / Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf, sha 25233af7...
+  # (the same file CT 120 still runs). The alternative needs only ONE copy: drive both cards
+  # from a single container via ct123-dual-gpu.sh + `-dev VulkanN`, as run-q38.sh does.
+  if ! pct exec "$ct" -- test -f "$MODEL" 2>/dev/null; then
+    echo ">>> SKIP $tag — $(basename "$MODEL") absent on CT $ct" >&2
+    echo "    (loudly skipped, never silently: a half-covered A/B reads as 'no difference found')" >&2
+    return 0
+  fi
   local start; start="$(date +%s.%N)"
   echo ">>> [$(date -u +%H:%M:%S)] $tag  (CT $ct)  args: $*"
   set +e

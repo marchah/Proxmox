@@ -211,12 +211,21 @@ These containers form the system:
         could move from the global `--reasoning off` to per-task control. Not yet retested.
     - ⚠️ **It serves more than the coder/reviewer pair** — plus general and evaluation models, all
       **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked into the script** (they
-      change as models are trialled). **As of 2026-08-23 there are SIX:**
+      change as models are trialled). **As of 2026-08-23 there are FIVE:**
       `qwen3.8-27b-mtp` (coder, MTP + vision on GPU, ctx 65536) ·
       `qwen3.8-27b-mtp-maxctx` (same model, vision on **CPU** → ctx 98304) ·
       `ornith-1.5-35b-a3b` (fastest + longest: 66.4 tok/s, ctx 196608, no drafter) ·
-      `thinkingcap-27b` (reviewer) · `qwen3.6-35b-a3b` (general) ·
-      `muse-glimmer-30b` (speculative/eval).
+      `thinkingcap-27b` (reviewer) · `muse-glimmer-30b` (speculative/eval).
+      ⚠️ **`qwen3.6-35b-a3b` was retired from CT 123 on 2026-08-23** (−24.77 GiB, `/models` 66 % →
+      51 % used) because `ornith-1.5-35b-a3b` is a strict upgrade at the same ~3B-active cost —
+      identical architecture, wins all 17 rows of the vendor comparison, and measured 66.4 vs
+      65.1 tok/s on this card. **CT 120 still serves that model as the ops runtime and is
+      unaffected** (separate `/models` disks; verified after the deletion). Restorable from
+      `unsloth/Qwen3.6-35B-A3B-GGUF` → `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (sha `25233af7…`, the
+      same file and pin CT 120 uses). ⚠️ This breaks the gpu2 arm of
+      `pro-v620/gpu-ab-bench/run-ab.sh`, which needs that model on **both** containers — it now
+      skips loudly. The one-copy alternative is `ct123-dual-gpu.sh` + `-dev VulkanN`, as
+      `run-q38.sh` does.
       - **`ornith-1.5-35b-a3b`** (added 2026-08-23, `ornith-ai/Ornith-1.5-35B-A3B-GGUF` Q5_K_M
         `2ac3a459…` + official `mmproj` `d9ce3102…`, both hash-verified). **Architecturally
         identical to `qwen3.6-35b-a3b`** — same `qwen35moe`, 40 layers / 16 heads / 2 KV heads /
