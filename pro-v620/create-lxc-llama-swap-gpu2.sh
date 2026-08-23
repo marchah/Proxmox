@@ -54,7 +54,30 @@ readonly CODER_REPO="unsloth/Qwen3.8-27B-GGUF"
 readonly CODER_FILE="Qwen3.8-27B-UD-Q5_K_XL.gguf"
 readonly CODER_SHA256="8601193d3d5760c37fb8ce1b43afebc69df5fb24e1fbc5a547c32e2200305276"
 readonly CODER_REVISION="4ca720788d1e01f1bff70c033e0d0028fd02e502"
-readonly CODER_ALIAS="qwen3.8-27b"
+readonly CODER_ALIAS="qwen3.8-27b-mtp"
+
+# --- Coder accelerators, both bootstrapped so a rebuild matches production ---------------
+# Qwen3.8's OWN MTP head as the drafter. A MATCHED drafter is the whole story: 61.7 %
+# acceptance vs 28.8 % for Qwen3.6's borrowed DFlash head, worth 1.58x over unaccelerated.
+# ⚠️ n-max 2-3 only. Acceptance falls fast as n-max rises AND n>=6 makes the model emit
+# degenerate repetition that inflates tok/s — see the sweep notes in CLAUDE.md.
+readonly CODER_DRAFT_REPO="a4lg/Qwen3.8-27B-MTP-ONLY-GGUF"
+readonly CODER_DRAFT_FILE="Qwen3.8-27B-MTP-ONLY-Q8_0.gguf"
+readonly CODER_DRAFT_SHA256="674d0fc3b2b09c48cf77fbab0aba39b9c4ee538bd240fa87c1f13044260f7d7b"
+readonly CODER_DRAFT_REVISION="2476d11971c63a9185686ab4ab0d311506d192b0"
+readonly CODER_DRAFT_NMAX="${CODER_DRAFT_NMAX:-2}"
+
+# Vision projector. Qwen3.8-27B is multimodal and WITHOUT this the server answers
+# "image input is not supported" while the caller carries on regardless — a silent failure
+# mode that once cost a 3-hour agent run reasoning about screenshots it never received.
+# Measured cost on this card: +1.11 GiB VRAM, no GTT spill, text-only decode 32.2 -> 32.0
+# tok/s with BYTE-IDENTICAL output, and MTP stays active on image requests (6/6 accepted).
+# ⚠️ VRAM is the binding constraint (2.12 GiB headroom at ctx 65536). If it ever runs out,
+# `--mmproj-device none` keeps the projector on CPU for zero VRAM.
+readonly CODER_MMPROJ_REPO="unsloth/Qwen3.8-27B-GGUF"
+readonly CODER_MMPROJ_FILE="mmproj-F16.gguf"
+readonly CODER_MMPROJ_LOCAL="Qwen3.8-27B-mmproj-F16.gguf"   # renamed: /models/hf is shared
+readonly CODER_MMPROJ_SHA256="cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e"
 readonly CODER_CTX="${CODER_CTX:-65536}"           # explicit — `auto`/--fit over-commits, see below
 readonly CODER_NPREDICT="${CODER_NPREDICT:-32768}" # thinking model — 8k truncates mid-reason
 
@@ -131,8 +154,9 @@ autonomous coding loop's model server (swaps a coder + a reviewer model).
 Fixed target:
   GPU:    Radeon Pro V620 GPU 2 (0000:06:00.0) — GPU 1 runs CT 120 (qwen3.6 ops)
   Engine: llama-swap (Go proxy) launching llama.cpp llama-server per model
-  Models: qwen3.8-27b (Qwen3.8-27B, coder) + thinkingcap-27b (ThinkingCap-Qwen3.6-27B, reviewer)
-          — bootstrap pair only; the live container serves eight, added by hand
+  Models: qwen3.8-27b-mtp (Qwen3.8-27B coder, MTP-accelerated + vision)
+          + thinkingcap-27b (ThinkingCap-Qwen3.6-27B, reviewer)
+          — bootstrap pair only; the live container serves four (2026-08-22), rest by hand
   API:    0.0.0.0:8080 (OpenAI-compatible; pick model by name)
 
 Run this script on the Proxmox host as root. Defaults to VMID 123 / hostname gpu2.
@@ -245,11 +269,24 @@ wait_for_container() {
 run_in_container() { pct exec "${VMID}" -- "$@"; }
 
 install_swap_stack() {
-  local models_manifest
-  # repo|file|sha256|revision|ctx|alias|npredict  (one line per model)
-  models_manifest="$(printf '%s|%s|%s|%s|%s|%s|%s\n%s|%s|%s|%s|%s|%s|%s\n' \
-    "${CODER_REPO}" "${CODER_FILE}" "${CODER_SHA256}" "${CODER_REVISION}" "${CODER_CTX}" "${CODER_ALIAS}" "${CODER_NPREDICT}" \
-    "${REVIEWER_REPO}" "${REVIEWER_FILE}" "${REVIEWER_SHA256}" "${REVIEWER_REVISION}" "${REVIEWER_CTX}" "${REVIEWER_ALIAS}" "${REVIEWER_NPREDICT}")"
+  local models_manifest assets_manifest coder_extra
+  # Non-served files: downloaded + verified, but they get no llama-swap entry because they
+  # are loaded alongside a target via --model-draft / --mmproj.
+  # repo|file|sha256|revision|localname
+  assets_manifest="$(printf '%s|%s|%s|%s|%s\n%s|%s|%s|%s|%s\n' \
+    "${CODER_DRAFT_REPO}" "${CODER_DRAFT_FILE}" "${CODER_DRAFT_SHA256}" "${CODER_DRAFT_REVISION}" "${CODER_DRAFT_FILE}" \
+    "${CODER_MMPROJ_REPO}" "${CODER_MMPROJ_FILE}" "${CODER_MMPROJ_SHA256}" "${CODER_REVISION}" "${CODER_MMPROJ_LOCAL}")"
+
+  # EXTRA_ARGS for the coder: reasoning format + MTP speculation + vision.
+  coder_extra="--reasoning-format auto"
+  coder_extra+=" --spec-type draft-mtp --model-draft /models/hf/${CODER_DRAFT_FILE}"
+  coder_extra+=" --spec-draft-n-max ${CODER_DRAFT_NMAX} --spec-draft-ngl 99"
+  coder_extra+=" --mmproj /models/hf/${CODER_MMPROJ_LOCAL}"
+
+  # repo|file|sha256|revision|ctx|alias|npredict|extra_args  (one line per model)
+  models_manifest="$(printf '%s|%s|%s|%s|%s|%s|%s|%s\n%s|%s|%s|%s|%s|%s|%s|%s\n' \
+    "${CODER_REPO}" "${CODER_FILE}" "${CODER_SHA256}" "${CODER_REVISION}" "${CODER_CTX}" "${CODER_ALIAS}" "${CODER_NPREDICT}" "${coder_extra}" \
+    "${REVIEWER_REPO}" "${REVIEWER_FILE}" "${REVIEWER_SHA256}" "${REVIEWER_REVISION}" "${REVIEWER_CTX}" "${REVIEWER_ALIAS}" "${REVIEWER_NPREDICT}" "--reasoning-format auto")"
 
   log "Installing Vulkan deps + llama.cpp ${LLAMACPP_RELEASE_TAG} + llama-swap ${LLAMASWAP_VERSION}"
   run_in_container bash -lc "apt-get update"
@@ -263,12 +300,12 @@ install_swap_stack() {
     "${LLAMACPP_ASSET_URL}" "${LLAMACPP_SHA256}" \
     "${LLAMASWAP_ASSET_URL}" "${LLAMASWAP_SHA256}" \
     "${SWAP_SERVER_BIND}" "${SWAP_SERVER_PORT}" \
-    "${models_manifest}" <<'CONTAINER_SCRIPT'
+    "${models_manifest}" "${assets_manifest}" <<'CONTAINER_SCRIPT'
 set -Eeuo pipefail
 LLAMACPP_ASSET_URL="$1"; LLAMACPP_SHA256="$2"
 LLAMASWAP_ASSET_URL="$3"; LLAMASWAP_SHA256="$4"
 SWAP_BIND="$5"; SWAP_PORT="$6"
-MODELS_MANIFEST="$7"
+MODELS_MANIFEST="$7"; ASSETS_MANIFEST="${8:-}"
 
 # 1. llama.cpp (llama-server + libs) — the engine llama-swap launches per model.
 if [[ ! -x /opt/llamacpp/current/llama-server ]]; then
@@ -380,7 +417,21 @@ CONFIG=/etc/llama-swap/config.yaml
   printf 'models:\n'
 } > "$CONFIG"
 
-while IFS='|' read -r repo file sha rev ctx alias npredict; do
+# Non-served assets first: a drafter/projector referenced by a model entry must already be
+# on disk when llama-swap starts that entry.
+while IFS='|' read -r repo file sha rev localname; do
+  [[ -n "$repo" ]] || continue
+  ap="/models/hf/${localname}"
+  if [[ ! -f "$ap" ]]; then
+    sudo -u llamacpp /home/llamacpp/.venv/bin/hf download "$repo" "$file" --revision "$rev" --local-dir /models/hf
+    # /models/hf is shared by every model, so a generic upstream name (mmproj-F16.gguf) is
+    # renamed to something unambiguous.
+    [[ "$file" == "$localname" ]] || mv "/models/hf/${file}" "$ap"
+  fi
+  printf '%s  %s\n' "$sha" "$ap" | sha256sum --check -
+done <<< "$ASSETS_MANIFEST"
+
+while IFS='|' read -r repo file sha rev ctx alias npredict extra; do
   [[ -n "$repo" ]] || continue
   mp="/models/hf/${file}"
   if [[ ! -f "$mp" ]]; then
@@ -392,7 +443,12 @@ while IFS='|' read -r repo file sha rev ctx alias npredict; do
     printf '    checkEndpoint: /health\n'
     printf '    cmd: |\n'
     # single-quoted format => ${PORT} stays literal for llama-swap to substitute
-    printf '      /usr/local/bin/llamaswap-guarded-serve %s ${PORT} %s %s %s\n' "$mp" "$ctx" "$alias" "$npredict"
+    if [[ -n "$extra" ]]; then
+      printf '      env EXTRA_ARGS="%s" /usr/local/bin/llamaswap-guarded-serve %s ${PORT} %s %s %s\n' \
+        "$extra" "$mp" "$ctx" "$alias" "$npredict"
+    else
+      printf '      /usr/local/bin/llamaswap-guarded-serve %s ${PORT} %s %s %s\n' "$mp" "$ctx" "$alias" "$npredict"
+    fi
   } >> "$CONFIG"
 done <<< "$MODELS_MANIFEST"
 
