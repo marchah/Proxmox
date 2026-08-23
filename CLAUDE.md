@@ -124,6 +124,14 @@ These containers form the system:
         6 → 20.49, **8 → 8.80**. Acceptance falls as n-max rises, so drafting *more* is strictly
         worse. Same cliff shape as DFlash's n≥8, i.e. the backend threshold, not an MTP property.
         Never copy an n-max between drafters.
+        🔄 **Re-swept on b10587 (2026-08-22) with the new requant: `n-max 3` is now the best CLEAN
+        setting** — 2 → 30.50 (73.7 %), **3 → 31.56 (64.2 %)**, 4 → 28.71 (52.0 %). Only 3.5 %
+        separates 2 from 3, so either is defensible; both are ~12 % faster than the b10361 figures
+        above. ⚠️ **n-max 6 and 8 are DEGENERATE, not fast** — 6 "reached" 41.97 and 8 22.39, but
+        their unique-8-gram ratios are 0.065 and 0.030, i.e. the output collapsed into repetition
+        (which drafts almost perfectly and inflates acceptance *and* tok/s). Discard both. ⚠️ The
+        MTP *baseline* also degenerated (ratio 0.141) because greedy decoding at temp 0 repeats on
+        its own, so treat the "vs base" ratios for MTP as soft; DFlash's baseline stayed clean.
       ⚠️ **`qwen3-instruct-2507` and `qwen3-coder-30b-a3b` were RETIRED 2026-08-14** and their
       GGUFs deleted, freeing 43.47 GB. Neither had a capability case left — the latter scores
       14 on the AA index against 32/35/38 for its peers, with no vendor benchmarks at its size.
@@ -215,6 +223,31 @@ These containers form the system:
         bump on 2026-08-11: the cliff did NOT lift** — n=6 45.1 tok/s → n=8 17.6, essentially
         unchanged. So it is not a transient upstream bug; keep n-max ≤ 6 and re-check again only
         if a release notes Vulkan batching work.
+      - ✅ **DONE for b10587 (2026-08-22) — and it paid off, though not by lifting the cliff.**
+        Re-swept with `pro-v620/gpu-ab-bench/spec-sweep.sh` on GPU 2. **The DFlash pair is the
+        controlled comparison: its target and drafter GGUFs are byte-identical to the b10361 run,
+        so only the build changed.**
+
+        | n-max | b10361 | b10587 | Δ |
+        | --- | ---: | ---: | ---: |
+        | unaccelerated | 17.57 | 17.54 | **−0.2 % (flat)** |
+        | 2 | 27.75 | 34.03 | **+22.6 %** |
+        | 3 | 29.68 | **37.73** | **+27.1 %** |
+        | 4 | 28.97 | 36.22 | **+25.0 %** |
+        | 8 | 21.18 | 22.63 | still collapsed |
+
+        **b10587 improved the speculative path by ~22–27 % while unaccelerated decode stayed flat**
+        — same files, same card, same flags. So a build bump can be worth far more to a speculative
+        entry than to a plain one; re-sweep speculation after every bump, not just when a release
+        notes Vulkan work.
+        - ⚠️ **The n≥8 cliff STILL did not lift** (n=4 2.06× → n=8 1.29×), so it survives three
+          builds now (b10308, b10361, b10587). Treat it as a fixed backend property.
+        - ⚠️ **n-max 6 is no longer merely slow, it is DEGENERATE** on both drafters — 56.17 tok/s
+          for DFlash at a unique-8-gram ratio of 0.058. A tok/s-only sweep would have recorded that
+          as a 3.20× win. **The optimum among clean results is 3 for BOTH drafters**, so the earlier
+          "≤ 6 is safe" guidance should now read **≤ 4**.
+        - The sweep's degeneracy gate is built into `spec-probe.py` (`uniq_8gram_min`,
+          `any_degenerate`), so this cannot silently recur.
       - ⚠️ **The drafter GGUF must declare `general.architecture = dflash`, not `dflash-draft`.**
         Upstream registers `dflash`; several community repos ship the fork's name and fail to load
         with `unknown model architecture` (llama.cpp #25116). Known good: `williamliao/…`,

@@ -62,15 +62,26 @@ start_server() {  # <device> <target> [drafter] [spec-type] [n_max]
 }
 
 # Which physical card actually took the load? Proven from host sysfs, never assumed.
-busy_card() {
-  local g1 g2
-  g1=$(cat /sys/bus/pci/devices/0000:2d:00.0/mem_info_vram_used)
-  g2=$(cat /sys/bus/pci/devices/0000:06:00.0/mem_info_vram_used)
-  # whichever holds > 5 GiB is the one running the model
-  if [ "$g1" -gt 5368709120 ] && [ "$g2" -gt 5368709120 ]; then echo "BOTH"
-  elif [ "$g1" -gt 5368709120 ]; then echo "gpu1"
-  elif [ "$g2" -gt 5368709120 ]; then echo "gpu2"
-  else echo "none"; fi
+# Attribution is by VRAM *delta* across server start, NOT by absolute occupancy: an
+# absolute ">5 GiB" test reports "BOTH" whenever an unrelated workload is resident on the
+# other card (e.g. CT 120 serving on GPU 1 during a GPU-2-only sweep), which silently
+# destroys the placement guarantee exactly when you are not watching.
+vram_snapshot() {
+  printf '%s %s' \
+    "$(cat /sys/bus/pci/devices/0000:2d:00.0/mem_info_vram_used)" \
+    "$(cat /sys/bus/pci/devices/0000:06:00.0/mem_info_vram_used)"
+}
+
+placed_from_delta() {  # <before-snapshot> <after-snapshot>
+  local b1 b2 a1 a2 d1 d2 min
+  read -r b1 b2 <<<"$1"
+  read -r a1 a2 <<<"$2"
+  d1=$((a1 - b1)); d2=$((a2 - b2))
+  min=$((3 * 1024 * 1024 * 1024))   # a 20 GB model gains far more than 3 GiB
+  if   [ "$d1" -gt "$min" ] && [ "$d2" -gt "$min" ]; then echo "BOTH"
+  elif [ "$d1" -gt "$min" ]; then echo "gpu1"
+  elif [ "$d2" -gt "$min" ]; then echo "gpu2"
+  else echo "unknown"; fi
 }
 
 run_one() {  # <device> <gpu-label> <cfg> <target> <drafter> <stype> <nmax>
@@ -78,14 +89,14 @@ run_one() {  # <device> <gpu-label> <cfg> <target> <drafter> <stype> <nmax>
   local tag="${cfg}.${glabel}.n${nmax:-base}"
   echo ">>> [$(date -u +%H:%M:%S)] $tag  (device $dev)"
   stop_server
-  local t0; t0="$(date +%s.%N)"
+  local t0 before; t0="$(date +%s.%N)"; before="$(vram_snapshot)"
   if ! start_server "$dev" "$target" "$drafter" "$stype" "$nmax"; then
     printf '{"tag":"%s","gpu":"%s","config":"%s","n_max":"%s","error":"unhealthy"}\n' \
       "$tag" "$glabel" "$cfg" "${nmax:-base}" >>"$RESULTS"
     cp "$OUT/server.log" "$OUT/${tag}.serverlog"; return
   fi
   local t1; t1="$(date +%s.%N)"
-  local placed; placed="$(busy_card)"
+  local placed; placed="$(placed_from_delta "$before" "$(vram_snapshot)")"
   pct exec "$CT" -- python3 /root/spec-probe.py "http://127.0.0.1:${PORT}" - "$NPREDICT" \
       >"$OUT/${tag}.probe.json" 2>"$OUT/${tag}.probeerr" || true
   local t2; t2="$(date +%s.%N)"
