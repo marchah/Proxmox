@@ -37,6 +37,7 @@ see the two-slot benchmark in the root `CLAUDE.md`.
 | `merge-row.py` | host | Merges one probe result file into `results.jsonl`. |
 | `kv-quant-test.sh` | host | A/B the KV cache type at fixed context, then at 2× context — isolates "quantised KV is slower" from "long context is slower". Hashes the output, which is how it caught q8_0 silently returning nothing. |
 | `kv-probe.py` | **in CT** | One fixed request; reports decode/prefill tok/s, MTP acceptance and a content hash. |
+| `ctx-ceiling-test.sh` | host | Finds the real context ceiling by loading successive ctx sizes and watching **GTT as closely as VRAM** — on RADV an over-commit spills silently rather than failing, so a successful load is not proof. |
 | `mmproj-offload-test.sh` | host | Projector on GPU vs on CPU (`--no-mmproj-offload`): VRAM freed against image-encode latency, at two resolutions plus a text-only control. |
 | `mmproj-probe.py` | **in CT** | Times text-only and image requests with `cache_prompt: false`, and flags a `prompt_n` too small to be a real image. |
 | `vision-test.py` | **in CT** | Asserts a multimodal server can actually SEE: generates a 256×256 PNG of a blue circle (pure-python encoder, no Pillow) and requires the reply to name both colour and shape. Exits non-zero on failure. |

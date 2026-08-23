@@ -139,6 +139,29 @@ These containers form the system:
         clean. The penalty **grows with resolution** (~4 ms/image-token on GPU vs ~18-21 on CPU), so
         downscaling recovers most of it. **Keep GPU offload while the 2.12 GiB headroom holds**; reach
         for `--no-mmproj-offload` only to reclaim that GiB for a bigger context or a second model.
+        - **Context ceiling with the projector on CPU (measured 2026-08-22, f16 KV):**
+
+          | ctx | VRAM | headroom | GTT | decode | output |
+          | --- | ---: | ---: | ---: | ---: | --- |
+          | 65,536 (current) | 26.75 GiB | 3.23 | 0.35 | 32.0 t/s | reference |
+          | **98,304 (96k)** | **29.00 GiB** | **0.98** | 0.48 | **32.0 t/s** | **byte-identical** |
+          | 114,688 (112k) | 29.76 GiB | **0.22** | **0.90** | 30.4 t/s (−5 %) | byte-identical |
+
+          **~96k is the practical ceiling** — full speed, identical output, ~1 GiB spare. 112k loads
+          and answers but headroom collapses to 0.22 GiB, GTT nearly triples and decode already loses
+          5 %: that is the spill beginning, not usable margin. At equal ~1 GiB headroom the ceilings
+          are **~80k with the projector on GPU vs ~96k on CPU**, so the 1.10 GiB buys **+16k tokens**
+          (or +32k over today's 65,536). 96k is *unreachable* with the projector on GPU — it would
+          need 30.10 GiB of 29.98.
+          - ✅ **f16 KV is ~72 KiB/token on this card**, now confirmed three ways: 65,536→98,304 cost
+            +2.25 GiB over 32,768 tokens (72.0), and 98,304→114,688 raised VRAM only 0.76 GiB but GTT
+            by 0.42 — (0.76+0.42)/16,384 = 73.7. **At 112k the KV did not get cheaper, it moved into
+            host memory.** The 64 KiB/token figure recorded earlier is slightly low, probably measured
+            without the drafter and projector resident.
+          - Compare the alternative: **q8_0 KV with the projector left on GPU reached 128k at full
+            speed and byte-identical output** — more context *and* fast image encode — conditional on
+            reasoning being off. f16 + CPU-offload at 96k is the route that holds regardless of the
+            reasoning setting.
         ⚠️ **Set `cache_prompt: false` when timing image requests.** With caching on, repeated
         identical requests report `prompt_n` of ~4 for a 1280×720 image and every config looks
         identical at ~0.6 s — you measure cache hits, not encoding. That flaw invalidated a first run.
