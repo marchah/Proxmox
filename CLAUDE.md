@@ -211,9 +211,30 @@ These containers form the system:
         could move from the global `--reasoning off` to per-task control. Not yet retested.
     - ⚠️ **It serves more than the coder/reviewer pair** — plus general and evaluation models, all
       **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked into the script** (they
-      change as models are trialled). **As of 2026-08-22 there are FOUR:**
-      `qwen3.8-27b-mtp` (coder), `thinkingcap-27b` (reviewer) · `qwen3.6-35b-a3b` (general) ·
+      change as models are trialled). **As of 2026-08-23 there are SIX:**
+      `qwen3.8-27b-mtp` (coder, MTP + vision on GPU, ctx 65536) ·
+      `qwen3.8-27b-mtp-maxctx` (same model, vision on **CPU** → ctx 98304) ·
+      `ornith-1.5-35b-a3b` (fastest + longest: 66.4 tok/s, ctx 196608, no drafter) ·
+      `thinkingcap-27b` (reviewer) · `qwen3.6-35b-a3b` (general) ·
       `muse-glimmer-30b` (speculative/eval).
+      - **`ornith-1.5-35b-a3b`** (added 2026-08-23, `ornith-ai/Ornith-1.5-35B-A3B-GGUF` Q5_K_M
+        `2ac3a459…` + official `mmproj` `d9ce3102…`, both hash-verified). **Architecturally
+        identical to `qwen3.6-35b-a3b`** — same `qwen35moe`, 40 layers / 16 heads / 2 KV heads /
+        head_dim 256, 256 experts / 8 per token — so it needed no new llama.cpp support. Measured:
+        **66.4 tok/s** (vs ~32 for the coder *with* its 4.19 GB MTP head), **KV 18.3 KiB/token**
+        (vs Qwen3.8-27B's 72 — 3.9× cheaper), ctx **196608** at 28.12 GiB with 1.86 GiB headroom,
+        vision working at 64.8 tok/s on an image request.
+        - **No drafter, deliberately**: on a ~3B-active MoE draft/verify overhead dominates — this
+          MoE already beats a *speculated* dense 27B outright.
+        - ⚠️ **Not a coder replacement.** It loses the two benchmarks closest to the loop's work:
+          Terminal-Bench 2.1 67.8 vs **73.0**, SWE-bench Pro 59.6 vs **61.7**. The loop is PR-gated
+          and serialised, so a task that fails review costs a whole cycle that tok/s cannot buy
+          back. (Those vendor cards *are* cross-comparable — both report Muse Glimmer-30B at
+          exactly 51.7 / 51.2, i.e. the same harness.) Use it for **long-context repo work and fast
+          first-pass/triage**.
+        - ⚠️ **Do not raise ctx to the native 262144.** It loads, but at 29.49 GiB it leaves only
+          **0.49 GiB** with GTT already at 0.54 — under the ~1 GiB floor where RADV spills silently.
+          Decode is identical at 131072 and 196608, so 192k is free and 256k is not worth the risk.
       A rebuild from the script yields only the bootstrap pair — re-add the rest by hand.
       That list is the served set; treat anything absent from it as not available.
       ⚠️ **`qwen3.8-27b`, `qwen3.6-27b` and `ornith` were RETIRED 2026-08-22**, freeing 43.4 GB
