@@ -82,6 +82,7 @@ These containers form the system:
       | `reasoning_effort: "low"` | **works** — 1770 tok, 3,945 ch reasoning, 3,158 ch answer |
       | `reasoning_effort: "medium"` | **works** — 2240 tok, 4,664 ch reasoning, 4,219 ch answer |
       | `reasoning_effort: "high"` / unset | runs away — 18,112 / 17,306 ch reasoning, **no answer** |
+      | `reasoning_effort: "none"` | ✅ **works, and is BYTE-IDENTICAL to `enable_thinking:false`** — 746 tok, same 2,659-char content, same sha `7eea1bc7ec28`. **Prefer this**: same code path, but the canonical OpenAI spelling and portable to other servers, whereas `chat_template_kwargs` is llama.cpp-specific. Available since PR #26045 (2026-07-24), so it worked on b10361 too — unlike `low`/`medium`, which needed PR #26941 (2026-08-14). |
       | `reasoning_budget: N` | ⚠️ **silently ignored** (byte-identical to control) — server-only |
       | `chat_template_kwargs: {"thinking_budget": N}` | ⚠️ silently ignored, same |
       | `/no_think` prompt suffix | ⚠️ ignored |
