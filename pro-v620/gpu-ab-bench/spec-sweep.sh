@@ -122,6 +122,16 @@ main() {
   fi
   for entry in "${CONFIGS[@]}"; do
     IFS='|' read -r cfg target drafter stype <<<"$entry"
+    # Skip a config whose GGUFs are gone rather than failing mid-sweep. The dflash arm's
+    # files (Qwen3.6-27B + its DFlash head) were deleted on 2026-08-22 when that model was
+    # retired from llama-swap; the arm is kept here because it produced the controlled
+    # b10361 -> b10587 comparison, and because the shape is worth documenting.
+    if ! pct exec "$CT" -- test -f "$target" || ! pct exec "$CT" -- test -f "$drafter"; then
+      echo "=== SKIP $cfg — missing GGUF on CT $CT ($(basename "$target") / $(basename "$drafter")) ==="
+      echo "    (loudly skipped, NOT silently: a sweep that covers fewer arms than you think"
+      echo "     reads as 'no difference found' when it actually never ran.)"
+      continue
+    fi
     echo "=== $cfg : target $(basename "$target") drafter $(basename "$drafter") ==="
     # GPU_LIST selects which cards to sweep, e.g. GPU_LIST="Vulkan0:gpu2" for GPU 2 only
     # (which needs no dual-GPU setup and leaves CT 120 serving).

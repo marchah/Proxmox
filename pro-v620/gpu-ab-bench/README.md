@@ -70,6 +70,15 @@ see the two-slot benchmark in the root `CLAUDE.md`.
   - Corollary: **run a no-speculation control.** Greedy decoding at temp 0 degenerates on its own —
     one prompt repeated even with speculation fully off — so degeneracy must be *attributed*, not
     assumed to be the drafter's fault.
+  - ⚠️ **The `dflash` arm's GGUFs were DELETED on 2026-08-22** (Qwen3.6-27B and its DFlash head,
+    retired from llama-swap). `spec-sweep.sh` now **loudly skips** a config whose files are missing
+    rather than failing mid-run — a sweep covering fewer arms than you assume reads as "no
+    difference found" when it never actually ran. The arm is kept in `CONFIGS` because it produced
+    the controlled b10361 → b10587 comparison and the shape is worth documenting. ⚠️ The DFlash
+    head is **not re-downloadable** (provenance never established, matched no published repo);
+    its sha256 is `c37b84724fa58cc5c6b545d8b96f8617a8c3bd7f018bf608feef4d3460e0575e` if it ever
+    surfaces. `dflash-kquant.gguf` (muse-glimmer's drafter) survives, so DFlash coverage is not
+    lost entirely.
   - Corollary: **"lossless at temp 0" does not hold on b10361.** Outputs were byte-identical across
     both GPUs at n-max ≤ 3 and at baseline, but **diverged at n ≥ 4**, so cross-config tok/s at
     n ≥ 4 compares different work. Hash the outputs and only compare cells that match.

@@ -107,20 +107,38 @@ These containers form the system:
         could move from the global `--reasoning off` to per-task control. Not yet retested.
     - ⚠️ **It serves more than the coder/reviewer pair** — plus general and evaluation models, all
       **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked into the script** (they
-      change as models are trialled). As of 2026-08-15 there are SEVEN:
-      `qwen3.8-27b-mtp` (coder), `thinkingcap-27b` (reviewer) · `qwen3.8-27b`, `qwen3.6-27b`,
-      `qwen3.6-35b-a3b`, `ornith` (general) · `muse-glimmer-30b` (speculative).
+      change as models are trialled). **As of 2026-08-22 there are FOUR:**
+      `qwen3.8-27b-mtp` (coder), `thinkingcap-27b` (reviewer) · `qwen3.6-35b-a3b` (general) ·
+      `muse-glimmer-30b` (speculative/eval).
       A rebuild from the script yields only the bootstrap pair — re-add the rest by hand.
       That list is the served set; treat anything absent from it as not available.
+      ⚠️ **`qwen3.8-27b`, `qwen3.6-27b` and `ornith` were RETIRED 2026-08-22**, freeing 43.4 GB
+      (`/models` 77 % → 51 % used). `qwen3.8-27b` was the unaccelerated A/B control and thermal
+      fallback for the coder; **the thermal case for it is gone** — with a blower per card a full
+      solo load lands at 73-88 °C, ~14-28 °C under the trip, so no non-speculative fallback is
+      needed. Its GGUF is **retained** because `qwen3.8-27b-mtp` shares it; only the alias went.
+      The other two had their weights deleted and are restorable:
+      `unsloth/Qwen3.6-27B-GGUF` → `Qwen3.6-27B-UD-Q5_K_XL.gguf` (etag `ac310abf2895aa39…`) and
+      `ornith-ai/Ornith-1.0-35B-GGUF` → `ornith-1.0-35b-Q5_K_M.gguf` (etag `325b351fc30a4114…`),
+      both verified live before deletion. ⚠️ Also deleted: `Qwen3.6-27B-DFlash-Q8_0.gguf`, which is
+      **NOT re-downloadable** — its provenance was never established (it matched no published
+      repo). Recorded sha256 `c37b84724fa58cc5c6b545d8b96f8617a8c3bd7f018bf608feef4d3460e0575e` in
+      case it ever surfaces. Losing it costs the DFlash arm of
+      `pro-v620/gpu-ab-bench/spec-sweep.sh` (now loudly skipped); `dflash-kquant.gguf` remains, so
+      DFlash coverage survives via `muse-glimmer-30b`.
       - ⚠️ **A MATCHED drafter beats a borrowed one — search HF for `MTP` too, not just `DFlash`.**
         Qwen ships no DFlash drafter for Qwen3.8, so the coder borrowed Qwen3.6-27B's head. Qwen3.8
         has its own native **MTP** head (`a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, Q8_0, 4.19 GB) and the
         pinned b10361 already lists `draft-mtp` under `--spec-type` — no build bump needed. Measured
         2026-08-15, all at ctx 65536: no speculation **17.55** tok/s · borrowed DFlash **23.68**
         (28.8 % acceptance) · own MTP **27.73** (61.7 %). The coder moved to `qwen3.8-27b-mtp`
-        2026-08-15. The unaccelerated `qwen3.8-27b` entry is the A/B control for any speculation
+        2026-08-15. The unaccelerated `qwen3.8-27b` entry *was* the A/B control for any speculation
         claim here (and the thermal fallback) — the DFlash-drafted entries were dropped, since a
         borrowed head had no capability case left once the matched one existed.
+        ⚠️ **That control alias was itself retired 2026-08-22** (thermals no longer justify a
+        non-speculative fallback). Its GGUF is still on disk, shared with the MTP entry, so an
+        unaccelerated baseline is still measurable — via `spec-sweep.sh`, which starts its own
+        server with no `--spec-*` flags, rather than via a standing llama-swap alias.
         ⚠️ **n-max 2 is the optimum and the sweep is NOT flat** — 2 → 27.77, 3 → 26.36, 4 → 26.87,
         6 → 20.49, **8 → 8.80**. Acceptance falls as n-max rises, so drafting *more* is strictly
         worse. Same cliff shape as DFlash's n≥8, i.e. the backend threshold, not an MTP property.
