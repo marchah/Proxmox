@@ -35,6 +35,8 @@ see the two-slot benchmark in the root `CLAUDE.md`.
 | `spec-probe.py` | **in CT** | Fires a fixed prompt set at a `llama-server` and reports decode tok/s + draft acceptance, **plus a unique-8-gram ratio per prompt** so a repetition-collapse artifact is visible in `results.jsonl` itself (`uniq_8gram_min`, `any_degenerate`). Pushed in automatically by `spec-sweep.sh`. |
 | `spec-probe-text.py` | **in CT** | Same prompts but **saves the generated text** and scores a unique-8-gram ratio. This is the degeneracy gate. |
 | `merge-row.py` | host | Merges one probe result file into `results.jsonl`. |
+| `kv-quant-test.sh` | host | A/B the KV cache type at fixed context, then at 2× context — isolates "quantised KV is slower" from "long context is slower". Hashes the output, which is how it caught q8_0 silently returning nothing. |
+| `kv-probe.py` | **in CT** | One fixed request; reports decode/prefill tok/s, MTP acceptance and a content hash. |
 | `vision-test.py` | **in CT** | Asserts a multimodal server can actually SEE: generates a 256×256 PNG of a blue circle (pure-python encoder, no Pillow) and requires the reply to name both colour and shape. Exits non-zero on failure. |
 
 ## Method — what makes the numbers trustworthy
@@ -109,6 +111,24 @@ Corollary: **smoke-test the harness on one configuration before launching a long
 Also: `pkill -f 'llama-server.*--port 5999'` from an interactive `ssh pve '...'` one-liner matches
 **the ssh command line itself** and kills your own session (exit 255). Bracket a character —
 `pkill -f 'llama-serve[r].*--port 5999'` — or run it from a script file.
+
+## ⚠️ Hash the output, or a quality failure reads as a win
+
+`kv-quant-test.sh` exists because of a specific trap. Quantising the KV cache to q8_0 on
+`Qwen3.8-27B` costs **zero** throughput — it is marginally *faster*, even at 2× context — so a
+speed-only comparison scores it a free win. It is not: with reasoning enabled the quantised cache
+perturbs the logits enough that the model never emits its end-of-thinking token, reasons to the
+cap, and returns **empty content**. The tell was the content hash `e3b0c44298fc…`, which is the
+sha256 of the empty string.
+
+With `reasoning_effort: "none"` the same config is byte-identical to f16 at twice the context and
+9 % faster. So the result is a *coupled* choice, not a ranking — and only hashing the output
+distinguishes the two cases. The same habit caught the n-max-6 repetition collapse.
+
+⚠️ Do not size context from the GGUF metadata formula
+(`2 × n_layer × n_head_kv × head_dim × bytes_per_element`). For this model it predicts 260
+KiB/token at f16 and matches a figure recorded elsewhere, but it over-predicts what this card
+actually allocates by ~3.5×. Measured from VRAM deltas: **~42 KiB/token q8_0, ~72 KiB/token f16**.
 
 ## Verifying vision, when a model has it
 

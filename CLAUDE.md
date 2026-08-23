@@ -65,6 +65,37 @@ These containers form the system:
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
+    - 📐 **KV-cache quantisation: q8_0 is LOSSLESS with reasoning off, and BREAKS reasoning on.**
+      Measured 2026-08-22 on GPU 2 (b10587, MTP n-max 2, projector loaded), one prompt at temp 0,
+      changing only the cache type — the previously recorded "−32 %" figure changed ctx *and* cache
+      type together and blamed the wrong variable:
+
+      | config | VRAM | GTT | decode | output |
+      | --- | ---: | ---: | ---: | --- |
+      | f16, ctx 65536 | 27.85 GiB | 0.35 | 32.0 t/s | reference (sha `f9e39b849b7f`) |
+      | q8_0, ctx 65536 | 25.97 GiB | 0.35 | **32.7 t/s** | 🔴 **EMPTY** (`e3b0c442…` = sha of "") |
+      | q8_0, ctx 131072 | 28.60 GiB | 0.60 | **32.7 t/s** | 🔴 **EMPTY** |
+      | **q8_0, ctx 131072, `reasoning_effort:none`** | 28.60 GiB | 0.60 | **34.9 t/s** | ✅ **BYTE-IDENTICAL to f16** (sha `7eea1bc7ec28`) |
+
+      - **q8_0 KV costs ZERO throughput** — it is marginally *faster*, unchanged even at 2× context.
+        Speed is not the trade-off; **thinking termination** is. With reasoning on, quantised KV
+        perturbs the logits enough that the model never emits its end-of-thinking token, so it
+        reasons to the cap and returns nothing. Deterministic: identical empty output, token count
+        and acceptance across two different context sizes.
+      - **With `reasoning_effort: "none"` it is provably lossless** — byte-identical content at
+        **2× the context**, +9 % decode (34.9 vs 32.0) and +12 pp MTP acceptance (93.8 vs 81.3).
+      - ⚠️ **This is a COUPLED choice: `reasoning off + q8_0` XOR `reasoning low/medium + f16`.**
+        Mixing gives silent empty replies. Since the coder's current default (no `reasoning_effort`
+        sent ≈ `high`) already returns nothing, the caller needs `"none"` anyway — after which q8_0
+        is free. **Not applied**, because a later caller sending `low` would fail silently.
+      - ⚠️ Measured KV cost is **~42 KiB/token at q8_0, ~72 KiB/token f16** — derived from the
+        VRAM deltas (64k f16 → q8_0 freed 1.88 GiB; q8_0 64k → 128k cost 2.63 GiB). **Do NOT size
+        context from the GGUF metadata formula** (`2 × n_layer × n_head_kv × head_dim × bytes`,
+        which gives 260 KiB/token f16 for this model and matches a figure recorded on the Mac): it
+        over-predicts what this card actually allocates by ~3.5×. Trust the measured deltas.
+      - ⚠️ At q8_0/128k only **1.38 GiB of headroom** remains and GTT has already crept 0.35 → 0.60
+        GiB — the leading edge of a spill, which on RADV is the ~12× decode collapse the loud-guard
+        does not catch. Not a config with room to grow.
     - ✅ **VISION IS ENABLED on the coder (2026-08-22)** via `--mmproj` in its `EXTRA_ARGS`.
       Qwen3.8-27B is multimodal and the capability had been inert since deployment. No script
       change was needed — `llamaswap-guarded-serve` word-splits `EXTRA_ARGS` and appends it to
