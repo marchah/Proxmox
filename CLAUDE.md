@@ -88,11 +88,31 @@ These containers form the system:
         Mixing gives silent empty replies. Since the coder's current default (no `reasoning_effort`
         sent ≈ `high`) already returns nothing, the caller needs `"none"` anyway — after which q8_0
         is free. **Not applied**, because a later caller sending `low` would fail silently.
-      - ⚠️ Measured KV cost is **~42 KiB/token at q8_0, ~72 KiB/token f16** — derived from the
-        VRAM deltas (64k f16 → q8_0 freed 1.88 GiB; q8_0 64k → 128k cost 2.63 GiB). **Do NOT size
-        context from the GGUF metadata formula** (`2 × n_layer × n_head_kv × head_dim × bytes`,
-        which gives 260 KiB/token f16 for this model and matches a figure recorded on the Mac): it
-        over-predicts what this card actually allocates by ~3.5×. Trust the measured deltas.
+      - ⚠️ **KV costs ~72 KiB/token f16, ~42 KiB/token q8_0 ON THIS CARD** — derived from the VRAM
+        deltas (64k f16 → q8_0 freed 1.88 GiB; q8_0 64k → 128k cost 2.63 GiB).
+        🔴 **CORRECTED 2026-08-26 — the old "do NOT size context from the GGUF metadata formula, it
+        over-predicts by ~3.5×" rule was WRONG, and carrying it to a new model would under-budget KV
+        by ~4×.** The formula `2 × n_layer × n_head_kv × head_dim × bytes` is right; **`n_layer`
+        means FULL-ATTENTION layers only.** The Qwen3.5/3.6/3.8 families are hybrid — most layers are
+        linear attention (Gated DeltaNet), whose state is fixed-size and context-independent, so only
+        the `layer_types == "full_attention"` layers hold a KV cache. Confirmed against **two**
+        models measured on this card:
+
+        | model | full-attn layers | formula | measured here |
+        | --- | --- | ---: | ---: |
+        | `qwen3.8-27b-mtp` (`full_attention_interval: 4`) | **16 of 64** | 64 KiB/tok | **72** |
+        | `ornith-1.5-35b-a3b` (`qwen3_5_moe_text`, same interval) | **10 of 40** | 20 KiB/tok | **18.3** |
+
+        The **260 KiB/token** figure recorded here and on the Mac counted all 65 layers, and it was
+        never a measurement: the Mac note *derives* its whole "KV GiB" column from it
+        (260 KiB × 65,536 = 16.25 GiB exactly), so it is circular rather than independent evidence.
+        - ⚠️ **A NON-hybrid model gets no such discount — the formula then applies literally.** Read
+          `layer_types` / `full_attention_interval` in `config.json` before sizing anything new.
+          Worked example: `ibm-granite/granite-4.2-30b` is plain GQA on **all 64** layers
+          (32 q / 8 kv, head_dim 128) → **256 KiB/token f16**, 3.5× this coder, which caps it near
+          **24-28k context** at Q5_K_M on one V620 against the coder's 65k.
+        - Then confirm with a VRAM **delta** between two context sizes, reading GTT alongside VRAM
+          (flat VRAM can mean the KV moved to host memory, not that it got cheaper).
       - ⚠️ At q8_0/128k only **1.38 GiB of headroom** remains and GTT has already crept 0.35 → 0.60
         GiB — the leading edge of a spill, which on RADV is the ~12× decode collapse the loud-guard
         does not catch. Not a config with room to grow.
@@ -156,8 +176,10 @@ These containers form the system:
           - ✅ **f16 KV is ~72 KiB/token on this card**, now confirmed three ways: 65,536→98,304 cost
             +2.25 GiB over 32,768 tokens (72.0), and 98,304→114,688 raised VRAM only 0.76 GiB but GTT
             by 0.42 — (0.76+0.42)/16,384 = 73.7. **At 112k the KV did not get cheaper, it moved into
-            host memory.** The 64 KiB/token figure recorded earlier is slightly low, probably measured
-            without the drafter and projector resident.
+            host memory.** The 64 KiB/token figure recorded earlier is not a bad measurement — it is
+            exactly the *formula's* value for this hybrid's 16 full-attention layers (see the
+            layer-count correction above); the extra ~8 KiB is the linear-attention state and
+            per-slot overhead that the formula does not model.
           - Compare the alternative: **q8_0 KV with the projector left on GPU reached 128k at full
             speed and byte-identical output** — more context *and* fast image encode — conditional on
             reasoning being off. f16 + CPU-offload at 96k is the route that holds regardless of the
