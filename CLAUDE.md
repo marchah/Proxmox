@@ -218,10 +218,16 @@ These containers form the system:
     inside the `10.10.10.0/24` NAT LAN, by hostname.
   - ⚠️ Changing `EMBED_MODEL`/`EMBED_DIM` later requires `kb-reindex --full` — the stored
     `sqlite-vec` vector dimension must match.
-  - ⚠️ **Nothing consumes it yet.** Verified 2026-08-07: CT 121's `/root/.hermes/config.yaml` has
-    no `mcp:` block and no `kb-rag`/`8770` reference, so this is a live-but-*unwired* service.
-    Registering `http://kb-rag:8770/mcp/` (header `Authorization: Bearer <key>`) on Hermes is the
-    step that makes it useful.
+  - ⚠️ **Queried over REST, but still NOT wired into Hermes.** Corrected 2026-08-27 — it is no
+    longer true that *nothing* consumes it: CT 140 logged **55 `POST /v1/search` from CT 121 in
+    14 days**, and the index is current (4,979 chunks / 625 docs). But **zero `/mcp` requests**,
+    and CT 121's `/root/.hermes/config.yaml` still has **no `mcp:` block**, so the MCP tools
+    (`kb_search`/`kb_get`) remain unreachable and every hit arrives over plain REST. No committed
+    consumer accounts for that traffic either: `/root/.hermes/scripts/kb-rag-health.sh` calls only
+    `/v1/stats`, and the KB Improvement Scout merely *mentions* kb-rag in its inventory prose. The
+    request times are scattered across the day with no cron pattern, i.e. ad-hoc/interactive use,
+    not an integration. Registering `http://kb-rag:8770/mcp/` (header `Authorization: Bearer
+    <key>`) on Hermes is still the step that makes it generally useful.
   - ⚠️ Its `rootfs` `backup=0` is one of the **silent no-ops** described under Conventions —
     verified 2026-08-07, CT 140's line is a bare `local-lvm:vm-140-disk-0,size=12G` with no
     `backup=`, so this entirely rebuildable container **is** in the weekly vzdump, contrary to what
