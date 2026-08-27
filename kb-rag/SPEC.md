@@ -29,7 +29,7 @@ below.)
 | Privilege | **unprivileged** | No hardware access needed. |
 | GPU | **none** | Embeddings run on CPU (see below). No `/dev/dri` passthrough. |
 | Cores | `4` | Parallel embedding during reindex; idle otherwise. |
-| Memory | `4096` MB (bge-small) / `8192` MB (bge-m3 or reranker on) | ONNX runtime + model + FastAPI. |
+| Memory | `4096` MB (bge-small) / `8192` MB (bge-m3) | ONNX runtime + model + FastAPI. The reranker this row once sized for was never built — see below. |
 | Root size | `12` GB | venv + ONNX model cache + git checkout + sqlite index. All rebuildable. |
 | Net | `vmbr0`, `ip=dhcp` | Gets `10.10.10.140` behind the host WiFi-NAT; agents reach it by hostname. |
 | On boot | yes | Persistent service. |
@@ -113,9 +113,15 @@ justification for a dedicated container is **shared multi-agent access**, not co
   the `sqlite-vec` vector dimension must match. Do **not** run embeddings on CT 120's GPU: it's
   busy serving the 35B model, and query-time embedding of one short query is milliseconds on
   CPU; batch indexing is offline.
-- **Reranker (optional, `RERANK=1`): `BAAI/bge-reranker-v2-m3` via fastembed.** Reorders the
-  top-30 hybrid candidates → top-`k`. Best precision, but +latency and +~2 GB RAM. Default
-  **off**; turn on once the corpus is large enough that ranking matters.
+- 🔴 **Reranker — SPECCED, NEVER IMPLEMENTED. `RERANK=1` does not exist.** The design was
+  `BAAI/bge-reranker-v2-m3` via fastembed, reordering the top-30 hybrid candidates → top-`k`
+  (better precision, +latency, +~2 GB RAM), defaulted **off** by open decision 3 below — and then
+  it was never built. Verified 2026-08-27: `grep -rn rerank kb-rag/app/` returns **nothing**, and
+  `create-lxc-kb-rag.sh` writes no `RERANK*` variable. Setting `RERANK=1` on the live CT is a
+  silent no-op, not a feature toggle — the same class of trap as the `rootfs` `backup=` line in
+  the row above. Building it is still the highest-value retrieval change here: a reranker
+  generally beats swapping the bi-encoder, and unlike an embedding-model change it needs **no
+  reindex**.
 - **API: FastAPI + uvicorn.** Serves REST and the MCP-over-HTTP transport from one app/port.
 - **MCP: streamable-HTTP MCP server** (Python `mcp` SDK) at `/mcp`, so agents in *other*
   containers connect over the network (stdio MCP can't cross containers). Hermes registers it
@@ -220,7 +226,7 @@ ROOT_SIZE_GB=12  MEMORY_MB=4096  SWAP_MB=1024  CORES=4  BRIDGE=vmbr0  IP_CONFIG=
 START_ON_BOOT=1
 KB_REPO_URL=git@github.com:marchah/CognitiveStack.git   KB_BRANCH=main
 EMBED_MODEL=BAAI/bge-small-en-v1.5   EMBED_REVISION=<pinned>   EMBED_DIM=384
-RERANK=0   RERANK_MODEL=BAAI/bge-reranker-v2-m3
+# RERANK=0 RERANK_MODEL=BAAI/bge-reranker-v2-m3   ⚠️ NEVER IMPLEMENTED — no such var is written
 API_PORT=8770   API_KEY=            # empty → auto-generate + print once (like hermes)
 DEPLOY_KEY_FILE=                    # path to a read-only deploy private key (required)
 REINDEX_INTERVAL=10min
@@ -314,7 +320,7 @@ kb-rag/
     chunker.py                # markdown → chunks + metadata + freshness
     config.py                 # index.config.yaml + env overrides
     embedder.py               # fastembed (CPU); KB_FAKE_EMBED=1 for plumbing tests
-    store.py                  # sqlite-vec + FTS5 + RRF (+ optional rerank)
+    store.py                  # sqlite-vec + FTS5 + RRF (no rerank — never implemented)
     reindex.py                # git pull + orchestrate chunk/embed/upsert
     server.py                 # FastAPI: REST + MCP-over-HTTP
     index.config.yaml         # include/exclude globs, model, defaults
@@ -325,7 +331,8 @@ kb-rag/
 1. **VMID / placement** — `140` (databases range; recommended) vs `122` (AI range).
 2. **Embedding model** — `bge-small-en-v1.5` (fast, 384d; recommended) vs `bge-m3`
    (multilingual, 1024d, ~2 GB, better recall).
-3. **Reranker** — off (lean; recommended) vs on.
+3. **Reranker** — off (lean; recommended) vs on. **Resolved: off — and then never implemented
+   at all**, so there is no toggle to turn on (see the reranker bullet above).
 4. **Extra exclude** — confirm `claude-gpu-recommendation.md` is excluded (personal), alongside
    the meta/nav files.
 
