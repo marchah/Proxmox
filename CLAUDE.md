@@ -68,7 +68,7 @@ These containers form the system:
       - ⚠️ **A MATCHED drafter beats a borrowed one — search HF for `MTP` too, not just `DFlash`.**
         Qwen ships no DFlash drafter for Qwen3.8, so the coder borrowed Qwen3.6-27B's head. Qwen3.8
         has its own native **MTP** head (`a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, Q8_0, 4.19 GB) and the
-        pinned b10361 already lists `draft-mtp` under `--spec-type` — no build bump needed. Measured
+        pinned build already lists `draft-mtp` under `--spec-type` — no build bump needed. Measured
         2026-08-15, all at ctx 65536: no speculation **17.55** tok/s · borrowed DFlash **23.68**
         (28.8 % acceptance) · own MTP **27.73** (61.7 %). The coder moved to `qwen3.8-27b-mtp`
         2026-08-15. The unaccelerated `qwen3.8-27b` entry is the A/B control for any speculation
@@ -167,8 +167,46 @@ These containers form the system:
         compare `predicted_per_second` plus `draft_n`/`draft_n_accepted`. (Pairs with the existing
         bump TODO to re-check `--cache-ram 0` on CT 120.) **Re-checked at the b10308 → b10361
         bump on 2026-08-11: the cliff did NOT lift** — n=6 45.1 tok/s → n=8 17.6, essentially
-        unchanged. So it is not a transient upstream bug; keep n-max ≤ 6 and re-check again only
-        if a release notes Vulkan batching work.
+        unchanged. So it is not a transient upstream bug; keep n-max ≤ 6.
+        **Re-checked again at the b10587 → b10678 bump on 2026-08-28** (this time prompted by a
+        Vulkan *correctness* fix rather than batching work — see below; that trigger rule was too
+        narrow). Swept n = 2/3/4/6/8 on `qwen3.8-27b-mtp`, three fixed prompts at temperature 0,
+        mean tok/s **31.4 / 32.2 / 31.1 / 28.9 / 14.9** — **the n≥8 cliff STILL has not lifted**
+        (third confirmation), and acceptance still falls monotonically with n (prose 72% → 25%).
+        Keep n-max ≤ 6, and prefer 2–3.
+      - 🔴 **Speculation is STILL not argmax-lossless — but the DEGENERACY was a real upstream bug,
+        now fixed.** Two separate effects were conflated in the 2026-08-22 note:
+        - *Divergence* is real and reproduces on b10678. At temperature 0, hashing the output per
+          (prompt, n-max): the **code** prompt is byte-identical at n=2/3 then changes at **n≥4**;
+          prose and list hold identical through n=6 and change at n=8. So the documented "outputs
+          diverge at n≥4" is CONFIRMED, and it is prompt-dependent.
+        - *Degenerate repetition* is **GONE**. The 2026-08-22 sweep saw unique-8gram collapse to
+          0.01–0.04 at high n-max (a fake speedup); on b10678 every cell scores **1.0**. That
+          symptom was almost certainly llama.cpp #27812 — `ggml_vk_graph_optimize` reordered nodes
+          aliasing the same memory through different views, giving "wrong tokens at temperature 0
+          and speculative-decoding acceptance numbers that mean nothing", on AMD Vulkan, found on
+          Qwen3.8's recurrent state. **Any spec measurement taken before b10677 is suspect.**
+        - 🔴 **n-max stays at 2 — a repeated A/B says 3 is NOT better overall.** The single-rep
+          sweep suggested 3 was a code-weighted win; an interleaved A-B-A-B-A-B run with **3
+          repetitions per cell** (same prompts, same build, temperature 0) shows it is a **wash**,
+          and that the losses are bigger than one repetition implied:
+          | prompt | n=2 | n=3 | Δ |
+          |---|---:|---:|---:|
+          | code | 35.46 ± 0.04 | 39.21 ± 0.29 | **+10.6%** |
+          | prose | 29.24 ± 0.04 | 27.48 ± 0.31 | **−6.0%** |
+          | list | 31.66 ± 0.02 | 29.28 ± 0.32 | **−7.5%** |
+          | **overall** | **32.12** | **31.99** | **−0.4%** |
+          Standard deviations are 0.02–0.32, so these differences are real, not noise. Both values
+          are argmax-safe (identical output hashes on all three prompts). n=3 would only pay if the
+          coder's output were overwhelmingly literal code; real agent turns mix code with reasoning
+          and prose, which is where n=3 loses 6–8%. **Do not switch without measuring the actual
+          workload mix**, not a code-only prompt.
+        - ⚠️ Method note: **one repetition per cell was actively misleading here** — it put prose at
+          −3.3% when the true figure is −6.0%, i.e. it understated the cost by half and flipped the
+          recommendation. Interleave configs and take ≥3 reps before acting on a spec-decoding
+          delta; the per-cell sd is small enough that 3 reps is decisive.
+        - Keep gating every spec benchmark on the output-sanity check; it is what separated these
+          two effects.
       - ⚠️ **The drafter GGUF must declare `general.architecture = dflash`, not `dflash-draft`.**
         Upstream registers `dflash`; several community repos ship the fork's name and fail to load
         with `unknown model architecture` (llama.cpp #25116). Known good: `williamliao/…`,
@@ -386,6 +424,20 @@ Engine differences that matter when extending the llama.cpp script:
   flat `llama-<tag>/` dir and symlinks `/opt/llamacpp/current`. It also installs the
   **libglvnd/EGL stack** (`libglvnd0 libgl1 libglx0 libegl1`) on top of `mesa-vulkan-drivers`
   — without it the Mesa ICD loader can silently report **zero** Vulkan devices in the container.
+  - **Both CT 120 and CT 123 run `b10678`** (bumped 2026-08-28 from b10587; the scripts had drifted
+    to b10361 because earlier bumps were applied live only — they are back in sync). Measured on
+    CT 120 with `llama-bench`, same model and flags, only the build changing: prompt processing
+    **+5.9%** at the production ubatch (pp4096 1584.0 → 1676.7 t/s, ±0.3%), **+2.2%** at ubatch 512,
+    and decode **flat** (tg128 84.09 → 84.42). That PP-up/TG-flat shape and the scaling with ubatch
+    both match llama.cpp #26686 (Vulkan `MUL_MAT_ID` row-ID hoisting for routed MoE prefill), which
+    is **default-on** — the `GGML_VK_MUL_MAT_ID_HOIST_ROW_IDS` env var in that PR was dev-only and
+    is NOT in the merged code, so it cannot be A/B'd on one build. Caveat: this is a cross-build
+    comparison over 91 commits, so the attribution is inferential, not isolated.
+  - ⚠️ **`llama-bench` cannot use the production `--batch-size 4096`** on this card: with 24.76 GiB
+    of weights resident it dies with `radv/amdgpu: Not enough memory for command submission` at
+    context creation. `-b 2048 -ub 1024` is the largest configuration that fits and is what the
+    numbers above use. It also has **no `-c` flag** — context comes from the test params, and
+    `--fit-target` is the auto-fit path this repo avoids on RADV (see the GTT-spill note).
 - LM Studio hot-reloads context/parallel via `lms load`; **llama.cpp sets them as start-time
   flags**, so its container ships a `llamacpp-reload <ctx> <parallel>` helper (rewrites
   `/etc/llamacpp.env` + `systemctl restart`) and a `Type=simple` service running
