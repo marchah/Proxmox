@@ -246,8 +246,9 @@ These containers form the system:
   apps as Compose stacks — currently **MealDeal**
   ([github.com/marchah/mealdeal](https://github.com/marchah/mealdeal), the grocery-deal tracker
   the local AI codes features for), live on `:4000`, and **work-board** on `:4100` (a Linear +
-  GitHub "what should I work on next?" board — private repo `marchah/work-board`, so unlike
-  MealDeal its GHCR package is private and Portainer needs a registry credential).
+  GitHub "what should I work on next?" board). ⚠️ work-board is the exception to the pattern
+  below: its compose file lives in its own **private** repo `marchah/work-board` rather than
+  in `docker-host/stacks/`, so Portainer needs both git and registry credentials for it.
   Apps here **do not consume a VMID each** —
   they are containers inside this VM, so a new project costs a compose file
   (`docker-host/stacks/<project>/compose.yaml`) plus a Portainer git stack, not a bespoke
