@@ -7,11 +7,11 @@
 #     Reference:       refs/heads/main
 #     Compose path:    docker-host/stacks/work-board/compose.yaml
 #
-# SECRETS DO NOT LIVE HERE. Every value below defaults to empty and is supplied as a Portainer
-# stack environment variable. That split is deliberate and load-bearing: it is what lets this
-# compose file sit in a PUBLIC repo while the app repo and its config stay private. An
-# unconfigured source does not crash the stack — the board renders and says which variable is
-# missing, by name.
+# SECRETS DO NOT LIVE HERE, and neither does the board's structure. Every value below defaults
+# to empty and is supplied as a Portainer stack environment variable; what the board watches
+# lives in app/config.toml inside the private work-board repo. That split is deliberate and
+# load-bearing: it is what lets this compose file sit in a PUBLIC repo. An unconfigured source
+# does not crash the stack — the board renders and says which variable is missing, by name.
 #
 # ── IMAGE SOURCE ─────────────────────────────────────────────────────────────────────────────
 # PULLS a prebuilt image published by marchah/work-board's `Publish image` workflow. Nothing is
@@ -46,34 +46,38 @@ services:
     # No volumes: the snapshot is held in memory and rebuilt on the next tick, so there is
     # nothing here worth backing up. A restart costs one collection cycle.
     environment:
-      # ── Linear ───────────────────────────────────────────────────────────────────────────
-      # `lane=ENV_VAR_NAME`; the named variable holds that workspace's personal API key.
+      # ── Secrets ──────────────────────────────────────────────────────────────────────────
+      # WHAT the board watches — lanes, labels, order, repos, which Linear workspace belongs
+      # where — is NOT here. It lives in app/config.toml inside the private work-board repo,
+      # baked into the image. Only secrets and runtime knobs are passed in, which is exactly
+      # what lets this file sit in a public repo.
+      #
+      # One variable per Linear workspace. The NAMES are chosen by `linear_key_env` in
+      # config.toml, so adding a workspace means editing there and adding the variable here.
       # ⚠️ The key defines who "me" is — the query filters on assignee.isMe, which resolves
       # against the key's own user. A bot's key yields an empty, correct board.
-      WORK_LINEAR_WORKSPACES: ${WORK_LINEAR_WORKSPACES:-work=LINEAR_API_KEY_WORK personal=LINEAR_API_KEY_PERSONAL}
       LINEAR_API_KEY_WORK: ${LINEAR_API_KEY_WORK:-}
       LINEAR_API_KEY_PERSONAL: ${LINEAR_API_KEY_PERSONAL:-}
 
-      # ── GitHub ───────────────────────────────────────────────────────────────────────────
-      # `lane=owner/repo`, space-separated. Repos absent from the list are dropped even when the
-      # search returns them, which keeps unrelated open-source activity off the board. Set the
-      # real list as a Portainer stack env var — work repo names do not belong in a public repo.
-      WORK_GITHUB_REPOS: ${WORK_GITHUB_REPOS:-}
-      WORK_GITHUB_LOGIN: ${WORK_GITHUB_LOGIN:-}
-      # ⚠️ Needs read access to every repo listed above. A fine-grained PAT scoped to your own
-      # repositories CANNOT see an organisation's — org repos need a PAT naming that org as its
-      # resource owner (org approval required), or a classic PAT with `repo`.
+      # ⚠️ Needs read access to every repo in config.toml. A fine-grained PAT takes a SINGLE
+      # resource owner, so spanning several organisations means either one token per org or a
+      # classic PAT with `repo`.
       WORK_GITHUB_TOKEN: ${WORK_GITHUB_TOKEN:-}
 
-      # ── Behaviour ────────────────────────────────────────────────────────────────────────
+      # ── Runtime ──────────────────────────────────────────────────────────────────────────
+      # Overrides [github].login from config.toml when set. Normally leave empty.
+      WORK_GITHUB_LOGIN: ${WORK_GITHUB_LOGIN:-}
+
+      # Path to the config file. Point this at a bind-mounted path to change what the board
+      # watches without rebuilding the image; empty uses the bundled app/config.toml.
+      WORK_CONFIG: ${WORK_CONFIG:-}
+
       WORK_REFRESH_SECONDS: ${WORK_REFRESH_SECONDS:-300}
       # A lane not refreshed within this many seconds renders with a loud stale banner. Keep it
       # comfortably above WORK_REFRESH_SECONDS so one missed tick is not an alarm.
       WORK_STALE_SECONDS: ${WORK_STALE_SECONDS:-900}
       WORK_HTTP_TIMEOUT: ${WORK_HTTP_TIMEOUT:-15}
       WORK_LOG_LEVEL: ${WORK_LOG_LEVEL:-INFO}
-      WORK_LANE_LABELS: ${WORK_LANE_LABELS:-work=Work personal=Personal}
-      WORK_LANE_ORDER: ${WORK_LANE_ORDER:-work=1 personal=2}
     # /healthz answers 200 once the first collection has completed. It deliberately does NOT
     # check whether the sources succeeded — a board correctly reporting that Linear is down is a
     # working board, and failing the healthcheck on that would restart-loop the container for an
