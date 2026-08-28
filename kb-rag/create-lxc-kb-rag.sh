@@ -53,7 +53,7 @@ API_PORT="${API_PORT:-8770}"
 REINDEX_INTERVAL="${REINDEX_INTERVAL:-10min}"
 
 # --- Pinned Python deps (validated together; bump deliberately) ---
-KB_PIP_PACKAGES="${KB_PIP_PACKAGES:-fastembed==0.8.0 sqlite-vec==0.1.9 pathspec==1.1.1 PyYAML==6.0.3 fastapi==0.140.2 uvicorn[standard]==0.51.0 mcp==1.28.1 pydantic==2.13.4}"
+KB_PIP_PACKAGES="${KB_PIP_PACKAGES:-fastembed==0.8.0 sqlite-vec==0.1.9 pathspec==1.1.1 PyYAML==6.0.3 fastapi==0.140.2 uvicorn[standard]==0.51.0 mcp==2.1.1 pydantic==2.13.4}"
 
 # --- Standalone (wget | bash) install: where to fetch app/ from when there is no checkout ---
 REPO_RAW_BASE="${REPO_RAW_BASE:-https://raw.githubusercontent.com/marchah/Proxmox/main/kb-rag}"
