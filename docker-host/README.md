@@ -1,8 +1,10 @@
 # docker-host — the app-stack host (VM 300)
 
 A Debian VM running **Docker + Compose + Portainer CE**. It hosts the homelab's small,
-self-contained web apps as Compose stacks — currently MealDeal, and whatever comes next — so a
-new project costs a compose file instead of a bespoke provisioning script.
+self-contained web apps as Compose stacks — currently MealDeal and work-board — so a
+new project costs a compose file instead of a bespoke provisioning script. A stack's
+compose file usually lives in `stacks/` here; work-board's lives in its own repo, and
+`## work-board specifics` says why.
 
 Apps here no longer consume a VMID each: they are containers inside this one VM.
 
@@ -143,6 +145,23 @@ image: ghcr.io/marchah/mealdeal:sha-b63ad81
 > published yet. (An earlier note here blamed a GitHub Actions billing lock — that was wrong; the
 > account is plan `free` and public repos get free minutes, so every line item nets $0.00. The
 > image was merely unpublished.)
+
+## work-board specifics
+
+Stack: **not in this repo.** It lives with the app at
+[`deploy/compose.yaml`](https://github.com/marchah/work-board) in the private
+`marchah/work-board` repo, because that file and the app's `config.toml` must agree with each
+other and splitting them across repos made one change a two-repo change. Portainer reads it as
+a git stack from there.
+
+Live at **`http://192.168.1.93:4100`** — a Linear + GitHub board answering "what should I work
+on next?". Holds no state: the snapshot is in memory and rebuilt on the next tick, so there is
+no volume to back up.
+
+⚠️ Being a private repo, it needs Portainer credentials **twice** — git, to read the compose,
+and registry, to pull the image — where MealDeal needs neither. Details live in that repo's
+README; the general lesson for this one is to **check a stack's repo and package visibility
+before assuming anonymous access**, rather than generalising from MealDeal.
 
 ## What you give up versus the old per-app LXC
 

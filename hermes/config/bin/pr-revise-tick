@@ -17,7 +17,7 @@ gh pr list --repo "$SLUG" --label "$LABEL" --state open --json number,headRefNam
   # yank a running worker's worktree. The work is tracked, so just clear the label and move on.
   # FAIL CLOSED: if we cannot determine the board state (list command fails, or its output isn't a number),
   # we can't rule out an in-flight task, so preserve the label and retry next tick rather than risk the free.
-  if ! TASKS_JSON="$(hermes kanban --board mealdeal list --json 2>/dev/null)"; then
+  if ! TASKS_JSON="$(hermes kanban --board default list --json 2>/dev/null)"; then
     echo "[pr-revise-tick] PR #$N ($BRANCH): kanban list failed — can't rule out an in-flight task; keeping $LABEL, will retry" >&2
     continue
   fi

@@ -233,12 +233,14 @@ These containers form the system:
         could move from the global `--reasoning off` to per-task control. Not yet retested.
     - ⚠️ **It serves more than the coder/reviewer pair** — plus general and evaluation models, all
       **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked into the script** (they
-      change as models are trialled). **As of 2026-08-23 there are FIVE:**
-      `qwen3.8-27b-mtp` (coder, MTP + vision on GPU, ctx 65536) ·
+      change as models are trialled). **Verified live 2026-08-28 — there are SIX:**
+      `qwen3.8-27b-dflash2` (coder, own **DFlash2** head + vision on GPU, ctx 65536) ·
+      `qwen3.8-27b-mtp` (previous coder, MTP head, kept as a one-line rollback) ·
       `qwen3.8-27b-mtp-maxctx` (same model, vision on **CPU** → ctx 98304) ·
       `ornith-1.5-35b-a3b` (fastest + longest: 66.4 tok/s, ctx 196608, no drafter) ·
       `thinkingcap-27b` (reviewer) · `muse-glimmer-30b` (speculative/eval).
-      ⚠️ **`qwen3.6-35b-a3b` was retired from CT 123 on 2026-08-23** (−24.77 GiB, `/models` 66 % →
+      Because this list is live-only it has drifted twice — **read the config before trusting any
+      doc**: `pct exec 123 -- bash -lc "grep -E '^  [a-z0-9.-]+:' /etc/llama-swap/config.yaml"`.
       51 % used) because `ornith-1.5-35b-a3b` is a strict upgrade at the same ~3B-active cost —
       identical architecture, wins all 17 rows of the vendor comparison, and measured 66.4 vs
       65.1 tok/s on this card. **CT 120 still serves that model as the ops runtime and is
@@ -282,31 +284,64 @@ These containers form the system:
       case it ever surfaces. Losing it costs the DFlash arm of
       `pro-v620/gpu-ab-bench/spec-sweep.sh` (now loudly skipped); `dflash-kquant.gguf` remains, so
       DFlash coverage survives via `muse-glimmer-30b`.
+      ⚠️ **The A/B-control case for `qwen3.8-27b` did NOT go away with the thermal case.** Retiring
+      it cost the 2026-08-28 DFlash2 comparison its baseline, and a no-speculation control had to be
+      recreated to run it — comparing two speculative configs against each other measures agreement,
+      not correctness. Keep a non-speculative entry, or be ready to re-add one before any
+      speculation claim.
       - ⚠️ **A MATCHED drafter beats a borrowed one — search HF for `MTP` too, not just `DFlash`.**
         Qwen ships no DFlash drafter for Qwen3.8, so the coder borrowed Qwen3.6-27B's head. Qwen3.8
         has its own native **MTP** head (`a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, Q8_0, 4.19 GB) and the
-        pinned b10361 already lists `draft-mtp` under `--spec-type` — no build bump needed. Measured
+        pinned build already lists `draft-mtp` under `--spec-type` — no build bump needed. Measured
         2026-08-15, all at ctx 65536: no speculation **17.55** tok/s · borrowed DFlash **23.68**
         (28.8 % acceptance) · own MTP **27.73** (61.7 %). The coder moved to `qwen3.8-27b-mtp`
-        2026-08-15. The unaccelerated `qwen3.8-27b` entry *was* the A/B control for any speculation
-        claim here (and the thermal fallback) — the DFlash-drafted entries were dropped, since a
-        borrowed head had no capability case left once the matched one existed.
-        ⚠️ **That control alias was itself retired 2026-08-22** (thermals no longer justify a
-        non-speculative fallback). Its GGUF is still on disk, shared with the MTP entry, so an
-        unaccelerated baseline is still measurable — via `spec-sweep.sh`, which starts its own
-        server with no `--spec-*` flags, rather than via a standing llama-swap alias.
-        ⚠️ **n-max 2 is the optimum and the sweep is NOT flat** — 2 → 27.77, 3 → 26.36, 4 → 26.87,
-        6 → 20.49, **8 → 8.80**. Acceptance falls as n-max rises, so drafting *more* is strictly
-        worse. Same cliff shape as DFlash's n≥8, i.e. the backend threshold, not an MTP property.
-        Never copy an n-max between drafters.
-        🔄 **Re-swept on b10587 (2026-08-22) with the new requant: `n-max 3` is now the best CLEAN
-        setting** — 2 → 30.50 (73.7 %), **3 → 31.56 (64.2 %)**, 4 → 28.71 (52.0 %). Only 3.5 %
-        separates 2 from 3, so either is defensible; both are ~12 % faster than the b10361 figures
-        above. ⚠️ **n-max 6 and 8 are DEGENERATE, not fast** — 6 "reached" 41.97 and 8 22.39, but
-        their unique-8-gram ratios are 0.065 and 0.030, i.e. the output collapsed into repetition
-        (which drafts almost perfectly and inflates acceptance *and* tok/s). Discard both. ⚠️ The
-        MTP *baseline* also degenerated (ratio 0.141) because greedy decoding at temp 0 repeats on
-        its own, so treat the "vs base" ratios for MTP as soft; DFlash's baseline stayed clean.
+        2026-08-15, and **to `qwen3.8-27b-dflash2` on 2026-08-28** (below).
+        ⚠️ **The unaccelerated `qwen3.8-27b` control alias was retired 2026-08-22** (thermals no
+        longer justify a non-speculative fallback). Its GGUF is still on disk, shared with the MTP
+        entry, so an unaccelerated baseline is still measurable — via `spec-sweep.sh`, which starts
+        its own server with no `--spec-*` flags, rather than via a standing llama-swap alias.
+        ⚠️ **n-max 2 is the optimum for MTP and the sweep is NOT flat** — 2 → 27.77, 3 → 26.36,
+        4 → 26.87, 6 → 20.49, **8 → 8.80**. Acceptance falls as n-max rises, so drafting *more* is
+        strictly worse. Never copy an n-max between drafters.
+      - ✅ **CODER MOVED TO DFlash2 2026-08-28 — +29% overall, +89% on code.** Qwen3.8 now has its
+        own **DFlash2** head (llama.cpp #27342, shipped in the pinned b10678; auto-detected from the
+        checkpoint, so `--spec-type` stays `draft-dflash`). GGUF `z-lab/Qwen3.8-27B-DFlash2-GGUF`
+        Q8_0, **1.92 GiB — smaller than the MTP head's 4.19 GiB**, so it frees ~2.3 GiB of VRAM.
+        Measured 3 reps, 3 prompts, temp 0, identical request params, against an explicit
+        no-speculation control (**17.03** tok/s, reproducing the documented ~17.6):
+        | drafter | code | prose | list | overall |
+        |---|---:|---:|---:|---:|
+        | MTP n=2 (was) | 35.44 | 29.19 | 31.72 | 32.12 |
+        | **DFlash2 n=8** | **67.14** | 26.72 | 30.47 | **41.44** |
+        | DSpark n=6 | — | — | — | 31.86 |
+        Code is what the coder emits, so the prose/list losses (−8.5 % / −3.9 %) are an acceptable
+        trade. **DSpark was tested and is NOT better than MTP** — the "DSpark beats DFlash by
+        16–31 %" claim is about DFlash*1* and about accepted length, and does not survive here.
+        The `qwen3.8-27b-mtp` entry is kept as a one-line rollback.
+      - 🔴 **The n≥8 cliff is an MTP property, NOT "the backend threshold".** This file previously
+        concluded it was a backend limit. DFlash2 and DSpark **do not cliff**: DFlash2 runs
+        40.29 → 40.93 → 41.40 → 41.43 at n = 6/7/8/10, and its acceptance is **identical (52.1 %)**
+        at 7/8/10 because the drafter saturates its own block length — so it plateaus instead of
+        collapsing, and n-max above ~8 is simply inert. That is why the coder can safely run n-max 8.
+      - 🔴 **Comparing two speculative configs to each other is NOT a correctness check — keep a
+        no-speculation control.** With a real control, the "argmax-safe" reading inverts: on the
+        **code** prompt, n=4+ **matches** the unaccelerated output while **n=2/3 do not**; on
+        **list**, *every* speculative setting differs from it; only prose agrees throughout. So the
+        previously "safe" low n-max values were agreeing with each other, not with the model. The
+        current coder (DFlash2 n=8) matches the reference on code and prose, where MTP n=2 did not.
+        🔄 **Re-swept on b10587 (2026-08-22) with the new requant: `n-max 3` was the best CLEAN
+        setting** — 2 → 30.50 (73.7 %), **3 → 31.56 (64.2 %)**, 4 → 28.71 (52.0 %); ~12 % faster
+        than the b10361 figures above. ⚠️ **n-max 6 and 8 looked fast but were DEGENERATE** — 6
+        "reached" 41.97 and 8 22.39 with unique-8-gram ratios of **0.065 and 0.030**, i.e. the
+        output collapsed into repetition, which drafts almost perfectly and inflates acceptance
+        *and* tok/s. The MTP *baseline* also degenerated (0.141) because greedy decoding at temp 0
+        repeats on its own.
+        🔴 **That degeneracy was an upstream bug, not a property of high n-max.** llama.cpp #27812
+        (fixed in b10677) had `ggml_vk_graph_optimize` reorder nodes aliasing the same memory
+        through different views, on AMD Vulkan, silently. Re-swept on **b10678** the same prompts
+        score **unique-8-gram 1.00 in every cell**. So the b10587 numbers above stand as a record of
+        what was observed, but **any speculative measurement taken before b10677 is suspect** — and
+        the "discard 6 and 8 as degenerate" conclusion no longer applies to a patched build.
       ⚠️ **`qwen3-instruct-2507` and `qwen3-coder-30b-a3b` were RETIRED 2026-08-14** and their
       GGUFs deleted, freeing 43.47 GB. Neither had a capability case left — the latter scores
       14 on the AA index against 32/35/38 for its peers, with no vendor benchmarks at its size.
@@ -326,6 +361,23 @@ These containers form the system:
         ⚠️ Those absolutes are **prompt-specific** (as is every speculative tok/s figure here); a
         re-sweep on a prose prompt gave 2 → 31.7, **3 → 35.8**, 4 → 34.1, 6 → 29.3. Compare the
         *shape*, not the numbers, across sweeps — the shape reproduced and **3 is still optimal**.
+        ✅ **RE-CONFIRMED post-#27812 on b10678 (2026-08-28)**, interleaved, 3 reps/cell, 3 prompts,
+        temperature 0 — mean tok/s **2 → 36.34, 3 → 41.58, 4 → 41.71, 6 → 39.66**. Keep **3**; it is
+        already what production runs, so no change was made.
+        - 🔴 **This narrows the "every pre-b10677 spec measurement is suspect" caveat.** muse's
+          numbers reproduce the pre-fix sweep within ~1–2% across all four values, so **this DFlash
+          sweep was never corrupted** — the Vulkan view-alias bug showed up as qwen3.8's high-n-max
+          *degeneracy*, not as a wrong optimum here. Re-verify before discarding old data, don't
+          assume it is all void.
+        - The one real change: **3 and 4 are now statistically tied** (41.58 vs 41.71, +0.3%, inside
+          the code prompt's ±0.87 sd), where pre-fix 3 led 4 by ~2%. "3 is optimal and 4 is worse" is
+          better stated as "3 and 4 tie; keep 3". n=2 is clearly worst (−12.5%) and 6 is down 5%.
+        - ⚠️ **muse has NO argmax-stable n-max range**, unlike `qwen3.8-27b-mtp` (where n=2 and n=3
+          are byte-identical). At temperature 0 the prose prompt returns **three different outputs**
+          across n=2/3/4/6 and the list prompt two, i.e. changing n-max here changes the answer even
+          between 2 and 3. Only the code prompt is stable across all four. Treat an n-max change on
+          this model as an output change, not just a throughput knob.
+        - No degeneracy anywhere: unique-8gram is **1.00** in all 36 cells.
       - A generous client `max_tokens`. It reasons before answering: at 300 the reply comes back
         with `content` **completely empty** and everything in `reasoning_content`. At 2500 it used
         465 and finished cleanly. A low cap yields empty responses, not errors.
@@ -396,8 +448,7 @@ These containers form the system:
         compare `predicted_per_second` plus `draft_n`/`draft_n_accepted`. (Pairs with the existing
         bump TODO to re-check `--cache-ram 0` on CT 120.) **Re-checked at the b10308 → b10361
         bump on 2026-08-11: the cliff did NOT lift** — n=6 45.1 tok/s → n=8 17.6, essentially
-        unchanged. So it is not a transient upstream bug; keep n-max ≤ 6 and re-check again only
-        if a release notes Vulkan batching work.
+        unchanged. So it is not a transient upstream bug; keep n-max ≤ 6.
       - ✅ **DONE for b10587 (2026-08-22) — and it paid off, though not by lifting the cliff.**
         Re-swept with `pro-v620/gpu-ab-bench/spec-sweep.sh` on GPU 2. **The DFlash pair is the
         controlled comparison: its target and drafter GGUFs are byte-identical to the b10361 run,
@@ -416,13 +467,56 @@ These containers form the system:
         entry than to a plain one; re-sweep speculation after every bump, not just when a release
         notes Vulkan work.
         - ⚠️ **The n≥8 cliff STILL did not lift** (n=4 2.06× → n=8 1.29×), so it survives three
-          builds now (b10308, b10361, b10587). Treat it as a fixed backend property.
+          builds now (b10308, b10361, b10587) — four including b10678. ⚠️ But it is an **MTP property, not
+          a backend one**: DFlash2 and DSpark do not cliff at all (see the 2026-08-28 entry below).
         - ⚠️ **n-max 6 is no longer merely slow, it is DEGENERATE** on both drafters — 56.17 tok/s
           for DFlash at a unique-8-gram ratio of 0.058. A tok/s-only sweep would have recorded that
-          as a 3.20× win. **The optimum among clean results is 3 for BOTH drafters**, so the earlier
-          "≤ 6 is safe" guidance should now read **≤ 4**.
+          as a 3.20× win. **The optimum among clean results is 3 for BOTH drafters**, so on b10587
+          the "≤ 6 is safe" guidance read **≤ 4**. ⚠️ That degeneracy was llama.cpp #27812 and is
+          fixed in b10677 — on b10678 the same cells score unique-8-gram 1.00, so the ≤ 4 tightening
+          was a workaround for a bug, not a standing rule.
         - The sweep's degeneracy gate is built into `spec-probe.py` (`uniq_8gram_min`,
           `any_degenerate`), so this cannot silently recur.
+        unchanged. So it is not a transient upstream bug; keep n-max ≤ 6.
+        **Re-checked again at the b10587 → b10678 bump on 2026-08-28** (this time prompted by a
+        Vulkan *correctness* fix rather than batching work — see below; that trigger rule was too
+        narrow). Swept n = 2/3/4/6/8 on `qwen3.8-27b-mtp`, three fixed prompts at temperature 0,
+        mean tok/s **31.4 / 32.2 / 31.1 / 28.9 / 14.9** — **the n≥8 cliff STILL has not lifted**
+        (third confirmation), and acceptance still falls monotonically with n (prose 72% → 25%).
+        Keep n-max ≤ 6, and prefer 2–3.
+      - 🔴 **Speculation is STILL not argmax-lossless — but the DEGENERACY was a real upstream bug,
+        now fixed.** Two separate effects were conflated in the 2026-08-22 note:
+        - *Divergence* is real and reproduces on b10678. At temperature 0, hashing the output per
+          (prompt, n-max): the **code** prompt is byte-identical at n=2/3 then changes at **n≥4**;
+          prose and list hold identical through n=6 and change at n=8. So the documented "outputs
+          diverge at n≥4" is CONFIRMED, and it is prompt-dependent.
+        - *Degenerate repetition* is **GONE**. The 2026-08-22 sweep saw unique-8gram collapse to
+          0.01–0.04 at high n-max (a fake speedup); on b10678 every cell scores **1.0**. That
+          symptom was almost certainly llama.cpp #27812 — `ggml_vk_graph_optimize` reordered nodes
+          aliasing the same memory through different views, giving "wrong tokens at temperature 0
+          and speculative-decoding acceptance numbers that mean nothing", on AMD Vulkan, found on
+          Qwen3.8's recurrent state. **Any spec measurement taken before b10677 is suspect.**
+        - 🔴 **n-max stays at 2 — a repeated A/B says 3 is NOT better overall.** The single-rep
+          sweep suggested 3 was a code-weighted win; an interleaved A-B-A-B-A-B run with **3
+          repetitions per cell** (same prompts, same build, temperature 0) shows it is a **wash**,
+          and that the losses are bigger than one repetition implied:
+          | prompt | n=2 | n=3 | Δ |
+          |---|---:|---:|---:|
+          | code | 35.46 ± 0.04 | 39.21 ± 0.29 | **+10.6%** |
+          | prose | 29.24 ± 0.04 | 27.48 ± 0.31 | **−6.0%** |
+          | list | 31.66 ± 0.02 | 29.28 ± 0.32 | **−7.5%** |
+          | **overall** | **32.12** | **31.99** | **−0.4%** |
+          Standard deviations are 0.02–0.32, so these differences are real, not noise. Both values
+          are argmax-safe (identical output hashes on all three prompts). n=3 would only pay if the
+          coder's output were overwhelmingly literal code; real agent turns mix code with reasoning
+          and prose, which is where n=3 loses 6–8%. **Do not switch without measuring the actual
+          workload mix**, not a code-only prompt.
+        - ⚠️ Method note: **one repetition per cell was actively misleading here** — it put prose at
+          −3.3% when the true figure is −6.0%, i.e. it understated the cost by half and flipped the
+          recommendation. Interleave configs and take ≥3 reps before acting on a spec-decoding
+          delta; the per-cell sd is small enough that 3 reps is decisive.
+        - Keep gating every spec benchmark on the output-sanity check; it is what separated these
+          two effects.
       - ⚠️ **The drafter GGUF must declare `general.architecture = dflash`, not `dflash-draft`.**
         Upstream registers `dflash`; several community repos ship the fork's name and fail to load
         with `unknown model architecture` (llama.cpp #25116). Known good: `williamliao/…`,
@@ -472,10 +566,28 @@ These containers form the system:
     inside the `10.10.10.0/24` NAT LAN, by hostname.
   - ⚠️ Changing `EMBED_MODEL`/`EMBED_DIM` later requires `kb-reindex --full` — the stored
     `sqlite-vec` vector dimension must match.
-  - ⚠️ **Nothing consumes it yet.** Verified 2026-08-07: CT 121's `/root/.hermes/config.yaml` has
-    no `mcp:` block and no `kb-rag`/`8770` reference, so this is a live-but-*unwired* service.
-    Registering `http://kb-rag:8770/mcp/` (header `Authorization: Bearer <key>`) on Hermes is the
-    step that makes it useful.
+  - ✅ **WIRED INTO HERMES 2026-08-28** — the long-standing "queried over REST but nothing uses
+    the MCP surface" gap is closed. CT 121's `config.yaml` now carries an `mcp_servers.kb-rag`
+    entry pointing at `http://kb-rag:8770/mcp/`, and `hermes mcp test kb-rag` discovers all three
+    tools; an agent turn calling `kb_stats`/`kb_search` returns live index data, and CT 140 logs
+    the `POST /mcp/` traffic from `10.10.10.121`. (Before this: 55 `POST /v1/search` in 14 days but
+    **zero** `/mcp` requests — every hit arrived over plain REST, ad-hoc rather than as an
+    integration.) Four things that were each load-bearing:
+    - ⚠️ **The config key is `mcp_servers:`, not `mcp:`** — earlier notes here said `mcp:`, which
+      would have been silently ignored. Schema is in `tools/mcp_tool.py`'s module docstring.
+    - ⚠️ **The trailing slash is required.** `/mcp` 307-redirects to `/mcp/`, and a redirected POST
+      is not something every MCP client replays correctly.
+    - ⚠️ **Keep the key OUT of `config.yaml`.** Hermes' `_load_mcp_config()` calls
+      `load_hermes_dotenv()` and resolves `${VAR}` (also Cursor-style `${env:VAR}`) before
+      connecting, so the entry reads `Authorization: "Bearer ${HERMES_KB_RAG_KEY}"` and the secret
+      stays in `~/.hermes/.env`. This is not cosmetic: `config.yaml` **is** in the nightly backup,
+      whose gitleaks gate is a hard `exit 1` on any finding — a literal token there would silently
+      kill the only tracked copy of the config. No other literal secret lives in that file.
+    - Hermes' MCP **client** is still on `mcp` 1.28.1 while CT 140 now serves 2.1.1; this works
+      only because v2 still serves the legacy 2025-06-18 handshake. Verify that stays true on any
+      future kb-rag SDK bump.
+    Validation order is worth knowing: `_filter_suspicious_mcp_servers()` runs **before**
+    interpolation, so the security check sees the placeholder, never the resolved secret.
   - ⚠️ Its `rootfs` `backup=0` is one of the **silent no-ops** described under Conventions —
     verified 2026-08-07, CT 140's line is a bare `local-lvm:vm-140-disk-0,size=12G` with no
     `backup=`, so this entirely rebuildable container **is** in the weekly vzdump, contrary to what
@@ -493,7 +605,11 @@ These containers form the system:
   running **Docker + Compose + Portainer CE**, which hosts the homelab's small self-contained web
   apps as Compose stacks — currently **MealDeal**
   ([github.com/marchah/mealdeal](https://github.com/marchah/mealdeal), the grocery-deal tracker
-  the local AI codes features for), live on `:4000`. Apps here **do not consume a VMID each** —
+  the local AI codes features for), live on `:4000`, and **work-board** on `:4100` (a Linear +
+  GitHub "what should I work on next?" board). ⚠️ work-board is the exception to the pattern
+  below: its compose file lives in its own **private** repo `marchah/work-board` rather than
+  in `docker-host/stacks/`, so Portainer needs both git and registry credentials for it.
+  Apps here **do not consume a VMID each** —
   they are containers inside this VM, so a new project costs a compose file
   (`docker-host/stacks/<project>/compose.yaml`) plus a Portainer git stack, not a bespoke
   provisioning script. Stack secrets (e.g. `IMAP_PASSWORD`) are **Portainer stack env vars**,
@@ -618,16 +734,26 @@ Engine differences that matter when extending the llama.cpp script:
   flat `llama-<tag>/` dir and symlinks `/opt/llamacpp/current`. It also installs the
   **libglvnd/EGL stack** (`libglvnd0 libgl1 libglx0 libegl1`) on top of `mesa-vulkan-drivers`
   — without it the Mesa ICD loader can silently report **zero** Vulkan devices in the container.
-  - **Current pins, all bumped 2026-08-22:** llama.cpp **`b10587`** (from `b10361`; llama.cpp now
-    also self-reports a semver, `0.2.0-dev (build 10587, commit 3f545becc)`), llama-swap **`v250`**
-    (from `v247`), and the coder GGUF moved to revision `4ca72078` after unsloth requantised it
-    (20.2 → 20.9 GB; chat template byte-identical, so tensors only). Prior builds are left in
-    `/opt/llamacpp/` and the previous llama-swap binary as `llama-swap.v247.bak`, so rollback is a
-    symlink flip / file copy. Verified after the bump: both cards' RADV init (the loud-guard passes),
-    CT 120 serving at 68.7 tok/s, all 7 llama-swap models registered, and MTP speculation still
-    active on the coder (65.5 % acceptance, 27.7 tok/s).
-    ⚠️ **The standing "re-run the n-max sweep at the next llama.cpp bump" TODO below is now DUE
-    again** — the sweep recorded here was measured on b10361, i.e. pre-bump. Harness: `pro-v620/gpu-ab-bench/spec-sweep.sh`.
+  - **Other pinned versions, bumped 2026-08-22:** llama-swap **`v250`** (from `v247`), and the
+    coder GGUF moved to revision `4ca72078` after unsloth requantised it (20.2 → 20.9 GB; chat
+    template byte-identical, so tensors only). Prior llama.cpp builds are left in `/opt/llamacpp/`
+    and the previous llama-swap binary as `llama-swap.v247.bak`, so **rollback is a symlink flip /
+    file copy**. Verified after that bump: both cards' RADV init (the loud-guard passes), CT 120
+    serving, every llama-swap model registered, and MTP speculation active on the coder.
+  - **Both CT 120 and CT 123 run `b10678`** (bumped 2026-08-28 from b10587; the scripts had drifted
+    to b10361 because earlier bumps were applied live only — they are back in sync). Measured on
+    CT 120 with `llama-bench`, same model and flags, only the build changing: prompt processing
+    **+5.9%** at the production ubatch (pp4096 1584.0 → 1676.7 t/s, ±0.3%), **+2.2%** at ubatch 512,
+    and decode **flat** (tg128 84.09 → 84.42). That PP-up/TG-flat shape and the scaling with ubatch
+    both match llama.cpp #26686 (Vulkan `MUL_MAT_ID` row-ID hoisting for routed MoE prefill), which
+    is **default-on** — the `GGML_VK_MUL_MAT_ID_HOIST_ROW_IDS` env var in that PR was dev-only and
+    is NOT in the merged code, so it cannot be A/B'd on one build. Caveat: this is a cross-build
+    comparison over 91 commits, so the attribution is inferential, not isolated.
+  - ⚠️ **`llama-bench` cannot use the production `--batch-size 4096`** on this card: with 24.76 GiB
+    of weights resident it dies with `radv/amdgpu: Not enough memory for command submission` at
+    context creation. `-b 2048 -ub 1024` is the largest configuration that fits and is what the
+    numbers above use. It also has **no `-c` flag** — context comes from the test params, and
+    `--fit-target` is the auto-fit path this repo avoids on RADV (see the GTT-spill note).
 - LM Studio hot-reloads context/parallel via `lms load`; **llama.cpp sets them as start-time
   flags**, so its container ships a `llamacpp-reload <ctx> <parallel>` helper (rewrites
   `/etc/llamacpp.env` + `systemctl restart`) and a `Type=simple` service running

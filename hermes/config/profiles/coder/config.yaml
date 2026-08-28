@@ -1,12 +1,24 @@
 model:
-  # qwen3.8-27b-mtp — the SAME Qwen3.8-27B weights as the old qwen3.8-27b-dflash entry;
-  # only the speculative drafter differs. That entry borrowed Qwen3.6-27B's DFlash head
-  # because Qwen ships no DFlash drafter for 3.8, and the borrow transfers only partly.
-  # Qwen3.8 has its own native MTP head, so it now drafts for itself. Measured on CT 123
-  # 2026-08-15, all at ctx 65536: no speculation 17.55 tok/s, borrowed DFlash 23.68
-  # (28.8% acceptance), own MTP 27.73 (61.7%). Same window, same output quality — the
-  # target weights are identical and speculation is verified against them.
-  default: qwen3.8-27b-mtp
+  # qwen3.8-27b-dflash2 — the SAME Qwen3.8-27B weights throughout this entry's history;
+  # only the speculative drafter has changed. Lineage: borrowed Qwen3.6 DFlash head ->
+  # Qwen3.8's own MTP head (2026-08-15) -> its own DFlash2 head (2026-08-28).
+  #
+  # DFlash2 landed upstream in llama.cpp #27342 and ships in the pinned b10678. Measured on
+  # CT 123 2026-08-28, 3 reps, 3 prompts, temp 0, identical request params, against an
+  # explicit NO-SPECULATION control (17.03 tok/s):
+  #              code    prose   list    overall
+  #   mtp  n=2   35.44   29.19   31.72   32.12    (previous coder)
+  #   dfl2 n=8   67.14   26.72   30.47   41.44    +29% overall, +89% on code
+  # Code is what the coder actually emits, so the prose/list losses (-8.5% / -3.9%) are an
+  # acceptable trade. The DFlash2 drafter is also SMALLER: 1.92 GiB vs the MTP head's 4.19 GiB.
+  #
+  # ⚠️ n-max 8 does NOT contradict the documented n>=8 Vulkan cliff — that cliff is an MTP
+  # property, not a backend threshold. DFlash2's acceptance is IDENTICAL at n=7/8/10 (52.1%)
+  # because the drafter saturates its own block length, so it plateaus rather than collapsing.
+  # Re-sweep if the drafter ever changes; never copy an n-max between drafters.
+  #
+  # The old qwen3.8-27b-mtp entry is kept on CT 123 as a one-line rollback.
+  default: qwen3.8-27b-dflash2
   provider: custom
   base_url: http://gpu2:8080/v1
   api_key: ''
