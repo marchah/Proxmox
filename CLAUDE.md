@@ -186,11 +186,25 @@ These containers form the system:
           aliasing the same memory through different views, giving "wrong tokens at temperature 0
           and speculative-decoding acceptance numbers that mean nothing", on AMD Vulkan, found on
           Qwen3.8's recurrent state. **Any spec measurement taken before b10677 is suspect.**
-        - Practical upshot: **n-max 3 is the fastest argmax-SAFE value for this coder.** On the code
-          prompt it gives 39.3 tok/s vs n=2's 35.0 (**+12%**) with a byte-identical answer, while
-          n=4 already changes the output. Prose/list are ~3% slower at n=3, so it is a code-weighted
-          win. Production still runs n-max **2** — switching is a one-line config change, but the
-          sweep was 1 repetition per cell, so repeat it before adopting.
+        - 🔴 **n-max stays at 2 — a repeated A/B says 3 is NOT better overall.** The single-rep
+          sweep suggested 3 was a code-weighted win; an interleaved A-B-A-B-A-B run with **3
+          repetitions per cell** (same prompts, same build, temperature 0) shows it is a **wash**,
+          and that the losses are bigger than one repetition implied:
+          | prompt | n=2 | n=3 | Δ |
+          |---|---:|---:|---:|
+          | code | 35.46 ± 0.04 | 39.21 ± 0.29 | **+10.6%** |
+          | prose | 29.24 ± 0.04 | 27.48 ± 0.31 | **−6.0%** |
+          | list | 31.66 ± 0.02 | 29.28 ± 0.32 | **−7.5%** |
+          | **overall** | **32.12** | **31.99** | **−0.4%** |
+          Standard deviations are 0.02–0.32, so these differences are real, not noise. Both values
+          are argmax-safe (identical output hashes on all three prompts). n=3 would only pay if the
+          coder's output were overwhelmingly literal code; real agent turns mix code with reasoning
+          and prose, which is where n=3 loses 6–8%. **Do not switch without measuring the actual
+          workload mix**, not a code-only prompt.
+        - ⚠️ Method note: **one repetition per cell was actively misleading here** — it put prose at
+          −3.3% when the true figure is −6.0%, i.e. it understated the cost by half and flipped the
+          recommendation. Interleave configs and take ≥3 reps before acting on a spec-decoding
+          delta; the per-cell sd is small enough that 3 reps is decisive.
         - Keep gating every spec benchmark on the output-sanity check; it is what separated these
           two effects.
       - ⚠️ **The drafter GGUF must declare `general.architecture = dflash`, not `dflash-draft`.**
