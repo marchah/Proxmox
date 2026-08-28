@@ -60,24 +60,54 @@ These containers form the system:
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
     - ⚠️ **It serves more than the coder/reviewer pair** — plus general and evaluation models, all
       **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked into the script** (they
-      change as models are trialled). As of 2026-08-15 there are SEVEN:
-      `qwen3.8-27b-mtp` (coder), `thinkingcap-27b` (reviewer) · `qwen3.8-27b`, `qwen3.6-27b`,
-      `qwen3.6-35b-a3b`, `ornith` (general) · `muse-glimmer-30b` (speculative).
+      change as models are trialled). **Verified live 2026-08-28 — there are SIX**:
+      `qwen3.8-27b-dflash2` (coder), `thinkingcap-27b` (reviewer) · `qwen3.8-27b-mtp` (previous
+      coder, kept as rollback), `qwen3.8-27b-mtp-maxctx`, `ornith-1.5-35b-a3b` (general) ·
+      `muse-glimmer-30b` (speculative).
       A rebuild from the script yields only the bootstrap pair — re-add the rest by hand.
       That list is the served set; treat anything absent from it as not available.
+      🔴 **The old "SEVEN" list here was stale and half-wrong** — `qwen3.8-27b`, `qwen3.6-27b` and
+      `qwen3.6-35b-a3b` were **not** served, and `ornith` is really `ornith-1.5-35b-a3b`. Because
+      this list is live-only, **read the config before trusting it**:
+      `pct exec 123 -- bash -lc "grep -E '^  [a-z0-9.-]+:' /etc/llama-swap/config.yaml"`.
+      ⚠️ Most costly omission: **the unaccelerated `qwen3.8-27b` control had been deleted**, which
+      is what a speculation claim is measured against (see the control note below).
       - ⚠️ **A MATCHED drafter beats a borrowed one — search HF for `MTP` too, not just `DFlash`.**
         Qwen ships no DFlash drafter for Qwen3.8, so the coder borrowed Qwen3.6-27B's head. Qwen3.8
         has its own native **MTP** head (`a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, Q8_0, 4.19 GB) and the
         pinned build already lists `draft-mtp` under `--spec-type` — no build bump needed. Measured
         2026-08-15, all at ctx 65536: no speculation **17.55** tok/s · borrowed DFlash **23.68**
         (28.8 % acceptance) · own MTP **27.73** (61.7 %). The coder moved to `qwen3.8-27b-mtp`
-        2026-08-15. The unaccelerated `qwen3.8-27b` entry is the A/B control for any speculation
-        claim here (and the thermal fallback) — the DFlash-drafted entries were dropped, since a
-        borrowed head had no capability case left once the matched one existed.
-        ⚠️ **n-max 2 is the optimum and the sweep is NOT flat** — 2 → 27.77, 3 → 26.36, 4 → 26.87,
-        6 → 20.49, **8 → 8.80**. Acceptance falls as n-max rises, so drafting *more* is strictly
-        worse. Same cliff shape as DFlash's n≥8, i.e. the backend threshold, not an MTP property.
-        Never copy an n-max between drafters.
+        2026-08-15, and **to `qwen3.8-27b-dflash2` on 2026-08-28** (below).
+        ⚠️ **n-max 2 is the optimum for MTP and the sweep is NOT flat** — 2 → 27.77, 3 → 26.36,
+        4 → 26.87, 6 → 20.49, **8 → 8.80**. Acceptance falls as n-max rises, so drafting *more* is
+        strictly worse. Never copy an n-max between drafters.
+      - ✅ **CODER MOVED TO DFlash2 2026-08-28 — +29% overall, +89% on code.** Qwen3.8 now has its
+        own **DFlash2** head (llama.cpp #27342, shipped in the pinned b10678; auto-detected from the
+        checkpoint, so `--spec-type` stays `draft-dflash`). GGUF `z-lab/Qwen3.8-27B-DFlash2-GGUF`
+        Q8_0, **1.92 GiB — smaller than the MTP head's 4.19 GiB**, so it frees ~2.3 GiB of VRAM.
+        Measured 3 reps, 3 prompts, temp 0, identical request params, against an explicit
+        no-speculation control (**17.03** tok/s, reproducing the documented ~17.6):
+        | drafter | code | prose | list | overall |
+        |---|---:|---:|---:|---:|
+        | MTP n=2 (was) | 35.44 | 29.19 | 31.72 | 32.12 |
+        | **DFlash2 n=8** | **67.14** | 26.72 | 30.47 | **41.44** |
+        | DSpark n=6 | — | — | — | 31.86 |
+        Code is what the coder emits, so the prose/list losses (−8.5 % / −3.9 %) are an acceptable
+        trade. **DSpark was tested and is NOT better than MTP** — the "DSpark beats DFlash by
+        16–31 %" claim is about DFlash*1* and about accepted length, and does not survive here.
+        The `qwen3.8-27b-mtp` entry is kept as a one-line rollback.
+      - 🔴 **The n≥8 cliff is an MTP property, NOT "the backend threshold".** This file previously
+        concluded it was a backend limit. DFlash2 and DSpark **do not cliff**: DFlash2 runs
+        40.29 → 40.93 → 41.40 → 41.43 at n = 6/7/8/10, and its acceptance is **identical (52.1 %)**
+        at 7/8/10 because the drafter saturates its own block length — so it plateaus instead of
+        collapsing, and n-max above ~8 is simply inert. That is why the coder can safely run n-max 8.
+      - 🔴 **Comparing two speculative configs to each other is NOT a correctness check — keep a
+        no-speculation control.** With a real control, the "argmax-safe" reading inverts: on the
+        **code** prompt, n=4+ **matches** the unaccelerated output while **n=2/3 do not**; on
+        **list**, *every* speculative setting differs from it; only prose agrees throughout. So the
+        previously "safe" low n-max values were agreeing with each other, not with the model. The
+        current coder (DFlash2 n=8) matches the reference on code and prose, where MTP n=2 did not.
       ⚠️ **`qwen3-instruct-2507` and `qwen3-coder-30b-a3b` were RETIRED 2026-08-14** and their
       GGUFs deleted, freeing 43.47 GB. Neither had a capability case left — the latter scores
       14 on the AA index against 32/35/38 for its peers, with no vendor benchmarks at its size.
