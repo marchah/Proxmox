@@ -1,7 +1,7 @@
 # docker-host — the app-stack host (VM 300)
 
 A Debian VM running **Docker + Compose + Portainer CE**. It hosts the homelab's small,
-self-contained web apps as Compose stacks — currently MealDeal, and whatever comes next — so a
+self-contained web apps as Compose stacks — currently MealDeal and work-board — so a
 new project costs a compose file instead of a bespoke provisioning script.
 
 Apps here no longer consume a VMID each: they are containers inside this one VM.
@@ -143,6 +143,34 @@ image: ghcr.io/marchah/mealdeal:sha-b63ad81
 > published yet. (An earlier note here blamed a GitHub Actions billing lock — that was wrong; the
 > account is plan `free` and public repos get free minutes, so every line item nets $0.00. The
 > image was merely unpublished.)
+
+## work-board specifics
+
+Stack: [`stacks/work-board/compose.yaml`](stacks/work-board/compose.yaml). Live at
+**`http://192.168.1.93:4100`**. A Linear + GitHub board answering "what should I work on
+next?" — app repo [marchah/work-board](https://github.com/marchah/work-board).
+
+**Two things differ from MealDeal, both deliberate:**
+
+⚠️ **Its GHCR package is PRIVATE**, because the app repo is. Anonymous pull does not work, so
+Portainer needs a registry credential configured once — without it the stack fails with
+`denied`/`unauthorized`, which reads like a missing image rather than a missing credential:
+
+> Portainer → Registries → Add registry → Custom registry
+> Name `ghcr` · URL `ghcr.io` · Username `<github user>` · Password a PAT with **`read:packages`**
+
+MealDeal never needed this: its repo is public, so its package came out public too. Do not
+generalise either case — check the package's visibility when adding a stack.
+
+⚠️ **It has no `dns: 10.10.10.1` override.** MealDeal needs one because it resolves single-label
+homelab names (`gpu2`, `llamacpp`) that Docker's embedded resolver refuses. work-board only talks
+to `api.linear.app` and `api.github.com`, so the default resolver is correct — copying the
+override across would be cargo-culting.
+
+It holds **no state**: the snapshot lives in memory and is rebuilt on the next tick, so there is
+no volume to back up and a restart costs one collection cycle. Real config — API keys, the repo
+list, the GitHub login — are **Portainer stack environment variables**; the compose file defaults
+them all to empty so the stack comes up clean and the board names whichever variable is missing.
 
 ## What you give up versus the old per-app LXC
 

@@ -245,7 +245,10 @@ These containers form the system:
   running **Docker + Compose + Portainer CE**, which hosts the homelab's small self-contained web
   apps as Compose stacks — currently **MealDeal**
   ([github.com/marchah/mealdeal](https://github.com/marchah/mealdeal), the grocery-deal tracker
-  the local AI codes features for), live on `:4000`. Apps here **do not consume a VMID each** —
+  the local AI codes features for), live on `:4000`, and **work-board** on `:4100` (a Linear +
+  GitHub "what should I work on next?" board — private repo `marchah/work-board`, so unlike
+  MealDeal its GHCR package is private and Portainer needs a registry credential).
+  Apps here **do not consume a VMID each** —
   they are containers inside this VM, so a new project costs a compose file
   (`docker-host/stacks/<project>/compose.yaml`) plus a Portainer git stack, not a bespoke
   provisioning script. Stack secrets (e.g. `IMAP_PASSWORD`) are **Portainer stack env vars**,
