@@ -97,6 +97,23 @@ These containers form the system:
         ⚠️ Those absolutes are **prompt-specific** (as is every speculative tok/s figure here); a
         re-sweep on a prose prompt gave 2 → 31.7, **3 → 35.8**, 4 → 34.1, 6 → 29.3. Compare the
         *shape*, not the numbers, across sweeps — the shape reproduced and **3 is still optimal**.
+        ✅ **RE-CONFIRMED post-#27812 on b10678 (2026-08-28)**, interleaved, 3 reps/cell, 3 prompts,
+        temperature 0 — mean tok/s **2 → 36.34, 3 → 41.58, 4 → 41.71, 6 → 39.66**. Keep **3**; it is
+        already what production runs, so no change was made.
+        - 🔴 **This narrows the "every pre-b10677 spec measurement is suspect" caveat.** muse's
+          numbers reproduce the pre-fix sweep within ~1–2% across all four values, so **this DFlash
+          sweep was never corrupted** — the Vulkan view-alias bug showed up as qwen3.8's high-n-max
+          *degeneracy*, not as a wrong optimum here. Re-verify before discarding old data, don't
+          assume it is all void.
+        - The one real change: **3 and 4 are now statistically tied** (41.58 vs 41.71, +0.3%, inside
+          the code prompt's ±0.87 sd), where pre-fix 3 led 4 by ~2%. "3 is optimal and 4 is worse" is
+          better stated as "3 and 4 tie; keep 3". n=2 is clearly worst (−12.5%) and 6 is down 5%.
+        - ⚠️ **muse has NO argmax-stable n-max range**, unlike `qwen3.8-27b-mtp` (where n=2 and n=3
+          are byte-identical). At temperature 0 the prose prompt returns **three different outputs**
+          across n=2/3/4/6 and the list prompt two, i.e. changing n-max here changes the answer even
+          between 2 and 3. Only the code prompt is stable across all four. Treat an n-max change on
+          this model as an output change, not just a throughput knob.
+        - No degeneracy anywhere: unique-8gram is **1.00** in all 36 cells.
       - A generous client `max_tokens`. It reasons before answering: at 300 the reply comes back
         with `content` **completely empty** and everything in `reasoning_content`. At 2500 it used
         465 and finished cleanly. A low cap yields empty responses, not errors.
