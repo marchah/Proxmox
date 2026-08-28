@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel
 
 from config import load_config
@@ -75,10 +75,9 @@ def do_search(query, top_k, mode, filters) -> list[dict]:
 
 
 # --- MCP ------------------------------------------------------------------
-# streamable_http_path="/" so mounting the sub-app at /mcp yields /mcp (not /mcp/mcp).
-# json_response=True returns a single JSON body instead of an SSE stream (simpler + avoids
-# streaming edge cases behind middleware).
-mcp = FastMCP("kb-rag", stateless_http=True, streamable_http_path="/", json_response=True)
+# mcp 2.x renamed FastMCP -> MCPServer AND moved every transport kwarg off the constructor
+# onto streamable_http_app(); they are passed at the mount at the bottom of this file.
+mcp = MCPServer("kb-rag")
 
 
 @mcp.tool()
@@ -124,7 +123,7 @@ class SearchRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # FastMCP's streamable-HTTP transport needs its session manager running.
+    # MCPServer's streamable-HTTP transport needs its session manager running.
     async with mcp.session_manager.run():
         yield
 
@@ -178,4 +177,21 @@ def v1_doc(chunk_uid: str | None = None, path: str | None = None):
     return result
 
 
-app.mount("/mcp", mcp.streamable_http_app())
+# streamable_http_path="/" so mounting the sub-app at /mcp yields /mcp (not /mcp/mcp).
+# json_response=True returns a single JSON body instead of an SSE stream (simpler + avoids
+# streaming edge cases behind middleware).
+# ⚠️ host="0.0.0.0" is LOAD-BEARING, not cosmetic. mcp 2.x auto-enables DNS-rebinding
+# protection when host is 127.0.0.1/localhost/::1 — and the app-factory default IS
+# "127.0.0.1", so a mounted app gets it silently. Its allowlist is `127.0.0.1:*` /
+# `localhost:*` / `[::1]:*`, but agents reach this service by LAN hostname
+# (http://kb-rag:8770/mcp/), so the default rejects every real request with
+# `421 Invalid Host header`. Bearer auth already gates /mcp; this restores v1 behaviour.
+app.mount(
+    "/mcp",
+    mcp.streamable_http_app(
+        streamable_http_path="/",
+        json_response=True,
+        stateless_http=True,
+        host="0.0.0.0",
+    ),
+)
