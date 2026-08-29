@@ -42,8 +42,18 @@ These containers form the system:
         an OpenAI subscription) reasoning was ~80 % of the token spend and produced a *shorter*
         entry — 5× faster at the same 6/6 template sections. It removes the thinking-budget failure
         structurally instead of sizing slots around it.
-      - ⚠️ **`--reasoning off` ≠ `--reasoning-format none`** (both now present). The latter only
-        decides *where* thought tags go; it does not stop them being generated.
+      - ⚠️ **`--reasoning off` ≠ `--reasoning-format`.** The latter only decides *where* thought
+        tags go; it does not stop them being generated.
+        🔴 **CT 120 ran `--reasoning-format none` until 2026-08-27, and it was silently corrupting
+        every generated file.** With thinking off the template still emits an EMPTY
+        `<think>\n\n</think>` pair, and `none` leaves it in `content` — so a KB-ingestion run
+        produced a file starting `<think>\n\n</think>\n\n---` instead of `---`, i.e. **not valid
+        frontmatter**. Found by running a real ingestion prompt, not by reading the config.
+        Now **`auto`**, which siphons the empty block into `reasoning_content`: same prompt starts
+        cleanly at `---`, `reasoning_content` still 0 chars, throughput unchanged (78.4 vs 78.7
+        tok/s). The original `none` was correct *when thinking was on by default* — it stopped an
+        OpenAI benchmark seeing empty `content` — but adding `--reasoning off` retired that
+        rationale and turned the flag into a bug. Fixed live and in the provisioning script.
       - ⚠️ **Do not try to do this from Hermes.** `hermes --reasoning none` does **not** reach a
         bare `custom` OpenAI endpoint — measured 2,845 → 2,656 output tokens (~7 %), versus ~3.5×
         when thinking is genuinely off — and it does not even reject an invalid level. Hermes'
