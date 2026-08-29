@@ -477,8 +477,7 @@ These containers form the system:
           was a workaround for a bug, not a standing rule.
         - The sweep's degeneracy gate is built into `spec-probe.py` (`uniq_8gram_min`,
           `any_degenerate`), so this cannot silently recur.
-        unchanged. So it is not a transient upstream bug; keep n-max ≤ 6.
-        **Re-checked again at the b10587 → b10678 bump on 2026-08-28** (this time prompted by a
+      - 🔄 **Re-checked again at the b10587 → b10678 bump on 2026-08-28** (this time prompted by a
         Vulkan *correctness* fix rather than batching work — see below; that trigger rule was too
         narrow). Swept n = 2/3/4/6/8 on `qwen3.8-27b-mtp`, three fixed prompts at temperature 0,
         mean tok/s **31.4 / 32.2 / 31.1 / 28.9 / 14.9** — **the n≥8 cliff STILL has not lifted**
@@ -646,7 +645,7 @@ All run on the Proxmox host as root.
 # Provision the ops LLM-runtime container (CT 120) — GPU 1 of two Radeon Pro V620
 ./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
 # Autonomous coding loop's GPU-2 model server (CT 123 gpu2) — llama-swap on GPU 2
-./pro-v620/create-lxc-llama-swap-gpu2.sh          # qwen3.8-27b-mtp coder + thinkingcap-27b reviewer, swapped by name (:8080)
+./pro-v620/create-lxc-llama-swap-gpu2.sh          # qwen3.8-27b-dflash2 coder + thinkingcap-27b reviewer, swapped by name (:8080)
 # The loop's execution sandbox (CT 122 coder-runner; runs npm/build/tests, needs CT 121's ssh pubkey)
 CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./coder-runner/create-lxc-coder-runner.sh
 # The loop/orchestrator config that runs INSIDE CT 121 (profiles/skills/plugins/timers) — run from within CT 121
