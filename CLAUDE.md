@@ -23,7 +23,10 @@ These containers form the system:
   ~29 °C of margin to the watchdog trip — thermals are not a constraint on this box. CT 120 is **pinned to GPU 1 alone** (`0000:2d:00.0`): its
   container bind-mounts only that card's `/dev/dri` render node (via the udev-stable `by-path`
   symlink — the reboot-stable way to pin one of two identical cards), so llama.cpp sees a single
-  Vulkan device and runs the whole ~26.6 GB model on it. **GPU 2 (`0000:06:00.0`) runs CT 123 `gpu2`**
+  Vulkan device and runs the whole ~26.6 GB model on it. ⚠️ **This card assignment is not
+  arbitrary** — GPU 2's chipset slot costs a fixed ~3.45 ms per decoded token, i.e. −22 % on this
+  MoE, so the model belongs on GPU 1 (see the two-slot benchmark under Conventions).
+  **GPU 2 (`0000:06:00.0`) runs CT 123 `gpu2`**
   (a `llama-swap` server for the autonomous coding loop — see below); it stays amdgpu-bound so the host
   fan/undervolt/watchdog services manage both. Both cards are undervolted −100 mV:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
@@ -46,6 +49,10 @@ These containers form the system:
         when thinking is genuinely off — and it does not even reject an invalid level. Hermes'
         reasoning-effort abstraction targets providers with a native parameter. Server-side or
         nothing.
+        ⚠️ **This was measured on b10361 and is now BUILD-DEPENDENT.** b10587 (deployed 2026-08-22)
+        *does* accept a native per-request `reasoning_effort`, verified against b10361 which ignored
+        it byte-identically. So the premise of this rule no longer holds — see the reasoning matrix
+        under CT 123. Whether `hermes --reasoning` now reaches through has NOT been retested.
       - ⚠️ The flag lives in the **serve script**, not `/etc/llamacpp.env`, so it survives
         `llamacpp-reload` (which rewrites only ctx/parallel).
       - **Two knobs are now over-provisioned** (deliberately left alone): `MODEL_PARALLEL=2`
@@ -58,20 +65,230 @@ These containers form the system:
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
+    - 📐 **KV-cache quantisation: q8_0 is LOSSLESS with reasoning off, and BREAKS reasoning on.**
+      Measured 2026-08-22 on GPU 2 (b10587, MTP n-max 2, projector loaded), one prompt at temp 0,
+      changing only the cache type — the previously recorded "−32 %" figure changed ctx *and* cache
+      type together and blamed the wrong variable:
+
+      | config | VRAM | GTT | decode | output |
+      | --- | ---: | ---: | ---: | --- |
+      | f16, ctx 65536 | 27.85 GiB | 0.35 | 32.0 t/s | reference (sha `f9e39b849b7f`) |
+      | q8_0, ctx 65536 | 25.97 GiB | 0.35 | **32.7 t/s** | 🔴 **EMPTY** (`e3b0c442…` = sha of "") |
+      | q8_0, ctx 131072 | 28.60 GiB | 0.60 | **32.7 t/s** | 🔴 **EMPTY** |
+      | **q8_0, ctx 131072, `reasoning_effort:none`** | 28.60 GiB | 0.60 | **34.9 t/s** | ✅ **BYTE-IDENTICAL to f16** (sha `7eea1bc7ec28`) |
+
+      - **q8_0 KV costs ZERO throughput** — it is marginally *faster*, unchanged even at 2× context.
+        Speed is not the trade-off; **thinking termination** is. With reasoning on, quantised KV
+        perturbs the logits enough that the model never emits its end-of-thinking token, so it
+        reasons to the cap and returns nothing. Deterministic: identical empty output, token count
+        and acceptance across two different context sizes.
+      - **With `reasoning_effort: "none"` it is provably lossless** — byte-identical content at
+        **2× the context**, +9 % decode (34.9 vs 32.0) and +12 pp MTP acceptance (93.8 vs 81.3).
+      - ⚠️ **This is a COUPLED choice: `reasoning off + q8_0` XOR `reasoning low/medium + f16`.**
+        Mixing gives silent empty replies. Since the coder's current default (no `reasoning_effort`
+        sent ≈ `high`) already returns nothing, the caller needs `"none"` anyway — after which q8_0
+        is free. **Not applied**, because a later caller sending `low` would fail silently.
+      - ⚠️ **KV costs ~72 KiB/token f16, ~42 KiB/token q8_0 ON THIS CARD** — derived from the VRAM
+        deltas (64k f16 → q8_0 freed 1.88 GiB; q8_0 64k → 128k cost 2.63 GiB).
+        🔴 **CORRECTED 2026-08-26 — the old "do NOT size context from the GGUF metadata formula, it
+        over-predicts by ~3.5×" rule was WRONG, and carrying it to a new model would under-budget KV
+        by ~4×.** The formula `2 × n_layer × n_head_kv × head_dim × bytes` is right; **`n_layer`
+        means FULL-ATTENTION layers only.** The Qwen3.5/3.6/3.8 families are hybrid — most layers are
+        linear attention (Gated DeltaNet), whose state is fixed-size and context-independent, so only
+        the `layer_types == "full_attention"` layers hold a KV cache. Confirmed against **two**
+        models measured on this card:
+
+        | model | full-attn layers | formula | measured here |
+        | --- | --- | ---: | ---: |
+        | `qwen3.8-27b-mtp` (`full_attention_interval: 4`) | **16 of 64** | 64 KiB/tok | **72** |
+        | `ornith-1.5-35b-a3b` (`qwen3_5_moe_text`, same interval) | **10 of 40** | 20 KiB/tok | **18.3** |
+
+        The **260 KiB/token** figure recorded here and on the Mac counted all 65 layers, and it was
+        never a measurement: the Mac note *derives* its whole "KV GiB" column from it
+        (260 KiB × 65,536 = 16.25 GiB exactly), so it is circular rather than independent evidence.
+        - ⚠️ **A NON-hybrid model gets no such discount — the formula then applies literally.** Read
+          `layer_types` / `full_attention_interval` in `config.json` before sizing anything new.
+          Worked example: `ibm-granite/granite-4.2-30b` is plain GQA on **all 64** layers
+          (32 q / 8 kv, head_dim 128) → **256 KiB/token f16**, 3.5× this coder, which caps it near
+          **24-28k context** at Q5_K_M on one V620 against the coder's 65k.
+        - Then confirm with a VRAM **delta** between two context sizes, reading GTT alongside VRAM
+          (flat VRAM can mean the KV moved to host memory, not that it got cheaper).
+      - ⚠️ At q8_0/128k only **1.38 GiB of headroom** remains and GTT has already crept 0.35 → 0.60
+        GiB — the leading edge of a spill, which on RADV is the ~12× decode collapse the loud-guard
+        does not catch. Not a config with room to grow.
+    - ✅ **VISION IS ENABLED on the coder (2026-08-22)** via `--mmproj` in its `EXTRA_ARGS`.
+      Qwen3.8-27B is multimodal and the capability had been inert since deployment. No script
+      change was needed — `llamaswap-guarded-serve` word-splits `EXTRA_ARGS` and appends it to
+      `llama-server` verbatim. Projector: `unsloth/Qwen3.8-27B-GGUF` → `mmproj-F16.gguf`, stored as
+      `/models/hf/Qwen3.8-27B-mmproj-F16.gguf`, 927,607,488 B, sha256 `cbb841a9ee0636b2…`
+      (hash-verified against upstream). **Every cost measured, not estimated:**
+
+      | resource | before | after | cost |
+      | --- | ---: | ---: | ---: |
+      | disk | — | — | **884 MiB** (of 84 GB free) |
+      | VRAM | 26.75 GiB | 27.86 GiB | **+1.11 GiB**, 2.12 GiB headroom left |
+      | GTT | 0.44 GiB | 0.44 GiB | **unchanged — no spill** |
+      | text-only decode | 32.2 tok/s | 32.0 tok/s | **−0.6 %, i.e. noise** |
+      | text-only output | — | — | **byte-identical** (sha `f9e39b849b7f` both) |
+
+      - **Verified working**, not assumed: a generated 256×256 PNG of a blue circle on near-white
+        sent as a base64 data URI returned *"There is a blue circle in the image."* Ground truth is
+        unambiguous so the test can actually fail — `pro-v620/gpu-ab-bench/vision-test.py`.
+      - **MTP and vision coexist on Vulkan/b10587**, confirming the Metal/b10450 finding transfers:
+        MTP stayed active *on the image request itself* (6/6 accepted) and text-only acceptance was
+        81.3 %. Worth having verified rather than assumed — `--spec-draft-n-max` proved that backend
+        behaviour does *not* always carry across backends.
+      - ⚠️ **VRAM is the binding constraint, not compatibility.** 2.12 GiB of headroom remains at
+        ctx 65536. If something else needs room the projector is the first thing to drop, and RADV's
+        failure mode is a silent **GTT spill** (~12× decode loss) that the loud-guard does NOT catch.
+        Mitigation if it ever bites: `--mmproj-device none` / `--no-mmproj-offload` keeps the
+        projector on CPU for zero VRAM, trading one-off image-encode latency.
+      - **GPU vs CPU projector — the documented escape hatch if VRAM gets tight.** Measured
+        2026-08-22 with `cache_prompt: false` so images are genuinely re-encoded:
+
+        | case | GPU offload (default) | `--no-mmproj-offload` | penalty |
+        | --- | ---: | ---: | ---: |
+        | VRAM | 27.85 GiB | **26.75 GiB** | **frees 1.10 GiB** |
+        | text-only | 0.81 s · 27.4 t/s | 0.81 s · 27.3 t/s | **none** |
+        | image 512×512 (283 tok) | **1.69 s** | 5.35 s | **3.2×** |
+        | image 1280×720 (947 tok) | **3.81 s** | 20.36 s | **5.3×** |
+        | decode after the image | 21.1 / 28.5 t/s | 21.1 / 28.4 t/s | **none** |
+
+        Vision stays **correct** on CPU, only slower, and the cost is confined to image encoding —
+        text throughput and post-image decode are unchanged, which also proves the comparison is
+        clean. The penalty **grows with resolution** (~4 ms/image-token on GPU vs ~18-21 on CPU), so
+        downscaling recovers most of it. **Keep GPU offload while the 2.12 GiB headroom holds**; reach
+        for `--no-mmproj-offload` only to reclaim that GiB for a bigger context or a second model.
+        - **Context ceiling with the projector on CPU (measured 2026-08-22, f16 KV):**
+
+          | ctx | VRAM | headroom | GTT | decode | output |
+          | --- | ---: | ---: | ---: | ---: | --- |
+          | 65,536 (current) | 26.75 GiB | 3.23 | 0.35 | 32.0 t/s | reference |
+          | **98,304 (96k)** | **29.00 GiB** | **0.98** | 0.48 | **32.0 t/s** | **byte-identical** |
+          | 114,688 (112k) | 29.76 GiB | **0.22** | **0.90** | 30.4 t/s (−5 %) | byte-identical |
+
+          **~96k is the practical ceiling** — full speed, identical output, ~1 GiB spare. 112k loads
+          and answers but headroom collapses to 0.22 GiB, GTT nearly triples and decode already loses
+          5 %: that is the spill beginning, not usable margin. At equal ~1 GiB headroom the ceilings
+          are **~80k with the projector on GPU vs ~96k on CPU**, so the 1.10 GiB buys **+16k tokens**
+          (or +32k over today's 65,536). 96k is *unreachable* with the projector on GPU — it would
+          need 30.10 GiB of 29.98.
+          - ✅ **f16 KV is ~72 KiB/token on this card**, now confirmed three ways: 65,536→98,304 cost
+            +2.25 GiB over 32,768 tokens (72.0), and 98,304→114,688 raised VRAM only 0.76 GiB but GTT
+            by 0.42 — (0.76+0.42)/16,384 = 73.7. **At 112k the KV did not get cheaper, it moved into
+            host memory.** The 64 KiB/token figure recorded earlier is not a bad measurement — it is
+            exactly the *formula's* value for this hybrid's 16 full-attention layers (see the
+            layer-count correction above); the extra ~8 KiB is the linear-attention state and
+            per-slot overhead that the formula does not model.
+          - Compare the alternative: **q8_0 KV with the projector left on GPU reached 128k at full
+            speed and byte-identical output** — more context *and* fast image encode — conditional on
+            reasoning being off. f16 + CPU-offload at 96k is the route that holds regardless of the
+            reasoning setting.
+        ⚠️ **Set `cache_prompt: false` when timing image requests.** With caching on, repeated
+        identical requests report `prompt_n` of ~4 for a 1280×720 image and every config looks
+        identical at ~0.6 s — you measure cache hits, not encoding. That flaw invalidated a first run.
+      - **Why it earns its keep even unused:** without `--mmproj` the server answers
+        `image input is not supported` and an agent **keeps working regardless** — a documented
+        3-hour run once had a "visual critic" reasoning about screenshots it never received. This
+        closes a silent failure mode for 884 MiB and no measurable throughput.
+    - 🔴 **The coder is a THINKING model whose default effort NEVER ANSWERS, and no entry sets a
+      `--reasoning` flag.** `llama-server`'s `--reasoning` defaults to `auto` (detect from template),
+      so Qwen3.8-27B reasons without bound: measured 2026-08-22 at 8000 tokens / **32,901 chars of
+      reasoning with `content` still empty**, `finish_reason: length`. `--n-predict 32768` is the
+      only bound, so a request can burn 32k tokens and return nothing — the same "Thinking Budget
+      Exhausted" failure CT 120 fixed with `--reasoning off`. Reproduced identically on b10361, and
+      the chat template is byte-identical across the 2026-08-20 requant (`12827f24b742ea4e`), so this
+      is long-standing behaviour, not a regression from either bump.
+    - ✅ **Reasoning is controllable BY THE CLIENT, per request — which is better than a global
+      server flag, because the loop can pick per task.** Measured against `qwen3.8-27b-mtp`:
+
+      | client-side parameter | effect |
+      | --- | --- |
+      | `chat_template_kwargs: {"enable_thinking": false}` | **works** — 746 tok, `stop`, 2,659-char answer, reasoning 0 |
+      | `reasoning_effort: "low"` | **works** — 1770 tok, 3,945 ch reasoning, 3,158 ch answer |
+      | `reasoning_effort: "medium"` | **works** — 2240 tok, 4,664 ch reasoning, 4,219 ch answer |
+      | `reasoning_effort: "high"` / unset | runs away — 18,112 / 17,306 ch reasoning, **no answer** |
+      | `reasoning_effort: "none"` | ✅ **works, and is BYTE-IDENTICAL to `enable_thinking:false`** — 746 tok, same 2,659-char content, same sha `7eea1bc7ec28`. **Prefer this**: same code path, but the canonical OpenAI spelling and portable to other servers, whereas `chat_template_kwargs` is llama.cpp-specific. Available since PR #26045 (2026-07-24), so it worked on b10361 too — unlike `low`/`medium`, which needed PR #26941 (2026-08-14). |
+      | `reasoning_budget: N` | ⚠️ **silently ignored** (byte-identical to control) — server-only |
+      | `chat_template_kwargs: {"thinking_budget": N}` | ⚠️ silently ignored, same |
+      | `/no_think` prompt suffix | ⚠️ ignored |
+      | `reasoning_effort: "minimal"` | ⚠️ **HTTP 500** — an invalid level crashes the request rather than being rejected |
+
+      - **Unset behaves like `high`**, which is why the default never answers. `low`/`medium` both
+        complete cleanly *and* run slightly faster (32.2 / 31.3 vs 28.5 tok/s).
+      - **On/off and effort are client-side; BUDGET is server-side only.** The robust shape is both:
+        clients send `reasoning_effort` per task, and the server sets `--reasoning-budget N` as a
+        floor so a client that sends nothing cannot run away. Hard-coding `--reasoning off` would
+        work but takes the choice away from the loop.
+      - ✅ **`reasoning_effort` support is NEW in b10587 — b10361 silently ignored it.** Verified by
+        running the identical request set against b10361 with the same model/drafter/flags: `unset`,
+        `low` and `medium` all returned **byte-identical** output (17,333 reasoning chars each, zero
+        content). At temperature 0 identical output proves the parameter had literally no effect. On
+        b10587 the same three give 17,306 / 3,945 / 4,664 chars. So the bump did not just ship fixes
+        — **it unlocked per-request reasoning control that did not exist before.**
+      - ⚠️ **Therefore the "Server-side or nothing" rule under CT 120 above is now BUILD-DEPENDENT
+        and probably obsolete.** It was correct on b10361 (llama.cpp had no native reasoning-effort
+        parameter, so Hermes' abstraction had nothing to target); b10587 has one. Retesting
+        `hermes --reasoning <level>` against CT 120 is now worthwhile — if it reaches through, CT 120
+        could move from the global `--reasoning off` to per-task control. Not yet retested.
     - ⚠️ **It serves more than the coder/reviewer pair** — plus general and evaluation models, all
       **live-only in `/etc/llama-swap/config.yaml`, deliberately not baked into the script** (they
-      change as models are trialled). **Verified live 2026-08-28 — there are SIX**:
-      `qwen3.8-27b-dflash2` (coder), `thinkingcap-27b` (reviewer) · `qwen3.8-27b-mtp` (previous
-      coder, kept as rollback), `qwen3.8-27b-mtp-maxctx`, `ornith-1.5-35b-a3b` (general) ·
-      `muse-glimmer-30b` (speculative).
+      change as models are trialled). **Verified live 2026-08-28 — there are SIX:**
+      `qwen3.8-27b-dflash2` (coder, own **DFlash2** head + vision on GPU, ctx 65536) ·
+      `qwen3.8-27b-mtp` (previous coder, MTP head, kept as a one-line rollback) ·
+      `qwen3.8-27b-mtp-maxctx` (same model, vision on **CPU** → ctx 98304) ·
+      `ornith-1.5-35b-a3b` (fastest + longest: 66.4 tok/s, ctx 196608, no drafter) ·
+      `thinkingcap-27b` (reviewer) · `muse-glimmer-30b` (speculative/eval).
+      Because this list is live-only it has drifted twice — **read the config before trusting any
+      doc**: `pct exec 123 -- bash -lc "grep -E '^  [a-z0-9.-]+:' /etc/llama-swap/config.yaml"`.
+      51 % used) because `ornith-1.5-35b-a3b` is a strict upgrade at the same ~3B-active cost —
+      identical architecture, wins all 17 rows of the vendor comparison, and measured 66.4 vs
+      65.1 tok/s on this card. **CT 120 still serves that model as the ops runtime and is
+      unaffected** (separate `/models` disks; verified after the deletion). Restorable from
+      `unsloth/Qwen3.6-35B-A3B-GGUF` → `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (sha `25233af7…`, the
+      same file and pin CT 120 uses). ⚠️ This breaks the gpu2 arm of
+      `pro-v620/gpu-ab-bench/run-ab.sh`, which needs that model on **both** containers — it now
+      skips loudly. The one-copy alternative is `ct123-dual-gpu.sh` + `-dev VulkanN`, as
+      `run-q38.sh` does.
+      - **`ornith-1.5-35b-a3b`** (added 2026-08-23, `ornith-ai/Ornith-1.5-35B-A3B-GGUF` Q5_K_M
+        `2ac3a459…` + official `mmproj` `d9ce3102…`, both hash-verified). **Architecturally
+        identical to `qwen3.6-35b-a3b`** — same `qwen35moe`, 40 layers / 16 heads / 2 KV heads /
+        head_dim 256, 256 experts / 8 per token — so it needed no new llama.cpp support. Measured:
+        **66.4 tok/s** (vs ~32 for the coder *with* its 4.19 GB MTP head), **KV 18.3 KiB/token**
+        (vs Qwen3.8-27B's 72 — 3.9× cheaper), ctx **196608** at 28.12 GiB with 1.86 GiB headroom,
+        vision working at 64.8 tok/s on an image request.
+        - **No drafter, deliberately**: on a ~3B-active MoE draft/verify overhead dominates — this
+          MoE already beats a *speculated* dense 27B outright.
+        - ⚠️ **Not a coder replacement.** It loses the two benchmarks closest to the loop's work:
+          Terminal-Bench 2.1 67.8 vs **73.0**, SWE-bench Pro 59.6 vs **61.7**. The loop is PR-gated
+          and serialised, so a task that fails review costs a whole cycle that tok/s cannot buy
+          back. (Those vendor cards *are* cross-comparable — both report Muse Glimmer-30B at
+          exactly 51.7 / 51.2, i.e. the same harness.) Use it for **long-context repo work and fast
+          first-pass/triage**.
+        - ⚠️ **Do not raise ctx to the native 262144.** It loads, but at 29.49 GiB it leaves only
+          **0.49 GiB** with GTT already at 0.54 — under the ~1 GiB floor where RADV spills silently.
+          Decode is identical at 131072 and 196608, so 192k is free and 256k is not worth the risk.
       A rebuild from the script yields only the bootstrap pair — re-add the rest by hand.
       That list is the served set; treat anything absent from it as not available.
-      🔴 **The old "SEVEN" list here was stale and half-wrong** — `qwen3.8-27b`, `qwen3.6-27b` and
-      `qwen3.6-35b-a3b` were **not** served, and `ornith` is really `ornith-1.5-35b-a3b`. Because
-      this list is live-only, **read the config before trusting it**:
-      `pct exec 123 -- bash -lc "grep -E '^  [a-z0-9.-]+:' /etc/llama-swap/config.yaml"`.
-      ⚠️ Most costly omission: **the unaccelerated `qwen3.8-27b` control had been deleted**, which
-      is what a speculation claim is measured against (see the control note below).
+      ⚠️ **`qwen3.8-27b`, `qwen3.6-27b` and `ornith` were RETIRED 2026-08-22**, freeing 43.4 GB
+      (`/models` 77 % → 51 % used). `qwen3.8-27b` was the unaccelerated A/B control and thermal
+      fallback for the coder; **the thermal case for it is gone** — with a blower per card a full
+      solo load lands at 73-88 °C, ~14-28 °C under the trip, so no non-speculative fallback is
+      needed. Its GGUF is **retained** because `qwen3.8-27b-mtp` shares it; only the alias went.
+      The other two had their weights deleted and are restorable:
+      `unsloth/Qwen3.6-27B-GGUF` → `Qwen3.6-27B-UD-Q5_K_XL.gguf` (etag `ac310abf2895aa39…`) and
+      `ornith-ai/Ornith-1.0-35B-GGUF` → `ornith-1.0-35b-Q5_K_M.gguf` (etag `325b351fc30a4114…`),
+      both verified live before deletion. ⚠️ Also deleted: `Qwen3.6-27B-DFlash-Q8_0.gguf`, which is
+      **NOT re-downloadable** — its provenance was never established (it matched no published
+      repo). Recorded sha256 `c37b84724fa58cc5c6b545d8b96f8617a8c3bd7f018bf608feef4d3460e0575e` in
+      case it ever surfaces. Losing it costs the DFlash arm of
+      `pro-v620/gpu-ab-bench/spec-sweep.sh` (now loudly skipped); `dflash-kquant.gguf` remains, so
+      DFlash coverage survives via `muse-glimmer-30b`.
+      ⚠️ **The A/B-control case for `qwen3.8-27b` did NOT go away with the thermal case.** Retiring
+      it cost the 2026-08-28 DFlash2 comparison its baseline, and a no-speculation control had to be
+      recreated to run it — comparing two speculative configs against each other measures agreement,
+      not correctness. Keep a non-speculative entry, or be ready to re-add one before any
+      speculation claim.
       - ⚠️ **A MATCHED drafter beats a borrowed one — search HF for `MTP` too, not just `DFlash`.**
         Qwen ships no DFlash drafter for Qwen3.8, so the coder borrowed Qwen3.6-27B's head. Qwen3.8
         has its own native **MTP** head (`a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, Q8_0, 4.19 GB) and the
@@ -79,6 +296,10 @@ These containers form the system:
         2026-08-15, all at ctx 65536: no speculation **17.55** tok/s · borrowed DFlash **23.68**
         (28.8 % acceptance) · own MTP **27.73** (61.7 %). The coder moved to `qwen3.8-27b-mtp`
         2026-08-15, and **to `qwen3.8-27b-dflash2` on 2026-08-28** (below).
+        ⚠️ **The unaccelerated `qwen3.8-27b` control alias was retired 2026-08-22** (thermals no
+        longer justify a non-speculative fallback). Its GGUF is still on disk, shared with the MTP
+        entry, so an unaccelerated baseline is still measurable — via `spec-sweep.sh`, which starts
+        its own server with no `--spec-*` flags, rather than via a standing llama-swap alias.
         ⚠️ **n-max 2 is the optimum for MTP and the sweep is NOT flat** — 2 → 27.77, 3 → 26.36,
         4 → 26.87, 6 → 20.49, **8 → 8.80**. Acceptance falls as n-max rises, so drafting *more* is
         strictly worse. Never copy an n-max between drafters.
@@ -108,6 +329,19 @@ These containers form the system:
         **list**, *every* speculative setting differs from it; only prose agrees throughout. So the
         previously "safe" low n-max values were agreeing with each other, not with the model. The
         current coder (DFlash2 n=8) matches the reference on code and prose, where MTP n=2 did not.
+        🔄 **Re-swept on b10587 (2026-08-22) with the new requant: `n-max 3` was the best CLEAN
+        setting** — 2 → 30.50 (73.7 %), **3 → 31.56 (64.2 %)**, 4 → 28.71 (52.0 %); ~12 % faster
+        than the b10361 figures above. ⚠️ **n-max 6 and 8 looked fast but were DEGENERATE** — 6
+        "reached" 41.97 and 8 22.39 with unique-8-gram ratios of **0.065 and 0.030**, i.e. the
+        output collapsed into repetition, which drafts almost perfectly and inflates acceptance
+        *and* tok/s. The MTP *baseline* also degenerated (0.141) because greedy decoding at temp 0
+        repeats on its own.
+        🔴 **That degeneracy was an upstream bug, not a property of high n-max.** llama.cpp #27812
+        (fixed in b10677) had `ggml_vk_graph_optimize` reorder nodes aliasing the same memory
+        through different views, on AMD Vulkan, silently. Re-swept on **b10678** the same prompts
+        score **unique-8-gram 1.00 in every cell**. So the b10587 numbers above stand as a record of
+        what was observed, but **any speculative measurement taken before b10677 is suspect** — and
+        the "discard 6 and 8 as degenerate" conclusion no longer applies to a patched build.
       ⚠️ **`qwen3-instruct-2507` and `qwen3-coder-30b-a3b` were RETIRED 2026-08-14** and their
       GGUFs deleted, freeing 43.47 GB. Neither had a capability case left — the latter scores
       14 on the AA index against 32/35/38 for its peers, with no vendor benchmarks at its size.
@@ -215,7 +449,35 @@ These containers form the system:
         bump TODO to re-check `--cache-ram 0` on CT 120.) **Re-checked at the b10308 → b10361
         bump on 2026-08-11: the cliff did NOT lift** — n=6 45.1 tok/s → n=8 17.6, essentially
         unchanged. So it is not a transient upstream bug; keep n-max ≤ 6.
-        **Re-checked again at the b10587 → b10678 bump on 2026-08-28** (this time prompted by a
+      - ✅ **DONE for b10587 (2026-08-22) — and it paid off, though not by lifting the cliff.**
+        Re-swept with `pro-v620/gpu-ab-bench/spec-sweep.sh` on GPU 2. **The DFlash pair is the
+        controlled comparison: its target and drafter GGUFs are byte-identical to the b10361 run,
+        so only the build changed.**
+
+        | n-max | b10361 | b10587 | Δ |
+        | --- | ---: | ---: | ---: |
+        | unaccelerated | 17.57 | 17.54 | **−0.2 % (flat)** |
+        | 2 | 27.75 | 34.03 | **+22.6 %** |
+        | 3 | 29.68 | **37.73** | **+27.1 %** |
+        | 4 | 28.97 | 36.22 | **+25.0 %** |
+        | 8 | 21.18 | 22.63 | still collapsed |
+
+        **b10587 improved the speculative path by ~22–27 % while unaccelerated decode stayed flat**
+        — same files, same card, same flags. So a build bump can be worth far more to a speculative
+        entry than to a plain one; re-sweep speculation after every bump, not just when a release
+        notes Vulkan work.
+        - ⚠️ **The n≥8 cliff STILL did not lift** (n=4 2.06× → n=8 1.29×), so it survives three
+          builds now (b10308, b10361, b10587) — four including b10678. ⚠️ But it is an **MTP property, not
+          a backend one**: DFlash2 and DSpark do not cliff at all (see the 2026-08-28 entry below).
+        - ⚠️ **n-max 6 is no longer merely slow, it is DEGENERATE** on both drafters — 56.17 tok/s
+          for DFlash at a unique-8-gram ratio of 0.058. A tok/s-only sweep would have recorded that
+          as a 3.20× win. **The optimum among clean results is 3 for BOTH drafters**, so on b10587
+          the "≤ 6 is safe" guidance read **≤ 4**. ⚠️ That degeneracy was llama.cpp #27812 and is
+          fixed in b10677 — on b10678 the same cells score unique-8-gram 1.00, so the ≤ 4 tightening
+          was a workaround for a bug, not a standing rule.
+        - The sweep's degeneracy gate is built into `spec-probe.py` (`uniq_8gram_min`,
+          `any_degenerate`), so this cannot silently recur.
+      - 🔄 **Re-checked again at the b10587 → b10678 bump on 2026-08-28** (this time prompted by a
         Vulkan *correctness* fix rather than batching work — see below; that trigger rule was too
         narrow). Swept n = 2/3/4/6/8 on `qwen3.8-27b-mtp`, three fixed prompts at temperature 0,
         mean tok/s **31.4 / 32.2 / 31.1 / 28.9 / 14.9** — **the n≥8 cliff STILL has not lifted**
@@ -383,7 +645,7 @@ All run on the Proxmox host as root.
 # Provision the ops LLM-runtime container (CT 120) — GPU 1 of two Radeon Pro V620
 ./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
 # Autonomous coding loop's GPU-2 model server (CT 123 gpu2) — llama-swap on GPU 2
-./pro-v620/create-lxc-llama-swap-gpu2.sh          # qwen3.8-27b-mtp coder + thinkingcap-27b reviewer, swapped by name (:8080)
+./pro-v620/create-lxc-llama-swap-gpu2.sh          # qwen3.8-27b-dflash2 coder + thinkingcap-27b reviewer, swapped by name (:8080)
 # The loop's execution sandbox (CT 122 coder-runner; runs npm/build/tests, needs CT 121's ssh pubkey)
 CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./coder-runner/create-lxc-coder-runner.sh
 # The loop/orchestrator config that runs INSIDE CT 121 (profiles/skills/plugins/timers) — run from within CT 121
@@ -471,6 +733,12 @@ Engine differences that matter when extending the llama.cpp script:
   flat `llama-<tag>/` dir and symlinks `/opt/llamacpp/current`. It also installs the
   **libglvnd/EGL stack** (`libglvnd0 libgl1 libglx0 libegl1`) on top of `mesa-vulkan-drivers`
   — without it the Mesa ICD loader can silently report **zero** Vulkan devices in the container.
+  - **Other pinned versions, bumped 2026-08-22:** llama-swap **`v250`** (from `v247`), and the
+    coder GGUF moved to revision `4ca72078` after unsloth requantised it (20.2 → 20.9 GB; chat
+    template byte-identical, so tensors only). Prior llama.cpp builds are left in `/opt/llamacpp/`
+    and the previous llama-swap binary as `llama-swap.v247.bak`, so **rollback is a symlink flip /
+    file copy**. Verified after that bump: both cards' RADV init (the loud-guard passes), CT 120
+    serving, every llama-swap model registered, and MTP speculation active on the coder.
   - **Both CT 120 and CT 123 run `b10678`** (bumped 2026-08-28 from b10587; the scripts had drifted
     to b10361 because earlier bumps were applied live only — they are back in sync). Measured on
     CT 120 with `llama-bench`, same model and flags, only the build changing: prompt processing
@@ -733,6 +1001,66 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   two entries + restart the CT — see the README "Recovering after a DRM renumber" recipe; a
   plain re-run is rejected while the CT exists). The `llamacpp-serve` guard turns the
   otherwise-silent CPU fallback into a loud startup failure.
+- ⚠️ **The two PCIe slots are NOT equivalent — GPU 2 pays a fixed per-token decode tax.**
+  Measured 2026-08-22 with `llama-bench` run inside each card's own container, 3 interleaved rounds
+  in alternating order, every other variable verified rather than assumed: same GGUF (`25233af7…`,
+  hash-matched across both containers *and* upstream HF), same build `b10361 (14e78ddef)`, same
+  flags (`-ngl 99 -fa 1 -b 4096 -ub 1024`), both cards −100 mV (read live from
+  `pp_od_clk_voltage`), both `power1_cap` 250 W. Variance under **0.1 %** across rounds.
+  Model: `Qwen3.6-35B-A3B-UD-Q5_K_XL`.
+
+  | test | GPU 1 — `2d:00.0` Gen4 x16 | GPU 2 — `06:00.0` Gen3 x4 | Δ |
+  | --- | ---: | ---: | ---: |
+  | pp512 | 969.4 | 976.8 | +0.8 % |
+  | pp4096 | 1573.6 | **1614.0** | **+2.6 %** |
+  | pp512 @d8192 | 863.0 | **890.3** | +3.2 % |
+  | pp512 @d32768 | 349.1 | **362.9** | +3.9 % |
+  | pp32768 | 621.8 | **642.9** | +3.4 % |
+  | tg128 | **83.9** | 65.1 | **−22.4 %** |
+  | tg128 @d8192 | **77.8** | 61.3 | −21.2 % |
+  | tg128 @d32768 | **70.3** | 56.4 | −19.7 % |
+
+  - **GPU 2 is the *stronger* card.** It wins every prefill test, sustains ~130 MHz higher clocks
+    (2462 vs 2333) and draws more power under the same offset and cap — yet loses ~20 % of decode.
+    A physical slot swap is therefore unnecessary to rank the two cards; prefill already answers it.
+  - **The penalty is a FIXED ~3.45 ms/token, not a percentage.** 11.92 → 15.36 ms/tok at depth 0,
+    12.86 → 16.31 at 8k, 14.24 → 17.73 at 32k — constant while per-token compute grows ~20 %. That
+    is the signature of an interconnect round-trip, not weaker silicon. Prefill batches 4096 tokens
+    per submission and amortises it away; decode issues one token at a time and pays it every token.
+  - **So the tax hurts FAST models most**, which is what decides placement: ~4 ms on this MoE's
+    12 ms token is −22 %, but on a dense 27B's 53 ms token only −7 %. **Never move
+    `qwen3.6-35b-a3b` to GPU 2** — it would surrender ~22 % of decode. The dense loop models on
+    CT 123 are correctly placed and barely notice.
+  - **The fixed-tax model was then confirmed on a second architecture.** `Qwen3.8-27B` (dense) run
+    through the same 3-interleaved-round harness, both cards driven from one container via
+    `--device`:
+
+    | test | GPU 1 | GPU 2 | Δ |
+    | --- | ---: | ---: | ---: |
+    | pp512 | 322.3 | **330.8** | +2.6 % |
+    | pp4096 | 358.2 | **370.1** | +3.3 % |
+    | pp512 @d8192 | 261.3 | **271.7** | +4.0 % |
+    | pp512 @d32768 | 125.5 | **130.5** | +4.0 % |
+    | tg128 | **19.15** | 17.76 | **−7.2 %** |
+    | tg128 @d8192 | **18.40** | 17.14 | −6.8 % |
+    | tg128 @d32768 | **17.09** | 16.00 | −6.3 % |
+
+    Same prefill-favours-GPU-2 / decode-favours-GPU-1 split, and the per-token penalty is again
+    **constant**: 52.22 → 56.31 ms at depth 0 (4.09 ms), 54.35 → 58.34 at 8k (3.99 ms), 58.51 →
+    62.50 at 32k (3.99 ms). ~4 ms on both architectures, but −7 % here versus −22 % on the MoE
+    purely because a dense token is 4× slower to produce. Independently corroborated by the
+    speculation sweep's unaccelerated baselines (19.00 → 17.65 tok/s, −7.1 %; `Qwen3.6-27B`
+    18.82 → 17.57, −6.6 %).
+  - ⚠️ **`current_link_speed` / `current_link_width` LIE** — both report `16.0 GT/s PCIe x16` for
+    *both* cards. Ground truth is the starred line of `pp_dpm_pcie`: `16.0GT/s, x16` on GPU 1 vs
+    `8.0GT/s, x4` on GPU 2. Closing the gap needs slot bifurcation in BIOS, still blocked by the
+    host having no video output — so that headless-BIOS problem now gates ~22 % of MoE decode on
+    GPU 2, not merely C-states.
+  - Harness: **`pro-v620/gpu-ab-bench/`** (host-side, NOT a service — no `install.sh`/unit). Read
+    its README before re-running: it carries the interleaving method, the "verify every control"
+    checklist, the ⚠️ **revert `ct123-dual-gpu.sh` before production returns** rule, the fact that
+    `gpu-thermal-watchdog` cannot protect a hand-driven `llama-bench`, and the output-sanity gate
+    that stops a speculative sweep reporting a degenerate-repetition artifact as a speedup.
 - **V620 host-side GPU services live under `pro-v620/` and run on the Proxmox host (NOT in the
   LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`. `pro-v620/fan-control/`
   runs one `gpu-fan-control@<instance>` per **controllable fan channel** (out-of-tree `nct6687`) —
@@ -770,6 +1098,26 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   2026-08-14/15 were all under the earlier shared-shroud cooling, which ran a full load with its
   fan maxed. With a blower per card, both saturated simultaneously settle at 62/73 °C — so treat a
   trip now as a real fault (a seized blower, a detached hub lead), not as normal saturation.
+  Independently re-validated 2026-08-22 across a benchmark session on the **production fan curve
+  untouched**, with **zero trips** and clocks flat throughout (no throttling) in every case.
+  ⚠️ **A DENSE model, not big-context MoE prefill, is the thermal worst case** — because a dense
+  27B pins the firmware-locked 250 W cap while the 3B-active MoE is memory-bound and never reaches
+  it:
+
+  | workload | peak junction G1 / G2 | power under load | fan |
+  | --- | --- | ---: | ---: |
+  | `qwen3.6-35b-a3b` MoE, 3× 32768-tok prefill | 73 / 74 °C | ~220 W | ≤ 50 % |
+  | **`Qwen3.8-27B` dense, prefill + decode** | **84 / 88 °C** | **250 W (at the cap)** | 61 % |
+
+  So margin to the 102 °C trip is ~28 °C on the MoE but only **~14 °C on a dense model** — still
+  safe, and with fan headroom left, but do not quote the MoE figure as the worst case. This also
+  explains the pre-blower trip history: every firing was a *dense* model (the qwen3.6-27b coding
+  harness, dense-28B muse-glimmer), never the MoE.
+  ⚠️ **It CANNOT protect a hand-driven load.** It stops the CT's model *service*
+  (`systemctl stop llamacpp` / `llama-swap`), which is a no-op against a `llama-bench` or
+  `llama-server` you launched yourself — the 105 °C hardware MODE1 reset then becomes the only
+  backstop. Run an independent guard alongside any manual benchmark: poll `temp2_input` on both
+  cards every 2 s and `pkill -f llama-bench` at ~100 °C.
 - **Non-GPU host networking lives under `host-net/`** (also host-side, NOT in an LXC).
   `host-net/wifi-nat/` lets the host run with **no ethernet**: onboard WiFi (`wlo1`) becomes the
   routed WAN and `vmbr0` becomes an internal NAT'd LAN (`10.10.10.0/24`) the LXCs sit behind
