@@ -429,12 +429,18 @@ EOF
 # --jinja makes llama-server use the model's own chat template, which is REQUIRED
 # for OpenAI-style tool/function calling to parse into the `tool_calls` field —
 # i.e. for agents. Verified across Qwen3.5/3.6 and Hermes (see README bake-off).
-# --reasoning-format none keeps the model's <think> tokens inline in the OpenAI
-# `content` stream (instead of siphoning them into `reasoning_content`), so an
-# OpenAI-compatible benchmark counts every generated token and measures TTFT at
-# the true first token. Qwen3.6 "medium" (incl. this MoE) has thinking ON by
-# default, so without this the `content` stream is empty and the benchmark would
-# flag every request as invalid_output.
+# --reasoning-format auto siphons any <think> block into `reasoning_content`,
+# leaving `content` clean.
+# ⚠️ This was `none` until 2026-08-27, and the change matters. `none` was chosen
+# back when thinking was ON by default: it kept <think> tokens inline so an
+# OpenAI-compatible benchmark saw a non-empty `content` stream and did not flag
+# every request as invalid_output. Adding `--reasoning off` below retired that
+# rationale — and turned `none` into an active bug. With thinking off the template
+# still emits an EMPTY `<think>\n\n</think>` pair, and `none` left it in `content`,
+# so every response began with those tags. Measured on a real KB-ingestion prompt:
+# the generated file started `<think>\n\n</think>\n\n---` instead of `---`, i.e. it
+# was not valid frontmatter. With `auto` the same prompt starts cleanly at `---`,
+# `reasoning_content` stays empty, and throughput is unchanged (78.4 vs 78.7 tok/s).
 # --reasoning off DISABLES thinking outright. It is a DIFFERENT flag from
 # --reasoning-format none: that one only decides *where* thought tags go, it does
 # not stop them being generated. Measured on this model, same prompt, on/off:
@@ -512,7 +518,7 @@ exec "${LLAMACPP_DIR}/llama-server" \
   --batch-size 4096 \
   --ubatch-size 1024 \
   --jinja \
-  --reasoning-format none \
+  --reasoning-format auto \
   --reasoning off \
   --cache-ram 0 \
   --metrics \
