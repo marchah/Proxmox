@@ -10,7 +10,7 @@ the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 > only GPU 1's `/dev/dri` render node (via the udev-stable `by-path` symlink — the only
 > reboot-stable way to pin one of two *identical* cards; see `configure_gpu_passthrough` in the
 > script). **GPU 2 now runs CT 123 `gpu2`** — a `llama-swap` server for the autonomous coding loop's
-> coder/reviewer split (`create-lxc-llama-swap-gpu2.sh`; `qwen3.8-27b-mtp` coder + `thinkingcap-27b`
+> coder/reviewer split (`create-lxc-llama-swap-gpu2.sh`; `qwen3.8-27b-dflash2` coder + `thinkingcap-27b`
 > reviewer, swapped one at a time on `0.0.0.0:8080`). GPU 2 stays amdgpu-bound, so the host services manage both cards:
 > both are undervolted −100 mV (`undervolt/` applies to every V620), and **each card has its own
 > 9733 radial blower**. Both blowers hang off a single SATA-powered PWM hub whose control lead sits
@@ -63,7 +63,7 @@ the chosen engine, per the 6700 XT comparison), one per V620:
 
   | Role     | Alias                 | Model / GGUF |
   |----------|-----------------------|--------------|
-  | coder    | `qwen3.8-27b-mtp`     | Qwen3.8-27B — `unsloth/Qwen3.8-27B-GGUF`, `Qwen3.8-27B-UD-Q5_K_XL.gguf`, drafted by its own MTP head (`a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, Q8_0) |
+  | coder    | `qwen3.8-27b-dflash2` | Qwen3.8-27B — `unsloth/Qwen3.8-27B-GGUF`, `Qwen3.8-27B-UD-Q5_K_XL.gguf`, drafted by its own DFlash2 head (`z-lab/Qwen3.8-27B-DFlash2-GGUF`, Q8_0) |
   | reviewer | `thinkingcap-27b`     | ThinkingCap-Qwen3.6-27B — `bottlecapai/…-GGUF`, `ThinkingCap-Qwen3.6-27B-Q4_K_M.gguf` |
 
   Both were chosen on measured evidence rather than reputation. The coder gains **+8.2 SWE-bench Pro**
@@ -75,15 +75,29 @@ the chosen engine, per the 6700 XT comparison), one per V620:
   happened inside a loop with no coding harness and an uncapped output. Its own headline result is that
   thinking-trace truncation falls 2.9 % → 0.4 %. `--n-predict 32768` now bounds it explicitly.
 
-  **The coder drafts with its OWN MTP head** (`a4lg/Qwen3.8-27B-MTP-ONLY-GGUF`, Q8_0) rather than a
-  borrowed DFlash one. Qwen ships no DFlash drafter for 3.8, and the Qwen3.6 head that was used
-  instead transferred only partially. Measured 2026-08-15 at ctx 65536, **all three on the same
-  prompt** (which is what makes them comparable — see the prompt-dependence warning below):
+  **The coder drafts with a MATCHED head, and which one has changed twice.** Qwen ships no DFlash
+  drafter for 3.8, so the coder first borrowed Qwen3.6's, which transferred only partially; it then
+  moved to Qwen3.8's own MTP head. Measured 2026-08-15 at ctx 65536, **all three on the same prompt**
+  (which is what makes them comparable — see the prompt-dependence warning below):
   no speculation **17.55** tok/s · borrowed DFlash **23.68** (28.8 % acceptance) ·
   **own MTP 27.73 (61.7 %)**.
-  ⚠️ `--spec-draft-n-max` is **2** here, and the sweep is *not* flat — 2 → 27.77, 3 → 26.36,
-  4 → 26.87, 6 → 20.49, 8 → 8.80. Acceptance falls as n-max rises, so drafting more is strictly
-  worse. Never carry an n-max across drafters.
+  ✅ **Since 2026-08-28 it drafts with Qwen3.8's own DFlash2 head** (`z-lab/Qwen3.8-27B-DFlash2-GGUF`,
+  Q8_0 — **1.92 GiB, smaller than the MTP head's 4.19 GiB**). llama.cpp #27342 added DFlash2 and it is
+  auto-detected from the checkpoint, so `--spec-type` stays `draft-dflash`. Measured 3 reps, 3 prompts,
+  temp 0, against a no-speculation control (17.03 tok/s):
+
+  | drafter | code | prose | list | overall |
+  |---|---:|---:|---:|---:|
+  | MTP n=2 | 35.44 | 29.19 | 31.72 | 32.12 |
+  | **DFlash2 n=8** | **67.14** | 26.72 | 30.47 | **41.44** |
+
+  Code is what the coder emits, so the prose/list losses (−8.5 % / −3.9 %) are an acceptable trade.
+  **DSpark was tested in the same run and is not better than MTP** (31.86 overall).
+  ⚠️ `--spec-draft-n-max` is **8** for DFlash2, and that does not contradict the n≥8 cliff: the cliff
+  is an **MTP property**, not a backend one. DFlash2 acceptance is identical at n=7/8/10 (52.1 %)
+  because the drafter saturates its own block length, so it plateaus rather than collapsing. For the
+  MTP head the sweep is *not* flat — 2 → 27.77, 3 → 26.36, 4 → 26.87, 6 → 20.49, 8 → 8.80.
+  **Never carry an n-max across drafters.**
 
   ⚠️ **A speculative tok/s figure is a RANGE, not a number — it depends on the prompt.** Speculation
   pays only when the drafter guesses right, so decode speed tracks **draft acceptance**, and

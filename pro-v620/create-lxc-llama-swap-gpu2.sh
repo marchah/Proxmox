@@ -54,24 +54,36 @@ readonly CODER_REPO="unsloth/Qwen3.8-27B-GGUF"
 readonly CODER_FILE="Qwen3.8-27B-UD-Q5_K_XL.gguf"
 readonly CODER_SHA256="8601193d3d5760c37fb8ce1b43afebc69df5fb24e1fbc5a547c32e2200305276"
 readonly CODER_REVISION="4ca720788d1e01f1bff70c033e0d0028fd02e502"
-readonly CODER_ALIAS="qwen3.8-27b-mtp"
+readonly CODER_ALIAS="qwen3.8-27b-dflash2"
 
 # --- Coder accelerators, both bootstrapped so a rebuild matches production ---------------
-# Qwen3.8's OWN MTP head as the drafter. A MATCHED drafter is the whole story: 61.7 %
-# acceptance vs 28.8 % for Qwen3.6's borrowed DFlash head, worth 1.58x over unaccelerated.
-# ⚠️ n-max 2-3 only. Acceptance falls fast as n-max rises AND n>=6 makes the model emit
-# degenerate repetition that inflates tok/s — see the sweep notes in CLAUDE.md.
-readonly CODER_DRAFT_REPO="a4lg/Qwen3.8-27B-MTP-ONLY-GGUF"
-readonly CODER_DRAFT_FILE="Qwen3.8-27B-MTP-ONLY-Q8_0.gguf"
-readonly CODER_DRAFT_SHA256="674d0fc3b2b09c48cf77fbab0aba39b9c4ee538bd240fa87c1f13044260f7d7b"
-readonly CODER_DRAFT_REVISION="2476d11971c63a9185686ab4ab0d311506d192b0"
-readonly CODER_DRAFT_NMAX="${CODER_DRAFT_NMAX:-2}"
+# Qwen3.8's OWN DFlash2 head as the drafter (llama.cpp #27342, in the pinned build). A MATCHED
+# drafter is the whole story, and DFlash2 beats the MTP head this entry used to bootstrap:
+# measured 2026-08-28, 3 reps, 3 prompts, temp 0, against a no-speculation control (17.03 tok/s)
+#              code    prose   list    overall
+#   MTP  n=2   35.44   29.19   31.72   32.12
+#   DFl2 n=8   67.14   26.72   30.47   41.44    +29 % overall, +89 % on code
+# Code is what the coder emits, so the prose/list losses are an acceptable trade. The DFlash2
+# head is also SMALLER: 1.92 GiB vs the MTP head's 4.19 GiB.
+#
+# DFlash2 is auto-detected from the checkpoint, so --spec-type stays draft-dflash.
+#
+# ⚠️ n-max 8 here does NOT contradict the n>=8 cliff documented in CLAUDE.md: that cliff is an
+# MTP property, not a backend threshold. DFlash2's acceptance is IDENTICAL at n=7/8/10 (52.1 %)
+# because the drafter saturates its own block length, so it plateaus (40.93 / 41.40 / 41.43)
+# instead of collapsing. Re-sweep if the drafter changes; never copy an n-max between drafters.
+readonly CODER_DRAFT_REPO="z-lab/Qwen3.8-27B-DFlash2-GGUF"
+readonly CODER_DRAFT_FILE="Qwen3.8-27B-DFlash2-Q8_0.gguf"
+readonly CODER_DRAFT_SHA256="c18e800daedc59ca68fd13b6a856d795746af6d399a9279ac6a277d1d422f87e"
+readonly CODER_DRAFT_REVISION="2d9571f8ce46e151f61c6499c99dee6079e1d610"
+readonly CODER_DRAFT_NMAX="${CODER_DRAFT_NMAX:-8}"
 
 # Vision projector. Qwen3.8-27B is multimodal and WITHOUT this the server answers
 # "image input is not supported" while the caller carries on regardless — a silent failure
 # mode that once cost a 3-hour agent run reasoning about screenshots it never received.
 # Measured cost on this card: +1.11 GiB VRAM, no GTT spill, text-only decode 32.2 -> 32.0
-# tok/s with BYTE-IDENTICAL output, and MTP stays active on image requests (6/6 accepted).
+# tok/s with BYTE-IDENTICAL output, and speculation stays active on image requests (6/6
+# accepted; measured with the MTP head, which the DFlash2 head replaced).
 # ⚠️ VRAM is the binding constraint (2.12 GiB headroom at ctx 65536). If it ever runs out,
 # `--mmproj-device none` keeps the projector on CPU for zero VRAM.
 readonly CODER_MMPROJ_REPO="unsloth/Qwen3.8-27B-GGUF"
@@ -154,9 +166,9 @@ autonomous coding loop's model server (swaps a coder + a reviewer model).
 Fixed target:
   GPU:    Radeon Pro V620 GPU 2 (0000:06:00.0) — GPU 1 runs CT 120 (qwen3.6 ops)
   Engine: llama-swap (Go proxy) launching llama.cpp llama-server per model
-  Models: qwen3.8-27b-mtp (Qwen3.8-27B coder, MTP-accelerated + vision)
+  Models: qwen3.8-27b-dflash2 (Qwen3.8-27B coder, DFlash2-accelerated + vision)
           + thinkingcap-27b (ThinkingCap-Qwen3.6-27B, reviewer)
-          — bootstrap pair only; the live container serves four (2026-08-22), rest by hand
+          — bootstrap pair only; the live container serves six (2026-08-28), rest by hand
   API:    0.0.0.0:8080 (OpenAI-compatible; pick model by name)
 
 Run this script on the Proxmox host as root. Defaults to VMID 123 / hostname gpu2.
@@ -277,9 +289,9 @@ install_swap_stack() {
     "${CODER_DRAFT_REPO}" "${CODER_DRAFT_FILE}" "${CODER_DRAFT_SHA256}" "${CODER_DRAFT_REVISION}" "${CODER_DRAFT_FILE}" \
     "${CODER_MMPROJ_REPO}" "${CODER_MMPROJ_FILE}" "${CODER_MMPROJ_SHA256}" "${CODER_REVISION}" "${CODER_MMPROJ_LOCAL}")"
 
-  # EXTRA_ARGS for the coder: reasoning format + MTP speculation + vision.
+  # EXTRA_ARGS for the coder: reasoning format + DFlash2 speculation + vision.
   coder_extra="--reasoning-format auto"
-  coder_extra+=" --spec-type draft-mtp --model-draft /models/hf/${CODER_DRAFT_FILE}"
+  coder_extra+=" --spec-type draft-dflash --model-draft /models/hf/${CODER_DRAFT_FILE}"
   coder_extra+=" --spec-draft-n-max ${CODER_DRAFT_NMAX} --spec-draft-ngl 99"
   coder_extra+=" --mmproj /models/hf/${CODER_MMPROJ_LOCAL}"
 
