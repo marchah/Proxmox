@@ -34,10 +34,9 @@ START_ON_BOOT="${START_ON_BOOT:-1}"
 
 # --- Target LLM runtime (CT 120) ---
 TARGET_LXC_VMID="${TARGET_LXC_VMID:-120}"
-# CT 120's hostname. When the containers share a resolver that knows this name (e.g. the
-# host WiFi-NAT setup's dnsmasq maps it to CT 120's reserved IP), it survives CT 120
+# CT 120's hostname. When the LAN router resolves this name to CT 120, it survives CT 120
 # address changes — so it is PREFERRED over a discovered IP, which goes stale if CT 120's
-# address ever changes (as happened on the ethernet→WiFi cutover). Verified from inside
+# address ever changes. Verified from inside
 # the Hermes container at provision time; falls back to the discovered IP if it doesn't
 # resolve there.
 TARGET_HOSTNAME="${TARGET_HOSTNAME:-llamacpp}"

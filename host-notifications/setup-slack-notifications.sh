@@ -5,9 +5,8 @@ set -Eeuo pipefail
 # Route Proxmox notifications (backup failures, replication errors, fencing, package updates,
 # ...) to Slack, in addition to the built-in mail-to-root target.
 #
-# WHY THIS EXISTS: the weekly backup job failed silently for four consecutive weeks after the
-# WiFi-NAT cutover changed the host's IP and broke the NFS mount. Proxmox *did* notify — to
-# root's local mailbox via postfix, which nobody reads. A notification nobody sees is not a
+# WHY THIS EXISTS: the weekly backup job can fail silently for weeks — Proxmox *does* notify, but
+# to root's local mailbox via postfix, which nobody reads. A notification nobody sees is not a
 # notification.
 #
 # Run on the Proxmox host as root, passing a Slack INCOMING WEBHOOK URL:

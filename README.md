@@ -15,9 +15,6 @@ Utilities for creating and operating local Proxmox LXCs and VMs.
 - `docker-host/`: the app-stack host — a Debian **VM** with Docker + Compose + Portainer,
   where the small self-contained web apps (MealDeal, and future projects) run as Compose
   stacks. Includes their compose files under `docker-host/stacks/`.
-- `host-net/`: host-side networking that runs on the Proxmox host itself (not in an
-  LXC). `host-net/wifi-nat/` turns the host into a WiFi-uplink NAT gateway so it can
-  run with no ethernet.
 - `host-notifications/`: routes Proxmox notifications (backup failures and friends) to
   Slack, because the builtin target delivers to a local mailbox nobody reads.
 
@@ -124,28 +121,20 @@ deal extraction runs against CT 120 (no cloud API key). See
 ./docker-host/create-vm-docker-host.sh   # pinned Debian cloud image, Docker, Compose, Portainer
 ```
 
-Then open `https://192.168.1.93:9443`, create the Portainer admin user, and add a project as a
+Then open `https://192.168.1.250:9443`, create the Portainer admin user, and add a project as a
 **git stack** (Repository URL = this repo, compose path =
 `docker-host/stacks/<project>/compose.yaml`) with secrets as stack env vars. Portainer can
 auto-redeploy on a new commit via polling or a webhook.
 
 **This is the only VM in the repo, on purpose.** Proxmox recommends Docker in a VM, and
 Docker-in-LXC needs `nesting=1` + `keyctl=1` (often privileged), stacks `overlay2` on a container
-filesystem, tends to break after Proxmox kernel bumps, and shares a kernel with this host's
-hand-rolled nftables NAT that Docker also writes rules into. The GPU/LLM containers stay native
+filesystem, tends to break after Proxmox kernel bumps, and shares a kernel with the host's own
+firewall rules that Docker also writes into. The GPU/LLM containers stay native
 LXCs — they need device passthrough and gain nothing from Docker.
 
 > A per-app native LXC (`mealdeal/create-lxc-mealdeal.sh`, CT 110) was built and verified first,
 > then retired: one bespoke ~870-line script per app doesn't scale to a fleet of small projects.
 > Its reusable findings are recorded in CLAUDE.md.
-
-### Host WiFi-NAT Gateway (runs on the host, not in an LXC)
-
-`host-net/wifi-nat/install.sh` lets the Proxmox host run with **no ethernet**: the
-onboard WiFi (`wlo1`) becomes the routed WAN and `vmbr0` becomes an internal NAT'd LAN
-(`10.10.10.0/24`) that the LXCs sit behind (dnsmasq DHCP/DNS + nftables masquerade +
-port-forwards). It's staged and reversible, with an auto-rollback guarding the risky
-cutover. See [host-net/wifi-nat/README.md](host-net/wifi-nat/README.md).
 
 ### RX 6700 XT LLM Runtime LXC (prior GPU)
 

@@ -16,8 +16,8 @@ they need host device passthrough and gain nothing from Docker. This is the deli
 Proxmox recommends running Docker in a VM. Docker-in-LXC needs `nesting=1` + `keyctl=1` (and is
 frequently run privileged), which weakens namespace isolation, puts Docker's `overlay2` on top of
 a container filesystem — the classic breakage — tends to need its nesting/AppArmor tweaks redone
-after a Proxmox kernel bump, and shares a kernel with this host's hand-rolled nftables NAT
-(`host-net/wifi-nat`) that Docker also writes firewall rules into. A VM walls all of that off for
+after a Proxmox kernel bump, and shares a kernel with the host's own firewall rules that Docker
+also writes into. A VM walls all of that off for
 about 4 GB of RAM, which this host has spare.
 
 **VMID 300:** this repo's `100-119`/`120-139`/… ranges allocate *containers*. VMs get their own
@@ -42,12 +42,12 @@ PORTAINER_IMAGE=portainer/portainer-ce:2.39.5 ./docker-host/create-vm-docker-hos
 
 ## First-time setup
 
-1. Open **`https://192.168.1.93:9443`** and create the Portainer admin user. It's a self-signed
+1. Open **`https://192.168.1.250:9443`** and create the Portainer admin user. It's a self-signed
    cert, so expect a browser warning.
    ⚠️ Portainer only leaves initial setup open for a short window, then locks itself. If you see
    "instance timed out", restart it to reopen:
    ```bash
-   ssh pve 'ssh -i /root/.ssh/docker-host debian@10.10.10.100 -- docker restart portainer'
+   ssh pve 'ssh -i /root/.ssh/docker-host debian@docker-host -- docker restart portainer'
    ```
 2. That's it — the local Docker environment is already connected via the socket.
 
@@ -67,14 +67,13 @@ since this repo is public. Optionally enable **automatic updates** (poll on an i
 webhook): Portainer compares the repo's latest commit hash against what it deployed and
 redeploys on change.
 
-Then expose it on the LAN by adding a port-forward to `host-net/wifi-nat/wifi-nat.env` and
-running `install.sh --reload-nft`.
+It is reachable on the LAN immediately — the VM has its own LAN address.
 
 ## Operating it
 
 ```bash
 # SSH in (the host holds the key)
-ssh pve 'ssh -i /root/.ssh/docker-host debian@10.10.10.100'
+ssh pve 'ssh -i /root/.ssh/docker-host debian@docker-host'
 
 # From the guest
 docker ps
@@ -100,7 +99,7 @@ docker pull portainer/portainer-ce:<newer> && docker rm -f portainer && \
 ## MealDeal specifics
 
 Stack: [`stacks/mealdeal/compose.yaml`](stacks/mealdeal/compose.yaml). Live at
-**`http://192.168.1.93:4000`** (SPA + GraphQL at `/graphql`).
+**`http://192.168.1.250:4000`** (SPA + GraphQL at `/graphql`).
 
 **Ingest is off until you add mailbox credentials.** Blank `IMAP_USER`/`IMAP_PASSWORD` make the
 app disable ingest entirely rather than crash, so the stack comes up clean. To enable it, set
@@ -154,7 +153,7 @@ Stack: **not in this repo.** It lives with the app at
 other and splitting them across repos made one change a two-repo change. Portainer reads it as
 a git stack from there.
 
-Live at **`http://192.168.1.93:4100`** — a Linear + GitHub board answering "what should I work
+Live at **`http://192.168.1.250:4100`** — a Linear + GitHub board answering "what should I work
 on next?". Holds no state: the snapshot is in memory and rebuilt on the next tick, so there is
 no volume to back up.
 
@@ -185,10 +184,10 @@ Two things matter, and neither is the VM's OS disk (rebuildable by re-running th
 
 ```bash
 # List what exists
-ssh pve 'ssh -i /root/.ssh/docker-host debian@10.10.10.100 -- docker volume ls'
+ssh pve 'ssh -i /root/.ssh/docker-host debian@docker-host -- docker volume ls'
 
 # Copy a volume out to the Proxmox host
-ssh pve 'ssh -i /root/.ssh/docker-host debian@10.10.10.100 -- \
+ssh pve 'ssh -i /root/.ssh/docker-host debian@docker-host -- \
   docker run --rm -v mealdeal_mealdeal-data:/d alpine tar -cz -C /d .' > mealdeal-data.tgz
 ```
 

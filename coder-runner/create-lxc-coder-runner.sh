@@ -14,7 +14,7 @@ SWAP_MB="${SWAP_MB:-1024}"
 CORES="${CORES:-4}"
 BRIDGE="${BRIDGE:-vmbr0}"
 IP_CONFIG="${IP_CONFIG:-dhcp}"
-# Fixed MAC so the dnsmasq reservation (10.10.10.122 coder-runner) is deterministic.
+# Fixed MAC so the LAN router's DHCP reservation for coder-runner is deterministic.
 MAC="${MAC:-BC:24:11:C0:DE:22}"
 PASSWORD="${PASSWORD:-}"
 START_ON_BOOT="${START_ON_BOOT:-1}"
@@ -288,7 +288,7 @@ print_summary() {
 ==> coder-runner LXC ${VMID} (${LXC_HOSTNAME}) is ready.
 
   IP (this boot):   ${ip:-unknown}
-  Reserved name:    coder-runner  (add 10.10.10.122 reservation in host-net/wifi-nat/wifi-nat.env)
+  Reserved name:    coder-runner  (reserve this MAC on the LAN router for a stable address)
   Node:             $(pct exec "${VMID}" -- bash -lc 'node -v' 2>/dev/null || echo '?')
   SSH:              key-only; driven by CT 121 (hermes)
   Build workdir:    /build

@@ -571,15 +571,14 @@ These containers form the system:
   - Security: a **read-only deploy key** for the KB repo is **mandatory** (`DEPLOY_KEY_FILE=`, the
     container can only pull), and every data endpoint is gated by a bearer key auto-generated at
     provision and stored mode-600 in `/etc/kb-rag.env`. Secrets are pushed as mode-600 files and
-    the host copies removed (the hermes idiom). **No nft port-forward by default** — reachable only
-    inside the `10.10.10.0/24` NAT LAN, by hostname.
+    the host copies removed (the hermes idiom). Reachable on its own LAN IP, by hostname.
   - ⚠️ Changing `EMBED_MODEL`/`EMBED_DIM` later requires `kb-reindex --full` — the stored
     `sqlite-vec` vector dimension must match.
   - ✅ **WIRED INTO HERMES 2026-08-28** — the long-standing "queried over REST but nothing uses
     the MCP surface" gap is closed. CT 121's `config.yaml` now carries an `mcp_servers.kb-rag`
     entry pointing at `http://kb-rag:8770/mcp/`, and `hermes mcp test kb-rag` discovers all three
     tools; an agent turn calling `kb_stats`/`kb_search` returns live index data, and CT 140 logs
-    the `POST /mcp/` traffic from `10.10.10.121`. (Before this: 55 `POST /v1/search` in 14 days but
+    the `POST /mcp/` traffic from CT 121. (Before this: 55 `POST /v1/search` in 14 days but
     **zero** `/mcp` requests — every hit arrived over plain REST, ad-hoc rather than as an
     integration.) Four things that were each load-bearing:
     - ⚠️ **The config key is `mcp_servers:`, not `mcp:`** — earlier notes here said `mcp:`, which
@@ -625,7 +624,7 @@ These containers form the system:
   never in this public repo. ⚠️ **Why a VM when everything else is an LXC:** Proxmox recommends
   Docker in a VM; Docker-in-LXC needs `nesting=1`+`keyctl=1` (often privileged), puts `overlay2`
   on a container filesystem, tends to break after Proxmox kernel bumps, and shares a kernel with
-  this host's hand-rolled nftables NAT that Docker also writes rules into. The GPU/LLM containers
+  the host's own firewall rules that Docker also writes into. The GPU/LLM containers
   stay native LXCs — they need device passthrough and gain nothing here. MealDeal now **pulls a
   prebuilt image** — `marchah/mealdeal#36` merged 2026-07-27 and its `Publish image` workflow
   publishes `ghcr.io/marchah/mealdeal` on every push to `main` (tags `main` + `sha-<short>`, plus
@@ -670,8 +669,8 @@ DEPLOY_KEY_FILE=./cognitivestack-deploy ./kb-rag/create-lxc-kb-rag.sh
 # Hosts MealDeal and future small projects as compose stacks. Portainer UI on :9443.
 ./docker-host/create-vm-docker-host.sh
 ./docker-host/create-vm-docker-host.sh --reinstall-docker   # re-run ONLY the in-guest install
-# Operate the app stacks — prefer the Portainer UI (https://192.168.1.93:9443); by CLI:
-ssh pve 'ssh -i /root/.ssh/docker-host debian@10.10.10.100'   # into the VM (host holds the key)
+# Operate the app stacks — prefer the Portainer UI (https://192.168.1.250:9443); by CLI:
+ssh pve 'ssh -i /root/.ssh/docker-host debian@docker-host'    # into the VM (host holds the key)
 #   docker ps
 #   docker compose -f /opt/stacks/mealdeal/compose.yaml logs -f
 #   docker compose -f /opt/stacks/mealdeal/compose.yaml up -d --build
@@ -965,11 +964,10 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   keep a big rootfs out of backups, exclude paths in the backup job instead:
   `vzdump <vmid> --exclude-path /opt/<bulk>`.
 - **Backups (`Synology-Backup` NFS, weekly job Sundays 01:00, all guests, keep-last=3).** Two
-  traps here, both hit for real on 2026-07-26 after a four-week silent outage:
-  - ⚠️ **The Synology allow-lists NFS clients by IP.** The WiFi-NAT cutover moved the host
-    `192.168.1.50` → `.93`, so every backup from 2026-07-05 on failed with
-    `mount.nfs: access denied by server`. Fixed in DSM (Control Panel → Shared Folder → NFS
-    Permissions). It is allow-listed by the **exact IP**, so *another host IP change breaks
+  traps here, both of which have caused a silent multi-week outage:
+  - ⚠️ **The Synology allow-lists NFS clients by IP**, so a change to the host's address breaks
+    every backup with `mount.nfs: access denied by server` — silently. Fix in DSM (Control Panel →
+    Shared Folder → NFS Permissions). It is allow-listed by the **exact IP**, so *another host IP change breaks
     backups again* — prefer a `192.168.1.0/24` rule.
   - ⚠️ **`vzdump` needs `tmpdir: /var/tmp` in `/etc/vzdump.conf`** (set; comment in-file). Its
     temp dir defaults to the *target storage*, and for an **unprivileged** container `tar` runs
@@ -1128,14 +1126,8 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   `llama-server` you launched yourself — the 105 °C hardware MODE1 reset then becomes the only
   backstop. Run an independent guard alongside any manual benchmark: poll `temp2_input` on both
   cards every 2 s and `pkill -f llama-bench` at ~100 °C.
-- **Non-GPU host networking lives under `host-net/`** (also host-side, NOT in an LXC).
-  `host-net/wifi-nat/` lets the host run with **no ethernet**: onboard WiFi (`wlo1`) becomes the
-  routed WAN and `vmbr0` becomes an internal NAT'd LAN (`10.10.10.0/24`) the LXCs sit behind
-  (dnsmasq DHCP/DNS + nftables masquerade/port-forwards, reservations `.120`→CT120 / `.121`→CT121).
-  Same idempotent-`install.sh` + `.env` idiom, but **staged/transactional** because it re-points
-  the host's own uplink: `stage → --test-wifi → --cutover → --confirm`, with an armed auto-rollback
-  (a full, verified teardown) as the safety net and `--revert` to undo. Containers keep `ip=dhcp`
-  (no per-CT change) — they just get `10.10.10.x` and are reached from the LAN via the host's WiFi
-  IP + the DNAT port-forwards. Consumers that hard-code a container's IP (e.g. Hermes's
-  `model.base_url`, the bench-runner's `MODEL_API_URL`) must use the dnsmasq name / be re-pointed
-  after the cutover changes CT 120's address.
+- **Host networking.** The host is on the LAN at static **`192.168.1.93`**, with `vmbr0` bridging
+  its NIC. Containers and VMs keep `ip=dhcp` and each takes **its own lease from the LAN router**,
+  so every service is reached directly on its own IP and by hostname (the router serves DHCP
+  hostnames under domain `lan`). ⚠️ Give each guest a **DHCP reservation on the router** — the
+  leases are dynamic, and anything pinned to an address goes stale when one moves.
