@@ -9,8 +9,8 @@ set -Eeuo pipefail
 # Proxmox recommends Docker in a VM, and Docker-in-LXC needs nesting=1 + keyctl=1 (and is often
 # run privileged), which: weakens namespace isolation, puts Docker's overlay2 on top of a
 # container filesystem (the classic breakage), tends to need its nesting/AppArmor tweaks redone
-# after a Proxmox kernel bump, and shares a kernel with this host's hand-rolled nftables NAT
-# (host-net/wifi-nat) that Docker also writes firewall rules into. A VM walls all of that off
+# after a Proxmox kernel bump, and shares a kernel with the host's own firewall rules
+# that Docker also writes into. A VM walls all of that off
 # for ~4 GB of RAM. The GPU/LLM containers stay native LXCs — they need host device access and
 # have nothing to gain here.
 #
@@ -33,8 +33,8 @@ MEMORY_MB="${MEMORY_MB:-4096}"
 DISK_SIZE="${DISK_SIZE:-40G}"
 DISK_STORAGE="${DISK_STORAGE:-local-lvm}"
 BRIDGE="${BRIDGE:-vmbr0}"
-# Fixed MAC so the dnsmasq reservation (10.10.10.100 docker-host) is deterministic and the
-# port-forwards keep resolving to this VM across reboots.
+# Fixed MAC so the DHCP reservation on the LAN router is deterministic and this VM keeps the
+# same address across reboots.
 MAC="${MAC:-BC:24:11:D0:CE:00}"
 START_ON_BOOT="${START_ON_BOOT:-1}"
 
@@ -335,13 +335,8 @@ print_summary() {
   printf '    if that happens, restart the container to reopen it:\n'
   printf '      ssh -i %s %s@%s -- docker restart portainer\n' "${SSH_KEY_FILE}" "${CI_USER}" "${ip}"
 
-  printf '\nReach it from the LAN by adding to host-net/wifi-nat/wifi-nat.env:\n'
-  printf '  RESERVATIONS  += "%s 10.10.10.100 %s"\n' "${MAC}" "${VM_NAME}"
-  printf '  PORT_FORWARDS += "tcp %s 10.10.10.100 %s"   # Portainer UI\n' \
-    "${PORTAINER_HTTPS_PORT}" "${PORTAINER_HTTPS_PORT}"
-  printf '  PORT_FORWARDS += "tcp 4000 10.10.10.100 4000"  # MealDeal\n'
-  printf '  then: /root/wifi-nat/install.sh --reload-dns && /root/wifi-nat/install.sh --reload-nft\n'
-  printf '  (then reboot the VM to take the reserved address: qm reboot %s)\n' "${VMID}"
+  printf '\nIt is on the LAN with its own DHCP lease.\n'
+  printf '  Reserve %s on the LAN router so the address is stable across reboots.\n' "${MAC}"
 }
 
 main() {

@@ -9,7 +9,7 @@ It holds **no secrets**, is **repo-agnostic** (one runner serves every repo the 
 created **once** — new repos are added purely on CT 121 via `hermes project`, never a new LXC.
 
 ```
-CT 121 hermes (10.10.10.121)                 CT 122 coder-runner (10.10.10.122, NO secrets)
+CT 121 hermes                                CT 122 coder-runner (NO secrets)
   gateway + kanban dispatcher                  node 26 + pnpm + git + build toolchain (+aider optional)
   git repos + managed worktrees + token  ── rsync worktree + ssh 'npm ci && checks' ──▶ runs ALL execution
   coder's native TEXT edits only               /build/<task>/ per task · disposable
@@ -36,8 +36,8 @@ CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" \
   ./create-lxc-coder-runner.sh
 ```
 
-Then add the dnsmasq reservation so CT 121 can reach it by name (`coder-runner`) — see
-`host-net/wifi-nat/wifi-nat.env` (`10.10.10.122`), and reload dnsmasq.
+Then reserve its MAC on the LAN router so CT 121 can keep reaching it by name
+(`coder-runner`) across reboots.
 
 ## Verify
 

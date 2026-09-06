@@ -37,7 +37,7 @@ services:
     # refuses single-label names, so `gpu2` and `llamacpp` never resolve. Verified: the same
     # container resolves them with this set and times out without it.
     dns:
-      - 10.10.10.1
+      - 192.168.1.1
     ports:
       - '${MEALDEAL_PORT:-4000}:4000'
     volumes:

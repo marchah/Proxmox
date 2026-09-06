@@ -153,7 +153,7 @@ SWAP_MB="${SWAP_MB:-4096}"
 CORES="${CORES:-8}"
 BRIDGE="${BRIDGE:-vmbr0}"
 IP_CONFIG="${IP_CONFIG:-dhcp}"
-# Fixed MAC so the dnsmasq reservation (10.10.10.123 gpu2) is deterministic.
+# Fixed MAC so the LAN router's DHCP reservation for gpu2 is deterministic.
 MAC="${MAC:-BC:24:11:C0:DE:23}"
 PASSWORD="${PASSWORD:-}"
 START_ON_BOOT="${START_ON_BOOT:-1}"

@@ -34,9 +34,8 @@ This is the same command the official Hermes Docker image runs.
 
 The provisioner points Hermes at CT 120 and writes `/root/.hermes/config.yaml`. It
 **prefers CT 120's hostname** (`TARGET_HOSTNAME`, default `llamacpp`) over a discovered
-IP, because a name that a shared resolver maps to CT 120 (e.g. the host WiFi-NAT setup's
-dnsmasq → CT 120's reserved IP) survives CT 120 address changes, whereas a baked-in IP
-goes stale (as it did on the ethernet→WiFi cutover). The name is **verified from inside
+IP, because a name the LAN router resolves to CT 120 survives CT 120 changing address,
+whereas a baked-in IP goes stale. The name is **verified from inside
 the Hermes container** at provision time; if it doesn't resolve there, it falls back to
 CT 120's discovered IP:
 
@@ -131,8 +130,8 @@ user allowlist (without an allowlist Hermes denies all incoming users).
   (config, skills, crons, sessions) lives outside the install dir and is preserved. Do **not**
   run `hermes gateway install` — it would clobber the hand-built unit and Slack manifest.
 - **CT 120 IP drift:** using `TARGET_HOSTNAME` (`llamacpp`, the default) makes `base_url`
-  robust to CT 120 changing address, as long as a shared resolver maps the name to CT 120
-  (the host WiFi-NAT dnsmasq does this via CT 120's reservation). If the provisioner had to
+  robust to CT 120 changing address, as long as the LAN router resolves the name to CT 120
+  (give CT 120 a DHCP reservation). If the provisioner had to
   fall back to a discovered IP (name didn't resolve from the Hermes CT), the old caveat
   applies: give CT 120 a DHCP reservation, and if it moves, edit `model.base_url` in
   `/root/.hermes/config.yaml` and `systemctl restart hermes`.

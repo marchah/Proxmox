@@ -24,14 +24,14 @@ below.)
 | Field | Value | Rationale |
 | --- | --- | --- |
 | VMID | `140` | Databases range `140-159` — the durable artifact is a vector+FTS **database**. (Alt: `122` in the AI range `120-139` since agents consume it. Decision flagged below.) |
-| Hostname | `kb-rag` | Reachable by name from the NAT LAN via dnsmasq, like `llamacpp`. |
+| Hostname | `kb-rag` | Reachable by name from the LAN, like `llamacpp`. |
 | Template | Debian 12 standard (`pveam`, latest) | Same as `hermes` / `bench-runner`. |
 | Privilege | **unprivileged** | No hardware access needed. |
 | GPU | **none** | Embeddings run on CPU (see below). No `/dev/dri` passthrough. |
 | Cores | `4` | Parallel embedding during reindex; idle otherwise. |
 | Memory | `4096` MB (bge-small) / `8192` MB (bge-m3) | ONNX runtime + model + FastAPI. The reranker this row once sized for was never built — see below. |
 | Root size | `12` GB | venv + ONNX model cache + git checkout + sqlite index. All rebuildable. |
-| Net | `vmbr0`, `ip=dhcp` | Gets `10.10.10.140` behind the host WiFi-NAT; agents reach it by hostname. |
+| Net | `vmbr0`, `ip=dhcp` | Gets its own LAN lease; agents reach it by hostname. |
 | On boot | yes | Persistent service. |
 | Backup | **in `vzdump` anyway** | Intent was rootfs `backup=0` (the index is rebuildable from git), but ⚠️ PVE rejects `backup=` on `rootfs` — it is mount-point-only (verified pve-manager 9.2.3), so the script's `pct set` is a silent no-op and this CT lands in the weekly backup. To skip the bulk: `vzdump 140 --exclude-path /opt/kb-rag`. |
 
@@ -284,9 +284,8 @@ kb-reindex.timer    OnBootSec=2min  OnUnitActiveSec=${REINDEX_INTERVAL}
 - **Read-only deploy key** — the container can only *pull* the KB, never push.
 - **Secrets never in argv/env** — deploy key + API key pushed as mode-600 files, read with
   `cat`, deleted; host copies removed immediately (the hermes idiom).
-- **Network scope:** internal NAT (`10.10.10.0/24`); agents reach it by hostname. No nft
-  port-forward by default. Add one (like the `:9119` dashboard forward) only if you want to
-  query it from the wider LAN.
+- **Network scope:** the container sits directly on the LAN with its own IP; agents reach it by
+  hostname. Every data endpoint is bearer-gated, which is what limits access — not the topology.
 
 ## Operations & consumption
 
