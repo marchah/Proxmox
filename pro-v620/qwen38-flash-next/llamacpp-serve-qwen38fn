@@ -89,6 +89,22 @@ args=(
 # 0 = none, which needs 82.6 GB of VRAM and does not fit two cards.
 [ -n "${MODEL_CPU_MOE:-}" ] && [ "${MODEL_CPU_MOE}" != "0" ] && args+=( --n-cpu-moe "${MODEL_CPU_MOE}" )
 
+# 🔴 Layer-split proportions across the cards (-ts). REQUIRED whenever MODEL_CPU_MOE is
+# set, and the reason is not obvious.
+#
+# --n-cpu-moe N moves the experts of the FIRST N layers to the CPU, so layers 0..N-1 are
+# "light" (attention only) and N..47 are "heavy" (~1.56 GB of experts each). llama.cpp's
+# default split divides the 48 layers EVENLY by count, which hands the first card mostly
+# light layers and the second card mostly heavy ones. Measured at --n-cpu-moe 20 with no
+# -ts: GPU 1 held 13.4 GiB while GPU 2 was pinned at 30.7 GiB and spilled 9.3 GiB to GTT
+# — 6.6 tok/s decode, against ~50 predicted. The cards were not short of memory in total
+# (53 GiB of demand against 60 GiB of capacity); it was purely maldistribution.
+#
+# Rough sizing: give card 1 all N light layers plus half the heavy ones, i.e.
+#   card1_layers = N + (48 - N) / 2      ->  -ts card1_layers,(48 - card1_layers)
+# At N=20 that is 34,14. Verify with per-card VRAM and GTT, never by assuming.
+[ -n "${MODEL_TENSOR_SPLIT:-}" ] && args+=( --tensor-split "${MODEL_TENSOR_SPLIT}" )
+
 # Model loading mode (-lm): auto | none | mmap | mlock. This replaces the now-deprecated
 # --mmap/--mlock/--dio (llama.cpp #28334).
 # 🔴 Load-bearing for THIS model, and llama.cpp says so itself at startup:

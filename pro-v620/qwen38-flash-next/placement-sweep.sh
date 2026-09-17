@@ -31,7 +31,12 @@ REPS="${REPS:-3}"
 N_PREDICT="${N_PREDICT:-256}"
 DEPTHS="${DEPTHS:-0,8000,32000}"
 ONE_GPU="${ONE_GPU:-false}"
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-1200}"
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-1800}"
+# auto | none | mmap | mlock. llama.cpp warns that CPU tensor overrides + mmap is slower
+# and suggests `none`; empty leaves the default.
+LOAD_MODE="${LOAD_MODE:-}"
+# Override the derived layer split (see start_server). Empty = derive from n_cpu_moe.
+TENSOR_SPLIT="${TENSOR_SPLIT:-}"
 # 48 MoE layers, ~1.56 GB of Q4 expert weight each, so each +1 hands ~1.56 GB back:
 #   15 = minimum that fits two cards · 20 = ~8 GB spare · 28 = ~20 GB spare
 #   34 = fits one card · 48 = all experts in RAM (the no-GPU-experts control)
@@ -87,6 +92,25 @@ start_server() {
   done
 
   set_env_var MODEL_CPU_MOE        "$ncmoe"
+  # 🔴 Derive the layer split from ncmoe — a FIXED split is wrong for every other value.
+  # --n-cpu-moe N makes layers 0..N-1 light (experts on CPU) and N..47 heavy, so an even
+  # split by layer COUNT loads the second card with all the heavy ones. Give card 1 the
+  # light layers plus half the heavy ones. Measured at ncmoe 20: without this, GPU 2
+  # pinned at 30.7 GiB and spilled 9.3 GiB to GTT for 6.6 t/s; with it, 25.7/21.7 GiB,
+  # no spill, 11.7 t/s. Override with TENSOR_SPLIT= to sweep the split itself.
+  if [ "$EXPECTED_GPUS" -ge 2 ]; then
+    if [ -n "${TENSOR_SPLIT:-}" ]; then
+      ts="$TENSOR_SPLIT"
+    else
+      c1=$(( ncmoe + (48 - ncmoe) / 2 ))
+      ts="${c1},$(( 48 - c1 ))"
+    fi
+    set_env_var MODEL_TENSOR_SPLIT "$ts"
+    log "tensor-split ${ts} (derived from n_cpu_moe ${ncmoe})"
+  else
+    set_env_var MODEL_TENSOR_SPLIT ""
+  fi
+  set_env_var MODEL_LOAD_MODE      "${LOAD_MODE:-}"
   set_env_var MODEL_CONTEXT_LENGTH "$CTX"
   set_env_var MODEL_PARALLEL       "$PARALLEL"
   set_env_var MODEL_EXPECTED_GPUS  "$EXPECTED_GPUS"
@@ -117,6 +141,7 @@ cat >"${OUT_DIR}/manifest.json" <<JSON
  "ctx": ${CTX}, "parallel": ${PARALLEL}, "reps": ${REPS},
  "n_predict": ${N_PREDICT}, "depths": "${DEPTHS}",
  "one_gpu": ${ONE_GPU}, "expected_gpus": ${EXPECTED_GPUS},
+ "load_mode": "${LOAD_MODE}", "tensor_split_override": "${TENSOR_SPLIT}",
  "server_extra": "${SERVER_EXTRA}", "ncmoe_list": "${NCMOE_LIST}",
  "llamacpp_dir": "$(pct exec "$VMID" -- bash -lc "grep -m1 '^LLAMACPP_DIR=' ${ENVFILE} | cut -d= -f2")",
  "host_ram_gib": $(free -g | awk '/^Mem:/{print $2}'),

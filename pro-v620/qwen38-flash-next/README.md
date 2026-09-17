@@ -122,6 +122,104 @@ ONE_GPU=true NCMOE_LIST="34 40 48" ./placement-sweep.sh   # is one card faster? 
 and a `SUMMARY.md` carrying the decode table, the **VRAM-freed-versus-decode-lost trade**,
 the depth curve, and the template-contract result.
 
+## Measured, 2026-09-17 — first run of this architecture on RADV
+
+✅ **It works.** Output is coherent, non-degenerate (8-gram ratio 1.0) and reproducible
+across reps at temperature 0. As far as this KB can tell these are the first
+Qwen3.8-Flash-Next numbers on a Vulkan/RDNA2 target anywhere — upstream validated CPU and
+CUDA only, and the Vulkan hyper-connection ops merged hours before this ran.
+
+🔴 **But it is ~4x slower than the sizing note predicts, and the note's whole method is
+why.** At `--n-cpu-moe 20`, ctx 65536, two cards:
+
+| | decode | note's prediction | my prediction |
+| --- | ---: | ---: | ---: |
+| 2 cards, `-ncmoe 20` | **11.74 t/s** | 51 t/s | 56 t/s |
+
+Both estimates model decode as *active bytes ÷ bandwidth*. The measurement says that is
+the wrong model for a hybrid placement — see the utilisation trace below.
+
+### 🔴 `--tensor-split` is REQUIRED with `--n-cpu-moe`, and nothing warns you
+
+The single biggest effect found, and it is a configuration bug rather than a hardware
+limit. `--n-cpu-moe N` moves the experts of the **first** N layers to the CPU, so layers
+`0..N-1` are light and `N..47` are heavy (~1.56 GB of experts each). llama.cpp's default
+split divides 48 layers **evenly by count**, handing card 1 mostly light layers and card 2
+mostly heavy ones:
+
+| `-ncmoe 20` | GPU 1 | GPU 2 | decode |
+| --- | ---: | ---: | ---: |
+| default split | 13.4 GiB, 0.2 GiB GTT | **30.7 GiB, 9.3 GiB GTT** | **6.6 t/s** |
+| `--tensor-split 34,14` | 25.1 GiB, 14 MiB GTT | 21.2 GiB, 14 MiB GTT | **11.74 t/s** |
+
+**+78% decode and ~3x prefill, from rebalancing alone.** The cards were never short of
+memory *in total* — 53 GiB of demand against 60 GiB of capacity. It was pure
+maldistribution, and the symptom was a 9.3 GiB GTT spill on one card while the other sat
+17 GiB idle. Rule of thumb, now derived automatically by `placement-sweep.sh`:
+
+```
+card1_layers = N + (48 - N) / 2      # -ts card1_layers,(48 - card1_layers)
+```
+
+### 🔴 Nothing is saturated — this is serialization-bound, not bandwidth-bound
+
+Sampled during a 300-token decode:
+
+```
+gpu1=35% gpu2=13%   gpu1=43% gpu2= 2%
+gpu1=13% gpu2=26%   gpu1=83% gpu2= 0%
+gpu1= 6% gpu2=31%   gpu1=16% gpu2=71%     host CPU 33-43% throughout
+```
+
+**The two cards alternate and neither is busy; the CPU is a third idle.** Every token
+walks 20 CPU expert layers, then card 1's layers, then card 2's, synchronising at each
+handoff — 48 layers of serial dependency with three participants. That is a *latency*
+cost, and it is invisible to any `bytes ÷ bandwidth` model. ✅ **This is the finding that
+matters for the purchase decision in the sizing note: its arithmetic cannot predict a
+hybrid placement, and measured reality is 4x below it.**
+
+### ⚠️ `--load-mode none` is llama.cpp's own advice and it is WRONG here
+
+llama-server prints, at every start, `tensor overrides to CPU are used with mmap enabled -
+consider using --load-mode none for better performance`. Measured, same config:
+
+| load mode | decode | GPU 1 GTT |
+| --- | ---: | ---: |
+| `auto` (mmap) | **11.74 t/s** | 14 MiB |
+| `none` | 11.18 t/s (−5%) | **31.6 GiB** |
+
+`none` is marginally slower *and* pulls 31.6 GiB into GTT. Kept on `auto`. ✅ **Treat that
+startup hint as a hypothesis, not instruction.**
+
+### ✅ The template trap is real but `--reasoning off` neutralises it
+
+Measured against the running server — and this is the opposite of what reading the
+template alone implies:
+
+| client sends | result |
+| --- | --- |
+| nothing | ✅ `content='OK'` |
+| `reasoning_effort: "none"` | ✅ `content='OK'` — **does not raise** |
+| `reasoning_effort: "high"` | ✅ `content='OK'` — **does not raise** |
+| `"low"` / `"medium"` / `"xhigh"` | ✅ `content='OK'` |
+
+With `--reasoning off` set server-side, llama.cpp does not pass the effort through to the
+template, so the values that *would* raise never reach it. `reasoning_content` comes back
+`''` and `content` stays clean, confirming `--reasoning-format auto` is siphoning the empty
+`<think>` pair correctly. **So a caller carrying settings over from CT 123 cannot break
+this server** — the protection works. `placement-probe.py --contract` asserts exactly that
+(it originally asserted the reverse, which was wrong).
+
+### Load times, which bound any "elastic reallocation" scheme
+
+| | |
+| --- | ---: |
+| First load, cold page cache, 111 GB off the SATA 860 EVO | **2 m 38 s** |
+| Reload with the file in page cache (160 GiB cap holds it) | **40–46 s** |
+
+So the two-profile elasticity idea costs ~45 s per flip once warm, not the ~4 minutes a
+cold load implies. Still far too slow to do per-request; fine at a role handoff.
+
 ## ⚠️ Warnings
 
 - 🔴 **Multi-GPU is the *penalised* path for this architecture right now, which inverts

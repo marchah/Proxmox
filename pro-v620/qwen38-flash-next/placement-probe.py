@@ -76,18 +76,32 @@ def contract_check(base):
     except Exception as e:
         out["bare_chat"] = {"ok": False, "error": repr(e)[:200]}
 
-    # These two MUST be rejected by the template. A 200 here means the contract moved.
-    for bad in ("none", "high"):
+    # 🔴 MEASURED 2026-09-17, and it is the opposite of what the template alone implies.
+    # The raw template raises on "none" and "high". But with --reasoning off set on the
+    # server, llama.cpp does not hand the effort through to the template, so BOTH values
+    # come back HTTP 200 with clean content. That is the desired outcome: the server flag
+    # NEUTRALISES the caller-side trap rather than exposing it.
+    # So the assertion is "a caller cannot break this", not "the template rejects it".
+    # A non-200, or empty content, means the protection has regressed.
+    for val in ("none", "high", "low", "medium", "xhigh"):
         try:
             r = post(base + "/v1/chat/completions",
                      {"model": "qwen3.8-flash-next", "messages": msgs,
-                      "max_tokens": 16, "reasoning_effort": bad})
-            out["effort_" + bad] = {"raised": False,
-                                    "note": "accepted — contract CHANGED, re-read the template"}
+                      "max_tokens": 32, "temperature": 0, "reasoning_effort": val})
+            ch = r["choices"][0]["message"]
+            ok = bool((ch.get("content") or "").strip())
+            out["effort_" + val] = {
+                "harmless": ok,
+                "content": (ch.get("content") or "")[:40],
+                "note": "" if ok else "200 but EMPTY content — --reasoning off may have stopped working",
+            }
         except urllib.error.HTTPError as e:
-            out["effort_" + bad] = {"raised": True, "http": e.code}
+            out["effort_" + val] = {
+                "harmless": False, "http": e.code,
+                "note": "rejected — --reasoning off is no longer shielding callers",
+            }
         except Exception as e:
-            out["effort_" + bad] = {"raised": True, "error": repr(e)[:120]}
+            out["effort_" + val] = {"harmless": False, "error": repr(e)[:120]}
     return out
 
 

@@ -237,6 +237,30 @@ These containers form the system:
     lookup uses, small-M matrix opts for qwen #28457). Verified: qwen3.6 serves clean output on
     b11018. ⚠️ **CT 123 is stopped and its container is still on b10678** — its script pin
     moved, so a rebuild is correct, but a plain `pct start 123` brings back the old build.
+  - 🔴 **`--tensor-split` is REQUIRED alongside `--n-cpu-moe`, and nothing warns you.**
+    `--n-cpu-moe N` moves the experts of the **first** N layers to the CPU, so `0..N-1` are light
+    and `N..47` are heavy (~1.56 GB each); llama.cpp's default split divides 48 layers **evenly by
+    count** and hands card 2 all the heavy ones. Measured at `-ncmoe 20`: default split put GPU 1
+    at 13.4 GiB and pinned GPU 2 at 30.7 GiB **spilling 9.3 GiB to GTT → 6.6 t/s**, while
+    `--tensor-split 34,14` gave 25.1/21.2 GiB, **no spill, 11.74 t/s (+78%)**. The cards were never
+    short of memory in total (53 GiB of demand vs 60 GiB capacity) — pure maldistribution. Rule:
+    `card1 = N + (48 − N)/2`, derived automatically by `placement-sweep.sh`.
+  - 🔴 **Measured decode is ~4x BELOW the sizing note, and the reason invalidates its method.**
+    11.74 t/s against the note's 51. During decode **nothing is saturated** — the two cards
+    alternate (6–83% each) and the host CPU sits at 33–43% — because every token walks 20 CPU
+    expert layers then card 1's then card 2's, synchronising at each handoff. That is a **latency**
+    cost, invisible to the note's `active bytes ÷ bandwidth` model. ✅ Treat every hybrid-placement
+    figure in `large-moe-build-shapes.md` as an upper bound that has now been falsified by 4x.
+  - ⚠️ **`--load-mode none` is llama.cpp's own startup advice for this config and it is WRONG
+    here**: 11.18 t/s vs 11.74 on `auto`, and it pulls **31.6 GiB into GTT**. Kept on `auto`.
+    Treat that hint as a hypothesis.
+  - ✅ **`--reasoning off` NEUTRALISES the template trap** — measured, and the opposite of what the
+    template alone implies. With it set, `reasoning_effort` of `none`/`high`/`low`/`medium`/`xhigh`
+    **all return clean content**; the raising values never reach the template. So a caller carrying
+    CT 123's settings over cannot break this server. `reasoning_content` is `''`, confirming
+    `--reasoning-format auto` siphons the empty `<think>` pair.
+  - Load times, which bound any elastic-reallocation scheme: **2 m 38 s cold** (111 GB off the SATA
+    SSD), **40–46 s warm** once the 160 GiB cap holds the file in page cache.
   - 🔴 **Multi-GPU is the *penalised* path for this arch, inverting "more cards is better".**
     llama.cpp #28699 measured the QSA indexer's pooled rows crossing inter-GPU links every layer
     at **2x decode cost** on a layer split; the per-device fix is an **open draft**, and #28623
