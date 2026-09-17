@@ -14,19 +14,17 @@ These containers form the system:
 
 - **CT 120** (`pro-v620/`): a *privileged* Ubuntu LXC — the **LLM runtime** — serving
   `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, 35B total / ~3B active) via Vulkan, exposing an
-  OpenAI-compatible API at `0.0.0.0:1234` under the id `qwen3.6-35b-a3b`. The host now has
-  **two Radeon Pro V620s** (Navi 21 / gfx1030, 32 GB each): one in the **PCIe-1** (CPU) slot
-  `0000:2d:00.0`, one in the **PCIe-3** (chipset) slot `0000:06:00.0`, each cooled by its **own
-  9733 radial blower**, both hanging off one SATA-powered PWM hub whose control lead sits on the
-  **PUMP FAN** header (one `gpu-fan-control@hub` instance on pwm2, curve tracks the hotter card).
-  With both cards saturated at once they settle around 62 / 73 °C at 51 % fan — thermals are not a
-  constraint on this box. CT 120 is **pinned to GPU 1 alone** (`0000:2d:00.0`): its
+  OpenAI-compatible API at `0.0.0.0:1234` under the id `qwen3.6-35b-a3b`. The host has
+  **two Radeon Pro V620s** (Navi 21 / gfx1030, 32 GB each): `0000:83:00.0` (top) and
+  `0000:03:00.0` (bottom), **both CPU-direct Gen4 x16** on the ROMED8-2T, each cooled by its own
+  9733 radial blower on a board fan header and driven by `pro-v620/gpu-blower-control/`. Under
+  sustained MoE load a card settles at **55 / 62 °C edge/junction at ~35 % fan** — thermals are not
+  a constraint. CT 120 is **pinned to GPU 1 alone** (`0000:83:00.0`): its
   container bind-mounts only that card's `/dev/dri` render node (via the udev-stable `by-path`
   symlink — the reboot-stable way to pin one of two identical cards), so llama.cpp sees a single
-  Vulkan device and runs the whole ~26.6 GB model on it. ⚠️ **This card assignment is not
-  arbitrary** — GPU 2's chipset slot costs a fixed ~3.45 ms per decoded token, i.e. −22 % on this
-  MoE, so the model belongs on GPU 1 (see the two-slot benchmark under Conventions).
-  **GPU 2 (`0000:06:00.0`) runs CT 123 `gpu2`**
+  Vulkan device and runs the whole ~26.6 GB model on it. ✅ **Either card will now do** — the B550's
+  chipset-slot decode tax is gone with the platform move; all seven ROMED8-2T slots are CPU-direct.
+  **GPU 2 (`0000:03:00.0`) runs CT 123 `gpu2`**
   (a `llama-swap` server for the autonomous coding loop — see below); it stays amdgpu-bound so the host
   fan/undervolt/watchdog services manage both. Both cards are undervolted −100 mV:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
@@ -50,7 +48,7 @@ These containers form the system:
     autonomous coding loop that hot-swaps between a coder model (Qwen3.8-27B, alias
     `qwen3.8-27b-dflash2`) and a reviewer model (ThinkingCap-Qwen3.6-27B, alias `thinkingcap-27b`),
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
-    Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:06:00.0`, by-path, REAL node name) + the loud-guard.
+    Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:03:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
     - 📐 **KV-cache quantisation: q8_0 is free on speed, but BREAKS thinking termination.**
       q8_0 KV costs zero throughput (marginally faster, unchanged at 2× context) — the trade-off is
@@ -647,40 +645,37 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   two entries + restart the CT — see the README "Recovering after a DRM renumber" recipe; a
   plain re-run is rejected while the CT exists). The `llamacpp-serve` guard turns the
   otherwise-silent CPU fallback into a loud startup failure.
-- ⚠️ **The two PCIe slots are NOT equivalent — GPU 2 pays a fixed per-token decode tax.**
-  GPU 1 is Gen4 x16, GPU 2 is Gen3 x4 off the chipset. The penalty is a **fixed ~4 ms per decoded
-  token**, not a percentage — constant across depths and confirmed on two architectures. So it
-  hurts FAST models most: ~4 ms on this MoE's 12 ms token is **−22%**, but on a dense 27B's 53 ms
-  token only −7%.
-  - **Never move `qwen3.6-35b-a3b` to GPU 2** — it would surrender ~22% of decode. The dense loop
-    models on CT 123 are correctly placed and barely notice.
-  - **GPU 2 is the *stronger* card** — it wins every prefill test and sustains higher clocks, yet
-    loses ~20% of decode. Prefill batches thousands of tokens per submission and amortises the
-    interconnect round-trip away; decode issues one token at a time and pays it every token. So a
-    physical slot swap is unnecessary to rank the two cards.
-  - ⚠️ **`current_link_speed` / `current_link_width` LIE** — both report `16.0 GT/s PCIe x16` for
-    *both* cards. Ground truth is the starred line of `pp_dpm_pcie`. Closing the gap needs slot
-    bifurcation in BIOS, blocked by the host having no video output — so the headless-BIOS problem
-    gates ~22% of MoE decode on GPU 2, not merely C-states.
+- ✅ **Both PCIe slots are equivalent on this board.** All seven ROMED8-2T slots are CPU-direct
+  Gen4 x16, verified on both cards via `pp_dpm_pcie`. The B550's chipset-slot penalty — a fixed
+  ~4 ms per decoded token, i.e. **−22% on this MoE** and the reason the model had to live on GPU 1 —
+  **no longer applies**, so either card can host either workload.
+  - ⚠️ **`current_link_speed` / `current_link_width` still are not trustworthy in general.** On the
+    B550 both reported `16.0 GT/s x16` while one card was really Gen3 x4. Ground truth is the
+    **starred line of `pp_dpm_pcie`**; check that, not the friendly file.
+  - The mechanism is worth keeping: an interconnect round-trip is a **fixed per-token cost**, so it
+    hurts FAST models most — ~4 ms on a 12 ms MoE token is −22%, on a dense 27B's 53 ms token only
+    −7%. Prefill batches thousands of tokens per submission and amortises it away; decode pays it
+    every token. Re-measure before trusting any slot to be free.
   - Harness: **`pro-v620/gpu-ab-bench/`** (host-side, NOT a service). Read its README before
     re-running: it carries the interleaving method, the "verify every control" checklist, the
     ⚠️ **revert `ct123-dual-gpu.sh` before production returns** rule, and the output-sanity gate.
 - **V620 host-side GPU services live under `pro-v620/` and run on the Proxmox host (NOT in the
-  LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`. `pro-v620/fan-control/`
-  runs one `gpu-fan-control@<instance>` per **controllable fan channel** (out-of-tree `nct6687`) —
-  currently a single **`@hub`→pwm2** driving BOTH cards' 9733 blowers through a SATA-powered PWM
-  hub on the PUMP FAN header (curve tracks the hotter card; a required sensor missing on either
-  forces 100%). Each card has its own blower, so only the *control signal* is shared.
-  ⚠️ **Only `PUMP_FAN1` can control an externally-powered fan on this board** — the `SYS_FAN*`
-  headers are in DC (voltage) mode, so their pin 4 carries no PWM signal and a SATA-powered fan
-  free-runs at 100 % there forever. No software fix exists (no `pwm*_mode`, firmware-configured,
-  Nuvoton publishes no NCT6687D register map, and this host has no video output to reach BIOS);
-  CoolerControl/`fancontrol` cannot help — they write the same sysfs files. ⚠️ **A tach reading
-  proves NOTHING about control**: a 4-pin fan with no PWM signal reports RPM perfectly while
-  ignoring every duty change, which cost ~2 weeks of misdiagnosis (a fan and a hub were each
-  wrongly declared dead). Confirm control by driving the channel to 0 and checking the fan STOPS.
-  ⚠️ The hub returns a tach from its **RED port only**, so one blower's failure is invisible to the
-  tach watchdog. Each instance pins its GPU(s) by PCI address and is driven off the card temp(s);
+  LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`.
+  **`pro-v620/gpu-blower-control/`** drives each card's blower from that card's amdgpu temps by
+  writing **BMC fan duty over in-band IPMI** (`ipmitool raw 0x3a 0xd6`, `/dev/ipmi0`). Control law
+  is the B550 one — linear ramp on **edge** temp plus a hotspot override on the hottest of
+  junction/mem — and a missing sensor or failed write forces 100%.
+  ⚠️ **The BMC has no GPU temperature sensor**, so its own fan tables can never cool a passive
+  card; this service is the only thing closing that loop.
+  🔴 **Do NOT infer which blower cools which card from PCI bus order — here it is reversed**
+  (`FAN4`→`0000:83:00.0` top, `FAN5`→`0000:03:00.0` bottom). Getting it backwards is nearly
+  undiagnosable: each card's blower ramps on the *other* card's heat, both cards appear to "fail to
+  cool" identically, and shroud/airflow/undervolt/PCIe all test clean. Verify by **starving one
+  blower under load** — see that service's README.
+  ⚠️ **A tach reading proves NOTHING about control**: confirm by driving a channel down and
+  checking the fan actually slows.
+  ⚠️ `pro-v620/fan-control/` (out-of-tree `nct6687` PWM sysfs) is the **B550-era predecessor and
+  does not work on this board** — no server board has that Super I/O chip. Kept for reference.
   `pro-v620/undervolt/` applies a persistent GFX **voltage offset** to **every** V620
   (both at −100 mV). The V620's board power
   is **firmware-locked at 250 W** (`power1_cap` write of any other value → `-EINVAL`) and

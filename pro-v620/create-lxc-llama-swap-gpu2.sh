@@ -16,11 +16,11 @@ set -Eeuo pipefail
 # added by hand to /etc/llama-swap/config.yaml and deliberately not baked here —
 # see the note in CLAUDE.md. A rebuild gives you these two and nothing else.
 readonly GPU_NAME="Radeon Pro V620"
-# This container is pinned to GPU 2 (PCIe-3/chipset slot). GPU 1 (0000:2d:00.0)
+# This container is pinned to GPU 2 (bottom card). GPU 1 (0000:83:00.0)
 # runs CT 120 (qwen3.6 ops). Passthrough binds ONLY GPU 2's DRM nodes — the only
 # reboot-stable way to pin one of two IDENTICAL cards (see configure_gpu_passthrough).
-readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:06:00.0}"    # GPU 2 (PCIe-3/chipset) — the card this container uses
-readonly OTHER_GPU_PCI_ADDRESS="${OTHER_GPU_PCI_ADDRESS:-0000:2d:00.0}"  # GPU 1 (PCIe-1/CPU) — runs CT 120, NOT passed through here
+readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:03:00.0}"    # GPU 2 (bottom card) — the card this container uses
+readonly OTHER_GPU_PCI_ADDRESS="${OTHER_GPU_PCI_ADDRESS:-0000:83:00.0}"  # GPU 1 (top card) — runs CT 120, NOT passed through here
 
 # Pinned prebuilt Vulkan llama.cpp release (same as CT 120). llama-swap launches
 # this llama-server per model. Bump TAG + SHA256 together from
@@ -117,7 +117,7 @@ readonly CODER_NPREDICT="${CODER_NPREDICT:-32768}" # thinking model — 8k trunc
 # ⚠️ The llamaswap-guarded-serve guard does NOT catch this. It only fails loudly when the
 # GPU is missing entirely (CPU/software fallback). A GTT spill keeps every layer nominally
 # "on GPU", so the guard passes. Verify a new ctx by hand after loading the model:
-#   cat /sys/bus/pci/devices/0000:06:00.0/mem_info_{vram_used,gtt_used}
+#   cat /sys/bus/pci/devices/0000:03:00.0/mem_info_{vram_used,gtt_used}
 # gtt_used must stay small (~0.3 GiB is normal host-visible scratch); hundreds of MB is
 # fine, GiB means the context is too big for this card. Raise ctx only with that check.
 
@@ -164,7 +164,7 @@ Create an Ubuntu LXC running llama-swap on GPU 2 of a dual-V620 host — the
 autonomous coding loop's model server (swaps a coder + a reviewer model).
 
 Fixed target:
-  GPU:    Radeon Pro V620 GPU 2 (0000:06:00.0) — GPU 1 runs CT 120 (qwen3.6 ops)
+  GPU:    Radeon Pro V620 GPU 2 (0000:03:00.0) — GPU 1 runs CT 120 (qwen3.6 ops)
   Engine: llama-swap (Go proxy) launching llama.cpp llama-server per model
   Models: qwen3.8-27b-dflash2 (Qwen3.8-27B coder, DFlash2-accelerated + vision)
           + thinkingcap-27b (ThinkingCap-Qwen3.6-27B, reviewer)
@@ -175,7 +175,7 @@ Run this script on the Proxmox host as root. Defaults to VMID 123 / hostname gpu
 
 Useful overrides:
   VMID=123 LXC_HOSTNAME=gpu2 ./create-lxc-llama-swap-gpu2.sh
-  GPU_PCI_ADDRESS=0000:06:00.0 ./create-lxc-llama-swap-gpu2.sh
+  GPU_PCI_ADDRESS=0000:03:00.0 ./create-lxc-llama-swap-gpu2.sh
   CODER_CTX=131072 REVIEWER_CTX=65536 ./create-lxc-llama-swap-gpu2.sh
 
 Notes:

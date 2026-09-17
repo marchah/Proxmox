@@ -1,0 +1,17 @@
+[Unit]
+Description=GPU blower control (amdgpu junction temp -> BMC fan duty over in-band IPMI)
+Documentation=https://github.com/marchah/Proxmox
+After=multi-user.target
+ConditionPathExists=/dev/ipmi0
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/gpu-blower-control.env
+ExecStart=/usr/local/sbin/gpu-blower-control
+Restart=always
+RestartSec=5
+# if the unit dies for good, leave the blowers at full rather than wherever they were
+ExecStopPost=/bin/sh -c 'ipmitool raw 0x3a 0xd6 0x14 0x14 0x14 0x64 0x64 0x14 0x14 0x1e 0x1e 0x1e 0x1e 0x1e 0x1e 0x1e 0x1e 0x1e >/dev/null 2>&1 || true'
+
+[Install]
+WantedBy=multi-user.target

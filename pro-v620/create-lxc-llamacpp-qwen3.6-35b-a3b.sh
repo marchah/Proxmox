@@ -10,8 +10,8 @@ set -Eeuo pipefail
 # llama-server on an OpenAI-compatible API at 0.0.0.0:1234. There is no LM Studio
 # sibling for this card (see pro-v620/README.md); llama.cpp is the chosen engine.
 readonly GPU_NAME="Radeon Pro V620"
-# The host has TWO V620s (PCIe-1/CPU slot 0000:2d:00.0 and PCIe-3/chipset slot
-# 0000:06:00.0), but this container is pinned to GPU 1 ALONE: the ~26.6 GB model
+# The host has TWO V620s (0000:83:00.0 top, 0000:03:00.0 bottom; both CPU-direct
+# Gen4 x16), but this container is pinned to GPU 1 ALONE: the ~26.6 GB model
 # fits a single 32 GB card, so there is no reason to split it, and leaving GPU 2
 # idle keeps it free for a future second service. Passthrough binds only GPU 1's
 # DRM nodes (see configure_gpu_passthrough) — bind-isolating one render node is the
@@ -20,7 +20,7 @@ readonly GPU_NAME="Radeon Pro V620"
 # amdgpu-bound (the host fan/undervolt/watchdog services expect both cards);
 # "idle" here means no workload, not removed. Set GPU_PCI_ADDRESS= to pin the
 # other card instead.
-readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:2d:00.0}"    # GPU 1 (PCIe-1/CPU) — the card this container uses
+readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:83:00.0}"    # GPU 1 (top card) — the card this container uses
 # The other V620 (left idle) is INFORMATIONAL ONLY (logs/comments); the passthrough
 # uses GPU_PCI_ADDRESS alone. It is DERIVED at runtime (resolve_idle_gpu) from the
 # other V620 present, so it can't collide with the pinned card when GPU_PCI_ADDRESS
@@ -141,8 +141,8 @@ After it is up, change context length / parallel slots without re-provisioning:
 Important:
   The container is privileged so GPU passthrough (the Vulkan render node) works
   with less friction. Treat it as a trusted container. It is pinned to ONE V620
-  (GPU 1, 0000:2d:00.0) by bind-mounting only that card's DRM nodes; the second
-  card (GPU 2, 0000:06:00.0) is left idle/free. Set GPU_PCI_ADDRESS= to pin the
+  (GPU 1, 0000:83:00.0) by bind-mounting only that card's DRM nodes; the second
+  card (GPU 2, 0000:03:00.0) is left idle/free. Set GPU_PCI_ADDRESS= to pin the
   other card. Keep GPU 2 present + amdgpu-bound so the host fan/undervolt/watchdog
   services stay happy.
 USAGE

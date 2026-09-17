@@ -74,7 +74,7 @@ Creates a privileged Ubuntu LXC serving a high-parameter Qwen model on the
 **Radeon Pro V620** (Navi 21 / gfx1030, 32 GB) via **Vulkan**:
 
 - GPU: **two Radeon Pro V620s** (32 GB each — replaced the 12 GiB RX 6700 XT), one in
-  PCIe-1 (`0000:2d:00.0`) and one in PCIe-3 (`0000:06:00.0`). The ~26.6 GB model fits one
+  `0000:83:00.0` (top) and `0000:03:00.0` (bottom), both CPU-direct Gen4 x16. The ~26.6 GB model fits one
   card, so **CT 120 is pinned to GPU 1 alone**, and **GPU 2 runs CT 123 `gpu2`** (a
   `llama-swap` server). Each card has its **own 9733 blower**, both driven through a
   SATA-powered PWM hub on the PUMP FAN header (one curve tracking the hotter card), and both
