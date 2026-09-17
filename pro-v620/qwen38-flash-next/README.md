@@ -64,8 +64,9 @@ which silently corrupts every generated file. `auto` siphons it into `reasoning_
    checkpoint, ~28.7 GB at Q4, but it is a **row lookup, not a matmul**: a handful of
    rows per token, so it costs almost nothing in host RAM. This alone takes the GPU-side
    model from 111.3 GB to **~82.6 GB**, and it is why Q4 is reachable at all.
-2. **Routed experts, layer by layer** — `--n-cpu-moe N` over 48 MoE layers, ~1.56 GB of
-   Q4 expert weight each. **This is the dial**, and the subject of `placement-sweep.sh`.
+2. **Routed experts, layer by layer** — `--n-cpu-moe N` keeps the experts of the **first
+   N** of 48 MoE layers in host RAM, ~1.56 GB of Q4 expert weight each. **This is the
+   dial**, and the subject of `placement-sweep.sh`. (`-cmoe` is the all-48 shorthand.)
 
 | `--n-cpu-moe` | VRAM for the model | free for a second model | why you'd pick it |
 |---:|---:|---:|---|

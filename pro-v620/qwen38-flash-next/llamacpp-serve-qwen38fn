@@ -84,8 +84,17 @@ args=(
 # time — this is what takes the GPU-side model from 111.3 GB down to ~82.6 GB.
 [ -n "${MODEL_OT_OVERRIDE:-}" ] && args+=( --override-tensor "${MODEL_OT_OVERRIDE}" )
 
-# Routed experts for the last N of 48 MoE layers in host RAM. 0 = none (needs 82.6 GB).
+# Routed experts for the FIRST N of 48 MoE layers in host RAM (llama.cpp's wording:
+# "keep the Mixture of Experts (MoE) weights of the first N layers in the CPU").
+# 0 = none, which needs 82.6 GB of VRAM and does not fit two cards.
 [ -n "${MODEL_CPU_MOE:-}" ] && [ "${MODEL_CPU_MOE}" != "0" ] && args+=( --n-cpu-moe "${MODEL_CPU_MOE}" )
+
+# Optional server-side effort level, as a FALLBACK. --reasoning off above should be
+# enough: it sets enable_thinking=false, and an unset effort resolves to 'xhigh', which
+# the template accepts (it only raises on values OUTSIDE xhigh/medium/low). If the
+# contract check ever shows bare chat requests failing, pin MODEL_REASONING_EFFORT=low
+# rather than reaching for "none", which this template rejects.
+[ -n "${MODEL_REASONING_EFFORT:-}" ] && args+=( --reasoning-effort "${MODEL_REASONING_EFFORT}" )
 
 # Vision. Costs ~1.1 GiB of VRAM; --no-mmproj-offload keeps it on CPU for zero VRAM at
 # 3-5x on image encoding only (text throughput unaffected).
