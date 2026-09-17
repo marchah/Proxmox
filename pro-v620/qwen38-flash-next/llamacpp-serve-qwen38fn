@@ -89,6 +89,18 @@ args=(
 # 0 = none, which needs 82.6 GB of VRAM and does not fit two cards.
 [ -n "${MODEL_CPU_MOE:-}" ] && [ "${MODEL_CPU_MOE}" != "0" ] && args+=( --n-cpu-moe "${MODEL_CPU_MOE}" )
 
+# Model loading mode (-lm): auto | none | mmap | mlock. This replaces the now-deprecated
+# --mmap/--mlock/--dio (llama.cpp #28334).
+# 🔴 Load-bearing for THIS model, and llama.cpp says so itself at startup:
+#   "tensor overrides to CPU are used with mmap enabled - consider using --load-mode none
+#    for better performance"
+# With mmap, the ~28.7 GB PLE table and every CPU-resident expert layer are FILE-BACKED,
+# so the kernel may evict them and fault them back from the SATA 860 EVO — which turns a
+# bandwidth measurement into a disk measurement, the exact failure the KB warned about.
+# `none` reads them into anonymous memory instead; with swap 0 and MemorySwapMax=0 they
+# then genuinely stay resident. Left unset (auto) until the sweep measures it.
+[ -n "${MODEL_LOAD_MODE:-}" ] && args+=( --load-mode "${MODEL_LOAD_MODE}" )
+
 # Optional server-side effort level, as a FALLBACK. --reasoning off above should be
 # enough: it sets enable_thinking=false, and an unset effort resolves to 'xhigh', which
 # the template accepts (it only raises on values OUTSIDE xhigh/medium/low). If the
