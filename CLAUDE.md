@@ -744,6 +744,23 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   junction/mem — and a missing sensor or failed write forces 100%.
   ⚠️ **The BMC has no GPU temperature sensor**, so its own fan tables can never cool a passive
   card; this service is the only thing closing that loop.
+  ✅ **But it DOES monitor the CPU and every DIMM, and acts on them — so those need no host
+  service.** The GPU is the *only* thermal gap on this board, which is exactly why
+  `gpu-blower-control` exists and why there is no CPU/RAM equivalent. Read them with
+  `ipmitool sdr type Temperature`: `CPU Temp`, `MB Temp`, `Card Side Temp`, `Onboard LAN Temp`,
+  and **one sensor per memory channel, `TEMP_CPU1_DDR4A` through `…DDR4H`** — an unpopulated
+  channel reports `No Reading`, which is how to tell which slots are filled without opening the
+  case (`dmidecode`'s `Locator` is useless here: ASRock reports every slot as `DIMM 0`).
+  Baseline measured 2026-09-17 under the qwen4exp placement sweep, **4 of 8 channels populated
+  (C, D, G, H)**: DIMMs **45-50 °C** (H hottest, G coolest, ~4 °C spread from airflow position),
+  CPU **41 °C**, fans 1200-2400 RPM. DDR4 RDIMMs throttle near 85 °C, so that is ~35 °C of
+  headroom, and the BMC exposes **no upper threshold** on the DIMM sensors to trip on.
+  ⚠️ Expect **+5-10 °C when the other four sticks land** — A/B/E/F are currently acting as
+  airflow gaps, and filling them both adds heat sources and restricts flow.
+  ✅ **Flat DIMM temps are a useful independent check on whether a workload is really
+  memory-bandwidth-bound.** They did not budge while CPU utilisation swung 2% → 50%, which
+  corroborates, from a completely different sensor, the finding that the hybrid qwen4exp
+  placement is latency-bound rather than saturating the ~92 GB/s the sizing note assumes.
   🔴 **Do NOT infer which blower cools which card from PCI bus order — here it is reversed**
   (`FAN4`→`0000:83:00.0` top, `FAN5`→`0000:03:00.0` bottom). Getting it backwards is nearly
   undiagnosable: each card's blower ramps on the *other* card's heat, both cards appear to "fail to
