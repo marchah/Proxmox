@@ -355,3 +355,90 @@ Two more, less load-bearing:
 
 `shellcheck` for `.sh` and `llamacpp-serve-qwen38fn`; `python3 -m py_compile` for `.py`.
 All clean as committed.
+
+## Memory bandwidth and latency — measured 2026-09-17
+
+`./membench.sh` on a quiet host. Re-run verbatim once the remaining four DIMMs land; the point
+is that the 4-stick and 8-stick numbers come from an identical harness.
+
+### STREAM, 4 of 8 channels populated (C/D/G/H)
+
+| threads | Copy | Scale | Add | Triad |
+| ---: | ---: | ---: | ---: | ---: |
+| **8** | **80.3 GB/s** | 51.2 | 56.2 | **56.3** |
+| 16 | 77.8 | 50.1 | 54.9 | 55.0 |
+| 32 | 74.8 | 49.0 | 54.0 | 54.1 |
+
+🔴 **This settles the open question, and NOT in the direction expected: `stressapptest` was not
+understating.** STREAM reports *application* bytes. Triad moves 24 B/iteration in application
+terms, but a normal store first reads the line it is about to overwrite (read-for-ownership), so
+real DRAM traffic is 32 B/iteration:
+
+| | figure | as DRAM traffic | % of 102.4 GB/s theoretical |
+| --- | ---: | ---: | ---: |
+| STREAM Triad | 56.3 GB/s app | **75.1 GB/s** (x32/24 RFO) | 73.3% |
+| `stressapptest` (acceptance soak) | 76.4 GB/s | 76.4 GB/s | 74.6% |
+| **STREAM Copy** | **80.3 GB/s** | **80.3 GB/s** | **78.4%** |
+
+Triad-corrected and `stressapptest` agree within 2%. Copy must be using non-temporal stores —
+at 16 B/iteration application bytes, an RFO correction would put it at 120 GB/s, above
+theoretical, so the RFO is provably absent. **~80 GB/s / 78.4% of peak is the achievable
+ceiling on four channels**, and the old `23.1 GB/s per channel` (90.2% of peak) was simply never
+reachable. Honest per-channel figure: **19.1-20.1 GB/s**.
+
+⚠️ **8 threads beat 16 and 32.** Four channels saturate at 8 threads and more only add
+contention, so the acceptance soak's 16 threads left nothing on the table (-3%). **At eight
+channels this will invert** — the re-run must sweep threads, not reuse 8.
+
+### Idle latency — random pointer chase, 4 GiB working set
+
+| | latency |
+| --- | ---: |
+| **with huge pages** | **141.36 ns/load** |
+| without (4 KiB pages) | 226.95 ns/load |
+
+🔴 **The huge-page flag is worth 38%, so a latency number without it is meaningless.** THP on
+this host is `madvise`, not `always`, so the probe must call `madvise(MADV_HUGEPAGE)` itself —
+otherwise a random walk misses the TLB on essentially every access and the figure is DRAM latency
+*plus* a full page-table walk. The 227 ns first run was exactly that mistake.
+⚠️ **141 ns is not attributable.** It is plausible for Rome with fully random access across four
+channels (core → IOD → UMC adds ~20-30 ns over monolithic, and every access is a row miss), but
+separating any 3DS contribution needs a flat 2Rx4 set on this same harness. Treat it as a
+baseline to re-run, not as evidence.
+
+### ✅ Does the 3DS substitution cost latency? Probably not — and refresh likely favours it
+
+The installed modules are Samsung `M393A8K40B22-CAE`, **2S2Rx4 3DS** (SPD `Rank: 4`), against the
+advertised flat 2Rx4 `M393A8G40AB2-CWE`. Three mechanisms, per JEDEC JESD79-4:
+
+1. ✅ **The core latency chain is unchanged.** Every die in a 3DS stack is a standard DDR4 die at
+   the same speed bin, so CL / tRCD / tRP / tRAS are identical. **3DS does not raise idle latency
+   by design.**
+2. ✅ **3DS adds `_slr` / `_dlr` (same / different logical rank) timing variants** — `tRRD_dlr`,
+   `tFAW_dlr`, `tCCD_L_dlr` — which do not exist on a flat DIMM. These are inter-die activate
+   constraints and are generally **more relaxed** than their same-rank equivalents, because rows
+   on different dies do not contend for the same bank resources. Net effect on parallelism is
+   positive, not negative.
+3. 🔴 **Refresh is the real cost, and it INVERTS the concern.** Deriving die density from the
+   organisation at 64 GB and x4:
+
+   | part | logical ranks | per rank | **die density** | tRFC / tREFI | **refresh overhead** |
+   | --- | ---: | ---: | ---: | --- | ---: |
+   | delivered 2S2Rx4 3DS | 4 | 16 GB | **8 Gb** | ~350 ns / 7812.5 ns | **~4.5%** |
+   | advertised 2Rx4 flat | 2 | 32 GB | **16 Gb** | ~550 ns / 3906 ns | **~14.1%** |
+
+   **Stacking 8 Gb dies avoids the monolithic-16 Gb refresh penalty that the part actually
+   ordered would have carried.** ⚠️ Partly offset because 3DS refreshes per logical rank — four
+   instead of two — but each is shorter and a refresh to one rank overlaps with access to
+   another.
+
+**So the substitution is not a latency liability and may be a small refresh advantage**, and the
+measured 78.4% of theoretical peak is ordinary DDR4 behaviour with no anomaly to explain.
+⚠️ **None of this changes the qwen4exp findings**: the sweep already showed bandwidth is not the
+constraint (`-ncmoe 48` matches `-ncmoe 34`), and one card beating two has no memory path in it.
+
+### ⛔ The 8-stick test could not run
+
+A/B/E/F are empty — `ipmitool sdr type Temperature` reports `No Reading` on those four channels.
+`./membench.sh` is committed so the 8-stick run is one command when the sticks arrive. **Sweep
+threads above 8 on that run**, and re-measure latency with the huge-page fix in place.
