@@ -19,12 +19,12 @@ These containers form the system:
   `0000:03:00.0` (bottom), **both CPU-direct Gen4 x16** on the ROMED8-2T, each cooled by its own
   9733 radial blower on a board fan header and driven by `pro-v620/gpu-blower-control/`. Under
   sustained MoE load a card settles at **55 / 62 °C edge/junction at ~35 % fan** — thermals are not
-  a constraint. CT 120 is **pinned to GPU 1 alone** (`0000:83:00.0`): its
+  a constraint. CT 120 is **pinned to one card alone** (`0000:03:00.0`): its
   container bind-mounts only that card's `/dev/dri` render node (via the udev-stable `by-path`
   symlink — the reboot-stable way to pin one of two identical cards), so llama.cpp sees a single
   Vulkan device and runs the whole ~26.6 GB model on it. ✅ **Either card will now do** — the B550's
   chipset-slot decode tax is gone with the platform move; all seven ROMED8-2T slots are CPU-direct.
-  **GPU 2 (`0000:03:00.0`) runs CT 123 `gpu2`**
+  **The other card (`0000:83:00.0`) runs CT 123 `gpu2`**
   (a `llama-swap` server for the autonomous coding loop — see below); it stays amdgpu-bound so the host
   fan/undervolt/watchdog services manage both. Both cards are undervolted −100 mV:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
@@ -48,7 +48,7 @@ These containers form the system:
     autonomous coding loop that hot-swaps between a coder model (Qwen3.8-27B, alias
     `qwen3.8-27b-dflash2`) and a reviewer model (ThinkingCap-Qwen3.6-27B, alias `thinkingcap-27b`),
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
-    Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:03:00.0`, by-path, REAL node name) + the loud-guard.
+    Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:83:00.0`, by-path, REAL node name) + the loud-guard.
     The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
     - 📐 **KV-cache quantisation: q8_0 is free on speed, but BREAKS thinking termination.**
       q8_0 KV costs zero throughput (marginally faster, unchanged at 2× context) — the trade-off is

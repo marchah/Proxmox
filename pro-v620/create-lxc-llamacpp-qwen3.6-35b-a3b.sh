@@ -20,7 +20,7 @@ readonly GPU_NAME="Radeon Pro V620"
 # amdgpu-bound (the host fan/undervolt/watchdog services expect both cards);
 # "idle" here means no workload, not removed. Set GPU_PCI_ADDRESS= to pin the
 # other card instead.
-readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:83:00.0}"    # GPU 1 (top card) — the card this container uses
+readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:03:00.0}"    # the card this container uses (both are Gen4 x16 and equivalent)
 # The other V620 (left idle) is INFORMATIONAL ONLY (logs/comments); the passthrough
 # uses GPU_PCI_ADDRESS alone. It is DERIVED at runtime (resolve_idle_gpu) from the
 # other V620 present, so it can't collide with the pinned card when GPU_PCI_ADDRESS
@@ -141,8 +141,8 @@ After it is up, change context length / parallel slots without re-provisioning:
 Important:
   The container is privileged so GPU passthrough (the Vulkan render node) works
   with less friction. Treat it as a trusted container. It is pinned to ONE V620
-  (GPU 1, 0000:83:00.0) by bind-mounting only that card's DRM nodes; the second
-  card (GPU 2, 0000:03:00.0) is left idle/free. Set GPU_PCI_ADDRESS= to pin the
+  (0000:03:00.0) by bind-mounting only that card's DRM nodes; the second
+  card (0000:83:00.0) is left idle/free. Set GPU_PCI_ADDRESS= to pin the
   other card. Keep GPU 2 present + amdgpu-bound so the host fan/undervolt/watchdog
   services stay happy.
 USAGE
