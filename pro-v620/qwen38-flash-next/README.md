@@ -166,13 +166,22 @@ the depth curve, and the template-contract result.
 
 Found while implementing. All three would mislead a purchase decision.
 
-1. 🔴 **"The homelab is exactly one build short — support lands in b10679+" is wrong.**
-   `qwen4exp` is present in **b10678**, which CT 120 and CT 123 were already running
-   (`grep -rlx qwen4exp /opt/llamacpp/llama-b10678` hits `libllama.so.0.3.0`). The model
-   was runnable on this box before this work started. b11018 is still the right pin —
-   for three merged `qwen4exp` follow-ups that post-date b10678 (#27880 graph splits,
-   #27941 fixes, #28023 indexer head slices) — but b10678 is a working rollback, not a
-   blocker.
+1. 🔴 **"Exactly one build short — support lands in b10679+" is wrong, but NOT in the
+   direction it first appears. The real floor is b11013, and it landed the day this was
+   written.** `qwen4exp` is registered as an arch string in b10678
+   (`grep -rlx qwen4exp /opt/llamacpp/llama-b10678` hits `libllama.so.0.3.0`) — which is
+   exactly the trap. The architecture uses **hyper-connections** (`hc_count: 4`), and:
+
+   | commit | merged | meaning |
+   |---|---|---|
+   | `qwen4exp: add hc ops` (#28901) | 2026-09-16 | the ops exist at all |
+   | `vulkan: support qwen4exp hc ops` (#28988) | **2026-09-17 04:34** | RADV can run them |
+
+   **b11013 is the first build containing #28988; b11010 does not have it** (checked with
+   the compare API against the commit). So this model could not have run on this box's
+   Vulkan stack at any point before today, and **b10678 is not a rollback target** —
+   grepping the arch string on it would have promised a model that cannot execute.
+   ✅ **Check that a backend can run an arch, not merely that the arch is registered.**
    *(Method note: `strings` is not installed in CT 120, so `strings … | grep` returns
    empty for every query and reads as "absent". Use `grep -rlx`.)*
 2. ⚠️ **The PLE offload regex carries a dead alternative.** The note says

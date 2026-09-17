@@ -217,13 +217,26 @@ These containers form the system:
     values that work on CT 123's coder, where `"none"` is the documented off switch. Unset means
     `xhigh`, which never answers. Handled **server-side** with `--reasoning off` so no caller can
     trip it; `placement-probe.py --contract` asserts it rather than assuming.
-  - 🔴 **`qwen4exp` is in b10678 — the KB's "exactly one build short / needs b10679+" is wrong**
-    (`grep -rlx qwen4exp /opt/llamacpp/llama-b10678` hits `libllama.so.0.3.0`). The model was
-    runnable here before this work. The pin still moved to **b11018** for three merged `qwen4exp`
-    follow-ups that post-date b10678 (#27880, #27941, #28023), and only for this model's
-    `LLAMACPP_DIR` — `/opt/llamacpp/current` stays on b10678 so qwen3.6 is untouched.
+  - 🔴 **`b11013` is a HARD FLOOR for this model on Vulkan, and checking the arch string will
+    tell you otherwise.** `qwen4exp` is registered in b10678, but the architecture uses
+    hyper-connections and `vulkan: support qwen4exp hc ops` (llama.cpp **#28988**) only merged
+    **2026-09-17 04:34** — b11013 is the first build with it, b11010 is not. So the model could
+    not run on this box's Vulkan stack before that day, and **b10678 is not a rollback target**
+    even though `grep -rlx qwen4exp /opt/llamacpp/llama-b10678` hits. The KB's "exactly one build
+    short / b10679+" is wrong in both directions: the string landed earlier, the *backend* much
+    later. ✅ **Check that a backend can run an arch, never that the arch is merely registered.**
     ⚠️ `strings` is **not installed** in CT 120, so `strings … | grep` answers empty for every
     query and reads as "absent". Use `grep -rlx`.
+  - ✅ **Both provisioning scripts and CT 120's `/opt/llamacpp/current` are on b11018**
+    (2026-09-17, from b10678). Beyond the qwen4exp floor above, this range carries
+    `models : fix GDN normalization from max to rsqrt` (#28068) — **Qwen3.6-35B-A3B is a
+    Gated-DeltaNet hybrid, so that is a correctness fix for CT 120's own ops model**, plus
+    `memory : avoid allocating V cache for indexer` (#28330), `qwen4exp: enable rms_norm + mul
+    fusion` (#28896) and several Vulkan wins that touch both models (sparse FA #28105,
+    topk_moe prefill fusion #28422, type-aligned GET_ROWS #28253 — which is the op the PLE
+    lookup uses, small-M matrix opts for qwen #28457). Verified: qwen3.6 serves clean output on
+    b11018. ⚠️ **CT 123 is stopped and its container is still on b10678** — its script pin
+    moved, so a rebuild is correct, but a plain `pct start 123` brings back the old build.
   - 🔴 **Multi-GPU is the *penalised* path for this arch, inverting "more cards is better".**
     llama.cpp #28699 measured the QSA indexer's pooled rows crossing inter-GPU links every layer
     at **2x decode cost** on a layer split; the per-device fix is an **open draft**, and #28623
