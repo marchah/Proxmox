@@ -66,12 +66,17 @@ def contract_check(base):
                  {"model": "qwen3.8-flash-next", "messages": msgs,
                   "max_tokens": 64, "temperature": 0})
         ch = r["choices"][0]["message"]
+        content = ch.get("content") or ""
         out["bare_chat"] = {
-            "ok": bool((ch.get("content") or "").strip()),
-            "content": (ch.get("content") or "")[:80],
-            # With thinking off the template still emits an empty <think></think>; with
-            # --reasoning-format auto it lands here and NOT in content.
-            "reasoning_content_present": bool(ch.get("reasoning_content") is not None),
+            "ok": bool(content.strip()),
+            "content": content[:80],
+            # What matters is that `content` is CLEAN. An absent reasoning_content is not a
+            # failure — it just means no thought block was emitted, which is the point of
+            # --reasoning off. A <think> tag leaking into content is the real defect, and it
+            # silently corrupts every generated file (a KB run once produced frontmatter
+            # starting "<think>\n\n</think>\n\n---").
+            "think_leaked_into_content": "<think>" in content,
+            "reasoning_content_present": ch.get("reasoning_content") is not None,
         }
     except Exception as e:
         out["bare_chat"] = {"ok": False, "error": repr(e)[:200]}

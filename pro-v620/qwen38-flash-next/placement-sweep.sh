@@ -52,6 +52,9 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 log() { printf '==> %s\n' "$*"; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"
+# Be location-independent: systemd-run and cron do not inherit a working directory, and the
+# helper scripts are resolved relative to this one.
+cd "$(dirname "$(readlink -f "$0")")"
 [ -x ./placement-probe.py ]   || die "placement-probe.py not found or not executable"
 [ -x ./summarize-sweep.py ]   || die "summarize-sweep.py not found or not executable"
 mkdir -p "$OUT_DIR"
@@ -75,9 +78,28 @@ vram_mib() { echo $(( $(cat "/sys/bus/pci/devices/$1/mem_info_vram_used" 2>/dev/
 gtt_mib()  { echo $(( $(cat "/sys/bus/pci/devices/$1/mem_info_gtt_used"  2>/dev/null || echo 0) / 1048576 )); }
 
 # Rewrite one KEY=value in the container's env file, appending if absent.
+#
+# 🔴 The value MUST land QUOTED. llamacpp-serve-qwen38fn does
+# `set -a; source /etc/llamacpp-qwen38fn.env`, so an unquoted value containing a space is
+# parsed as an assignment followed by a COMMAND: writing `EXTRA_ARGS=--device Vulkan0`
+# made bash try to run `Vulkan0`, the serve script exited 127, and systemd crash-looped
+# the unit while the ONE_GPU control died on its first config.
+#
+# json.dumps does the quoting and escaping, and the python below contains no single quotes
+# so it survives being wrapped in them. sed would need & and | escaped as well, plus
+# another shell quoting layer on top — that is what broke the first time.
 set_env_var() {
-  pct exec "$VMID" -- bash -lc \
-    "if grep -q '^${1}=' ${ENVFILE}; then sed -i 's|^${1}=.*|${1}=${2}|' ${ENVFILE}; else printf '%s\n' '${1}=${2}' >> ${ENVFILE}; fi"
+  local key="$1" val="$2"
+  pct exec "$VMID" -- python3 -c '
+import json, os, re, sys
+path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
+line = key + "=" + json.dumps(val)
+src = open(path).read() if os.path.exists(path) else ""
+src, n = re.subn(r"(?m)^" + re.escape(key) + r"=.*$", lambda m: line, src)
+if not n:
+    src = src.rstrip("\n") + "\n" + line + "\n"
+open(path, "w").write(src)
+' "$ENVFILE" "$key" "$val"
 }
 
 start_server() {
@@ -107,6 +129,15 @@ start_server() {
     fi
     set_env_var MODEL_TENSOR_SPLIT "$ts"
     log "tensor-split ${ts} (derived from n_cpu_moe ${ncmoe})"
+    # ⚠️ At n_cpu_moe 48 there are no heavy layers left, so the formula yields "48,0" and
+    # card 2 gets NOTHING. That is arguably the right placement — splitting the non-expert
+    # layers would only add an inter-GPU hop — but it makes the row effectively
+    # SINGLE-GPU, so it must not be read as a two-card data point. Recorded, not silently
+    # allowed.
+    case "$ts" in
+      *,0) log "⚠️  card 2 gets 0 layers — this row is effectively SINGLE-GPU"
+           printf '%s\n' "$ncmoe" >>"${OUT_DIR}/.single_gpu_rows" ;;
+    esac
   else
     set_env_var MODEL_TENSOR_SPLIT ""
   fi
