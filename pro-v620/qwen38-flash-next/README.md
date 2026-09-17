@@ -134,10 +134,61 @@ why.** At `--n-cpu-moe 20`, ctx 65536, two cards:
 
 | | decode | note's prediction | my prediction |
 | --- | ---: | ---: | ---: |
-| 2 cards, `-ncmoe 20` | **11.74 t/s** | 51 t/s | 56 t/s |
+| 2 cards, `-ncmoe 20` | **11.7 t/s** | 51 t/s | 56 t/s |
 
 Both estimates model decode as *active bytes ÷ bandwidth*. The measurement says that is
 the wrong model for a hybrid placement — see the utilisation trace below.
+
+### The full two-GPU sweep — 10 configs, round-robin, 2 reps
+
+`ctx 65536` · `parallel 1` · `n_predict 192` · `--tensor-split` derived per row · b11018
+
+| `-ncmoe` | VRAM used | free for a guest | max GTT | decode @ d0 | decode @ d8000 | |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 15 | 57.5 GiB | 6.5 GiB | 2198 MiB | **13.0** | 10.1 | ⚠️ spill |
+| 20 | 52.1 GiB | 11.9 GiB | 238 MiB | 11.7 | **10.3** | ok |
+| 28 | 40.4 GiB | **23.6 GiB** | 238 MiB | 10.1 | 9.2 | ok |
+| 34 | 31.3 GiB | 32.7 GiB | 238 MiB | 8.4 | 7.9 | ok |
+| 48 | 9.2 GiB | 54.8 GiB | 238 MiB | 8.6 | 8.2 | ⚠️ *see below* |
+
+🔴 **VRAM has almost no leverage past a point.** `-ncmoe 48`, holding **9.2 GiB** of VRAM,
+matches `-ncmoe 34` holding **31.3 GiB** — 8.6 vs 8.4 at d0, 8.2 vs 7.9 at depth. **22 GiB
+of VRAM buys nothing across that span.** All the leverage is between 34 and 15, and even
+there it is modest: +48 GiB of VRAM is +51% at d0 but only **+23% at depth 8000**.
+**VRAM's value halves at realistic context depth** — which is the finding that should
+reshape the sizing note's purchase argument, since that note prices cards on short-prompt
+arithmetic.
+
+⚠️ **The `-ncmoe 48` row is effectively SINGLE-GPU and must not be read as a two-card
+point.** With no heavy layers left the derived split is `48,0`, so card 2 holds nothing
+(measured: GPU2 at 16 MiB). That is the right placement — splitting the non-expert layers
+would only add an inter-GPU hop — but the sweep now logs it and records the row in
+`.single_gpu_rows` rather than letting it pass as two-card data. **`-ncmoe 34` is the
+honest two-vs-one comparison point.**
+
+### What it costs to reserve VRAM for a second model
+
+Moving `-ncmoe 20` → `28` frees ~12 GiB more (23.6 GiB total, comfortably a 27B guest at
+Q4/Q5) for **−14% at d0 and −11% at depth**. So the answer to "can another model take
+20 GB and leave the rest to Qwen" is **yes, for about 11-14%**.
+
+⚠️ **Cost per GiB is NON-monotonic** — 0.04 → 0.12 → 0.11 → 0.06 t/s per GiB across the
+row order above. VRAM is nearly free to give away below `-ncmoe 20` and above `-ncmoe 34`;
+the expensive region is the middle. Don't interpolate.
+
+### Depth costs 5-22%, and inversely to how much is offloaded
+
+| `-ncmoe` | d0 → d8000 |
+| ---: | --- |
+| 15 | 13.0 → 10.1 (**−22%**) |
+| 20 | 11.7 → 10.3 (−12%) |
+| 28 | 10.1 → 9.2 (−9%) |
+| 34 | 8.4 → 7.9 (−6%) |
+| 48 | 8.6 → 8.2 (−5%) |
+
+**The more that sits on the CPU, the less depth hurts proportionally** — CPU expert time
+dominates, so the QSA indexer is a smaller share of the total. Consistent with #28699
+being the depth cost.
 
 ### 🔴 `--tensor-split` is REQUIRED with `--n-cpu-moe`, and nothing warns you
 
