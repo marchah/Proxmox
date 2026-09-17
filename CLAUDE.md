@@ -204,6 +204,42 @@ These containers form the system:
     engine scripts — `create-lxc-lmstudio-qwen3.5-9b.sh` (LM Studio `lms`) and
     `create-lxc-llamacpp-qwen3.5-9b.sh` (llama.cpp). The README found llama.cpp better on
     that card, which is why the V620 ships only the llama.cpp script.
+- **CT 120's second shape — Qwen3.8-Flash-Next on BOTH cards** (`pro-v620/qwen38-flash-next/`):
+  the same container, repurposed to serve `qwen4exp` (180B total / **6B active**, `UD-Q4_K_XL`
+  **111.33 GB**) across both V620s with the PLE table and a tunable share of routed experts in
+  system RAM. The **first model here that does not fit in VRAM** — it exists because the EPYC
+  platform has 251 GiB (512 GB once the other four sticks land). `/models` grown to 320G;
+  CT 120 runs 48 cores / **160 GiB** / swap 0. **CT 123 is stopped** to free GPU 2 and must stay
+  stopped — its `llama-swap` passes no device selector and would grab a card CT 120 is using.
+  Rollback is `./ct120-cutover.sh to-qwen36`; both GGUFs and both llama.cpp builds stay on disk.
+  - 🔴 **The reasoning contract is INVERTED from Qwen3.8-27B.** The template resolves
+    `reasoning_effort|default('xhigh')` and **raises** on `"none"` and `"high"` — exactly the
+    values that work on CT 123's coder, where `"none"` is the documented off switch. Unset means
+    `xhigh`, which never answers. Handled **server-side** with `--reasoning off` so no caller can
+    trip it; `placement-probe.py --contract` asserts it rather than assuming.
+  - 🔴 **`qwen4exp` is in b10678 — the KB's "exactly one build short / needs b10679+" is wrong**
+    (`grep -rlx qwen4exp /opt/llamacpp/llama-b10678` hits `libllama.so.0.3.0`). The model was
+    runnable here before this work. The pin still moved to **b11018** for three merged `qwen4exp`
+    follow-ups that post-date b10678 (#27880, #27941, #28023), and only for this model's
+    `LLAMACPP_DIR` — `/opt/llamacpp/current` stays on b10678 so qwen3.6 is untouched.
+    ⚠️ `strings` is **not installed** in CT 120, so `strings … | grep` answers empty for every
+    query and reads as "absent". Use `grep -rlx`.
+  - 🔴 **Multi-GPU is the *penalised* path for this arch, inverting "more cards is better".**
+    llama.cpp #28699 measured the QSA indexer's pooled rows crossing inter-GPU links every layer
+    at **2x decode cost** on a layer split; the per-device fix is an **open draft**, and #28623
+    ("multi gpu & buffer size issues") was closed incomplete. Always run `ONE_GPU=true` as a
+    control before concluding two cards help.
+  - ⚠️ **Decode degrades with context DEPTH** (the same indexer), a cost no bandwidth arithmetic
+    models — so a short-prompt tok/s figure is not this model's throughput. Quote depth always.
+  - ⚠️ The PLE offload tensor is **`per_layer_token_embd`**; the KB's `ngram_embedding`
+    alternative is the *safetensors* name and matches nothing in a GGUF.
+  - ⚠️ **The thermal watchdog's `GPU_SERVICE_MAP` must point BOTH cards at `120:llamacpp`** while
+    CT 120 holds both. The stock map sends a GPU-2 trip to `123:llama-swap` — a no-op now — which
+    would leave the real load on an overheating card. `ct120-cutover.sh` sets and restores it.
+  - ⚠️ **`gpu-ab-bench/thermal-guard.sh` and `sample-gpus.py` are B550-era** and still name
+    `0000:2d:00.0`/`0000:06:00.0`. Those paths do not exist, so the guard's hwmon glob misses,
+    `cat` fails and `set -e` kills it in under a second — it fails **silently open**. Use
+    `qwen38-flash-next/thermal-guard.sh` on this platform.
 - **CT 121 `hermes`** (`hermes/`): an *unprivileged* Debian LXC running NousResearch's
   **Hermes Agent** — the homelab's agent (NOT a model server; it *consumes* CT 120's API,
   see the `ct120-vs-hermes` memory). It auto-discovers CT 120's IP, points Hermes at it via a
@@ -303,6 +339,10 @@ All run on the Proxmox host as root.
 ```bash
 # Provision the ops LLM-runtime container (CT 120) — GPU 1 of two Radeon Pro V620
 ./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
+# Move CT 120 to Qwen3.8-Flash-Next on BOTH cards (hybrid GPU+RAM). Reversible; CT 123 must be stopped.
+cd pro-v620/qwen38-flash-next && ./install.sh --download   # env/serve/unit + resume the 112 GB pull
+cd pro-v620/qwen38-flash-next && ./ct120-cutover.sh to-qwen38fn   # cut over   (to-qwen36 = full rollback)
+cd pro-v620/qwen38-flash-next && ./thermal-guard.sh & ./placement-sweep.sh   # find the best --n-cpu-moe
 # Autonomous coding loop's GPU-2 model server (CT 123 gpu2) — llama-swap on GPU 2
 ./pro-v620/create-lxc-llama-swap-gpu2.sh          # qwen3.8-27b-dflash2 coder + thinkingcap-27b reviewer, swapped by name (:8080)
 # The loop's execution sandbox (CT 122 coder-runner; runs npm/build/tests, needs CT 121's ssh pubkey)

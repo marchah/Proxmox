@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# llama-server for Qwen3.8-Flash-Next (qwen4exp) on BOTH Radeon Pro V620s, with the PLE
+# n-gram table and a configurable share of the routed experts in system RAM.
+# Installed to /usr/local/bin/llamacpp-serve-qwen38fn inside CT 120.
+set -Eeuo pipefail
+set -a
+# shellcheck disable=SC1091  # runtime-only env file
+source /etc/llamacpp-qwen38fn.env
+set +a
+export LD_LIBRARY_PATH="${LLAMACPP_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+# ---------------------------------------------------------------------------------------
+# Guard 1 — RADV must see the EXPECTED NUMBER of GPUs, not merely one.
+#
+# The qwen3.6 single-GPU guard only asked "is any Vulkan device visible", which is the
+# right check when exactly one card is pinned. Here the model is sized against N cards:
+# if one card's DRM node stops matching /sys (renderD*/card* renumber after a reboot, GPU
+# add/remove, or kernel change) the server would still start, silently place that card's
+# layers in system RAM, and just run slow. That is the failure this counts against.
+# ---------------------------------------------------------------------------------------
+: "${MODEL_EXPECTED_GPUS:=2}"
+devices="$("${LLAMACPP_DIR}/llama-server" --list-devices 2>/dev/null || true)"
+found="$(printf '%s\n' "${devices}" | grep -ciE 'Vulkan.*V620|V620' || true)"
+if [ "${found}" -lt "${MODEL_EXPECTED_GPUS}" ]; then
+  echo "FATAL: expected ${MODEL_EXPECTED_GPUS} Vulkan V620(s), RADV offered ${found}." >&2
+  echo "A missing card does NOT fail the load — llama.cpp would place its layers in host" >&2
+  echo "RAM and serve at a fraction of the expected speed. Failing loud instead." >&2
+  echo "The passed-through DRM node likely no longer matches /sys (renderD*/card*" >&2
+  echo "renumber after a reboot / GPU add-remove / kernel change)." >&2
+  echo "Recover on the Proxmox HOST: re-resolve both cards' DRM nodes and fix CT 120's" >&2
+  echo "lxc.mount.entry lines, then restart the CT — see pro-v620/README.md" >&2
+  echo "'Recovering after a DRM renumber'. Devices RADV actually offered:" >&2
+  printf '%s\n' "${devices}" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------------------
+# Guard 2 — every shard of the model must be present.
+#
+# llama.cpp discovers 00002..00004 from the first shard's name. A half-finished download
+# gives a confusing mid-load failure; name the missing file instead.
+# ---------------------------------------------------------------------------------------
+case "${MODEL_PATH}" in
+  *-00001-of-*)
+    total="$(printf '%s' "${MODEL_PATH}" | sed -E 's/.*-00001-of-0*([0-9]+)\.gguf/\1/')"
+    for i in $(seq 1 "${total}"); do
+      shard="$(printf '%s' "${MODEL_PATH}" | sed -E "s/-00001-of-/-$(printf '%05d' "${i}")-of-/")"
+      [ -f "${shard}" ] || { echo "FATAL: missing shard $(basename "${shard}")" >&2; exit 1; }
+    done
+    ;;
+esac
+
+args=(
+  --model "${MODEL_PATH}"
+  --host "${MODEL_SERVER_BIND}"
+  --port "${MODEL_SERVER_PORT}"
+  --alias "${MODEL_ALIAS}"
+  --n-gpu-layers "${MODEL_GPU_LAYERS}"
+  --ctx-size "${MODEL_CONTEXT_LENGTH}"
+  --parallel "${MODEL_PARALLEL}"
+  --threads "${MODEL_THREADS}"
+  --flash-attn on
+  --batch-size "${MODEL_BATCH_SIZE:-4096}"
+  --ubatch-size "${MODEL_UBATCH_SIZE:-1024}"
+  --jinja
+  # 🔴 Both of these are load-bearing, for DIFFERENT reasons.
+  #
+  # --reasoning off: this template resolves `reasoning_effort|default('xhigh')`, so an
+  # unset value means xhigh and the model reasons without answering. It also RAISES on
+  # "none" and "high" — the opposite contract to Qwen3.8-27B, where "none" is the off
+  # switch. Turning thinking off server-side means no caller can trip either trap.
+  #
+  # --reasoning-format auto: with thinking off the template still emits an EMPTY
+  # <think>\n\n</think> pair. `none` leaves it in `content`, which corrupts every
+  # generated file (a KB run produced a file starting <think>\n\n</think>\n\n--- instead
+  # of ---). `auto` siphons it into reasoning_content.
+  --reasoning off
+  --reasoning-format auto
+  --cache-ram 0
+  --metrics
+)
+
+# The PLE table in host RAM. ~51B params / ~28.7 GB of lookup rows, read a handful at a
+# time — this is what takes the GPU-side model from 111.3 GB down to ~82.6 GB.
+[ -n "${MODEL_OT_OVERRIDE:-}" ] && args+=( --override-tensor "${MODEL_OT_OVERRIDE}" )
+
+# Routed experts for the last N of 48 MoE layers in host RAM. 0 = none (needs 82.6 GB).
+[ -n "${MODEL_CPU_MOE:-}" ] && [ "${MODEL_CPU_MOE}" != "0" ] && args+=( --n-cpu-moe "${MODEL_CPU_MOE}" )
+
+# Vision. Costs ~1.1 GiB of VRAM; --no-mmproj-offload keeps it on CPU for zero VRAM at
+# 3-5x on image encoding only (text throughput unaffected).
+if [ -n "${MODEL_MMPROJ:-}" ] && [ -f "${MODEL_MMPROJ}" ]; then
+  args+=( --mmproj "${MODEL_MMPROJ}" )
+  [ "${MODEL_MMPROJ_ON_CPU:-false}" = "true" ] && args+=( --no-mmproj-offload )
+fi
+
+# Escape hatch for the sweep and for one-off trials, same idiom as CT 123's
+# llamaswap-guarded-serve: word-split and appended verbatim.
+# shellcheck disable=SC2206
+[ -n "${EXTRA_ARGS:-}" ] && args+=( ${EXTRA_ARGS} )
+
+printf 'llamacpp-serve-qwen38fn: %s\n' "${LLAMACPP_DIR}/llama-server ${args[*]}" >&2
+exec "${LLAMACPP_DIR}/llama-server" "${args[@]}"
