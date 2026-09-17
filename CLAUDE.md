@@ -752,7 +752,9 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   channel reports `No Reading`, which is how to tell which slots are filled without opening the
   case (`dmidecode`'s `Locator` is useless here: ASRock reports every slot as `DIMM 0`).
   Baseline measured 2026-09-17 under the qwen4exp placement sweep, **4 of 8 channels populated
-  (C, D, G, H)**: DIMMs **45-50 °C** (H hottest, G coolest, ~4 °C spread from airflow position),
+  (C, D, G, H) — a CORRECT, deliberate placement** chosen from the board documentation and
+  validated by the owner's own tests, all four at `Configured Memory Speed: 3200 MT/s`; don't
+  "fix" it and don't reason about it from generic one-per-quadrant folklore: DIMMs **45-50 °C** (H hottest, G coolest, ~4 °C spread from airflow position),
   CPU **41 °C**, fans 1200-2400 RPM. DDR4 RDIMMs throttle near 85 °C, so that is ~35 °C of
   headroom, and the BMC exposes **no upper threshold** on the DIMM sensors to trip on.
   ⚠️ Expect **+5-10 °C when the other four sticks land** — A/B/E/F are currently acting as

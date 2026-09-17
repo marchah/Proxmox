@@ -25,7 +25,10 @@ slots are filled without opening the case. Do **not** use `dmidecode` for that: 
 firmware labels every slot `Locator: DIMM 0`, so the field is worthless here.
 
 Baseline measured **2026-09-17** under the qwen4exp placement sweep, with **4 of 8 channels
-populated (C, D, G, H)**:
+populated (C, D, G, H)**. ✅ That placement is **correct and deliberate** — chosen from the
+board documentation and validated by the owner's own tests, all four running at
+`Configured Memory Speed: 3200 MT/s`. Don't "fix" it, and don't second-guess it from generic
+one-per-quadrant advice.
 
 | sensor | reading |
 | --- | ---: |
