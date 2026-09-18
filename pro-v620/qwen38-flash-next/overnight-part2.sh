@@ -669,21 +669,49 @@ PY
   # measurably slower for no reason; this picks from what the sweep actually measured.
   python3 - "$RUN" >"${RUN}/best_threads.txt" <<'PY'
 import glob, json, os, re, statistics as st, sys
-run, best = sys.argv[1], None
-for f in glob.glob(os.path.join(run, "par1-t*-c65536.json")):
-    m = re.match(r"par1-t(\d+)-c65536\.json$", os.path.basename(f))
+
+# 🔴 Pick across CONCURRENCY LEVELS, not just single-stream. Measured at the winning
+# placement, the thread ranking INVERTS with load:
+#
+#   threads   par 1    par 2    par 4
+#   8         14.25      --     29.37     <- best solo, WORST at 4 streams
+#   16        14.09    22.10    30.88     <- within 1% solo, best at 2 and 4
+#   32        13.22    20.46    30.46
+#
+# 8 threads saturates the four populated memory channels for one stream, but four
+# concurrent streams present more parallel work than 8 threads can cover. Choosing on the
+# par-1 rows alone -- which this did -- would set the worst value for concurrent use.
+#
+# So score each thread count by its MEAN RELATIVE performance across every parallel level
+# it was measured at: relative to the best value at that level, so a level with a bigger
+# absolute aggregate does not dominate the average.
+run = sys.argv[1]
+by_level = {}   # parallel -> {threads: aggregate}
+for f in glob.glob(os.path.join(run, "par*-t*-c65536.json")):
+    m = re.match(r"par(\d+)-t(\d+)-c65536\.json$", os.path.basename(f))
     if not m:
         continue
     try:
         d = json.load(open(f))
     except Exception:
         continue
-    v = d.get("per_stream_tps") or 0
-    if v and (best is None or v > best[1]):
-        best = (int(m.group(1)), v)
-print(best[0] if best else 16)
+    v = d.get("aggregate_tps") or 0
+    if v:
+        by_level.setdefault(int(m.group(1)), {})[int(m.group(2))] = v
+
+score, seen = {}, {}
+for lvl, per_t in by_level.items():
+    best = max(per_t.values())
+    for t, v in per_t.items():
+        score[t] = score.get(t, 0.0) + v / best
+        seen[t] = seen.get(t, 0) + 1
+# Only consider thread counts measured at every level, so a value that happens to have
+# been tried only where it looks good cannot win by omission.
+full = max(seen.values()) if seen else 0
+cand = {t: score[t] / seen[t] for t in score if seen[t] == full}
+print(max(cand, key=cand.get) if cand else 16)
 PY
-  echo "best single-stream thread count: $(cat "${RUN}/best_threads.txt")"
+  echo "best all-round thread count: $(cat "${RUN}/best_threads.txt")"
 }
 stage parallel 18000 s4_parallel
 
