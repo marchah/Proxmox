@@ -16,8 +16,10 @@
 # takes only GPU 2 — but two servers on one card is still wrong, so the guard stays.)
 set -Eeuo pipefail
 
-readonly CONF=/etc/pve/lxc/120.conf
-readonly VMID=120
+# Overridable so cutover-transition-test.sh can drive the real transitions against a mocked
+# host. Defaults are the production paths; nothing else sets them.
+readonly VMID="${VMID:-120}"
+readonly CONF="${CONF:-/etc/pve/lxc/${VMID}.conf}"
 readonly BAK_DIR="${BAK_DIR:-/root/qwen38-flash-next}"
 
 # GPU 2. Mount at the REAL host node names — mounting at a different name inside the
@@ -27,7 +29,9 @@ readonly GPU2_RENDER_DST='renderD128'
 readonly GPU2_CARD_DST='card1'
 readonly GPU1_PCI='0000:03:00.0'
 
-readonly WATCHDOG_ENV=/etc/gpu-thermal-watchdog.env
+readonly WATCHDOG_ENV="${WATCHDOG_ENV:-/etc/gpu-thermal-watchdog.env}"
+# Overridable for the mocked transition test; production value is the real udev path.
+readonly DRI_BY_PATH="${DRI_BY_PATH:-/dev/dri/by-path}"
 
 # Set when the map check fails. Deferred to the end so the status dump below still prints —
 # that output is exactly what an operator needs when protection is broken.
@@ -93,7 +97,7 @@ assert_map_owns_cards() {
   for pair in "${pairs[@]}"; do
     addr="${pair%%=*}"; svc="${pair#*=}"; vm="${svc%%:*}"; unit="${svc#*:}"
     seen="${seen} ${addr}"
-    conf="/etc/pve/lxc/${vm}.conf"
+    conf="${LXC_CONF_DIR:-/etc/pve/lxc}/${vm}.conf"
     if ! grep -q "pci-${addr}-render" "$conf" 2>/dev/null; then
       log "🔴 MAP MISMATCH: ${addr} -> CT ${vm}, but CT ${vm} does not bind that render node"
       bad=1
@@ -144,6 +148,8 @@ set_watchdog_map() {
   local want="$1"
   [ -f "$WATCHDOG_ENV" ] || { log "watchdog env absent — skipping map update"; return 0; }
   cp -a "$WATCHDOG_ENV" "${BAK_DIR}/gpu-thermal-watchdog.env.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+  # ⚠️ `sed -i` here is GNU syntax. This script targets the Proxmox host, which has GNU sed;
+  # it will not run as-is on a BSD/macOS box (cutover-transition-test.sh shims it).
   if grep -q '^GPU_SERVICE_MAP=' "$WATCHDOG_ENV"; then
     sed -i "s|^GPU_SERVICE_MAP=.*|GPU_SERVICE_MAP=${want}|" "$WATCHDOG_ENV"
   else
@@ -160,7 +166,7 @@ case "${1:-status}" in
     assert_ct123_stopped
     ct123_release_gpu2
 
-    [ -e "/dev/dri/by-path/pci-${GPU2_PCI}-render" ] \
+    [ -e "${DRI_BY_PATH}/pci-${GPU2_PCI}-render" ] \
       || die "GPU 2 by-path render node missing on the host"
 
     # Refuse to cut over onto a half-downloaded model.
@@ -183,9 +189,9 @@ case "${1:-status}" in
       cp -a "$CONF" "${BAK_DIR}/120.conf.bak.$(date -u +%Y%m%dT%H%M%SZ)"
       log "attaching GPU 2 (${GPU2_PCI}) to CT ${VMID}"
       {
-        printf 'lxc.mount.entry: /dev/dri/by-path/pci-%s-render dev/dri/%s none bind,optional,create=file\n' \
+        printf 'lxc.mount.entry: %s/pci-%s-render dev/dri/%s none bind,optional,create=file\n' "$DRI_BY_PATH" \
           "$GPU2_PCI" "$GPU2_RENDER_DST"
-        printf 'lxc.mount.entry: /dev/dri/by-path/pci-%s-card dev/dri/%s none bind,optional,create=file\n' \
+        printf 'lxc.mount.entry: %s/pci-%s-card dev/dri/%s none bind,optional,create=file\n' "$DRI_BY_PATH" \
           "$GPU2_PCI" "$GPU2_CARD_DST"
       } >>"$CONF"
     fi
