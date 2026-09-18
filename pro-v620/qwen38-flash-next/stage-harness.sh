@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+# Exercises stagelib.sh against deliberately broken stages, to catch the `set -u`/exit-status
+# bugs that `bash -n` and shellcheck cannot see. Safe: it touches no model service.
 set -Eeuo pipefail
 RUN=/tmp/tstg; rm -rf "$RUN"; mkdir -p "$RUN"; RESULTS="$RUN/R.md"; : >"$RESULTS"
 CT=120; BUILDER=201; ENVF=/dev/null

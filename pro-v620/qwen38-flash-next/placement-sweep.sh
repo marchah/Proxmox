@@ -136,13 +136,34 @@ start_server() {
   # light layers plus half the heavy ones. Measured at ncmoe 20: without this, GPU 2
   # pinned at 30.7 GiB and spilled 9.3 GiB to GTT for 6.6 t/s; with it, 25.7/21.7 GiB,
   # no spill, 11.7 t/s. Override with TENSOR_SPLIT= to sweep the split itself.
+  #
+  # 🔴 CORRECTED 2026-09-18 (-2): the obvious "light layers + half the heavy ones" still
+  # puts ~2 layers too much on card 1 and SPILLS ANYWAY — card 1 also carries the output
+  # head and a larger KV share, which the layer count does not see. It silently
+  # overcommitted at ncmoe 15/16/20. The -2 is validated exactly where the spilling was:
+  # ncmoe 16 -> "30,18" (the deployed best config, 14.46 t/s), 20 -> "32,16",
+  # 28 -> "36,12". Above that range card 1 has room to spare either way, so the term is
+  # safe rather than load-bearing — it only ever shifts load toward the emptier card.
   if [ "${CPU_ONLY:-false}" = "true" ]; then
     set_env_var MODEL_TENSOR_SPLIT ""
   elif [ "$EXPECTED_GPUS" -ge 2 ]; then
     if [ -n "${TENSOR_SPLIT:-}" ]; then
       ts="$TENSOR_SPLIT"
     else
-      c1=$(( ncmoe + (48 - ncmoe) / 2 ))
+      if [ "$ncmoe" -ge 48 ]; then
+        # No heavy layers left to rebalance, so the -2 would hand card 2 two LIGHT layers
+        # and an inter-GPU hop for nothing. Keep this case exact so the "*,0" single-GPU
+        # detection below still fires.
+        c1=48
+      else
+        c1=$(( ncmoe + (48 - ncmoe) / 2 - 2 ))
+        # Defensive clamp; ncmoe >= 5 already makes it unreachable. Written as a full `if`
+        # rather than `[ ... ] && c1=1` out of habit, not necessity: that construct is only
+        # a `set -e` hazard when it is the LAST command of a FUNCTION (the function then
+        # returns 1 and the call site dies). In a loop body or an if-branch like this one it
+        # is harmless -- verified, because this repo has previously chased it as the cause of
+        # a failure it was not.
+      fi
       ts="${c1},$(( 48 - c1 ))"
     fi
     set_env_var MODEL_TENSOR_SPLIT "$ts"

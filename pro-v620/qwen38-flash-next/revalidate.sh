@@ -3,7 +3,7 @@
 #
 # 🔴 Why this is necessary: every placement number measured on 2026-09-17 was taken with the
 # governor pinned to `powersave`, i.e. all cores at 1500 MHz against a 3308 MHz maximum. That
-# cost -52% throughput AND blew run-to-run spread out to as much as 36%, so the SHAPE of the
+# cost ~30% throughput AND blew run-to-run spread out to as much as 36%, so the SHAPE of the
 # -ncmoe curve and the (flat) threads result are both unproven. With the governor fixed the
 # spread collapses to ~1.4%, which is why 2 samples per cell is now enough where 3 was not.
 #
@@ -61,7 +61,16 @@ echo "==> governor pinned to ${GOV} for the whole run"
 
 cell() {  # cell <label> <ncmoe> <threads>
   local label="$1" ncmoe="$2" threads="$3" c1 ip t=0
-  c1=$(( ncmoe + (48 - ncmoe) / 2 ))
+  # Same corrected split as placement-sweep.sh: the naive "light layers + half the heavy
+  # ones" leaves card 1 ~2 layers overcommitted and it spills anyway (silently, at ncmoe
+  # 15/16/20). Keep these two derivations identical or a revalidation measures a different
+  # placement than the sweep it is checking.
+  if [ "$ncmoe" -ge 48 ]; then
+    c1=48
+  else
+    c1=$(( ncmoe + (48 - ncmoe) / 2 - 2 ))
+    if [ "$c1" -lt 1 ]; then c1=1; fi
+  fi
   reset_env
   setv MODEL_CPU_MOE "$ncmoe"; setv MODEL_THREADS "$threads"
   setv MODEL_TENSOR_SPLIT "${c1},$(( 48 - c1 ))"

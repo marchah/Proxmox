@@ -249,14 +249,37 @@ These containers form the system:
     count** and hands card 2 all the heavy ones. Measured at `-ncmoe 20`: default split put GPU 1
     at 13.4 GiB and pinned GPU 2 at 30.7 GiB **spilling 9.3 GiB to GTT → 6.6 t/s**, while
     `--tensor-split 34,14` gave 25.1/21.2 GiB, **no spill, 11.74 t/s (+78%)**. The cards were never
-    short of memory in total (53 GiB of demand vs 60 GiB capacity) — pure maldistribution. Rule:
-    `card1 = N + (48 − N)/2`, derived automatically by `placement-sweep.sh`.
-  - 🔴 **Measured decode is ~4x BELOW the sizing note, and the reason invalidates its method.**
-    11.74 t/s against the note's 51. During decode **nothing is saturated** — the two cards
-    alternate (6–83% each) and the host CPU sits at 33–43% — because every token walks 20 CPU
-    expert layers then card 1's then card 2's, synchronising at each handoff. That is a **latency**
-    cost, invisible to the note's `active bytes ÷ bandwidth` model. ✅ Treat every hybrid-placement
-    figure in `large-moe-build-shapes.md` as an upper bound that has now been falsified by 4x.
+    short of memory in total (53 GiB of demand vs 60 GiB capacity) — pure maldistribution.
+    🔴 **The obvious rule `card1 = N + (48 − N)/2` still spills** — card 1 also holds the output
+    head and a larger KV share, which a layer count cannot see, so it silently overcommitted at
+    `-ncmoe` 15/16/20. Corrected: **`card1 = N + (48 − N)/2 − 2`**, derived automatically by
+    `placement-sweep.sh` and validated where the spilling was (16 → `30,18`, which is the
+    deployed best config; 20 → `32,16`; 28 → `36,12`). ⚠️ `-ncmoe 48` is exempt — with no heavy
+    layers the split must stay `48,0`, or card 2 gets two light layers and an inter-GPU hop for
+    nothing. ✅ **Measure demand as `VRAM used + GTT`** and check it is split-invariant (64192 /
+    64192 / 64190 MiB across three splits): that separates "too big in total, no split helps"
+    from "merely maldistributed".
+  - 🔴 **Measured decode is ~5x BELOW the sizing note, and the reason invalidates its method.**
+    The best two-card placement is **14.46 t/s** at depth 0 / 13.37 at 8k (`-ncmoe 16`, split
+    `30,18`) against the note's predicted 72; one card at `-ncmoe 34` does **13.01 / 12.23**. (The
+    11.74 above is a mid-curve point from the tensor-split A/B, not the best config.) During decode
+    **nothing is saturated** — the cards alternate (6–83% each), the host CPU sits at 33–43%, and
+    the DIMM temperatures never leave idle — because every token walks the CPU expert layers, then
+    card 1's, then card 2's, synchronising at each handoff. `GGML_SCHED_DEBUG` names the
+    mechanism: **~30 graph splits per token at ~1.07 ms**, 61% of a fixed term that is itself
+    ~72% of the token. That is a **latency** cost, invisible to the note's
+    `active bytes ÷ bandwidth` model.
+    📐 The replacement, fitted within 1.3%:
+    **`ms/token = 25.9 + 1.52 × (CPU-resident expert layers) + 16.1 × (extra GPU boundaries)`**.
+    ✅ `large-moe-build-shapes.md` is corrected in CognitiveStack PR #487 — read that, not the
+    pre-measurement version.
+  - 🔴 **PREFILL is the binding constraint, not decode, and one card BEATS two.** Across the
+    placement curve prefill falls 63% where decode falls 36%: an 8k prompt costs **104 s to first
+    token on two cards, 205 s on one**. And at *matched* placement (`-ncmoe 34`) one card beats two
+    by **20.9% at depth 0 / 24.2% at 8k** with prefill tied (+0.5%) — llama.cpp #28699's
+    inter-GPU indexer tax, measured here at **+16.1 ms/token per extra card boundary**. So the
+    second card is worth **+11% decode but +97% prefill**; judge it on prefill. This is why the
+    model ships on CT 123's single card.
   - ⚠️ **`--load-mode none` is llama.cpp's own startup advice for this config and it is WRONG
     here**: 11.18 t/s vs 11.74 on `auto`, and it pulls **31.6 GiB into GTT**. Kept on `auto`.
     Treat that hint as a hypothesis.

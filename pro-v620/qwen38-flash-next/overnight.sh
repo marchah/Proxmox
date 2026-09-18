@@ -99,7 +99,7 @@ Type=oneshot
 RemainAfterExit=yes
 # 🔴 WHY NOT powersave: this host uses acpi-cpufreq, where \`powersave\` PINS every core to
 # the minimum 1500 MHz against a 3308 MHz maximum -- it is NOT the dynamic governor it is
-# under amd-pstate-epp. Measured 2026-09-17 on Qwen3.8-Flash-Next: -52% decode at short
+# under amd-pstate-epp. Measured 2026-09-17 on Qwen3.8-Flash-Next: ~-30% decode at short
 # prompt, -27% at 8k, and run-to-run spread blowing out from ~1.4% to as much as 36%.
 # C-states are innocent and the BIOS levers should stay: pinning cores out of C2 via
 # /dev/cpu_dma_latency changed throughput by 0%. Idle cost of this change is ~1.7 W of CPU
