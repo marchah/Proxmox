@@ -34,7 +34,7 @@ OFFSET_MIN_MV="${OFFSET_MIN_MV:--100}"
 OFFSET_MAX_MV="${OFFSET_MAX_MV:-0}"
 # Select the V620 by PCI vendor:device so a SECOND amdgpu GPU can't get the offset.
 GPU_PCI_ID="${GPU_PCI_ID:-1002:73a1}"   # Radeon Pro V620 (Navi 21 / gfx1030)
-# Optional exact PCI address (e.g. 0000:2d:00.0) to disambiguate identical cards.
+# Optional exact PCI address (e.g. 0000:03:00.0 or 0000:83:00.0) to disambiguate identical cards.
 GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-}"
 WAIT_SECS="${WAIT_SECS:-30}"            # max wait for pp_od_clk_voltage at boot
 # How many V620s to WAIT for at boot before applying (this host has two). 0 = auto:

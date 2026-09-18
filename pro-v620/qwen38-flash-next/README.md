@@ -149,9 +149,20 @@ within ~120 MiB of the measurement, across four different shapes. ⚠️ Read th
 one consistent moment — a reading taken mid-cell versus after it differs by ~2 GiB of
 transient compute buffer, which is enough to invent a non-uniformity that is not there.
 
-🔴 **`-ncmoe 15` and below cannot fit two cards in any shape at any split** — total demand
-is 64.2 GiB against 64 GiB of capacity, leaving ~620 MiB per card even perfectly balanced,
-under the ~1024 MiB where RADV starts spilling to GTT. **16 is the floor.**
+🔴 **`-ncmoe 16` is the floor in practice.** ⚠️ **This paragraph used to say 15 "cannot fit in
+any shape at any split", on a demand of "64.2 GiB against 64 GiB" — both wrong.** 64295 MiB is
+**62.79 GiB**, which does *not* exceed the 64 GiB of total capacity, and that figure is for the
+**f16 / projector-GPU** shape specifically. What is actually established:
+
+- `15` **f16 / projector GPU**: 64295 MiB, ~620 MiB/card balanced — spills at any split.
+- `15` **q8_0 / projector CPU**: 62394 MiB, ~1571 MiB/card balanced — *above* the ~1024 MiB RADV
+  floor, so not excluded by capacity. Measured at split **`29,19`: SPILLED**, 3256 / **89 MiB**
+  free — starved by maldistribution. **That split is excluded by measurement; other splits are
+  unvalidated.**
+- ✅ **The operative rule is a headroom POLICY, not a capacity proof**: this folder accepts a
+  placement at **≥2048 MiB free on every card** (below that is marked "tight" throughout). 15's
+  best balanced estimate of 1571 MiB/card fails that policy, which is why 16 is the floor.
+  See [the `-ncmoe 15` closure](#--ncmoe-15--closed-by-policy-not-by-physics).
 
 🔴 **`-ncmoe 34` is the floor for one card**, at 30.4 GiB of 32. Below that a single card
 cannot hold it; above it you are trading decode for headroom at ~0.29 t/s per layer.
@@ -199,7 +210,9 @@ the depth curve, and the template-contract result.
 ## The answer: which configuration to run
 
 All figures at full clock (`schedutil`), b11018, two V620s, measured 2026-09-18.
-**`-ncmoe 16` is the floor** — nothing below it fits in any shape at any split.
+**`-ncmoe 16` is the floor** — below it, only `15` + q8_0 + projector-CPU is even arithmetically
+close, and it fails this folder's ≥2048 MiB/card headroom policy (and spilled at the one split
+measured). See [the closure](#--ncmoe-15--closed-by-policy-not-by-physics).
 
 ### ✅ Default — fastest, and it also has the most headroom
 
@@ -312,7 +325,7 @@ That advice was right; it now has a number.
 | `--threads 32` | −4 to −5% solo; 16 is best at 2+ streams (8 edges it ~1% solo, then loses 4.9% at 4) |
 | the documented `--tensor-split` | ~2 layers off; spills at `-ncmoe` 15/16/20 and costs up to −11% |
 | f16 KV at `--ctx-size 131072` | spills at `-ncmoe 16` and costs −21% of decode at depth |
-| `-ncmoe` below 16 | does not fit, in any shape, at any split |
+| `-ncmoe` below 16 | fails the ≥2048 MiB/card headroom policy; `15`+q8_0+projCPU spilled at the one split measured |
 | `--load-mode none` | −5%, despite llama.cpp suggesting it at startup |
 | `powersave` governor | −30%, and it was the single largest factor found |
 
@@ -664,7 +677,7 @@ it with f16 KV and the projector resident. The candidates, computed and then loa
 | --- | ---: | ---: | --- |
 | `15`, f16, projector GPU | 64295 | 620 | 🔴 spills at any split |
 | `14`, q8_0, projector CPU | 63895 | 820 | 🔴 still spills — measured 11.54 t/s |
-| `15`, q8_0, projector CPU | 62394 | 1571 | computes as fitting — ⚠️ never load-checked |
+| `15`, q8_0, projector CPU | 62394 | 1571 | 🔴 **measured at `29,19`: SPILLED** (3256 / 89 MiB) |
 | **`16`, q8_0, projector CPU** | **60691** ✅measured | **2422** | ✅ **14.17 / 13.45 — the best cell** |
 | `16`, f16, projector GPU | 62794 computed / 62605 measured | 1371 | 14.16 / 13.07; vision stays resident |
 
@@ -676,16 +689,36 @@ fits (see [that retraction](#-q8_0-kv--projector-on-cpu-is-free-at-a-placement-t
 deployed config runs. Take the f16 / projector-on-GPU row only if **image-encoding latency**
 matters, which is the one thing it actually buys.
 
-⚠️ **The retraction re-opens `-ncmoe 15`, and nobody re-tested it.** 15 with `q8_0` +
-`--no-mmproj-offload` computes to 1571 MiB/card balanced — *above* the ~1024 MiB RADV spill
-floor — and the only recorded reason for rejecting it was the 14% depth cost that turned out
-not to exist. ⚠️ It also contradicts the summary line above claiming `-ncmoe` below 16 "does
-not fit, in any shape, at any split", which was true of the f16 / projector-GPU shape that
-was measured and is unproven for this one. **Treat 15 as an untested candidate, not as
-excluded** — it is worth one load-check and a depth probe.
+### 🔴 `-ncmoe 15` — closed by POLICY, not by physics
 
-The frugal shape still does **not** buy a whole placement step: `q8_0` +
-`--no-mmproj-offload` saves ~1900 MiB while one layer of experts costs ~1500.
+⚠️ **Two wrong things were said about 15 in a row, in opposite directions.** First it was
+excluded as "cannot fit in any shape at any split" (a unit error: 62.79 GiB, not 64.2, and only
+the f16 shape was measured). Then the q8_0 retraction was used to call it an "untested candidate"
+that "nobody re-tested" — also wrong, because the saved results contain a load-check of it.
+What the record actually supports:
+
+- **Measured**: `15` + q8_0 + projector-CPU at split **`29,19` SPILLED**, 3256 / **89 MiB** free.
+  Card 2 was starved by maldistribution. That split is dead.
+- **Not established**: that *every* split at 15 fails. A perfect rebalance of the ~1500 MiB
+  between those cards would be roughly 1756 / 1589 MiB, and discrete layers may make it
+  unattainable — it has to be measured, not derived.
+- **The projected gain is ~2%**: one expert layer is ~1.52 ms on a ~69 ms token → ~14.8 t/s.
+- **Larger batch and 15 are mutually exclusive.** `4096/1024` costs ~1000 MiB on the heavy card;
+  a hypothetical perfect rebalance would leave ~1071 MiB/card, **47 MiB above the ~1024 floor**.
+  Not impossible — just far too marginal to run, and the larger batch is worth **2-3× prefill**,
+  which is the binding constraint.
+
+✅ **Closure**: at `-ncmoe 15`, q8_0 KV and CPU projector, split `29,19` was measured and failed
+the headroom check. Other splits remain unvalidated. Further testing is **deprioritized**: the
+projected decode gain is ~2%, the estimated balanced headroom of 1571 MiB/card fails this
+folder's **≥2048 MiB/card acceptance policy**, and larger-batch configurations at `-ncmoe 16`
+offer the more promising prefill improvement. **Not a supported production configuration** — and
+that is a headroom-policy decision, not a claim that the model cannot fit.
+
+⚠️ **The frugal shape still does not buy a whole placement step**, but the reason is the policy,
+not the arithmetic: `q8_0` + `--no-mmproj-offload` saves ~1900 MiB while one layer of experts
+costs ~1500, so trading the cache shape for a layer nets ~400 MiB — which does not lift 15's
+~1571 MiB/card to the ≥2048 MiB the policy requires.
 
 ### ⛔ CPU-only is not worth it — and you do not need it to free a card
 

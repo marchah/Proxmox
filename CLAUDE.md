@@ -458,7 +458,9 @@ Engine differences that matter when extending the llama.cpp script:
   **libglvnd/EGL stack** (`libglvnd0 libgl1 libglx0 libegl1`) on top of `mesa-vulkan-drivers`
   — without it the Mesa ICD loader can silently report **zero** Vulkan devices in the container.
   - **CT 120 and CT 123 both run llama.cpp `b11018`** (CT 123 got it 2026-09-18 by copying
-    `/opt/llamacpp/b11018-baseline` from CT 120 — same Ubuntu 24.04 / glibc 2.39, so the binary
+    `/opt/llamacpp/b11018-baseline` — ⚠️ **NOT a copy of CT 120's tree, which this line used to
+    claim.** Same source revision (`build 11018, commit c9a5eeeb3`) but different builds: GNU
+    13.3.0 vs 11.4.0, different sha256. Same Ubuntu 24.04 / glibc 2.39, so a binary
     moves; `qwen4exp` needs b11013+ and CT 123 was on b10678). llama-swap was pinned at `v250`
     before its removal. Prior
     llama.cpp builds are left in `/opt/llamacpp/` and the previous llama-swap binary kept as a

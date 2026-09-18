@@ -53,13 +53,47 @@ for fn in mtp_set_placement s2c_context s3_mtp s2b_split s4_parallel; do
     fails=$((fails + 1)); continue
   fi
 done
+# 🔴 NOT `if ( "$fn" ); then`. Bash disables errexit for the whole `if` CONDITION, and that
+# suppression reaches inside the function — so an ordinary failing command mid-stage did not
+# abort the stage, the stage ran on and returned 0, and this harness reported OK. Counting
+# failures could not help, because the failure was never surfaced to count. Verified on the
+# host, not just locally: `if (body); then` prints "continued past rc=42" then "reported OK".
+# ✅ Run the stage as a STANDALONE subshell with errexit re-armed inside it, and read $? on
+# the next line. The parent's errexit is lifted only across those two lines.
 for fn in s2c_context s3_mtp s2b_split; do
-  if ( "$fn" >/dev/null 2>&1 ); then
+  set +e
+  ( set -Eeuo pipefail; "$fn" ) >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
     echo "  OK   $fn"
   else
-    echo "  🔴 FAIL $fn (rc=$?)"; fails=$((fails + 1))
+    echo "  🔴 FAIL $fn (rc=${rc})"; fails=$((fails + 1))
   fi
 done
+
+# The watchdog-based runner in stagelib.sh was never exercised here, which the follow-up
+# review called out. One negative control: a stage that fails internally must be reported as
+# a failure by `stage()` too, not just by the direct calls above.
+if [ -f stagelib.sh ]; then
+  # shellcheck source=/dev/null
+  . ./stagelib.sh 2>/dev/null || true
+  if declare -F stage >/dev/null; then
+    boom() { false; echo "unreachable"; }
+    set +e
+    ( set -Eeuo pipefail; stage boom ) >/dev/null 2>&1
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then
+      echo "  🔴 FAIL stage() reported success for a stage that failed internally"
+      fails=$((fails + 1))
+    else
+      echo "  OK   stage() surfaces an internal failure (rc=${rc})"
+    fi
+  else
+    echo "  ⚠️  stagelib.sh defines no stage() — skipped that control"
+  fi
+fi
 if [ "$fails" -gt 0 ]; then
   echo "🔴 ${fails} harness check(s) FAILED"
   exit 1

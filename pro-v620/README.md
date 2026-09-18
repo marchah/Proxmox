@@ -4,14 +4,20 @@ Scripts in this folder target the desktop server's **Radeon Pro V620** (Navi 21 
 gfx1030, RDNA 2, **32 GB** GDDR6, 72 CUs). The V620 **replaces the RX 6700 XT** —
 the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 
-> **Two V620s, one in use:** the host runs **two V620s** — PCIe-1 (CPU) slot `0000:2d:00.0`
-> ("GPU 1") and PCIe-3 (chipset) slot `0000:06:00.0` ("GPU 2"). The model is only ~26.6 GB and
+> **Two V620s, both in use:** the host runs **two V620s** — `0000:03:00.0`
+> ("GPU 1") and `0000:83:00.0` ("GPU 2"). ⚠️ **This line used to read "PCIe-3 (chipset) slot
+> `0000:06:00.0`", which is the B550 topology and predates the 2026-09-16 EPYC move.** All seven
+> ROMED8-2T slots are CPU-direct Gen4 x16, so the old chipset decode tax no longer applies and
+> either card can host either workload. The model is only ~26.6 GB and
 > fits a single 32 GB card, so **CT 120 is pinned to GPU 1 alone**: its container bind-mounts
 > only GPU 1's `/dev/dri` render node (via the udev-stable `by-path` symlink — the only
 > reboot-stable way to pin one of two *identical* cards; see `configure_gpu_passthrough` in the
-> script). **GPU 2 now runs CT 123 `gpu2`** — a `llama-swap` server for the autonomous coding loop's
-> coder/reviewer split (`create-lxc-llama-swap-gpu2.sh`; `qwen3.8-27b-dflash2` coder + `thinkingcap-27b`
-> reviewer, swapped one at a time on `0.0.0.0:8080`). GPU 2 stays amdgpu-bound, so the host services manage both cards:
+> script). **GPU 2 (`0000:83:00.0`) runs CT 123 `gpu2`, which since 2026-09-18 serves
+> Qwen3.8-Flash-Next** (`qwen38-flash-next/`, `-ncmoe 34`, OpenAI API on `0.0.0.0:1234`).
+> ⚠️ **It previously ran a `llama-swap` coder/reviewer proxy on `:8080`; that was removed.**
+> `create-lxc-llama-swap-gpu2.sh` is kept as the recipe — the binary, its `.bak` predecessors
+> and `/etc/llama-swap/config.yaml` with all six model entries are intact and the unit is
+> stopped+disabled, so it is recoverable, but nothing on the box runs it. GPU 2 stays amdgpu-bound, so the host services manage both cards:
 > both are undervolted −100 mV (`undervolt/` applies to every V620), and **each card has its own
 > 9733 radial blower**. Both blowers hang off a single SATA-powered PWM hub whose control lead sits
 > on the **PUMP FAN** header, driven by one `gpu-fan-control@hub` instance whose curve tracks the
@@ -37,7 +43,10 @@ the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 >
 > The [`gpu-thermal-watchdog/`](gpu-thermal-watchdog/) remains armed as the last-resort net, stopping
 > the LLM server at 102 °C and mapping a trip to that card's **owning workload** (GPU 1 → CT 120
-> `llamacpp`, GPU 2 → CT 123 `llama-swap`). It has not tripped since the per-card blowers went in;
+> `llamacpp`, GPU 2 → CT 123 **`llamacpp-qwen38fn`**). ⚠️ **That map must name the unit that
+> actually runs.** It said `123:llama-swap` until 2026-09-18, after that service was removed —
+> and a map naming a stopped unit makes a thermal trip a **silent no-op**, leaving the real load
+> on an overheating card with only the 105 °C hardware reset behind it. It has not tripped since the per-card blowers went in;
 > its three 2026-08-14/15 firings were all under the old shared-shroud cooling. ⚠️ It leaves the
 > stopped service **down** by design, so the symptom from outside is a plain connection-refused on
 > `:8080` with the container still running, and an in-flight request sees a **502** that looks exactly
@@ -53,10 +62,14 @@ the chosen engine, per the 6700 XT comparison), one per V620:
   runtime: llama.cpp's `llama-server` (reload = restart, via the `llamacpp-reload`
   helper). Exposes an OpenAI-compatible API on `0.0.0.0:1234`, serves the model
   under the identifier `qwen3.6-35b-a3b`.
-- `create-lxc-llama-swap-gpu2.sh` — **GPU 2 (CT 123 `gpu2`)**, the autonomous
-  coding loop: a `llama-swap` proxy on `0.0.0.0:8080` that hot-swaps a coder model
-  and a reviewer model, one resident at a time. See the callout above and
-  `create-lxc-llama-swap-gpu2.sh --help`.
+- `qwen38-flash-next/` — **GPU 2 (CT 123 `gpu2`), the current occupant**: Qwen3.8-Flash-Next
+  (`qwen4exp`, 180B/6B, 111.33 GB) with the PLE table and part of the routed experts in host RAM.
+  `VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh`. That folder's README is the single detailed
+  record of the placement study.
+- `create-lxc-llama-swap-gpu2.sh` — ⚠️ **DECOMMISSIONED 2026-09-18**, kept as the recipe: a
+  `llama-swap` proxy on `0.0.0.0:8080` that hot-swapped a coder and a reviewer model, one
+  resident at a time. Recoverable (see the callout above), but re-enabling it needs a device
+  selector in its config first, or it will grab a card another container is using.
 
   **GPU-2 loop models** (updated 2026-08-15; both dense 27B, only one fits the 32 GB card at a time;
   both thinking, ctx **65536**, `--n-predict 32768`, `--parallel 1`, pick by alias):
@@ -339,8 +352,8 @@ is visible to Vulkan and resident in VRAM:
 ```bash
 pct exec 120 -- vulkaninfo --summary                                # expect exactly ONE V620 under the radv driver
 # cardN numbering is NOT stable — read GPU 1 by PCI address (card0 here is the idle GPU 2):
-cat /sys/bus/pci/devices/0000:2d:00.0/mem_info_vram_used            # ~29.8 GiB while the model is loaded (GPU 1)
-cat /sys/bus/pci/devices/0000:06:00.0/mem_info_vram_used            # GPU 2: ~0 when the loop is idle; high while CT 123 has a model loaded
+cat /sys/bus/pci/devices/0000:03:00.0/mem_info_vram_used            # ~29.8 GiB while the model is loaded (GPU 1)
+cat /sys/bus/pci/devices/0000:83:00.0/mem_info_vram_used            # GPU 2: ~29 GiB while CT 123 serves Qwen3.8-Flash-Next
 ```
 
 > **Reboot caveat.** The container binds GPU 1's render node by PCI address, but the
@@ -358,8 +371,8 @@ mount entries, then restart. No rebuild, no re-download (model + rootfs untouche
 
 ```bash
 conf=/etc/pve/lxc/120.conf
-rn=$(basename "$(readlink -f /dev/dri/by-path/pci-0000:2d:00.0-render)")   # current renderD*
-cn=$(basename "$(readlink -f /dev/dri/by-path/pci-0000:2d:00.0-card)")     # current card*
+rn=$(basename "$(readlink -f /dev/dri/by-path/pci-0000:03:00.0-render)")   # current renderD*
+cn=$(basename "$(readlink -f /dev/dri/by-path/pci-0000:03:00.0-card)")     # current card*
 sed -i -E "s#(-render dev/dri/)renderD[0-9]+#\1${rn}#; s#(-card dev/dri/)card[0-9]+#\1${cn}#" "$conf"
 pct stop 120 && pct start 120
 pct exec 120 -- /usr/local/bin/llamacpp-wait-health   # blocks until serving (guard passes)
@@ -395,7 +408,7 @@ path — a proof-of-concept confirmed exactly that.
 
 #### ROCm in a passthrough VM (PoC, 2026-06-29) — works, but slower than Vulkan
 
-A VM with the V620 passed through (`vfio-pci` → `qm set <id> --hostpci0 0000:2d:00.0,pcie=1`,
+A VM with the V620 passed through (`vfio-pci` → `qm set <id> --hostpci0 0000:03:00.0,pcie=1`,
 q35 + OVMF) runs its **own** kernel, so a matched `amdgpu-dkms` + ROCm stack can be
 installed and the `hipMemcpy` fault disappears. Verified end-to-end: the host→device→host
 roundtrip that aborts in the LXC returns `OK`, `rocminfo` shows `gfx1030` with a ~30 GiB

@@ -38,20 +38,32 @@ echo "$(date -u +%FT%TZ) guard armed: cards=[${CARDS}] limit=${LIMIT}C patterns=
 
 while :; do
   for pci in $CARDS; do
-    h="$(hwmon_for "$pci")" || continue
-    # 🔴 `|| echo 0` made an unreadable sensor read as 0 °C — below every threshold, so the
-    # guard sailed past a card it could not see. That is failing OPEN, and the comment above
-    # promises the opposite. A missing sensor is now treated as over-temp: this guard exists
-    # precisely because the systemd watchdog cannot protect a hand-driven benchmark, so if it
-    # cannot see a card it must shed load rather than assume the card is cold.
-    jr="$(cat "${h}/temp2_input" 2>/dev/null || true)"
-    mr="$(cat "${h}/temp3_input" 2>/dev/null || true)"
-    case "${jr}${mr}" in
-      *[!0-9]*|"")
-        echo "$(date -u +%FT%TZ) 🔴 ${pci}: junction/mem sensor unreadable (junction='${jr}' mem='${mr}') — treating as OVER-TEMP" | tee -a "$LOG"
-        j=999; m=999 ;;
-      *) j=$(( jr / 1000 )); m=$(( mr / 1000 )) ;;
-    esac
+    # This guard exists because the systemd watchdog cannot protect a hand-driven benchmark,
+    # so anything it cannot SEE must shed load rather than be assumed cold.
+    #
+    # 🔴 Two fail-open bugs lived here, the second one introduced while fixing the first.
+    #   1. `|| echo 0` made an unreadable sensor read as 0 °C.
+    #   2. The replacement validated the CONCATENATION `${jr}${mr}`, so one empty reading
+    #      beside one numeric reading concatenated to a numeric string, passed validation,
+    #      and the empty one became 0 in the arithmetic. Only BOTH sensors missing tripped —
+    #      which is the single case the test covered. Validate each reading SEPARATELY.
+    # ✅ Losing the hwmon directory mid-run is the same class and routes the same way: the
+    #    startup check only proves it existed at startup.
+    unreadable=""
+    if ! h="$(hwmon_for "$pci")"; then
+      unreadable="hwmon directory gone"
+    else
+      jr="$(cat "${h}/temp2_input" 2>/dev/null || true)"
+      mr="$(cat "${h}/temp3_input" 2>/dev/null || true)"
+      case "$jr" in ""|*[!0-9]*) unreadable="junction='${jr}'" ;; esac
+      case "$mr" in ""|*[!0-9]*) unreadable="${unreadable:+${unreadable} }mem='${mr}'" ;; esac
+    fi
+    if [ -n "$unreadable" ]; then
+      echo "$(date -u +%FT%TZ) 🔴 ${pci}: UNREADABLE (${unreadable}) — treating as OVER-TEMP" | tee -a "$LOG"
+      j=999; m=999
+    else
+      j=$(( jr / 1000 )); m=$(( mr / 1000 ))
+    fi
     hot=$(( j > m ? j : m ))
     if [ "$hot" -ge "$LIMIT" ]; then
       echo "$(date -u +%FT%TZ) THERMAL GUARD: ${pci} junction=${j}C mem=${m}C >= ${LIMIT}C — killing [${PATTERNS}]" \

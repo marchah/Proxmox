@@ -29,6 +29,10 @@ readonly GPU1_PCI='0000:03:00.0'
 
 readonly WATCHDOG_ENV=/etc/gpu-thermal-watchdog.env
 
+# Set when the map check fails. Deferred to the end so the status dump below still prints —
+# that output is exactly what an operator needs when protection is broken.
+MAP_BAD=0
+
 die() { echo "ERROR: $*" >&2; exit 1; }
 log() { printf '==> %s\n' "$*"; }
 
@@ -63,23 +67,52 @@ ct123_restore() {
     || log "  (CT 123 not running; enable llamacpp-qwen38fn after 'pct start 123')"
 }
 
-# The invariant the map exists to satisfy, checked rather than assumed: a mapped service must
-# be enabled-or-active in a container that actually holds that card.
+# 🔴 An earlier version of this was named for ownership and checked none of it: it never read
+# any container's GPU bindings, accepted `is-enabled` OR `is-active` (so an enabled-but-dead
+# unit passed), never checked that BOTH cards had entries, and returned 0 on every path —
+# while logging "every mapped unit exists and is live". That is the same defect class this
+# whole review is about: a claim asserting something the code does not do.
+#
+# What it checks now, and reports as three DISTINCT states rather than one:
+#   - both known cards have a map entry at all;
+#   - the target container actually has that card's render node bound in its config;
+#   - the unit is active (serving), enabled-but-inactive (configured, not serving — the
+#     legitimate state of a deliberately stopped CT 123 after rollback), or neither.
+# It returns non-zero on a real mismatch. ⚠️ It still cannot prove which device a running
+# process has open, and it says nothing about intermediate or post-reboot states — an
+# end-of-script assertion structurally cannot. That is what a mocked transition test is for.
 assert_map_owns_cards() {
-  local map addr svc vm unit bad=0
+  local map addr svc vm unit conf bad=0 seen=""
   map="$(grep -m1 '^GPU_SERVICE_MAP=' "$WATCHDOG_ENV" 2>/dev/null | cut -d= -f2-)"
-  [ -n "$map" ] || { log "WARN: watchdog map empty — cannot verify ownership"; return 0; }
+  [ -n "$map" ] || { log "🔴 watchdog map EMPTY — a trip on either card sheds no load"; return 1; }
   local IFS=','
   for pair in $map; do
     addr="${pair%%=*}"; svc="${pair#*=}"; vm="${svc%%:*}"; unit="${svc#*:}"
-    if ! pct exec "$vm" -- systemctl is-enabled "$unit" >/dev/null 2>&1 \
-      && ! pct exec "$vm" -- systemctl is-active "$unit" >/dev/null 2>&1; then
-      log "🔴 MAP MISMATCH: ${addr} -> ${vm}:${unit}, which is neither enabled nor active"
+    seen="${seen} ${addr}"
+    conf="/etc/pve/lxc/${vm}.conf"
+    if ! grep -q "pci-${addr}-render" "$conf" 2>/dev/null; then
+      log "🔴 MAP MISMATCH: ${addr} -> CT ${vm}, but CT ${vm} does not bind that render node"
+      bad=1
+      continue
+    fi
+    if pct exec "$vm" -- systemctl is-active "$unit" >/dev/null 2>&1; then
+      log "  ${addr} -> ${vm}:${unit} — owns the card, unit ACTIVE"
+    elif pct exec "$vm" -- systemctl is-enabled "$unit" >/dev/null 2>&1; then
+      log "  ${addr} -> ${vm}:${unit} — owns the card, unit CONFIGURED but not serving"
+    else
+      log "🔴 MAP MISMATCH: ${addr} -> ${vm}:${unit} is neither active nor enabled"
       bad=1
     fi
   done
-  [ "$bad" -eq 0 ] && log "watchdog map verified: every mapped unit exists and is live" || \
+  local c
+  for c in "$GPU1_PCI" "$GPU2_PCI"; do
+    case "$seen" in *"$c"*) ;; *) log "🔴 ${c} has NO map entry — unprotected"; bad=1 ;; esac
+  done
+  if [ "$bad" -ne 0 ]; then
     log "🔴 the watchdog would be a NO-OP for at least one card — fix the map before loading"
+    return 1
+  fi
+  log "watchdog map checked: both cards mapped to a unit in a container that binds them"
   return 0
 }
 
@@ -153,7 +186,7 @@ case "${1:-status}" in
 
     log "enabling the qwen4exp server"
     pct exec "$VMID" -- systemctl enable --now llamacpp-qwen38fn
-    assert_map_owns_cards
+    assert_map_owns_cards || MAP_BAD=1
     ;;
 
   to-qwen36)
@@ -182,7 +215,7 @@ case "${1:-status}" in
     log "enabling the qwen3.6 server"
     pct exec "$VMID" -- systemctl enable --now llamacpp
     ct123_restore
-    assert_map_owns_cards
+    assert_map_owns_cards || MAP_BAD=1
     log "GPU 2 released — CT 123 can be started again (pct start 123)"
     ;;
 
@@ -220,7 +253,7 @@ if gpu2_attached && [ "$(pct config 123 2>/dev/null | awk '/^onboot/{print $2}')
   echo "  🔴 CT 120 holds GPU 2 while CT 123 is set to autostart — a host reboot puts two"
   echo "     servers on one card. Run: pct set 123 --onboot 0"
 fi
-assert_map_owns_cards
+assert_map_owns_cards || MAP_BAD=1
 echo "--- per-card VRAM / GTT ---"
 for pci in "$GPU1_PCI" "$GPU2_PCI"; do
   d="/sys/bus/pci/devices/${pci}"
@@ -228,3 +261,12 @@ for pci in "$GPU1_PCI" "$GPU2_PCI"; do
     "$(( $(cat "${d}/mem_info_vram_used" 2>/dev/null || echo 0) / 1048576 ))" \
     "$(( $(cat "${d}/mem_info_gtt_used"  2>/dev/null || echo 0) / 1048576 ))"
 done
+
+if [ "${MAP_BAD:-0}" -ne 0 ]; then
+  echo
+  echo "🔴 EXITING NON-ZERO: the thermal watchdog map does not match reality, so a trip on at"
+  echo "   least one card would shed no load. Fix GPU_SERVICE_MAP in ${WATCHDOG_ENV} before"
+  echo "   putting load on these cards — only the 105 °C hardware reset is behind it."
+  exit 1
+fi
+
