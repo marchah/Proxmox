@@ -1,16 +1,12 @@
 # `hermes/config/` — the CT-121 autonomous-coding-loop / orchestrator config
 
-This folder captures the config that drives the homelab's **autonomous coder↔reviewer loop**, which runs inside
-**CT 121 `hermes`** (the Hermes Agent LXC). It used to live only on the running container; this is the documented,
-version-controlled, re-deployable snapshot. Scope is the **loop/orchestrator only** — the box's unrelated
-KB/homelab automations are intentionally not tracked here.
+Reference configuration for the retired on-box Hermes coder/reviewer loop.
+The loop moved to Multica on 2026-09-18; CT 122 was removed and CT 123 now serves
+Flash-Next directly. Reusing this snapshot requires a runner, SSH credentials,
+and model endpoints matching the committed profiles.
 
-It mirrors the repo's host-service idiom (`pro-v620/gpu-thermal-watchdog/` et al.): an idempotent `install.sh` +
-committed files + a `*.env.example` template + this README. The difference is the deploy **target is CT 121**, not
-the Proxmox host — run `install.sh` inside the container (`git clone` the repo there, or `pct push` this folder in).
-
-> This is **operator config for a self-driving loop**, not an app. It assumes CT 121 (`hermes/create-lxc-hermes-agent.sh`),
-> CT 122 `coder-runner` (`coder-runner/`), and CT 123 `gpu2` (`pro-v620/create-lxc-llama-swap-gpu2.sh`) already exist.
+`install.sh` runs inside CT 121 and installs profiles, skills, plugins, helpers
+and timers. The unrelated KB/homelab automations are outside this folder.
 
 ## The loop, end to end
 
@@ -37,7 +33,7 @@ the Proxmox host — run `install.sh` inside the container (`git clone` the repo
 
 The dispatcher runs **one task at a time** (`kanban.max_in_progress: 1`) because the single GPU-2 card holds one
 model resident at a time and llama-swap hot-swaps coder⇄reviewer at role handoffs. **No auto-merge to public `main`** —
-PRs are human-reviewed. See the `autonomous-coding-loop` memory for the full design + hard-won gotchas.
+PRs are human-reviewed.
 
 ## Layout
 

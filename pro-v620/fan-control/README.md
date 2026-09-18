@@ -1,89 +1,21 @@
-# GPU fan control — Radeon Pro V620 coolers (per-cooler instances)
+# B550 GPU fan control
 
-Host-level (Proxmox) service that drives the V620 cooler fan(s) from the **GPU's own
-temperature**, instead of the BIOS smart-fan curve (which can only read a motherboard
-temperature probe). The V620s are passively cooled datacenter cards, so their fans are
-the **only** cooling.
+Reference service for the MSI MAG B550 Tomahawk Max's NCT6687D controller.
+The ROMED8-2T uses [gpu-blower-control](../gpu-blower-control/README.md).
 
-The service runs **one systemd instance per controllable fan channel**. Current hardware —
-**each V620 has its own 9733 radial blower**, and both blowers hang off a single
-**SATA-powered PWM hub** that takes its control signal from the **PUMP FAN** header:
+One systemd instance controls one fan channel, using GPU temperatures and
+PCI-address matching. The B550 hub profile drives two 9733 blowers on PUMP_FAN1
+(`pwm2`) and tracks the hotter card. Its PCI addresses and header assignments
+belong to that board.
 
-| Instance | GPU(s) cooled | Cooler | nct6687 pwm | Idle floor |
-|----------|---------------|--------|-------------|------------|
-| `gpu-fan-control@hub` | both — `0000:2d:00.0` + `0000:06:00.0` | 2 × 9733 blower (one per card) via an EN-Labs PWMHUB10SMG on PUMP_FAN1 | pwm2 | 12% (pwm 32, ~1000 RPM) |
+PUMP_FAN1 was the verified PWM output for externally powered fans; the tested
+SYS_FAN headers used DC mode. Confirm duty changes affect the fan, since a tach
+reading alone does not prove control. The hub returns only one blower's tach.
+Each blower needs 12 V / 1.5 A, so verify the hub's per-port rating.
 
-Each card has its **own** blower, so cooling capacity is per-card; only the **PWM control
-signal** is shared through the hub. One signal means one curve, so it tracks the **hottest**
-card, and a required sensor missing on **any** of them forces 100%.
-
-An instance pins its GPU(s) by **PCI address** (`GPU_PCI_ADDRESS` — comma-separated when one
-channel drives fans on several cards; stable across boots, unlike the `cardN` index) and its
-fan by `FAN_PWM_CHANNEL`.
-
-> ### ⚠️ Only PUMP_FAN1 can control an externally-powered fan
->
-> The **`SYS_FAN*` headers on this board are in DC (voltage) mode**, so their **pin 4 carries
-> no PWM signal**. A fan drawing its 12 V from elsewhere (SATA) ignores pin 2's voltage and
-> has nothing on pin 4 to obey — it free-runs at **100% forever**. `PUMP_FAN1` is the only
-> header verified to drive pin 4, which is why the hub's control lead lives there.
->
-> Verified 2026-08-22 the hard way, across `SYS_FAN1`, `SYS_FAN2` and `SYS_FAN4`, with two
-> different blowers, a plain SATA+PWM cable **and** the hub — every combination free-ran at
-> 100%. The clincher: a **3-pin** case fan is smoothly speed-controlled on `pwm5`
-> (1360→1217→1027→869→695→496→369 RPM, stalling below 18%), and only voltage control can do
-> that to a fan with no PWM wire at all.
->
-> **There is no software fix.** The driver exposes no `pwm*_mode` attribute (its
-> `NCT6687_REG_FAN_CTRL_MODE` is manual-vs-auto, a different thing), upstream documents the
-> PWM-vs-DC unit as "configured by firmware", Nuvoton does not publish the NCT6687D register
-> map, and this host has no video output to reach BIOS. **CoolerControl / `fancontrol` /
-> lm-sensors cannot help either** — they write the same `pwm*` sysfs files this daemon does;
-> they do not change hardware mode.
->
-> ⚠️ **A tach reading proves NOTHING about control.** A 4-pin fan receiving no PWM signal
-> reports RPM perfectly while ignoring every duty change. Mistaking a healthy tach for
-> working control cost roughly two weeks of misdiagnosis here — a fan was blamed, a cable
-> replaced, a hub bought, then a fan and a hub each wrongly declared dead. **Confirm control
-> by driving the channel to 0 and checking the fan actually stops.**
->
-> ⚠️ **Monitoring gap:** the hub returns a tach signal from its **RED port only**, so `fan2`
-> reports just one of the two blowers. Failure of the other is invisible to the tach
-> watchdog; [`gpu-thermal-watchdog/`](../gpu-thermal-watchdog/) is the backstop for that card.
->
-> ⚠️ **Per-port current is the spec that matters, and it is usually unstated.** Each blower is
-> **12 V / 18 W = 1.5 A**. `SYS_FAN` headers are rated 1 A / 12 W and `PUMP_FAN1` 2-3 A, which
-> is why the blowers cannot be header-powered on a SYS_FAN channel at all. Arctic's Case Fan
-> Hub is **1 A/port** — too weak. Arctic's Fan Controller and Lian Li's EDGE Hub are
-> **USB/software-controlled**, so they are useless for a sysfs curve on headless Proxmox
-> regardless of their current rating.
-
-## Measured thermals & 3D-printed mounts (per cooler)
-
-Junction temperature at −100 mV undervolt (the [`undervolt/`](../undervolt/) floor).
-**Split** = model split across both cards (each ~half the load); **solo full-load** = the
-whole model on one card (~250 W board power). CT 120 is pinned to GPU 1 and CT 123 to GPU 2,
-so the realistic worst case is **both cards loaded at once**.
-
-| Cooler | Card(s) | Split (½-load) | Solo / dual full-load | 3D-printed mount |
-|--------|---------|----------------|-----------------------|------------------|
-| **2 × 9733 blower, one per card** (current) | both | — | **GPU1 62 °C / GPU2 73 °C @ 51% fan** — both loaded at once ✅ | [thingiverse:7296707](https://www.thingiverse.com/thing:7296707) |
-| *9733 blower, single card (historical)* | 1 (PCIe-1) | — | ~83 °C @ ~93% fan | as above |
-| *NF-F12 iPPC-3000 shroud, both cards (retired 2026-08-15)* | both | ~56–59 °C @ 60% fan | GPU1 ~91 °C / GPU2 ~97 °C @ 100% fan | [printables 1670548](https://www.printables.com/model/1670548-v620-dual-shroud) |
-| *2 × Arctic S4028-6K (retired)* | 1 (PCIe-3) | ~70 °C | 106 °C, fan maxed, throttling | [printables 1712035](https://www.printables.com/model/1712035-amd-v340-v520-v620-mi25-mi50-mi60-mi100-mi210-fan) |
-
-**A blower per card resolved the thermal ceiling.** The current setup was load-tested
-2026-08-22 with **both cards driven simultaneously for ~6.7 minutes** — the case the shroud
-configuration never survived — and settled at **GPU 2 = 73 °C with the fan at only 51%**,
-temps flat for the final four minutes, **zero thermal-watchdog trips**. That is ~25 °C better
-than the shroud managed *with its fan maxed*, and it leaves **29 °C of margin** to the
-watchdog's 102 °C trip plus half the fan's range unused. Sustained saturation on both cards
-is comfortable; there is no workload on this box that approaches the cards' limits.
-
-The historical rows are kept because they explain the progression: the low-CFM Arctic pair
-could not push static pressure through a passive heatsink at all, and a single 120 mm shroud
-fan could hold a *split* load but ran a full load right at its limit. Static pressure per
-card is what matters, hence one radial blower each.
+The two-blower setup measured 62/73 °C junction at 51% duty under simultaneous
+load on 2026-08-22. The printed blower mount is
+[Thingiverse 7296707](https://www.thingiverse.com/thing:7296707).
 
 ## Why a kernel driver swap is needed
 
@@ -158,7 +90,7 @@ every boot (the `hwmonN`/`cardN` numbers are not stable).
 ## Install
 
 Run on the Proxmox host as root (idempotent — sets up the driver and the cooler
-instance(s) in `INSTANCES` (currently `hub`), and retires any stale/older ones):
+instance(s) in `INSTANCES` (`hub` for the B550 setup), and retires any stale/older ones):
 
 ```bash
 ./pro-v620/fan-control/install.sh

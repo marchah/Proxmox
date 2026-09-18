@@ -1,12 +1,12 @@
 # coder-runner (CT 122)
 
-A small, **generic, disposable** LXC that serves as the **execution sandbox** for the autonomous coding
-loop. The Hermes agent LXC (**CT 121**) drives it over **ssh + rsync** so that *untrusted project code* —
-`npm ci` (arbitrary install scripts!), builds, tests, running the app — executes **here**, never inside
-CT 121 (which holds Hermes's config + Slack/Discord/git tokens).
+Reference recipe for the retired Hermes coding loop. CT 122 and CT 121's runner
+SSH key were removed on 2026-09-18 when the loop moved to Multica.
 
-It holds **no secrets**, is **repo-agnostic** (one runner serves every repo the loop works on), and is
-created **once** — new repos are added purely on CT 121 via `hermes project`, never a new LXC.
+The recipe creates a disposable, repo-agnostic execution sandbox, driven from
+CT 121 over SSH and rsync. It keeps project builds, tests and install scripts
+separate from the agent container's credentials. Recreate the runner and key
+before using the helpers below.
 
 ```
 CT 121 hermes                                CT 122 coder-runner (NO secrets)
@@ -52,8 +52,8 @@ pct exec 121 -- ssh -i /root/.ssh/coder-runner -o StrictHostKeyChecking=accept-n
 | `VMID` | `122` | container id (120–139 AI range) |
 | `LXC_HOSTNAME` | `coder-runner` | hostname / dnsmasq name |
 | `MAC` | `BC:24:11:C0:DE:22` | fixed MAC for a deterministic DHCP reservation |
-| `NODE_VERSION` / `NODE_SHA256` | `v26.5.0` / *(pinned)* | Node, from the official prebuilt tarball verified by SHA-256 (deliberately **not** NodeSource `curl \| bash`); bump both together from `https://nodejs.org/dist/<VERSION>/SHASUMS256.txt` |
-| `PNPM_VERSION` | `latest` | pnpm, via `npm install -g` (mealdeal is a pnpm monorepo). Set an explicit version for a reproducible rebuild — but **never** `11.13.1`–`11.16.0`, whose tarballs shipped without most of their compiled files ([pnpm#13164](https://github.com/pnpm/pnpm/issues/13164)) and were republished as `11.17.0` |
+| `NODE_VERSION` / `NODE_SHA256` | `v26.7.0` / *(pinned)* | Node, from the official prebuilt tarball verified by SHA-256 (deliberately **not** NodeSource `curl \| bash`); bump both together from `https://nodejs.org/dist/<VERSION>/SHASUMS256.txt` |
+| `PNPM_VERSION` | `latest` | pnpm, via `npm install -g` (mealdeal is a pnpm monorepo). Set an explicit version for a reproducible rebuild |
 | `CODER_SSH_PUBKEY` | *(empty)* | CT 121 pubkey to authorize (required for the loop) |
 | `INSTALL_AIDER` | `0` | also install aider (talks to CT 120); off by default |
 | `CORES` / `MEMORY_MB` / `ROOT_SIZE_GB` | `4` / `4096` / `24` | sizing |

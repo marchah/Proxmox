@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# llama-server for Qwen3.8-Flash-Next (qwen4exp) on BOTH Radeon Pro V620s, with the PLE
-# n-gram table and a configurable share of the routed experts in system RAM.
-# Installed to /usr/local/bin/llamacpp-serve-qwen38fn inside CT 120.
+# Qwen3.8-Flash-Next on the configured V620(s), with PLE and routed experts in RAM.
+# Installed as /usr/local/bin/llamacpp-serve-qwen38fn in CT 120 or CT 123.
 set -Eeuo pipefail
 set -a
 # shellcheck disable=SC1091  # runtime-only env file
@@ -9,15 +8,7 @@ source /etc/llamacpp-qwen38fn.env
 set +a
 export LD_LIBRARY_PATH="${LLAMACPP_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-# ---------------------------------------------------------------------------------------
-# Guard 1 — RADV must see the EXPECTED NUMBER of GPUs, not merely one.
-#
-# The qwen3.6 single-GPU guard only asked "is any Vulkan device visible", which is the
-# right check when exactly one card is pinned. Here the model is sized against N cards:
-# if one card's DRM node stops matching /sys (renderD*/card* renumber after a reboot, GPU
-# add/remove, or kernel change) the server would still start, silently place that card's
-# layers in system RAM, and just run slow. That is the failure this counts against.
-# ---------------------------------------------------------------------------------------
+# Require the configured GPU count; a missing card otherwise causes CPU fallback.
 : "${MODEL_EXPECTED_GPUS:=2}"
 devices="$("${LLAMACPP_DIR}/llama-server" --list-devices 2>/dev/null || true)"
 found="$(printf '%s\n' "${devices}" | grep -ciE 'Vulkan.*V620|V620' || true)"
@@ -27,19 +18,14 @@ if [ "${found}" -lt "${MODEL_EXPECTED_GPUS}" ]; then
   echo "RAM and serve at a fraction of the expected speed. Failing loud instead." >&2
   echo "The passed-through DRM node likely no longer matches /sys (renderD*/card*" >&2
   echo "renumber after a reboot / GPU add-remove / kernel change)." >&2
-  echo "Recover on the Proxmox HOST: re-resolve both cards' DRM nodes and fix CT 120's" >&2
+  echo "Recover on the Proxmox HOST: re-resolve the passed-through DRM nodes and fix the container's" >&2
   echo "lxc.mount.entry lines, then restart the CT — see pro-v620/README.md" >&2
   echo "'Recovering after a DRM renumber'. Devices RADV actually offered:" >&2
   printf '%s\n' "${devices}" >&2
   exit 1
 fi
 
-# ---------------------------------------------------------------------------------------
-# Guard 2 — every shard of the model must be present.
-#
-# llama.cpp discovers 00002..00004 from the first shard's name. A half-finished download
-# gives a confusing mid-load failure; name the missing file instead.
-# ---------------------------------------------------------------------------------------
+# Verify every shard before starting a load.
 case "${MODEL_PATH}" in
   *-00001-of-*)
     total="$(printf '%s' "${MODEL_PATH}" | sed -E 's/.*-00001-of-0*([0-9]+)\.gguf/\1/')"
@@ -63,17 +49,7 @@ args=(
   --batch-size "${MODEL_BATCH_SIZE:-4096}"
   --ubatch-size "${MODEL_UBATCH_SIZE:-1024}"
   --jinja
-  # 🔴 Both of these are load-bearing, for DIFFERENT reasons.
-  #
-  # --reasoning off: this template resolves `reasoning_effort|default('xhigh')`, so an
-  # unset value means xhigh and the model reasons without answering. It also RAISES on
-  # "none" and "high" — the opposite contract to Qwen3.8-27B, where "none" is the off
-  # switch. Turning thinking off server-side means no caller can trip either trap.
-  #
-  # --reasoning-format auto: with thinking off the template still emits an EMPTY
-  # <think>\n\n</think> pair. `none` leaves it in `content`, which corrupts every
-  # generated file (a KB run produced a file starting <think>\n\n</think>\n\n--- instead
-  # of ---). `auto` siphons it into reasoning_content.
+  # Disable thinking and remove empty think tags from answer content.
   --reasoning off
   --reasoning-format auto
   --cache-ram 0
@@ -89,51 +65,20 @@ args=(
 # 0 = none, which needs 82.6 GB of VRAM and does not fit two cards.
 [ -n "${MODEL_CPU_MOE:-}" ] && [ "${MODEL_CPU_MOE}" != "0" ] && args+=( --n-cpu-moe "${MODEL_CPU_MOE}" )
 
-# 🔴 Layer-split proportions across the cards (-ts). REQUIRED whenever MODEL_CPU_MOE is
-# set, and the reason is not obvious.
-#
-# --n-cpu-moe N moves the experts of the FIRST N layers to the CPU, so layers 0..N-1 are
-# "light" (attention only) and N..47 are "heavy" (~1.56 GB of experts each). llama.cpp's
-# default split divides the 48 layers EVENLY by count, which hands the first card mostly
-# light layers and the second card mostly heavy ones. Measured at --n-cpu-moe 20 with no
-# -ts: GPU 1 held 13.4 GiB while GPU 2 was pinned at 30.7 GiB and spilled 9.3 GiB to GTT
-# — 6.6 tok/s decode, against ~50 predicted. The cards were not short of memory in total
-# (53 GiB of demand against 60 GiB of capacity); it was purely maldistribution.
-#
-# Rough sizing: give card 1 all N light layers plus half the heavy ones, i.e.
-#   card1_layers = N + (48 - N) / 2 - 2  ->  -ts card1_layers,(48 - card1_layers)
-#   🔴 the `- 2` is load-bearing: without it card 1 is ~2 layers overcommitted and spills
-#   anyway (measured at N=20: 34,14 held 101 MiB in GTT with 823 MiB free; 32,16 fits with
-#   4.0/4.9 GiB). N=48 is exempt and stays 48,0.
-# At N=20 that is 34,14. Verify with per-card VRAM and GTT, never by assuming.
+# Explicit split for multiple cards: CPU-expert layers are lighter than GPU layers.
+# At 1024/256 batch, start with card1=N+(48-N)/2-2; N=48 uses 48,0.
+# Verify each card's VRAM/GTT after changing placement, context or batch size.
 [ -n "${MODEL_TENSOR_SPLIT:-}" ] && args+=( --tensor-split "${MODEL_TENSOR_SPLIT}" )
 
-# KV cache quantisation. q8_0 halves the cache (24 KiB/token f16 -> ~12).
-# ⚠️ This repo's standing warning is that quantised KV breaks thinking termination — but that
-# is a COUPLED choice, and the coupling is satisfied here: this server runs --reasoning off,
-# which the same note calls provably lossless. Do not enable this on a server that lets
-# callers turn reasoning back on.
+# q8_0 halves KV memory. Keep reasoning off; validate output when changing cache type.
 if [ -n "${MODEL_KV_TYPE:-}" ]; then
   args+=( --cache-type-k "${MODEL_KV_TYPE}" --cache-type-v "${MODEL_KV_TYPE}" )
 fi
 
-# Model loading mode (-lm): auto | none | mmap | mlock. This replaces the now-deprecated
-# --mmap/--mlock/--dio (llama.cpp #28334).
-# 🔴 Load-bearing for THIS model, and llama.cpp says so itself at startup:
-#   "tensor overrides to CPU are used with mmap enabled - consider using --load-mode none
-#    for better performance"
-# With mmap, the ~28.7 GB PLE table and every CPU-resident expert layer are FILE-BACKED,
-# so the kernel may evict them and fault them back from the SATA 860 EVO — which turns a
-# bandwidth measurement into a disk measurement, the exact failure the KB warned about.
-# `none` reads them into anonymous memory instead; with swap 0 and MemorySwapMax=0 they
-# then genuinely stay resident. Left unset (auto) until the sweep measures it.
+# Load mode: empty uses auto (mmap), faster than none in the recorded A/B.
 [ -n "${MODEL_LOAD_MODE:-}" ] && args+=( --load-mode "${MODEL_LOAD_MODE}" )
 
-# Optional server-side effort level, as a FALLBACK. --reasoning off above should be
-# enough: it sets enable_thinking=false, and an unset effort resolves to 'xhigh', which
-# the template accepts (it only raises on values OUTSIDE xhigh/medium/low). If the
-# contract check ever shows bare chat requests failing, pin MODEL_REASONING_EFFORT=low
-# rather than reaching for "none", which this template rejects.
+# Optional template effort: low, medium or xhigh. Recheck --contract after changes.
 [ -n "${MODEL_REASONING_EFFORT:-}" ] && args+=( --reasoning-effort "${MODEL_REASONING_EFFORT}" )
 
 # Vision. Costs ~1.1 GiB of VRAM; --no-mmproj-offload keeps it on CPU for zero VRAM at

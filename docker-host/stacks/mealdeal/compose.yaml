@@ -12,19 +12,8 @@
 # has a safe default or resolves to empty, and an empty IMAP_USER/IMAP_PASSWORD makes the app
 # disable ingest entirely rather than crash — so the stack comes up clean before you add them.
 #
-# ── IMAGE SOURCE ─────────────────────────────────────────────────────────────────────────────
-# PULLS a prebuilt image published by marchah/mealdeal's `Publish image` workflow (GHCR, public
-# package — anonymous pull works, no registry credentials needed here). Nothing is built on the
-# Docker host, so a redeploy is a ~10 s pull instead of a multi-minute rebuild.
-#
-# `main` is the moving tag that follows the app's default branch. `pull_policy: always` means a
-# Portainer redeploy (or a git-stack auto-update) actually fetches it rather than reusing a stale
-# local layer cache.
-#
-# TO ROLL BACK: pin the immutable tag of a known-good build and redeploy —
-#   image: ghcr.io/marchah/mealdeal:sha-b63ad81
-# Available tags: `main`, `sha-<short>` per commit, plus semver from `v*` releases.
-# ─────────────────────────────────────────────────────────────────────────────────────────────
+# Pulls the public GHCR image. Roll back by pinning a known-good sha-<short> tag.
+# See docker-host/README.md for stack setup and backups.
 
 services:
   mealdeal:
@@ -46,18 +35,8 @@ services:
     environment:
       DATABASE_URL: file:/data/mealdeal.db
 
-      # Extraction runs on CT 123 (llama-swap, GPU 2). It used to target qwen3-instruct-2507,
-      # chosen because CT 120's qwen3.6 reasoned unprompted, spent its whole budget inside
-      # <think>, and returned finish_reason=length with no answer — every extraction hit the
-      # client's 10-minute timeout.
-      # ⚠️ CHANGED 2026-08-14: qwen3-instruct-2507 was RETIRED and its GGUF deleted, so this
-      # default pointed at a model that no longer exists. Now qwen3.6-35b-a3b — the fastest
-      # model on CT 123 (63.1 tok/s, 3B active). The original <think> failure no longer
-      # applies: every CT 123 entry now runs --reasoning-format auto, so reasoning lands in
-      # reasoning_content and `content` comes back clean. It DOES still spend tokens
-      # reasoning, so watch extraction latency; if that bites, the cheapest fix is adding a
-      # non-thinking model back to CT 123 rather than reverting this.
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://gpu2:8080/v1}
+      # CT 120 serves this model with reasoning disabled.
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://llamacpp:1234/v1}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-not-needed}
       OPENAI_MODEL: ${OPENAI_MODEL:-qwen3.6-35b-a3b}
 

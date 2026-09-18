@@ -4,12 +4,11 @@ set -Eeuo pipefail
 
 # Create an unprivileged Debian LXC that indexes the CognitiveStack Markdown knowledge base
 # and serves hybrid (keyword + semantic) search to every agent on the server over one
-# endpoint — REST and MCP-over-HTTP. See kb-rag/SPEC.md for the full design.
+# endpoint — REST and MCP-over-HTTP. See kb-rag/README.md for usage and index design.
 #
-# Markdown-in-git stays the single source of truth; this container holds only a derived,
-# rebuildable index (sqlite-vec + FTS5), so a wipe + reindex reconstructs everything — back up the
-# KB repo, not this container. (It still lands in vzdump: PVE won't take backup=0 on a rootfs —
-# see create_container.) Embeddings run on CPU (fastembed/ONNX) — no GPU, no load on CT 120.
+# Markdown-in-git is authoritative; the sqlite-vec + FTS5 index is rebuildable.
+# Embeddings run on CPU. To omit rebuildable bulk from vzdump, configure
+# --exclude-path /opt/kb-rag in the backup job; the root disk remains included.
 #
 # It syncs the KB with a read-only deploy key and reindexes on a 10-minute timer.
 #
@@ -182,18 +181,6 @@ create_container() {
   pct create "${create_args[@]}"
 
   pct set "${VMID}" --tags kb-rag >/dev/null 2>&1 || true
-
-  # Index/model cache are rebuildable, so we'd like the rootfs out of backups (repo convention).
-  # ⚠️ THIS IS A KNOWN NO-OP, kept only to mirror the other scripts: PVE rejects `backup=` on
-  # `rootfs` (`rootfs.backup: property is not defined in schema` — mount points only; verified on
-  # pve-manager 9.2.3), and the error is swallowed below. A container rootfs CANNOT be excluded
-  # from vzdump; to skip the bulk, exclude paths in the backup job instead:
-  #   vzdump 140 --exclude-path /opt/kb-rag
-  local rootfs_line
-  rootfs_line="$(pct config "${VMID}" | sed -n 's/^rootfs: //p')"
-  if [[ -n ${rootfs_line} && ${rootfs_line} != *backup=* ]]; then
-    pct set "${VMID}" --rootfs "${rootfs_line},backup=0" >/dev/null 2>&1 || true
-  fi
 }
 
 start_container() {

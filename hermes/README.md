@@ -76,7 +76,7 @@ Concurrent Hermes subagents and external API clients all share CT 120's 2 slots 
 ## Adding messaging platforms (post-provision)
 
 ```bash
-pct exec 121 -- hermes gateway setup        # interactive: add Telegram/Discord/Slack/…
+pct exec 121 -- bash -lc 'hermes gateway setup'        # interactive: add Telegram/Discord/Slack/…
 pct exec 121 -- systemctl restart hermes
 ```
 
@@ -106,12 +106,8 @@ user allowlist (without an allowlist Hermes denies all incoming users).
 
 - **Newest release by default, no pin to maintain.** `HERMES_VERSION=latest` (the default)
   resolves the newest **release tag** from the GitHub releases API before any work starts,
-  then fetches `scripts/install.sh` from that tag's **immutable** raw URL and runs it with
-  `--branch <tag>`, so the installer and the checked-out code are the same tagged commit. A
-  hardcoded pin here went stale silently and made a rebuild a *downgrade*: the script sat on
-  `v2026.6.19` while CT 121 ran `v2026.7.7.2` until 2026-07-27. Note it resolves the newest
-  *release*, **not** main HEAD — upstream lands ~2k commits between releases and this
-  container installs it as root with full terminal access.
+  then fetches `scripts/install.sh` from that tag's raw URL and runs it with
+  `--branch <tag>`, so the installer and the checked-out code are the same tagged commit.
   - Pin an explicit tag for a reproducible rebuild (`HERMES_VERSION=v2026.7.20`), using the
     **git tag**, **not** the `v0.19.0` marketing title (it is not a valid git ref). Only then
     can you also set `HERMES_INSTALLER_SHA256` to verify that tag's installer — a checksum
@@ -142,6 +138,6 @@ user allowlist (without an allowlist Hermes denies all incoming users).
   them. `nesting=1` is set on the container as well. Smoke-test from the host:
   `pct exec 121 -- bash -lc 'cd /usr/local/lib/hermes-agent && node_modules/.bin/agent-browser open https://example.com'`.
 - **No download file-list to maintain.** Unlike the bench-runner, this script ships zero
-  repo-local files into the container — the installer is fetched from the pinned upstream
-  tag (and SHA-256-verified) and `config.yaml`/`.env`/the unit are generated inline — so
+  repo-local files into the container — the installer is fetched from the selected upstream
+  tag (optionally SHA-256-verified for an explicit pin) and `config.yaml`/`.env`/the unit are generated inline — so
   there is nothing to keep in sync for the standalone `wget | bash` path.
