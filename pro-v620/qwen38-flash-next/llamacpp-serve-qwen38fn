@@ -105,6 +105,15 @@ args=(
 # At N=20 that is 34,14. Verify with per-card VRAM and GTT, never by assuming.
 [ -n "${MODEL_TENSOR_SPLIT:-}" ] && args+=( --tensor-split "${MODEL_TENSOR_SPLIT}" )
 
+# KV cache quantisation. q8_0 halves the cache (24 KiB/token f16 -> ~12).
+# ⚠️ This repo's standing warning is that quantised KV breaks thinking termination — but that
+# is a COUPLED choice, and the coupling is satisfied here: this server runs --reasoning off,
+# which the same note calls provably lossless. Do not enable this on a server that lets
+# callers turn reasoning back on.
+if [ -n "${MODEL_KV_TYPE:-}" ]; then
+  args+=( --cache-type-k "${MODEL_KV_TYPE}" --cache-type-v "${MODEL_KV_TYPE}" )
+fi
+
 # Model loading mode (-lm): auto | none | mmap | mlock. This replaces the now-deprecated
 # --mmap/--mlock/--dio (llama.cpp #28334).
 # 🔴 Load-bearing for THIS model, and llama.cpp says so itself at startup:

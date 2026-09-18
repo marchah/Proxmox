@@ -37,6 +37,11 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-1800}"
 LOAD_MODE="${LOAD_MODE:-}"
 # Override the derived layer split (see start_server). Empty = derive from n_cpu_moe.
 TENSOR_SPLIT="${TENSOR_SPLIT:-}"
+# llama-server --threads. Empty leaves whatever the env file already has.
+# ⚠️ Worth sweeping: STREAM measured 8 threads saturating four channels (80.3 GB/s) and 32
+# being WORSE (74.8), and the CPU-side expert FFN is memory-bound GEMV — so the inherited
+# --threads 32 may be contention rather than throughput.
+THREADS="${THREADS:-}"
 # 48 MoE layers, ~1.56 GB of Q4 expert weight each, so each +1 hands ~1.56 GB back:
 #   15 = minimum that fits two cards · 20 = ~8 GB spare · 28 = ~20 GB spare
 #   34 = fits one card · 48 = all experts in RAM (the no-GPU-experts control)
@@ -59,7 +64,12 @@ cd "$(dirname "$(readlink -f "$0")")"
 [ -x ./summarize-sweep.py ]   || die "summarize-sweep.py not found or not executable"
 mkdir -p "$OUT_DIR"
 
-if [ "$ONE_GPU" = "true" ]; then
+if [ "${CPU_ONLY:-false}" = "true" ]; then
+  # Everything on the CPU. The 111.3 GB model fits the container's 160 GiB cap with room for
+  # KV and compute buffers. --n-cpu-moe and --tensor-split become meaningless and are cleared.
+  EXPECTED_GPUS=0
+  SERVER_EXTRA=""
+elif [ "$ONE_GPU" = "true" ]; then
   EXPECTED_GPUS=1
   # Confine llama.cpp to one Vulkan device rather than detaching a card: reversible and
   # needs no container restart. Confirm in the unit log that only one device is listed.
@@ -113,14 +123,22 @@ start_server() {
     sleep 3; waited=$((waited + 3))
   done
 
-  set_env_var MODEL_CPU_MOE        "$ncmoe"
+  if [ "${CPU_ONLY:-false}" = "true" ]; then
+    set_env_var MODEL_GPU_LAYERS 0
+    set_env_var MODEL_CPU_MOE    ""
+  else
+    set_env_var MODEL_GPU_LAYERS "${GPU_LAYERS:-99}"
+    set_env_var MODEL_CPU_MOE    "$ncmoe"
+  fi
   # 🔴 Derive the layer split from ncmoe — a FIXED split is wrong for every other value.
   # --n-cpu-moe N makes layers 0..N-1 light (experts on CPU) and N..47 heavy, so an even
   # split by layer COUNT loads the second card with all the heavy ones. Give card 1 the
   # light layers plus half the heavy ones. Measured at ncmoe 20: without this, GPU 2
   # pinned at 30.7 GiB and spilled 9.3 GiB to GTT for 6.6 t/s; with it, 25.7/21.7 GiB,
   # no spill, 11.7 t/s. Override with TENSOR_SPLIT= to sweep the split itself.
-  if [ "$EXPECTED_GPUS" -ge 2 ]; then
+  if [ "${CPU_ONLY:-false}" = "true" ]; then
+    set_env_var MODEL_TENSOR_SPLIT ""
+  elif [ "$EXPECTED_GPUS" -ge 2 ]; then
     if [ -n "${TENSOR_SPLIT:-}" ]; then
       ts="$TENSOR_SPLIT"
     else
@@ -142,6 +160,18 @@ start_server() {
     set_env_var MODEL_TENSOR_SPLIT ""
   fi
   set_env_var MODEL_LOAD_MODE      "${LOAD_MODE:-}"
+  [ -n "$THREADS" ] && set_env_var MODEL_THREADS "$THREADS"
+  [ -n "${BATCH:-}" ]   && set_env_var MODEL_BATCH_SIZE  "$BATCH"
+  [ -n "${UBATCH:-}" ]  && set_env_var MODEL_UBATCH_SIZE "$UBATCH"
+  # q8_0 KV halves the cache. ⚠️ The KB's "q8_0 breaks thinking termination" warning does NOT
+  # apply here: this server runs --reasoning off, which that same note identifies as the
+  # provably-lossless case. Output hashes still get compared by the probe.
+  [ -n "${KV_TYPE:-}" ] && set_env_var MODEL_KV_TYPE     "$KV_TYPE"
+  [ -n "${MMPROJ_CPU:-}" ] && set_env_var MODEL_MMPROJ_ON_CPU "$MMPROJ_CPU"
+  # llamacpp-serve-qwen38fn sources the env file under `set -a`, so anything written here is
+  # EXPORTED to llama-server. That is how upstream env knobs get through — e.g.
+  # LLAMA_PLE_RESIDENT, which appears in llama.cpp #28623's description and is undocumented.
+  set_env_var LLAMA_PLE_RESIDENT "${PLE_RESIDENT:-}"
   set_env_var MODEL_CONTEXT_LENGTH "$CTX"
   set_env_var MODEL_PARALLEL       "$PARALLEL"
   set_env_var MODEL_EXPECTED_GPUS  "$EXPECTED_GPUS"
@@ -173,6 +203,10 @@ cat >"${OUT_DIR}/manifest.json" <<JSON
  "n_predict": ${N_PREDICT}, "depths": "${DEPTHS}",
  "one_gpu": ${ONE_GPU}, "expected_gpus": ${EXPECTED_GPUS},
  "load_mode": "${LOAD_MODE}", "tensor_split_override": "${TENSOR_SPLIT}",
+ "threads_override": "${THREADS}", "cpu_only": ${CPU_ONLY:-false},
+ "batch_override": "${BATCH:-}", "ubatch_override": "${UBATCH:-}",
+ "kv_type_override": "${KV_TYPE:-}", "mmproj_cpu": "${MMPROJ_CPU:-}",
+ "ple_resident": "${PLE_RESIDENT:-}",
  "server_extra": "${SERVER_EXTRA}", "ncmoe_list": "${NCMOE_LIST}",
  "llamacpp_dir": "$(pct exec "$VMID" -- bash -lc "grep -m1 '^LLAMACPP_DIR=' ${ENVFILE} | cut -d= -f2")",
  "host_ram_gib": $(free -g | awk '/^Mem:/{print $2}'),

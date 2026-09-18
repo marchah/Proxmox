@@ -123,12 +123,21 @@ def one(base, prompt, n_predict):
     words = content.split()
     shingles = {" ".join(words[j:j + 8]) for j in range(max(0, len(words) - 7))}
     uniq = round(len(shingles) / max(1, len(words) - 7), 3)
+    # Draft acceptance, present only when speculation is active. This repo's rule is to
+    # judge a speculative config by ACCEPTANCE, not tok/s — unchanged acceptance with a
+    # different tok/s means only the workload moved. Absent keys mean no speculation,
+    # which is a valid control, not a failure.
+    dn, da = tm.get("draft_n"), tm.get("draft_n_accepted")
+    accept = round(100.0 * da / dn, 1) if (dn and da is not None) else None
     return {
         "wall_s": round(wall, 2),
         "prompt_n": tm.get("prompt_n"),
         "prefill_tps": tm.get("prompt_per_second"),
         "predicted_n": tm.get("predicted_n"),
         "decode_tps": tm.get("predicted_per_second"),
+        "draft_n": dn,
+        "draft_n_accepted": da,
+        "accept_pct": accept,
         "uniq_8gram": uniq,
         # Degeneracy gate. Repetition is cheap to generate and would read as a win.
         "degenerate": uniq < 0.7,
@@ -174,11 +183,13 @@ def main():
         if "decode_tps" not in r or r.get("decode_tps") is None:
             continue
         k = "d%d/%s" % (r["depth_target"], r["class"])
-        agg.setdefault(k, {"decode": [], "prefill": [], "sha": set(), "degen": False,
-                           "prompt_n": r.get("prompt_n")})
+        agg.setdefault(k, {"decode": [], "prefill": [], "accept": [], "sha": set(),
+                           "degen": False, "prompt_n": r.get("prompt_n")})
         agg[k]["decode"].append(r["decode_tps"])
         if r.get("prefill_tps"):
             agg[k]["prefill"].append(r["prefill_tps"])
+        if r.get("accept_pct") is not None:
+            agg[k]["accept"].append(r["accept_pct"])
         agg[k]["sha"].add(r["content_sha"])
         agg[k]["degen"] |= bool(r.get("degenerate"))
 
@@ -192,6 +203,9 @@ def main():
             "decode_tps_min": round(min(v["decode"]), 2),
             "decode_tps_max": round(max(v["decode"]), 2),
             "prefill_tps_median": med(v["prefill"]),
+            # Per-class, because acceptance is PROMPT-DEPENDENT — code drafts far better
+            # than prose, and that spread can exceed the effect being measured.
+            "accept_pct_median": med(v["accept"]),
             # >1 sha across reps at temperature 0 means the run is not reproducible;
             # comparing placements on it would be measuring noise.
             "reps_agree": len(v["sha"]) == 1,
