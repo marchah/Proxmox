@@ -164,8 +164,6 @@ s2b_split() {
   note "(12 of 48 blocks are full-attention, and card 1 owns more of them), the 1.11 GiB vision"
   note "projector landing on one device, and per-device compute buffers."
   note ""
-  note "| -ncmoe | split | shape | d0 t/s | d8000 t/s | VRAM free c1/c2 | GTT c1/c2 | verdict |"
-  note "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |"
   # ---- phase 1: headroom for every candidate, load-only (~2 min each)
   note "### Phase 1 — does it fit? (load only)"
   note ""
@@ -179,7 +177,10 @@ s2b_split() {
       "15 29 q8_0 true"  "14 29 q8_0 true"  "16 30 q8_0 true"; do
     read -r nc c1 kv mp <<<"$spec"
     [ "$kv" = "-" ] && kv=""; [ "$mp" = "-" ] && mp=""
-    lbl="nc${nc}-c${c1}$([ -n "$kv" ] && echo "-q8")$([ "$mp" = true ] && echo "-projcpu")"
+    lbl="nc${nc}-c${c1}"
+    [ -n "$kv" ] && lbl="${lbl}-q8"
+    [ "$mp" = true ] && lbl="${lbl}-projcpu"
+    : # keep the exit status clean: the two tests above legitimately return 1
     res=$(split_headroom "$lbl" "$nc" "$c1" "$kv" "$mp")
     read -r v f1 f2 g1 g2 <<<"$res"
     note "| ${nc} | ${c1},$(( 48 - c1 )) | ${kv:-f16} / $([ "$mp" = true ] && echo "proj CPU" || echo "proj GPU") | ${f1} / ${f2} | ${g1} / ${g2} | ${v} |"
@@ -281,10 +282,14 @@ ctx_cell() {  # <label> <ncmoe> <c1> <ctx> <kvtype>
   fi
   ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 64 --depths 0,8000 \
     --classes code >/dev/null 2>&1 || true
-  # A deep probe as well: a long window is pointless if throughput collapses in it. 32k is
-  # the deepest that still fits every configuration tested here.
-  ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 160 --depths 0,8000,32000 \
+  # Split into two probes: a 32k prefill costs ~13 min per REQUEST at this architecture's
+  # prefill rate, so three prompt classes there would be 40 min of prefill for a per-class
+  # breakdown nothing depends on. At 32k the question is "does throughput hold" -- a
+  # magnitude, not a class comparison. d0/d8k keep all three classes; the 32k arm takes one.
+  ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 160 --depths 0,8000 \
     >"${RUN}/${label}.json" 2>/dev/null || true
+  ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 160 --depths 32000 \
+    --classes code >"${RUN}/${label}-deep.json" 2>/dev/null || true
   local A=/sys/bus/pci/devices/0000:03:00.0 B=/sys/bus/pci/devices/0000:83:00.0
   local u1 f1 g1 u2 f2 g2
   u1=$(( $(cat $A/mem_info_vram_used)/1048576 )); g1=$(( $(cat $A/mem_info_gtt_used)/1048576 ))
@@ -292,21 +297,27 @@ ctx_cell() {  # <label> <ncmoe> <c1> <ctx> <kvtype>
   u2=$(( $(cat $B/mem_info_vram_used)/1048576 )); g2=$(( $(cat $B/mem_info_gtt_used)/1048576 ))
   f2=$(( ($(cat $B/mem_info_vram_total) - $(cat $B/mem_info_vram_used))/1048576 ))
   echo "$(( u1 + u2 ))" >"${RUN}/${label}.vramtotal"
-  python3 - "${RUN}/${label}.json" "$ctx" "${kv:-f16}" "${nc} / ${c1},$(( 48 - c1 ))" \
-           "$(( u1 + u2 ))" "$f1" "$f2" "$g1" "$g2" >>"$RESULTS" <<'PY'
+  python3 - "${RUN}/${label}.json" "${RUN}/${label}-deep.json" "$ctx" "${kv:-f16}" \
+           "${nc} / ${c1},$(( 48 - c1 ))" "$(( u1 + u2 ))" "$f1" "$f2" "$g1" "$g2" >>"$RESULTS" <<'PY'
 import json, statistics as st, sys
-_, path, ctx, kv, place, vram, f1, f2, g1, g2 = sys.argv
-try: s = json.load(open(path))["summary"]
-except Exception:
-    print("| %s | %s | %s | probe failed | - | - | - |" % (ctx, kv, place)); raise SystemExit
-def med(pre):
-    v = [x["decode_tps_median"] for k, x in s.items()
-         if k.startswith(pre) and x.get("decode_tps_median")]
+_, path, deep, ctx, kv, place, vram, f1, f2, g1, g2 = sys.argv
+def med(p, pre, key="decode_tps_median"):
+    try: s = json.load(open(p))["summary"]
+    except Exception: return 0.0
+    v = [x[key] for k, x in s.items() if k.startswith(pre) and x.get(key)]
     return st.median(v) if v else 0.0
+a, b = med(path, "d0/"), med(path, "d8000/")
+c  = med(deep, "d32000/")
+pf = med(deep, "d32000/", "prefill_tps_median")
+if a == 0.0:
+    print("| %s | %s | %s | **DID NOT SERVE** | - | - | - | - |" % (ctx, kv, place)); raise SystemExit
+# The verdict is HEADROOM: under ~1 GiB free RADV spills, and a spilled long-context cell
+# still answers requests, just slowly enough to look like a placement problem.
 free_min, gtt_max = min(int(f1), int(f2)), max(int(g1), int(g2))
 flag = " **SPILLED**" if (gtt_max > 256 or free_min < 1024) else (" tight" if free_min < 2048 else "")
-print("| %s | %s | %s | %.2f | %.2f | %.2f | %s MiB, free %s/%s, gtt %s/%s%s |" % (
-    ctx, kv, place, med("d0/"), med("d8000/"), med("d32000/"), vram, f1, f2, g1, g2, flag))
+print("| %s | %s | %s | %.2f | %.2f | %s | %s | %s MiB, free %s/%s, gtt %s/%s%s |" % (
+    ctx, kv, place, a, b, ("%.2f" % c) if c else "—",
+    ("%.1f" % pf) if pf else "—", vram, f1, f2, g1, g2, flag))
 PY
 }
 
@@ -323,8 +334,8 @@ s2c_context() {
   note "1.50 GiB at 65536, 3.00 at 131072, **6.00 at the native 262144** — or half of each at"
   note "\`q8_0\`, which is safe here only because the server runs \`--reasoning off\`."
   note ""
-  note "| ctx | KV type | -ncmoe / split | d0 t/s | d8k t/s | d32k t/s | VRAM |"
-  note "| --- | --- | --- | ---: | ---: | ---: | --- |"
+  note "| ctx | KV | -ncmoe / split | d0 t/s | d8k t/s | d32k t/s | d32k prefill | VRAM |"
+  note "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |"
   # At the fastest placement: double the window, then go for the full native one on q8_0.
   ctx_cell "ctx131072-f16-best"   "$NC" "$C1" 131072 ""
   ctx_cell "ctx262144-q8-best"    "$NC" "$C1" 262144 "q8_0"
