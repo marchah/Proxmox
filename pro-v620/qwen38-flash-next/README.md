@@ -122,6 +122,83 @@ ONE_GPU=true NCMOE_LIST="34 40 48" ./placement-sweep.sh   # is one card faster? 
 and a `SUMMARY.md` carrying the decode table, the **VRAM-freed-versus-decode-lost trade**,
 the depth curve, and the template-contract result.
 
+## The answer: which configuration to run
+
+All figures at full clock (`schedutil`), b11018, two V620s, measured 2026-09-18.
+**`-ncmoe 16` is the floor** — nothing below it fits in any shape at any split.
+
+### ✅ Default — fastest, and it also has the most headroom
+
+```
+--n-cpu-moe 16 --tensor-split 30,18 --threads 16 \
+  --cache-type-k q8_0 --cache-type-v q8_0 --no-mmproj-offload \
+  --ctx-size 131072 --parallel 1
+```
+
+| | |
+| --- | ---: |
+| decode, short prompt | **14.17 t/s** |
+| decode, 8k context | **13.45 t/s** |
+| prefill, 8k | 76.9 t/s → **104 s to first token** |
+| VRAM free | 2.3 / 1.3 GiB, no spill |
+
+`q8_0` + projector-on-CPU is free here (identical at d0, +2.9% at depth) and frees 1.6 GiB,
+which is what lets `--ctx-size 131072` fit. ⚠️ Safe **only** because the server runs
+`--reasoning off`; the coupling is a hard XOR. ⚠️ Image encoding is 3–5× slower with the
+projector on CPU — text is unaffected. If vision latency matters, drop `--no-mmproj-offload`
+and `--cache-type-*`, accept 14.16 / 13.07 and 1.3 / 1.5 GiB free.
+
+### Leave room for a second model
+
+| `-ncmoe` | split | decode d0 | d8k | prefill d8k | VRAM freed | cost |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 16 | `30,18` | 14.17 | 13.45 | 76.9 | — | — |
+| 20 | `32,16` | 13.03 | 12.06 | 63.6 | ~8.7 GiB | −8.0% |
+| 28 | `36,12` | ~11.3 | ~10.6 | 47.4 | ~20.9 GiB | −20% |
+| 48 | `48,0` | 10.18 | 8.70 | 29.0 | **54.8 GiB, one card entirely** | −28% |
+
+**`-ncmoe 48` is the one to know about**: the whole model runs in **9.4 GiB on a single
+card**, leaving the other completely free, for −28% of decode. That is the configuration to
+use if CT 123 needs a card back.
+⚠️ The 28 and 48 rows were measured at the documented split; expect a few percent better at
+the corrected one.
+
+### Concurrency
+
+| want | setting | result |
+| --- | --- | --- |
+| one interactive caller | `--parallel 1 --ctx-size 131072` | 14.17 t/s, full 128k window |
+| batch throughput | `--parallel 4 --ctx-size 131072` | **30.9 t/s aggregate**, 7.7 each, 32k per slot |
+
+**2.30× aggregate at four streams**, and doubling the context budget is free — so never run
+`--parallel 4` at `--ctx-size 65536`, which buys nothing and leaves each caller 16k.
+
+### ⛔ What not to do
+
+| | why |
+| --- | --- |
+| CPU-only (`-ngl 0`) | 6.04 t/s, **−57%** — and pointless, since `-ncmoe 48` frees a whole card at 10.18 |
+| `--threads 32` | −4 to −5% solo; 16 is best across every concurrency level |
+| the documented `--tensor-split` | ~2 layers off; spills at `-ncmoe` 15/16/20 and costs up to −11% |
+| f16 KV at `--ctx-size 131072` | spills at `-ncmoe 16` and costs −21% of decode at depth |
+| `-ncmoe` below 16 | does not fit, in any shape, at any split |
+| `--load-mode none` | −5%, despite llama.cpp suggesting it at startup |
+| `powersave` governor | −30%, and it was the single largest factor found |
+
+### The ceiling, and why
+
+Decode is **~72% fixed per-token overhead** — three independent routes agree: the `-ncmoe`
+curve fit and a clock experiment both give ~43 ms, and the concurrency fit gives 53.5 ms of
+a 71 ms budget. `GGML_SCHED_DEBUG` then names it: **~30 graph splits per token**, matching the
+placement almost exactly (16 CPU-expert layers × 2 crossings + the card boundary + the PLE
+lookup) at ~1.1 ms per crossing — 61% of the fixed term.
+
+So the lever is **fewer CPU↔GPU crossings**, not more bandwidth or faster cores. Ruled out
+separately: memory bandwidth (4× headroom, DIMMs 9 °C cooler than a real soak), PCIe transfer
+(400 KB/token = 16 µs against 1.07 ms measured per crossing), core count (8 ≈ 32 threads),
+core clock (57% of the budget is clock-independent), and disk (zero steady-state majflt).
+Upstream PR **#27880** attacks exactly this and did not go far enough.
+
 ## Measured, 2026-09-18 — at full clock
 
 🔴 **Every number in this file before 2026-09-18 was taken with the CPU governor pinned to
@@ -285,8 +362,9 @@ the recommended placement instead of spilling — confirmed by the `--parallel` 
 
 The rebase of llama.cpp PR **#28097** onto b11018 (see `mtp-patches/`) **builds, loads the
 target model and serves normally** — the no-speculation control on that exact binary gives
-**13.88 t/s** against 14.17 for the `b11018-baseline` build at the same placement, so the
-build is healthy. But **both drafter GGUFs abort the moment the MTP graph is constructed**:
+**14.42 d0 / 13.43 d8k** against `b11018-baseline`'s 14.17 / 13.45 at the same placement, so
+the build is healthy and if anything marginally faster. But **both drafter GGUFs abort the
+moment the MTP graph is constructed**:
 
 ```
 /root/llama.cpp/ggml/src/ggml.c:2264: GGML_ASSERT(ggml_can_repeat(b, a)) failed
