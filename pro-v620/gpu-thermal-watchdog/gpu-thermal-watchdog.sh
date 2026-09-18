@@ -8,12 +8,8 @@
 #   * ~105C junction / 103C mem -> the amdgpu driver forces a GPU RESET (MODE1),
 #     which crashes/corrupts whatever is running on the card (ungraceful).
 #
-# This daemon watches junction+mem on every V620 and, if either crosses a trip
-# threshold (default 102C junction / 101C mem — above the throttle, below the
-# emergency), GRACEFULLY stops the LLM server (llama.cpp in CT 120) to shed the
-# load so the card cools before the hardware has to reset it. It is a safety net,
-# not a performance tool: the split (normal) workload never gets near these temps;
-# only a sustained SOLO full-load on one card does.
+# Stops the owning LXC service at 102C junction / 101C memory. Leave the service
+# down after a trip until cooling is checked. See README.md for the service map.
 #
 # Failure philosophy is the OPPOSITE of the fan controller's: stopping the model
 # server is DISRUPTIVE, so an unreadable sensor must NOT cause a false trip — it is
@@ -33,7 +29,7 @@ GPU_HWMON_NAME="${GPU_HWMON_NAME:-amdgpu}"
 # (the set is re-resolved every poll) and loudly warned about, never silently dropped.
 # NB: `-` not `:-` so an explicit empty value (GPU_PCI_ADDRESS=) reaches auto mode
 # (watch every amdgpu found); `:-` would substitute the default on empty.
-GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS-0000:2d:00.0,0000:06:00.0}"
+GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS-0000:03:00.0,0000:83:00.0}"
 
 # Trip thresholds (whole °C). junction emergency is 105C, mem emergency 103C, so
 # these sit a few degrees below each — after the 100C/98C throttle, before the reset.
@@ -52,20 +48,9 @@ LLM_CT_VMID="${LLM_CT_VMID:-120}"
 LLM_SERVICE="${LLM_SERVICE:-llamacpp}"
 PROTECT_CMD="${PROTECT_CMD:-}"
 RESUME_CMD="${RESUME_CMD:-}"
-# Per-GPU protection map: which LXC service OWNS each card, so a trip stops the RIGHT
-# workload — not a single hard-coded one. Both V620s now run a workload (GPU 1 = the
-# ops model in CT 120; GPU 2 = the coding loop's llama-swap in CT 123), so stopping
-# CT 120 when GPU 2 is the hot card would shed the wrong load and leave GPU 2 heating
-# toward the hardware reset. Format: "PCI=VMID:service", comma-separated. An over-temp
-# card that is NOT in the map falls back to stopping EVERY mapped service (conservative
-# — better to over-shed than let a hot card run unshed). If this is empty but the legacy
-# LLM_CT_VMID/LLM_SERVICE are set, every watched card maps to that one service (the old
-# single-service behavior). PROTECT_CMD/RESUME_CMD still override everything.
-# NB: `-` not `:-` so an explicit empty value (GPU_SERVICE_MAP=) reaches the legacy
-# single-service fallback below; `:-` would substitute the default map on empty.
-# 🔴 The in-script fallback was doubly stale: B550-era PCI addresses that do not exist on
-# the ROMED8-2T (0000:2d / 0000:06) AND the removed llama-swap unit. Both cards would miss
-# and every trip would fall through to the "not in map" branch. Current addresses + units.
+# Map PCI=VMID:service entries to their owning workload. An unmapped hot card
+# stops every mapped service. An explicit empty map uses LLM_CT_VMID/LLM_SERVICE;
+# PROTECT_CMD/RESUME_CMD override both. Keep this aligned with container passthrough.
 GPU_SERVICE_MAP="${GPU_SERVICE_MAP-0000:03:00.0=120:llamacpp,0000:83:00.0=123:llamacpp-qwen38fn}"
 # Leave the server DOWN after a trip (default) or auto-restart it once cooled.
 # Default false: reaching the trip temp means cooling could not keep up, so resuming

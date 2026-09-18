@@ -31,13 +31,7 @@ mtp_row()  { echo "  [row $1]"; }
 ctx_cell() { echo "  [ctx_cell $*]"; }
 split_cell() { echo "  [split_cell $*]"; }
 split_headroom() { echo "fits 4000 4000 71 15"; }
-# 🔴 THIS HARNESS USED TO REPORT FAILURES AND STILL EXIT 0. The if/else swallowed every
-# non-zero status, so a human saw "🔴 FAIL" while any caller checking $? saw success — a
-# false green in the one tool whose entire job is catching failures. It now counts failures
-# and exits non-zero.
-# 🔴 It also could not tell "the stage is broken" from "I failed to load the stage": an
-# extraction that matched nothing made `eval ""` succeed, leaving the function undefined, so
-# the stage later reported rc=127 as if it were a stage bug. Both are checked separately now.
+# Check extraction, definition and stage execution separately; fail on any error.
 fails=0
 for fn in mtp_set_placement s2c_context s3_mtp s2b_split s4_parallel; do
   body="$(sed -n "/^${fn}() {/,/^}/p" overnight-part2.sh)"

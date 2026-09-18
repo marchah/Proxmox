@@ -2,18 +2,15 @@
 
 An unprivileged Debian LXC that indexes the **CognitiveStack** Markdown knowledge base and
 serves hybrid (keyword + semantic) search to every agent on the server over one endpoint —
-REST **and** MCP-over-HTTP. See [`SPEC.md`](SPEC.md) for the full design and rationale.
+REST **and** MCP-over-HTTP on port 8770.
 
 **Markdown-in-git stays the source of truth.** This container holds only a derived,
 rebuildable index (`sqlite-vec` + FTS5), so a wipe + reindex reconstructs everything — back up
 the CognitiveStack repo, not this container. Embeddings run on **CPU** (`fastembed`/ONNX) — no
 GPU, no load on CT 120.
 
-⚠️ The script *tries* to set `backup=0` on the rootfs, but **PVE silently rejects `backup=` on
-`rootfs`** (it is a mount-point-only property — verified on pve-manager 9.2.3), so this CT **is**
-in the weekly `vzdump` despite being fully rebuildable. Low stakes (~1.8 GB), but if you want the
-bulk out of the archive, exclude it in the backup job instead:
-`vzdump 140 --exclude-path /opt/kb-rag`.
+The root disk is included in the weekly `vzdump`. To omit rebuildable bulk, use
+`vzdump 140 --exclude-path /opt/kb-rag` in the backup job.
 
 ## Provision (on the Proxmox host, as root)
 
@@ -91,15 +88,27 @@ Register `http://kb-rag:8770/mcp/` (trailing slash — `/mcp` 307-redirects to i
 streamable-HTTP MCP server, header `Authorization: Bearer <key>`. Tools: `kb_search`, `kb_get`,
 `kb_stats`.
 
-⚠️ **No agent is wired to it yet** (as of 2026-08-07 CT 121's `/root/.hermes/config.yaml` has no
-`mcp:` block), so the service is live but unused. This registration is the step that makes it do
-anything.
+Hermes registers the endpoint under `mcp_servers.kb-rag` in
+`/root/.hermes/config.yaml`, with `Authorization: "Bearer ${HERMES_KB_RAG_KEY}"`.
+Store that variable in `/root/.hermes/.env`, outside the backed-up config.
+Verify from CT 121 with `hermes mcp test kb-rag`, including after MCP SDK upgrades.
+
+## Index design
+
+The default embedder is `BAAI/bge-small-en-v1.5` (384 dimensions, fastembed/ONNX
+on CPU). SQLite stores metadata, FTS5 keyword ranks and sqlite-vec nearest
+neighbors; hybrid search merges ranks with Reciprocal Rank Fusion (`k=60`).
+
+The chunker splits at H2 headings, then H3/paragraph boundaries for sections
+larger than about 1000 tokens. Chunks retain frontmatter and freshness metadata.
+Incremental reindexing embeds changed content hashes, prunes deleted chunks and
+records the source commit. Rebuild after changing embedding model or dimensions.
+The API returns full chunks by `chunk_uid`, or all chunks of a file by `path`.
 
 ## Layout
 
 ```
 kb-rag/
-  SPEC.md               # design doc
   README.md             # this file
   create-lxc-kb-rag.sh  # provisioning (run on the Proxmox host)
   app/

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the Qwen3.8-Flash-Next serve config into CT 120. Idempotent — re-run freely.
+# Install the Qwen3.8-Flash-Next serve config into the selected container. Idempotent — re-run freely.
 # Runs on the Proxmox HOST as root, from this directory.
 #
 #   ./install.sh                # env + serve script + unit, download NOT started
@@ -47,7 +47,7 @@ install -d -o llamacpp -g llamacpp /models/hf/qwen3.8-flash-next
 
 cat >/etc/systemd/system/llamacpp-qwen38fn.service <<'UNIT'
 [Unit]
-Description=llama.cpp llama-server (Qwen3.8-Flash-Next, qwen4exp) on two Radeon Pro V620
+Description=llama.cpp llama-server (Qwen3.8-Flash-Next, qwen4exp)
 After=network-online.target
 Wants=network-online.target
 # Never both at once: they would fight over the same port and the same cards.
@@ -73,7 +73,7 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-echo "unit installed (not enabled — cutover does that)"
+echo "unit installed (not enabled)"
 CONTAINER_SCRIPT
 
 if [ "$DO_DOWNLOAD" = "true" ]; then
@@ -97,4 +97,4 @@ pct exec "$VMID" -- bash -lc '
   echo "  shards: $(ls /models/hf/qwen3.8-flash-next/*.verified 2>/dev/null | wc -l)/5 verified"
   echo "  dl:     $(systemctl is-active qwen38fn-dl 2>&1 | head -1)"'
 echo
-echo "Next: ./ct120-cutover.sh to-qwen38fn   (once all 5 files are verified)"
+echo "Next: follow README.md deployment steps once all 5 files are verified."

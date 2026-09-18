@@ -134,11 +134,11 @@ reboot                                            # OverDrive off after reboot
 - The offset is applied live and does **not** require the GPU to be idle or the
   model unloaded.
 - **VFIO passthrough resets the offset.** Unbinding/rebinding `amdgpu` (e.g. the
-  ROCm-in-VM PoC in the main [`../README.md`](../README.md#rocm-in-a-passthrough-vm-poc-2026-06-29--works-but-slower-than-vulkan))
+  ROCm-in-VM PoC in the main [`../README.md`](../README.md#backend-and-power))
   clears the card's OverDrive state, yet this `RemainAfterExit` oneshot keeps
   reading "active" — so it will **not** re-apply. Stop `gpu-undervolt` before
   rebinding to `vfio-pci`, and `systemctl restart gpu-undervolt` (then re-check
   `pp_od_clk_voltage`) once `amdgpu` is back.
 - Vulkan remains the inference runtime (see the main
-  [`../README.md`](../README.md#why-vulkan-and-not-rocmhip)); the undervolt is
+  [`../README.md`](../README.md#backend-and-power)); the undervolt is
   orthogonal to the engine.

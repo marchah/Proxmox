@@ -1,33 +1,16 @@
 # Token-usage collector (CT 121)
 
-A systemd timer inside **CT 121** that turns llama.cpp's resettable Prometheus
-counters into a durable daily series, so "how many tokens did we spend last month"
-finally has an answer.
+A five-minute systemd timer inside CT 121 accumulates token usage in a daily ledger.
+It reads two sources, reported separately:
 
-It reads **two** sources, kept deliberately separate: CT 120's `/metrics` endpoint
-(all clients, resets on restart) and Hermes' own `session_model_usage` accounting
-(per model and provider, exact, never resets) — the latter being the only place
-cloud usage such as `gpt-5.6-terra` over `openai-codex` appears at all. See
-[Cloud / Codex usage](#cloud--codex-usage--a-second-different-source) for why they
-must never be summed.
+| Source | Coverage | Limitation |
+| --- | --- | --- |
+| `endpoint` | All clients of CT 120's llama.cpp `/metrics` | Counters reset on server restart; totals are a lower bound |
+| `hermes_accounted` | Hermes `session_model_usage`, filtered by provider | Only Hermes calls observed after the collector baseline |
 
-Runs **inside the Hermes LXC**, not on the Proxmox host — unlike the `pro-v620/`
-services. It scrapes over HTTP (no `pct` needed) and writes where the weekly
-online-model-pricing job can read it without extra plumbing.
-
-## Why this is not just "curl /metrics"
-
-CT 120 exposes `llamacpp:prompt_tokens_total` and `llamacpp:tokens_predicted_total`
-(it needs `--metrics`; added in the same PR as this collector). Both are **counters
-since process start**, and llama.cpp persists nothing. So:
-
-- A single scrape means "tokens since `<uptime>`", never a monthly total.
-- CT 120 **gets restarted** — restarting is the remedy for the prompt-cache
-  corruption — and every restart zeroes the counters.
-
-Two scrapes a month apart therefore cannot be subtracted. This collector samples
-every 5 minutes and folds each delta into a monotonic running total, detecting
-resets the way Prometheus' own `rate()` does.
+The default database provider is `openai-codex`. Exclude `custom`, `auto` and empty
+providers: they overlap CT 120's endpoint totals. Do not sum overlapping sources.
+CT 123 exposes llama.cpp metrics on `:1234` but is not in the configured source list.
 
 ## Install
 
@@ -68,18 +51,11 @@ Under `TOKEN_USAGE_DIR`, default `/root/.hermes/token-usage/`:
 | `state.json` | **authoritative** — per-source cursor, running totals, reset count, daily buckets |
 | `daily.jsonl` | derived on every write — one line per `(date, source)`, for consumers that would rather grep |
 
-Living under `/root/.hermes` is deliberate: `backup-automations.sh` rsyncs that
-tree and this path is not deny-listed, so the ledger is backed up to the private
-config-backup repo automatically. It is also the one place the Hermes pricing job
-can read without extra plumbing. Day buckets use `TOKEN_USAGE_TZ`
-(`America/New_York`), so a "day" here matches the Hermes cron schedules.
+The ledger is readable by the Hermes pricing job. Day buckets use `TOKEN_USAGE_TZ`
+(default `America/New_York`). It is excluded from the git config backup; the
+weekly CT 121 vzdump is its off-box copy. The accumulated history cannot be rebuilt.
 
-The ledger is **not rebuildable** — it is accumulated observation. Losing it loses
-the history, which is why it sits somewhere backed up.
-
-## Accuracy — every total is a floor
-
-Read this before quoting a number.
+## Endpoint accuracy
 
 - **Tokens served between the last scrape and a restart are lost.** Nothing
   persists them server-side, so no sampling collector can recover them. The loss
@@ -91,67 +67,19 @@ Read this before quoting a number.
 - **The first sample attributes nothing.** llama.cpp's counter may already be
   non-zero when the collector starts; those tokens predate observation.
 
-So the series is a lower bound. Good enough to answer "are we above or below the
-~18M tokens/month hosted break-even", which is what it exists for; not an
-accounting record.
+## Provider accounting
 
-## Cloud / Codex usage — a second, different source
+The collector reads per-row deltas from `session_model_usage`, keyed by
+`session_id|model|billing_provider|task`. The task distinguishes conversation calls
+from title generation, compression and approvals. It also records cache reads,
+reasoning tokens, call counts and the provider's billing metadata.
 
-A model reached over `openai-codex` (the weekly pricing cron now runs on
-`gpt-5.6-terra`) never touches CT 120, so `/metrics` cannot see it. Hermes records
-every call it makes — any provider — in `state.db`'s **`session_model_usage`**
-table, so the collector reads that too, filtered to the providers named in
-`TOKEN_USAGE_DB_PROVIDERS` (default `openai-codex`).
+The first pass establishes a baseline without attributing prior usage. Row decreases
+are clamped to zero. Session deletion can remove rows, so the ledger retains observed
+deltas independently of the database.
 
-Different mechanism, different semantics, and better behaved than the counters:
-
-- **Exact per-row deltas.** Keyed by `session_id|model|billing_provider|task`,
-  which is unique across the table (verified: 0 duplicate groups in 972 rows —
-  the 3-tuple without `task` has 39). `task` separates Hermes' own overhead calls
-  (`title_generation`, `compression`, `approval`) from the conversation.
-- **No reset problem.** Rows only grow. A *decrease* means the session row was
-  pruned (`session_model_usage` cascade-deletes with its session), not a restart,
-  so deltas are clamped at zero and never re-attributed.
-- **Richer.** Carries `cache_read_tokens`, `reasoning_tokens` and `api_call_count`.
-  Codex rows come back `billing_mode: subscription_included` /
-  `cost_status: included` — i.e. free at the margin under the ChatGPT plan, which
-  is exactly what the local-vs-hosted comparison needs to know.
-- **First pass attributes nothing**, same as the endpoint source. Rows already in
-  the table predate the collector. (Learned the hard way: the initial run booked
-  216k `gpt-5.6-terra` tokens dating to 2026-07-18 into a single day.)
-
-⚠️ **Do not add `custom`, `auto`, or the empty provider to
-`TOKEN_USAGE_DB_PROVIDERS`.** That is CT 120 traffic, which the `llamacpp`
-endpoint already counts — you would double every local token. The two sources
-measure deliberately different populations:
-
-| Family | Covers | Attribution | Resets |
-| --- | --- | --- | --- |
-| `endpoint` (`/metrics`) | **all** clients of that server, incl. OpenCode on the Mac | none | on llama-server restart |
-| `hermes_accounted` (`provider/model`) | only what **Hermes** spent | per model + provider | never |
-
-`token-usage-report` prints them as separate families with separate subtotals and
-never merges them into one headline number. `total_tokens` in the JSON is only
-meaningful because the shipped default keeps the families disjoint (endpoint =
-CT 120, accounted = cloud only).
-
-## Why CT 123 (`gpu2`) is absent
-
-`gpu2:8080/metrics` answers 200 but serves **llama-swap's own host telemetry** —
-`llamaswap_cpu_util_percent`, `memory_*`, `swap_*`, `load_average`,
-`network_bytes_total`. There are **no token or request counters at all**.
-
-Adding `--metrics` to each model in `/etc/llama-swap/config.yaml` would give each
-upstream llama.cpp its own `/metrics`, reachable through llama-swap at
-`/upstream/<model>/metrics`. That was rejected: llama-swap unloads and reloads
-models on demand, so those counters reset on **every swap** and the endpoint is
-unreachable whenever the model is unloaded. A 5-minute sampler would miss any
-model that loads, serves, and unloads between ticks. That is worse than not
-measuring, because it looks like data.
-
-Measuring CT 123 needs a different mechanism — parsing llama.cpp's
-`print_timing` lines out of CT 123's journal, which requires running there rather
-than scraping from here. Not built.
+`token-usage-report` keeps endpoint and provider families separate. The JSON
+`total_tokens` is meaningful only when the configured populations are disjoint.
 
 ## Extending
 

@@ -14,7 +14,7 @@ two protections:
 
 | Layer | Junction / Mem | What happens |
 |---|---|---|
-| `gpu-fan-control` | 90 °C hotspot | forces the GPU fan(s) to 100% (cooling) |
+| `gpu-blower-control` | 90 °C hotspot | forces the GPU fan(s) to 100% (cooling) |
 | **GPU throttle** (hardware) | **100 °C / 98 °C** | clocks drop to shed heat — keeps running, just slower. *Normal; this daemon does NOT act on it.* |
 | **→ this watchdog** | **102 °C / 101 °C** | gracefully **stops the LLM server** to remove the load |
 | **GPU emergency** (hardware) | **105 °C / 103 °C** | amdgpu forces a **MODE1 reset** — crashes/corrupts whatever was running (ungraceful) |
@@ -22,24 +22,15 @@ two protections:
 The 102 °C trip is deliberately **above** the 100 °C throttle (a little throttling is
 fine) and **below** the 105 °C emergency — the last graceful chance before the reset.
 
-**With a 9733 blower per card this does not fire in normal operation.** Load-tested
-2026-08-22 with **both** cards saturated simultaneously — the heaviest case this box
-produces — GPU 1 settled at 62 °C and GPU 2 at 73 °C with the fan at only 51%, ~29 °C
-below the trip. See [`../fan-control/README.md`](../fan-control/README.md) for the
-per-cooler thermals.
-
-⚠️ **So treat a trip as a real fault, not as normal saturation.** Under the earlier
-shared-shroud cooling a full load genuinely ran near the limit and this watchdog fired
-three times (2026-08-14, twice 2026-08-15); that is no longer the expected regime. A trip
-now points at a seized blower, a detached hub control lead, or blocked airflow — and note
-the hub reports a tach for only **one** of the two blowers, so this watchdog is the
-primary detection for a failure of the other.
+Each card has its own IPMI-controlled blower. Treat a trip as a cooling fault:
+check the blower, wiring and airflow before restarting. See
+[blower control](../gpu-blower-control/README.md) for fan pairing and measurements.
 
 ## Behaviour
 
 - Watches `junction` + `mem` on every configured V620 every `POLL_SECS` (default 2 s).
 - On a trip: stops the service that **owns the over-temp card** (per `GPU_SERVICE_MAP`:
-  GPU 1 → `llamacpp` in CT 120, GPU 2 → `llama-swap` in CT 123) — **both if both are
+  GPU 1 → `llamacpp` in CT 120, GPU 2 → `llamacpp-qwen38fn` in CT 123) — **both if both are
   hot**, so it never sheds the wrong card's load. An over-temp card not in the map stops
   **every** mapped service (conservative). Logs `CRITICAL`, keeps the stop asserted while
   hot (idempotent).
@@ -79,13 +70,13 @@ journalctl -u gpu-thermal-watchdog -f          # watch it live
 
 | Var | Default | Meaning |
 |---|---|---|
-| `GPU_PCI_ADDRESS` | `0000:2d:00.0,0000:06:00.0` | V620s to watch (comma list; empty = all amdgpu) |
+| `GPU_PCI_ADDRESS` | `0000:03:00.0,0000:83:00.0` | V620s to watch (comma list; empty = all amdgpu) |
 | `TRIP_JUNCTION_C` | `102` | junction trip (°C) |
 | `TRIP_MEM_C` | `101` | mem trip (°C) |
 | `RESUME_C` | `95` | re-arm / auto-resume below this (°C) |
 | `POLL_SECS` | `2` | poll interval |
 | `WATCHDOG_ACTION` | `stop` | `stop` the owning service, or `warn` (log only — for testing) |
-| `GPU_SERVICE_MAP` | `0000:2d:00.0=120:llamacpp,0000:06:00.0=123:llama-swap` | per-GPU `PCI=VMID:service` — stop the card's OWNING service (unmapped card → stop all) |
+| `GPU_SERVICE_MAP` | `0000:03:00.0=120:llamacpp,0000:83:00.0=123:llamacpp-qwen38fn` | per-GPU `PCI=VMID:service` — stop the card's OWNING service (unmapped card → stop all) |
 | `LLM_CT_VMID` / `LLM_SERVICE` | `120` / `llamacpp` | **legacy** single service, used only if `GPU_SERVICE_MAP` is empty |
 | `PROTECT_CMD` / `RESUME_CMD` | *(empty)* | override the stop/start command (run via `bash -c`) |
 | `AUTO_RESUME` | `false` | restart the service once cooled instead of leaving it down |

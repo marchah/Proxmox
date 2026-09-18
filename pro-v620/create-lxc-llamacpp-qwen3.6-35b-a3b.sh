@@ -2,26 +2,13 @@
 
 set -Eeuo pipefail
 
-# This script is intentionally specific. Different GPUs or models should get a
-# separate script because GPU runtime flags, context sizes, and settings vary.
-# The Radeon Pro V620 (Navi 21 / gfx1030, 32 GB) is driven via Vulkan (mesa
-# RADV). It replaces the RX 6700 XT; with ~2.7x the VRAM it serves a much larger
-# model. This serves Qwen3.6-35B-A3B (MoE: 35B total / ~3B active per token) via
-# llama-server on an OpenAI-compatible API at 0.0.0.0:1234. There is no LM Studio
-# sibling for this card (see pro-v620/README.md); llama.cpp is the chosen engine.
+# Qwen3.6-35B-A3B on one Radeon Pro V620 via Vulkan/RADV, API :1234.
+# Run on the Proxmox host. See README.md for deployment and measurements.
 readonly GPU_NAME="Radeon Pro V620"
-# The host has TWO V620s (0000:83:00.0 top, 0000:03:00.0 bottom; both CPU-direct
-# Gen4 x16), but this container is pinned to GPU 1 ALONE: the ~26.6 GB model
-# fits a single 32 GB card, so there is no reason to split it, and leaving GPU 2
-# idle keeps it free for a future second service. Passthrough binds only GPU 1's
-# DRM nodes (see configure_gpu_passthrough) — bind-isolating one render node is the
-# only reboot-stable way to pin one of two IDENTICAL cards (name/vendor:device are
-# the same; Vulkan indices reorder across boots). GPU 2 must stay present +
-# amdgpu-bound (the host fan/undervolt/watchdog services expect both cards);
-# "idle" here means no workload, not removed. Set GPU_PCI_ADDRESS= to pin the
-# other card instead.
+# Pin one card by PCI address; the other card remains available to its own container.
+# Both cards stay amdgpu-bound for host cooling, undervolt and watchdog services.
 readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:03:00.0}"    # the card this container uses (both are Gen4 x16 and equivalent)
-# The other V620 (left idle) is INFORMATIONAL ONLY (logs/comments); the passthrough
+# The other V620 is INFORMATIONAL ONLY (logs/comments); the passthrough
 # uses GPU_PCI_ADDRESS alone. It is DERIVED at runtime (resolve_idle_gpu) from the
 # other V620 present, so it can't collide with the pinned card when GPU_PCI_ADDRESS
 # is overridden. Set GPU2_PCI_ADDRESS= only to override the informational label.
@@ -30,25 +17,12 @@ GPU2_PCI_ADDRESS="${GPU2_PCI_ADDRESS:-}"
 # both on https://github.com/ggml-org/llama.cpp/releases (the asset is
 # llama-<tag>-bin-ubuntu-vulkan-x64.tar.gz; the SHA-256 is the release asset's
 # digest). The prebuilt is preferred over a source build for reproducibility.
-# 🔴 b11013 is a HARD FLOOR, not a preference: `vulkan: support qwen4exp hc ops`
-# (llama.cpp #28988, merged 2026-09-17) is the first build in which the Vulkan backend
-# can run Qwen3.8-Flash-Next's hyper-connection ops at all. b11010 does not have it.
-# The qwen4exp ARCH STRING has been present since ~b10678, which is why a grep for it
-# reads as "supported" on a build that cannot actually execute the model on RADV.
-# Also in this range and relevant to THIS model: `models : fix GDN normalization from
-# max to rsqrt` (#28068) — Qwen3.6-35B-A3B is a Gated-DeltaNet hybrid, so that is a
-# correctness fix for the model this script deploys, not a neighbouring one.
+# This build includes the Gated-DeltaNet normalization fix (#28068).
 readonly LLAMACPP_RELEASE_TAG="b11018"
 readonly LLAMACPP_ASSET="llama-${LLAMACPP_RELEASE_TAG}-bin-ubuntu-vulkan-x64.tar.gz"
 readonly LLAMACPP_ASSET_URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMACPP_RELEASE_TAG}/${LLAMACPP_ASSET}"
 readonly LLAMACPP_SHA256="d5ae7502b5a312788df5a74bb47df00b97fdaa45c763f00c7f8909cd7cd6e105"
-# Qwen3.6-35B-A3B is a Mixture-of-Experts model: 35B total params, ~3B active per
-# token, so it runs far faster than a dense 27B/32B while keeping high capability
-# — the best capability-per-second on this card for an interactive agent. It is
-# the newer-gen successor to Qwen3.5-35B-A3B (same shape/speed/VRAM, improved tool
-# calling; see the README bake-off). UD-Q5_K_XL is unsloth's dynamic-quant build
-# (~26.6 GB), chosen over Q4 for slightly better quality at ~5% lower speed; a
-# single unsharded file.
+# Single-file Q5 model, ~26.6 GB of weights.
 readonly MODEL_REPO="unsloth/Qwen3.6-35B-A3B-GGUF"
 readonly MODEL_FILE="Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf"
 readonly MODEL_SHA256="25233af7642e3a91bd52cc4aeefdbd4a117479088e06cf1aea5b6bedb443c506"
@@ -62,41 +36,16 @@ readonly MODEL_REVISION="a483e9e6cbd595906af30beda3187c2663a1118c"
 # ansible/host benchmark tooling pins model_key to this. NOTE: this id is
 # client-facing — OpenAI requests must set "model" to it. See pro-v620/README.md.
 readonly MODEL_ALIAS="qwen3.6-35b-a3b"
-# 256k total context — the model's native maximum (262144), 128k per slot at
-# --parallel 2. This MoE's KV cache is cheap (~20 KB/token), so even 256k fits the
-# V620 at Q5: ~29.8 GiB used of ~30 GiB usable (the card exposes 30704 MiB, not a
-# full 32) — only ~0.2 GiB real margin. Stress-verified (a 4-concurrent prefill
-# held), but NO safety buffer: a heavier transient could OOM. If that bites, dial
-# back via `llamacpp-reload 131072 4` (~23.2 GiB), switch to Q4, or quantize the KV
-# cache. (The model runs on GPU 1 alone — see the GPU_PCI_ADDRESS note above — so
-# this is the true single-card budget, not a per-card half of a split.) A larger --ctx-size does NOT slow shorter
-# requests (attention is over actual length, not the max), so this ceiling is
-# "free" — an occasional high-context agent just works, no reload needed. Daytime
-# ~2 agents share it (128k per slot); a single agent can use the whole 256k window
-# via `llamacpp-reload 262144 1`. Bigger contexts DECODE slower, and a cold 256k
-# prefill takes minutes (fine for incremental/prefix-cached growth) — see README.
-# Retune live via `llamacpp-reload <context-length> <parallel>`.
+# 256k total context, 128k per slot at parallel=2. Recorded VRAM use is ~29.8 GiB
+# of 30704 MiB exposed; verify free VRAM and GTT when changing the workload/build.
+# Adjust with llamacpp-reload <context-length> <parallel>.
 readonly MODEL_CONTEXT_LENGTH="262144"
 # -ngl 99 offloads every layer (including all MoE experts) to the GPU; the whole
 # ~26.6 GB model fits in the V620's 32 GB (the llama.cpp equivalent of LM Studio's
 # --gpu max).
 readonly MODEL_GPU_LAYERS="99"
-# 2 continuous-batching slots (llama-server --parallel) → 131072 tokens per slot.
-# Was 4 (64k/slot), but qwen3.6 is a *thinking* model served with no output cap
-# (n_predict -1), so its reasoning generates until the slot's context physically
-# fills: a heavy request (e.g. a KB-ingestion skill) burned the whole 64k slot on
-# <think> and returned finish_reason='length' with no visible answer — Hermes then
-# surfaces "Thinking Budget Exhausted". 128k/slot leaves ample room for the
-# reasoning AND the answer. The MoE activates only ~3B params/token so it still
-# batches cheaply; go back to 4 (or down to 1 for a single 256k agent) via
-# `llamacpp-reload <ctx> <parallel>`. Continuous batching is on by default.
-# ⚠️ STALE PREMISE, KEPT FOR HISTORY: thinking is now OFF (`--reasoning off`, see
-# the flag comment below), so nothing generates a <think> block that could overrun
-# a 64k slot. That means **4 is viable again** and would double concurrency. 2 is
-# still shipped because it is the long-verified production setting and the 4-way
-# behaviour has NOT been re-measured since thinking was disabled — raise it as a
-# deliberate benchmarked step, not a free win. Re-read this note if you ever
-# re-enable thinking, because then the original reasoning applies again.
+# Two slots is the verified production default with thinking disabled.
+# Benchmark four slots before adopting it for higher concurrency.
 readonly MODEL_PARALLEL="2"
 readonly MODEL_SERVER_BIND="0.0.0.0"
 readonly MODEL_SERVER_PORT="1234"
@@ -150,7 +99,7 @@ Important:
   The container is privileged so GPU passthrough (the Vulkan render node) works
   with less friction. Treat it as a trusted container. It is pinned to ONE V620
   (0000:03:00.0) by bind-mounting only that card's DRM nodes; the second
-  card (0000:83:00.0) is left idle/free. Set GPU_PCI_ADDRESS= to pin the
+  card (0000:83:00.0) is not passed through. Set GPU_PCI_ADDRESS= to pin the
   other card. Keep GPU 2 present + amdgpu-bound so the host fan/undervolt/watchdog
   services stay happy.
 USAGE
@@ -265,7 +214,7 @@ configure_gpu_passthrough() {
   local render_node
   local card_node
 
-  log "Configuring single-GPU passthrough: only GPU 1 (${GPU_PCI_ADDRESS}); ${GPU2_PCI_ADDRESS:-the other V620} left idle"
+  log "Configuring single-GPU passthrough: only GPU 1 (${GPU_PCI_ADDRESS}); ${GPU2_PCI_ADDRESS:-the other V620} not passed through"
 
   conf_file="/etc/pve/lxc/${VMID}.conf"
   # Resolve GPU 1's DRM nodes by PCI address via the udev-stable by-path symlinks.
@@ -427,73 +376,12 @@ EOF
 
 # 4. Server wrapper: read fresh config on each (re)start, pin the lib dir, exec
 # llama-server. Continuous batching is on by default, so no -cb flag is needed.
-# --flash-attn on + a larger batch (--batch-size 4096 --ubatch-size 1024) were
-# picked from an on/off/+batch sweep on this card (see pro-v620/README.md): vs
-# flash-attn off they give ~+30% concurrent throughput (~102 -> ~133 tok/s
-# aggregate at concurrency 4), ~-40% TTFT, and -0.5 GiB VRAM; the batch bump adds
-# the last ~3%. FA's default 'auto' already enabled it here, but pinning 'on' is
-# deterministic. (On a single >8k cold prefill FA is marginally slower — a fine
-# trade for the concurrency/TTFT win in agent/serving use.)
-# --jinja makes llama-server use the model's own chat template, which is REQUIRED
-# for OpenAI-style tool/function calling to parse into the `tool_calls` field —
-# i.e. for agents. Verified across Qwen3.5/3.6 and Hermes (see README bake-off).
-# --reasoning-format auto siphons any <think> block into `reasoning_content`,
-# leaving `content` clean.
-# ⚠️ This was `none` until 2026-08-27, and the change matters. `none` was chosen
-# back when thinking was ON by default: it kept <think> tokens inline so an
-# OpenAI-compatible benchmark saw a non-empty `content` stream and did not flag
-# every request as invalid_output. Adding `--reasoning off` below retired that
-# rationale — and turned `none` into an active bug. With thinking off the template
-# still emits an EMPTY `<think>\n\n</think>` pair, and `none` left it in `content`,
-# so every response began with those tags. Measured on a real KB-ingestion prompt:
-# the generated file started `<think>\n\n</think>\n\n---` instead of `---`, i.e. it
-# was not valid frontmatter. With `auto` the same prompt starts cleanly at `---`,
-# `reasoning_content` stays empty, and throughput is unchanged (78.4 vs 78.7 tok/s).
-# --reasoning off DISABLES thinking outright. It is a DIFFERENT flag from
-# --reasoning-format none: that one only decides *where* thought tags go, it does
-# not stop them being generated. Measured on this model, same prompt, on/off:
-# 76.4s / 6000 tokens (HIT the output cap) / 12262 chars of reasoning / a
-# 470-char answer  ->  26.0s / 2045 tokens / 0 reasoning / a 4930-char answer.
-# The "on" column is the `Thinking Budget Exhausted` failure reproduced on demand:
-# reasoning consumed the whole budget and returned a truncated reply. On this
-# box's actual workload (KB ingestion via Hermes) reasoning was ~80% of the token
-# spend and produced a *shorter* entry — 5x faster at identical template section
-# coverage. Turning it off removes that failure mode structurally instead of
-# sizing per-slot context around it.
-# NOTE this is also the Hermes default, because CT 121's default provider
-# (`custom`) points at this endpoint — there is no separate Hermes setting.
-# Do NOT try to do this from the client: `hermes --reasoning none` does NOT reach
-# a bare custom OpenAI endpoint (measured 2845 -> 2656 output tokens, ~7%, versus
-# ~3.5x here) and does not even reject an invalid level. Server-side or nothing.
-# Per-request override for a caller that DOES want thinking:
-# `chat_template_kwargs: {"enable_thinking": true}`.
-# ⚠️ If you re-enable thinking, revisit MODEL_PARALLEL: 2 (131k/slot) was chosen
-# *because* reasoning filled 65k slots. With thinking off, 4 is viable again.
-# --cache-ram 0 DISABLES llama-server's prompt cache (default 8192 MiB). On
-# b10152 that cache served KV state that did not match the request's prompt: the
-# model then decoded a wall of '/' to the 65,536-token generation cap, ~17 min of
-# GPU per request, and every KB ingestion came back empty. Proven by replaying one
-# failing prompt — 7/7 garbage warm, clean 6/6 after a restart cleared the cache,
-# and clean with 25 chars prepended (a different prefix). A host reboot fixed it
-# until LRU churn re-poisoned it. Upstream has several open prompt-cache bugs in
-# this window (ggml-org/llama.cpp#25755 is Qwen3.6-on-Vulkan, #26207 is the same
-# silent-contamination shape via lora) and #26529 names --cache-ram 0 as the
-# workaround; no merged fix for slot-similarity reuse was found, so the b10308
-# bump alone is not trusted to have cured it. Cost: a cold slot re-evaluates the
-# whole prompt (~5 s for 6k tokens at ~1.1k tok/s) — within-conversation slot KV
-# reuse is unaffected, so multi-turn sessions still get incremental eval.
-# REMOVE THIS once those tickets are fixed and the fix is in the pinned build.
-# --metrics exposes Prometheus counters at GET /metrics (without it that route
-# returns 501). The ones that matter here are llamacpp:prompt_tokens_total and
-# llamacpp:tokens_predicted_total, which is the only place this homelab produces
-# a token count: llama.cpp returns a per-response `usage` object, but nothing
-# persists it, so "what do we actually spend per month" was unanswerable — see
-# the local-vs-hosted note in the CognitiveStack online-ai-models category, which
-# is blocked on exactly this number. Cost is a counter increment per request.
-# ⚠️ These are counters SINCE PROCESS START, and they reset on every restart —
-# including the restarts used to clear the prompt-cache corruption above. A single
-# scrape is "tokens since <uptime>", never a monthly total; accumulating deltas
-# over time is a separate job that does not exist yet.
+# Tuned attention/batch settings; --jinja enables structured tool calls.
+# --reasoning off disables thinking; --reasoning-format auto removes empty think
+# tags from content. Both are needed for clean generated files.
+# --cache-ram 0 disables cross-slot prompt caching after corruption on b10152;
+# within-conversation slot KV reuse remains available. Revalidate before enabling.
+# --metrics feeds the persistent token collector in CT 121; counters reset on restart.
 cat >/usr/local/bin/llamacpp-serve <<'EOS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -614,7 +502,7 @@ print_summary() {
   log "Done"
   printf 'LXC: %s (%s)\n' "${VMID}" "${LXC_HOSTNAME}"
   printf 'GPU target: %s\n' "${GPU_NAME}"
-  printf 'GPU pin: %s (GPU 1) in use; %s left idle\n' "${GPU_PCI_ADDRESS}" "${GPU2_PCI_ADDRESS:-the other V620}"
+  printf 'GPU pin: %s (GPU 1) in use; %s not passed through\n' "${GPU_PCI_ADDRESS}" "${GPU2_PCI_ADDRESS:-the other V620}"
   printf 'Engine: llama.cpp llama-server %s (Vulkan)\n' "${LLAMACPP_RELEASE_TAG}"
   printf 'Models mount: /models (%sG on %s, backup disabled)\n' "${MODELS_SIZE_GB}" "${MODELS_STORAGE}"
   if [[ -n ${ip} ]]; then

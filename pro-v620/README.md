@@ -1,377 +1,113 @@
 # Radeon Pro V620
 
-Scripts in this folder target the desktop server's **Radeon Pro V620** (Navi 21 /
-gfx1030, RDNA 2, **32 GB** GDDR6, 72 CUs). The V620 **replaces the RX 6700 XT** —
-the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
+The ROMED8-2T host has two Radeon Pro V620s (Navi 21 / gfx1030, 32 GB each),
+both on CPU-direct Gen4 x16 slots. Deployment recorded 2026-09-18:
 
-> **Two V620s, both in use:** the host runs **two V620s** — `0000:03:00.0`
-> ("GPU 1") and `0000:83:00.0` ("GPU 2"). All seven ROMED8-2T slots are CPU-direct Gen4 x16,
-> so the B550-era chipset decode tax no longer applies and either card can host either
-> workload. The model is only ~26.6 GB and
-> fits a single 32 GB card, so **CT 120 is pinned to GPU 1 alone**: its container bind-mounts
-> only GPU 1's `/dev/dri` render node (via the udev-stable `by-path` symlink — the only
-> reboot-stable way to pin one of two *identical* cards; see `configure_gpu_passthrough` in the
-> script). **GPU 2 (`0000:83:00.0`) runs CT 123 `gpu2`, which since 2026-09-18 serves
-> Qwen3.8-Flash-Next** (`qwen38-flash-next/`, `-ncmoe 34`, OpenAI API on `0.0.0.0:1234`).
-> ⚠️ **It previously ran a `llama-swap` coder/reviewer proxy on `:8080`; that was removed.**
-> `create-lxc-llama-swap-gpu2.sh` is kept as the recipe — the binary, its `.bak` predecessors
-> and `/etc/llama-swap/config.yaml` with all six model entries are intact and the unit is
-> stopped+disabled, so it is recoverable, but nothing on the box runs it. GPU 2 stays amdgpu-bound, so the host services manage both cards:
-> both are undervolted −100 mV (`undervolt/` applies to every V620), and **each card has its own
-> 9733 radial blower**. Both blowers hang off a single SATA-powered PWM hub whose control lead sits
-> on the **PUMP FAN** header, driven by one `gpu-fan-control@hub` instance whose curve tracks the
-> **hotter** card (see [`fan-control/`](fan-control/) and [`undervolt/`](undervolt/)). The
-> single-card figures below (benchmarks, thermals, undervolt A/B) were measured on **one** V620,
-> which is exactly this configuration.
->
-> **Thermals are comfortable with a blower per card.** Load-tested 2026-08-22 with **both cards
-> driven simultaneously for ~6.7 minutes** — the heaviest case this box can produce, and one the
-> earlier shared-shroud cooling never survived: **GPU 1 settled at 62 °C and GPU 2 at 73 °C with the
-> fan at only 51%**, flat for the final four minutes, **zero thermal-watchdog trips**. That leaves
-> ~29 °C of margin to the 102 °C watchdog trip and half the fan's range unused, so running the whole
-> model solo on one card is no longer a thermal trade-off. (Earlier cooling generations *were*
-> constrained — a shared NF-F12 shroud ran a full load at ~91–97 °C with its fan maxed, and before
-> that GPU 2's 2× Arctic S4028-6K pair overheated outright at 106 °C. Per-cooler history and
-> 3D-print mounts: [`fan-control/README.md`](fan-control/README.md).)
->
-> ⚠️ **Only `PUMP_FAN1` can control an externally-powered fan on this board** — the `SYS_FAN*`
-> headers are in DC (voltage) mode, so their pin 4 carries no PWM signal and a SATA-powered fan
-> free-runs at 100% there forever. There is no software fix (no `pwm*_mode`, firmware-configured,
-> no video output to reach BIOS). ⚠️ **A tach reading proves nothing about control.** Full detail
-> and the diagnostic procedure: [`fan-control/README.md`](fan-control/README.md).
->
-> The [`gpu-thermal-watchdog/`](gpu-thermal-watchdog/) remains armed as the last-resort net, stopping
-> the LLM server at 102 °C and mapping a trip to that card's **owning workload** (GPU 1 → CT 120
-> `llamacpp`, GPU 2 → CT 123 **`llamacpp-qwen38fn`**). 🔴 **That map must name the unit that
-> actually runs on each card** — a map naming a stopped or removed unit makes a thermal trip a
-> **silent no-op**, leaving the real load on an overheating card with only the 105 °C hardware
-> reset behind it. It has not tripped since the per-card blowers went in;
-> its three 2026-08-14/15 firings were all under the old shared-shroud cooling. ⚠️ It leaves the
-> stopped service **down** by design, so the symptom from outside is a plain connection-refused on
-> `:8080` with the container still running, and an in-flight request sees a **502** that looks exactly
-> like a model crash. Check `journalctl -u gpu-thermal-watchdog` on the **host** — EDT, while
-> container journals are UTC — before blaming the model. To go back to
-> splitting across both cards, pass through all of `/dev/dri` again in `configure_gpu_passthrough`.
+| PCI address | Container | Runtime |
+| --- | --- | --- |
+| `0000:03:00.0` | CT 120 `llamacpp` | Qwen3.6-35B-A3B, `llamacpp.service`, API `:1234` |
+| `0000:83:00.0` | CT 123 `gpu2` | [Qwen3.8-Flash-Next](qwen38-flash-next/README.md), `llamacpp-qwen38fn.service`, API `:1234` |
 
-With ~2.7× the VRAM of the 6700 XT (32 GB vs 12 GB), each card serves a large
-model. There are **two runtime scripts** here (no LM Studio sibling — llama.cpp is
-the chosen engine, per the 6700 XT comparison), one per V620:
+Each card has a 9733 blower controlled by [gpu-blower-control](gpu-blower-control/README.md)
+over IPMI: FAN5 cools `03:00.0`, FAN4 cools `83:00.0`. Both use the
+[−100 mV undervolt](undervolt/README.md). The
+[thermal watchdog](gpu-thermal-watchdog/README.md) stops the owning service at
+102 °C junction / 101 °C memory and leaves it stopped until the cooling fault is resolved.
 
-- `create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — **GPU 1 (CT 120)**, the ops/agent
-  runtime: llama.cpp's `llama-server` (reload = restart, via the `llamacpp-reload`
-  helper). Exposes an OpenAI-compatible API on `0.0.0.0:1234`, serves the model
-  under the identifier `qwen3.6-35b-a3b`.
-- `qwen38-flash-next/` — **GPU 2 (CT 123 `gpu2`), the current occupant**: Qwen3.8-Flash-Next
-  (`qwen4exp`, 180B/6B, 111.33 GB) with the PLE table and part of the routed experts in host RAM.
-  `VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh`. That folder's README is the single detailed
-  record of the placement study.
-- `create-lxc-llama-swap-gpu2.sh` — ⚠️ **DECOMMISSIONED 2026-09-18**, kept as the recipe: a
-  `llama-swap` proxy on `0.0.0.0:8080` that hot-swapped a coder and a reviewer model, one
-  resident at a time. Recoverable (see the callout above), but re-enabling it needs a device
-  selector in its config first, or it will grab a card another container is using.
+`create-lxc-llama-swap-gpu2.sh` is a reference recipe for the retired CT 123
+runtime. Its model config needs explicit device selection before reuse alongside
+another GPU container. The [B550 fan controller](fan-control/README.md) targets
+the prior motherboard.
 
-  **GPU-2 loop models** (updated 2026-08-15; both dense 27B, only one fits the 32 GB card at a time;
-  both thinking, ctx **65536**, `--n-predict 32768`, `--parallel 1`, pick by alias):
+## CT 120 provisioning
 
-  | Role     | Alias                 | Model / GGUF |
-  |----------|-----------------------|--------------|
-  | coder    | `qwen3.8-27b-dflash2` | Qwen3.8-27B — `unsloth/Qwen3.8-27B-GGUF`, `Qwen3.8-27B-UD-Q5_K_XL.gguf`, drafted by its own DFlash2 head (`z-lab/Qwen3.8-27B-DFlash2-GGUF`, Q8_0) |
-  | reviewer | `thinkingcap-27b`     | ThinkingCap-Qwen3.6-27B — `bottlecapai/…-GGUF`, `ThinkingCap-Qwen3.6-27B-Q4_K_M.gguf` |
+`create-lxc-llamacpp-qwen3.6-35b-a3b.sh` creates a privileged Ubuntu 24.04 LXC
+with a pinned llama.cpp Vulkan release and a checksum-verified model.
 
-  Both were chosen on measured evidence rather than reputation. The coder gains **+8.2 SWE-bench Pro**
-  over Qwen3.6-27B on the only SWE-bench variant covering TS/JS. The reviewer is the only model in the
-  set whose numbers come from a controlled experiment — 5 seeds, 95 % CIs, base model under identical
-  settings.
+| Setting | Shipped value |
+| --- | --- |
+| Engine | llama.cpp `b11018`, prebuilt Vulkan x64 |
+| Model | `unsloth/Qwen3.6-35B-A3B-GGUF`, `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` |
+| Alias | `qwen3.6-35b-a3b` |
+| GPU | `0000:03:00.0`, all layers offloaded |
+| Context / parallel slots | `262144` / `2` (131072 tokens per slot) |
+| Attention / batch / ubatch | `on` / `4096` / `1024` |
+| Reasoning / format | `off` / `auto` |
+| API | `0.0.0.0:1234` |
+| Container RAM / model storage | 16384 MB / `/models` mount, `backup=0` |
 
-  ⚠️ **ThinkingCap was previously dropped for "running away"**, and that judgement was confounded: it
-  happened inside a loop with no coding harness and an uncapped output. Its own headline result is that
-  thinking-trace truncation falls 2.9 % → 0.4 %. `--n-predict 32768` now bounds it explicitly.
+This MoE has 35B total parameters and about 3B active per token. Its ~26.6 GB
+weights fit one card. At the 256k context ceiling, a recorded load used about
+29.8 GiB of 30704 MiB exposed VRAM, leaving little transient headroom. Check
+free VRAM and GTT after changing context, batches or the binary.
 
-  **The coder drafts with a MATCHED head, and which one has changed twice.** Qwen ships no DFlash
-  drafter for 3.8, so the coder first borrowed Qwen3.6's, which transferred only partially; it then
-  moved to Qwen3.8's own MTP head. Measured 2026-08-15 at ctx 65536, **all three on the same prompt**
-  (which is what makes them comparable — see the prompt-dependence warning below):
-  no speculation **17.55** tok/s · borrowed DFlash **23.68** (28.8 % acceptance) ·
-  **own MTP 27.73 (61.7 %)**.
-  ✅ **Since 2026-08-28 it drafts with Qwen3.8's own DFlash2 head** (`z-lab/Qwen3.8-27B-DFlash2-GGUF`,
-  Q8_0 — **1.92 GiB, smaller than the MTP head's 4.19 GiB**). llama.cpp #27342 added DFlash2 and it is
-  auto-detected from the checkpoint, so `--spec-type` stays `draft-dflash`. Measured 3 reps, 3 prompts,
-  temp 0, against a no-speculation control (17.03 tok/s):
-
-  | drafter | code | prose | list | overall |
-  |---|---:|---:|---:|---:|
-  | MTP n=2 | 35.44 | 29.19 | 31.72 | 32.12 |
-  | **DFlash2 n=8** | **67.14** | 26.72 | 30.47 | **41.44** |
-
-  Code is what the coder emits, so the prose/list losses (−8.5 % / −3.9 %) are an acceptable trade.
-  **DSpark was tested in the same run and is not better than MTP** (31.86 overall).
-  ⚠️ `--spec-draft-n-max` is **8** for DFlash2, and that does not contradict the n≥8 cliff: the cliff
-  is an **MTP property**, not a backend one. DFlash2 acceptance is identical at n=7/8/10 (52.1 %)
-  because the drafter saturates its own block length, so it plateaus rather than collapsing. For the
-  MTP head the sweep is *not* flat — 2 → 27.77, 3 → 26.36, 4 → 26.87, 6 → 20.49, 8 → 8.80.
-  **Never carry an n-max across drafters.**
-
-  ⚠️ **A speculative tok/s figure is a RANGE, not a number — it depends on the prompt.** Speculation
-  pays only when the drafter guesses right, so decode speed tracks **draft acceptance**, and
-  acceptance depends on how predictable the output is. On `muse-glimmer-30b`, changing nothing but
-  the prompt moved throughput **32.9 → 44.3 tok/s** (acceptance 44.8 % → 71.0 %) — free-form prose
-  at the bottom, code at the top, a 35 % spread:
-
-  | prompt class | tok/s | draft acceptance |
-  |--------------|------:|-----------------:|
-  | free-form prose | 32.9 | 44.8 % |
-  | structured list | 39.6 | 59.2 % |
-  | verbatim repetition | 43.0 | 67.1 % |
-  | **code** | **44.3** | **71.0 %** |
-
-  So: always name the prompt class next to the number, never A/B two models on different prompts
-  (the prompt gap can exceed the effect you are measuring), and judge a suspected regression by
-  `draft_n_accepted`/`draft_n` from the response `timings` rather than by tok/s. Non-speculative
-  entries are unaffected — `qwen3.8-27b` reproduced its documented 17.6 tok/s exactly on a different
-  prompt, so this is purely a speculation artifact.
-
-  ⚠️ **Pin the shroud fan to 100 % before benchmarking GPU 2.** These runs otherwise trip the 102 °C
-  watchdog, which leaves `llama-swap` **down** (an in-flight request returns a 502 that mimics a
-  model crash). `systemctl stop gpu-fan-control@shroud`, write `255` to the `nct6687` hwmon's
-  `pwm3`, and restore the service from a `trap ... EXIT` — a missed restore leaves the fan loud,
-  which is the safe direction. Same work measured **92 °C on the curve vs 65-74 °C pinned**.
-  ⚠️ `pwm3=255` with the curve running is usually *not* a stuck pin: the curve tracks the **hotter
-  of the two cards** and overrides to 100 % at ≥80 °C hotspot, so CT 120 working GPU 1 legitimately
-  holds the shared shroud at full speed. Check both cards before suspecting the fan control.
-
-## Model choice: Qwen3.6-35B-A3B (MoE)
-
-`unsloth/Qwen3.6-35B-A3B-GGUF`, `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (~26.6 GB, a
-single unsharded file). This is a **Mixture-of-Experts** model: 35B total
-parameters but only **~3B active per token**, so it generates far faster than a
-dense 27B/32B at comparable quality — the best capability-per-second on this card.
-The intended consumer is an **agent** (tool-calling loops, where per-step latency
-compounds), which is exactly where the MoE's speed pays off.
-
-It fits 32 GB at Q5 (~26.6 GB weights) with ~5 GB left for the KV cache — i.e. it
-fits **one** V620 comfortably, which is why CT 120 is pinned to GPU 1 alone; the
-second card runs **Qwen3.8-Flash-Next** (CT 123; it ran the coding loop's `llama-swap`
-server until 2026-09-18 — see the note at the
-top). The dense alternatives that
-also fit (`Qwen3.5-27B`, `Qwen3-32B`) are documented in the repo history if you
-want to trade speed for a dense model — each would be its own script, not a flag on
-this one (per the repo's "one GPU/model/engine per script" convention).
-
-## llama.cpp Qwen3.6-35B-A3B LXC
-
-`create-lxc-llamacpp-qwen3.6-35b-a3b.sh` creates a privileged Ubuntu LXC running
-**llama.cpp's `llama-server`** (a pinned prebuilt Vulkan release) with the V620
-passed through.
-
-This script is deliberately narrow:
-
-- GPU: Radeon Pro V620 (Navi 21 / gfx1030)
-- GPU runtime: Vulkan (mesa RADV)
-- Engine: llama.cpp `llama-server`, prebuilt Vulkan x64 release (pinned by tag +
-  SHA-256 in the script — bump both from the [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases))
-- Repository: `unsloth/Qwen3.6-35B-A3B-GGUF`
-- File: `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, single file)
-- Identifier (`--alias`): `qwen3.6-35b-a3b`
-- Context length: `262144` (`--ctx-size`; the model's ~256k native max, 128k per slot at `--parallel 2` — KV cache is cheap on this MoE)
-- GPU offload: `--n-gpu-layers 99` (all layers, including MoE experts)
-- Parallel slots: `--parallel 2` (continuous batching, on by default; see "Context length and parallel slots" for why 2 not 4)
-- Attention / batch: `--flash-attn on --batch-size 4096 --ubatch-size 1024` (tuned — see Benchmarks → Tuning)
-- Tool calling: `--jinja` — uses the model's chat template so OpenAI `tool_calls` parse correctly (**required for agents**; without it llama-server won't emit tool calls)
-- API bind: `0.0.0.0:1234`
-- Model storage: `/models`
-
-Run it on the Proxmox host as `root` (destroy any existing CT 120 first):
+Run from this directory on the Proxmox host as root, using an unused VMID:
 
 ```bash
 ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
+# Example resource overrides:
+VMID=124 MODELS_SIZE_GB=200 MEMORY_MB=24576 CORES=8 ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
 ```
 
-Useful Proxmox/container overrides:
+A VMID override does not allocate a free GPU; set `GPU_PCI_ADDRESS` to a card
+with no competing workload. The script installs `/etc/llamacpp.env`,
+`llamacpp.service`, and `/usr/local/bin/llamacpp-{serve,wait-health,reload}`.
+Release tags and checksums are pinned in the script and must be updated together.
+
+## Context and concurrency
+
+Per-slot context is total context divided by parallel slots. `llamacpp-reload`
+rewrites context/parallel settings, restarts the service and waits for `/health`:
 
 ```bash
-VMID=120 LXC_HOSTNAME=llamacpp ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
-MODELS_SIZE_GB=200 MEMORY_MB=24576 CORES=8 ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
-PASSWORD='temporary-root-password' ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
+pct exec 120 -- bash -lc 'llamacpp-reload 262144 2'   # shipped: 128k per slot
+pct exec 120 -- bash -lc 'llamacpp-reload 262144 4'   # 64k per slot; benchmark for the workload
+pct exec 120 -- bash -lc 'llamacpp-reload 262144 1'   # one 256k slot
 ```
 
-(The model is fully offloaded to VRAM, so the container RAM limit defaults to a
-modest `16384` MB — fine on this 31 GiB host. Bump it only if you switch to
-`--no-mmap`.)
+The two-slot setting remains the verified production default. Four slots need
+fresh validation with the current build and reasoning disabled. Longer *used*
+contexts slow decode and cold prefill; increasing the ceiling alone does not
+represent a throughput improvement.
 
-The script creates a privileged Ubuntu LXC with a `/models` mount (backup
-disabled) and GPU 1's render-node passthrough (only that one card; see the top
-note), plus the Vulkan userspace and the
-**libglvnd/EGL stack** (`libglvnd0 libgl1 libglx0 libegl1`) — without the latter
-the Mesa ICD loader can silently report zero Vulkan devices inside the container.
-It installs:
+## Response content
 
-- a `llamacpp` user and a `llamacpp.service` systemd unit (`Type=simple`, runs
-  `llama-server` in the foreground)
-- `/etc/llamacpp.env` holding the tunable start flags (context length, parallel)
-- `/usr/local/bin/llamacpp-serve` (the service entrypoint), `llamacpp-wait-health`,
-  and `llamacpp-reload`
+The generated serve script uses `--jinja` for tool calling and
+`--reasoning off --reasoning-format auto` for clean answer content. Both reasoning
+flags are required: `off` disables thinking, while `auto` removes the template's
+empty `<think>` block from `content`. Using `--reasoning-format none` leaves those
+tags in generated files. These flags survive `llamacpp-reload`, which changes only
+context and parallelism.
 
-### Context length and parallel slots
+`--cache-ram 0` disables the prompt cache after corrupted cached state caused
+repeated garbage output on b10152. Revalidate cached follow-up requests before
+re-enabling it. Hermes' custom provider uses this endpoint and inherits its
+server settings.
 
-llama-server sets context length and parallel slots at process start, so changing
-them means restarting the server. Use the helper (it rewrites `/etc/llamacpp.env`
-and blocks until `/health` is ready):
-
-```bash
-pct exec 120 -- llamacpp-reload <context-length> <parallel>
-```
-
-The `262144` / `--parallel 2` default is the model's **~256k native maximum**,
-split across 2 continuous-batching slots (**128k each**). This MoE's KV cache is
-cheap (~20 KB/token), so even 256k fits the V620 at Q5 ~29.8 GiB used of ~30 GiB
-usable (the card exposes 30704 MiB, not a full 32) — only ~0.2 GiB real margin,
-stress-verified (a 4-concurrent prefill held) but with no safety buffer. A larger
-`--ctx-size` does not slow shorter requests (attention is
-over actual length), so this ceiling is free for normal traffic — but *using*
-large contexts decodes slower (see [Multi-agent capacity](#multi-agent-capacity-4--32k)).
-
-**Why 2 slots, not 4.** qwen3.6 is a *thinking* model and llama-server serves it
-with no output cap (`n_predict -1`), so its reasoning generates until the slot's
-context physically fills. On a 64k slot (the old `--parallel 4`) a heavy request —
-e.g. a Hermes KB-ingestion skill — could spend the entire slot on `<think>` and
-return `finish_reason='length'` with no visible answer (surfaced as **"Thinking
-Budget Exhausted"**). 128k/slot leaves comfortable room for the reasoning *and* the
-answer. If you need 4-way concurrency back for a genuinely multi-client burst,
-reload to `262144 4` — just expect heavy reasoning to risk the same ceiling.
-
-⚠️ **This reasoning applies only while thinking is ON, and it is now OFF** by default
-(`--reasoning off`, see [Reasoning / thinking](#reasoning--thinking-important-for-agents)).
-With no `<think>` block there is nothing to overrun a 64k slot, so **`--parallel 4`
-is viable again** and would double concurrency. `2` is kept as the shipped default
-because it has been the verified production setting and nobody has yet measured the
-4-way behaviour post-change — treat raising it as a deliberate, benchmarked step, not
-a free win.
-
-**Per-slot context = total ÷ parallel.** Switch modes live for the workload:
-
-```bash
-# Default — ~2 concurrent agents, 128k each:
-pct exec 120 -- llamacpp-reload 262144 2
-# Higher concurrency — ~4 agents, 64k each (watch for thinking-budget exhaustion):
-pct exec 120 -- llamacpp-reload 262144 4
-# Overnight — ONE agent needs the full 256k window (single slot, no concurrency):
-pct exec 120 -- llamacpp-reload 262144 1
-```
-
-(If you ever need more context than VRAM allows, KV-cache quantization is the
-lever: add `--cache-type-k q8_0 --cache-type-v q8_0` to `llamacpp-serve` to
-roughly halve KV memory. Not needed at these sizes.)
-
-Check the service and endpoint:
+## Operate and verify
 
 ```bash
 pct exec 120 -- systemctl status llamacpp.service
-pct exec 120 -- journalctl -u llamacpp.service -n 100 --no-pager   # shows the chosen Vulkan device
-curl http://<container-ip>:1234/v1/models                          # id == qwen3.6-35b-a3b
+pct exec 120 -- journalctl -u llamacpp.service -n 100 --no-pager
+pct exec 120 -- vulkaninfo --summary   # exactly one V620 using RADV
+curl http://llamacpp:1234/v1/models
+cat /sys/bus/pci/devices/0000:03:00.0/mem_info_vram_used
+cat /sys/bus/pci/devices/0000:03:00.0/mem_info_gtt_used
 ```
 
-### Token accounting (`/metrics`)
+The container includes Mesa Vulkan and libglvnd/EGL libraries. Passthrough binds
+only the selected GPU's DRM nodes, and the serve guard rejects missing RADV devices.
 
-The service runs with `--metrics`, so `GET /metrics` serves Prometheus counters
-(without the flag that route returns **501**):
+`--metrics` exposes prompt/completion token counters at `/metrics`. They reset
+on restart; [the CT 121 collector](../hermes/token-usage-collector/README.md)
+accumulates deltas for monthly reports. CT 123's endpoint is not in the configured
+source list.
 
-```bash
-pct exec 120 -- bash -lc 'curl -s http://127.0.0.1:1234/metrics | grep -E "prompt_tokens_total|tokens_predicted_total"'
-```
+### Recovering after a DRM renumber
 
-`llamacpp:prompt_tokens_total` and `llamacpp:tokens_predicted_total` are the only
-place this homelab produces a usable token count — llama.cpp returns a per-response
-`usage` object, but nothing persists it, which is why "what do we actually spend
-per month" has been unanswerable.
-
-> ⚠️ **These are counters since process start and reset on every restart** —
-> including the restarts used to clear the prompt-cache corruption. One scrape is
-> "tokens since `<uptime>`", *never* a monthly total. Getting a real monthly figure
-> needs something that accumulates deltas over time; that does not exist yet.
-> Pair a reading with `systemctl show llamacpp -p ActiveEnterTimestamp --value`.
-
-⚠️ **CT 123 (`gpu2`) is not covered yet, though it now COULD be.** Since 2026-09-18 it runs
-llama-server directly on `:1234` with `--metrics`, so it exposes
-`llamacpp:prompt_tokens_total` / `llamacpp:tokens_predicted_total` exactly as CT 120 does —
-nothing scrapes them, and Hermes does not use that endpoint, so the gap is small. **The reason
-below is historical**: while it ran llama-swap, its `:8080/metrics` was llama-swap's *own*
-process telemetry (CPU, memory, swap) with no token counters, and because
-llama-swap unloads and reloads models on demand, per-model llama.cpp counters
-would reset on every swap. Token accounting there needs a different mechanism.
-
-### Reasoning / thinking (important for agents)
-
-Qwen3.6 "medium" models (including this MoE) have thinking ON by default, but
-**this service disables it: `--reasoning off`** (since 2026-08-11, baked into the
-provisioning script). Because CT 121's default Hermes provider (`custom`) points
-here, **that is also the Hermes default** — there is no separate Hermes setting.
-
-Two flags, often confused, both present:
-
-| flag | what it does |
-| --- | --- |
-| `--reasoning off` | stops thinking being generated **at all** |
-| `--reasoning-format none` | only decides *where* thought tags go — inline in `content` rather than split into `reasoning_content`. It does **not** suppress them. |
-
-**Why off.** Measured on this model, same prompt, on → off:
-
-| | wall | completion tokens | reasoning | answer |
-| --- | ---: | ---: | ---: | ---: |
-| thinking on | 76.4 s | **6,000 (hit the cap)** | 12,262 ch | **470 ch** |
-| thinking off | 26.0 s | 2,045 | **0** | **4,930 ch** |
-
-The "on" row is the **"Thinking Budget Exhausted"** failure reproduced on demand —
-reasoning consumed the entire output budget and returned a truncated reply. On this
-box's real workload (KB ingestion via Hermes) reasoning was ~80 % of the token spend
-and produced a *shorter* entry: 5× faster at identical template coverage. Disabling
-it removes that failure structurally rather than sizing per-slot context around it
-(see [Why 2 slots, not 4](#context-window--concurrency), which that failure drove).
-
-- **To re-enable per request** (a client that wants the model to plan):
-  `{"chat_template_kwargs": {"enable_thinking": true}}`.
-- ⚠️ **Do not try to disable it from the client.** `hermes --reasoning none` does
-  **not** reach a bare custom OpenAI endpoint — measured 2,845 → 2,656 output tokens
-  (~7 %), versus ~3.5× when thinking is genuinely off — and it does not even reject
-  an invalid level. Hermes' reasoning-effort abstraction targets providers with a
-  native parameter. Server-side or nothing.
-- ⚠️ The flag lives in the **serve script**, not `/etc/llamacpp.env`, so it survives
-  `llamacpp-reload` (which rewrites only ctx/parallel).
-
-## Storage
-
-The container stores model files under `/models`, backed by local Proxmox storage
-(`local-lvm`). The mount has `backup=0` because model weights are large and
-re-downloadable. Back up container configuration, service files, and small
-application state separately.
-
-## AMD GPU (Vulkan)
-
-The V620 (Navi 21 / gfx1030) is driven through **Vulkan** (mesa RADV). The script
-installs the Vulkan userspace (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) plus
-the libglvnd/EGL stack, passes through only GPU 1's render node, and pins the RADV ICD
-(`VK_ICD_FILENAMES`) so the engine can't fall back to the llvmpipe software
-device. llama-server offloads all layers with `--n-gpu-layers 99`. Confirm the GPU
-is visible to Vulkan and resident in VRAM:
-
-```bash
-pct exec 120 -- vulkaninfo --summary                                # expect exactly ONE V620 under the radv driver
-# cardN numbering is NOT stable — read GPU 1 by PCI address (card0 here is the idle GPU 2):
-cat /sys/bus/pci/devices/0000:03:00.0/mem_info_vram_used            # ~29.8 GiB while the model is loaded (GPU 1)
-cat /sys/bus/pci/devices/0000:83:00.0/mem_info_vram_used            # GPU 2: ~29 GiB while CT 123 serves Qwen3.8-Flash-Next
-```
-
-> **Reboot caveat.** The container binds GPU 1's render node by PCI address, but the
-> destination node *name* is resolved at provision time. A host DRM renumber (only on a
-> GPU add/remove/reseat or kernel/driver change) can leave that name stale → RADV can't
-> init → a **loud** startup failure (the `llamacpp-serve` guard aborts rather than
-> silently running on CPU). This is deliberately not self-healing — it's rare and the
-> hard stop is safe. Recover in place; a plain re-run of the provisioning script is
-> rejected while CT 120 exists.
-
-#### Recovering after a DRM renumber
-
-On the Proxmox host — re-resolve GPU 1's current DRM node names and fix CT 120's two
-mount entries, then restart. No rebuild, no re-download (model + rootfs untouched):
+A hardware or kernel change can renumber DRM nodes. The source bind uses a
+PCI-stable path, but the destination name was resolved at provisioning. Repair
+CT 120's entries on the host, then restart:
 
 ```bash
 conf=/etc/pve/lxc/120.conf
@@ -382,120 +118,17 @@ pct stop 120 && pct start 120
 pct exec 120 -- /usr/local/bin/llamacpp-wait-health   # blocks until serving (guard passes)
 ```
 
-(Alternatively, `pct destroy 120` then re-run the provisioning script — but that
-re-downloads the ~27 GB model, so the in-place fix above is preferred.)
-
-### Why Vulkan and not ROCm/HIP?
-
-ROCm was tested (the llama.cpp `b9835` ROCm-7.2 prebuilt) and **does not work inside an
-LXC on this host** (it *does* work in a passthrough VM — see below). The runtime
-installed cleanly and the GPU enumerated correctly
-(`llama-server --list-devices` → `ROCm0: AMD Radeon Pro V620`; KFD reports
-`gfx_target_version 100300` = gfx1030), but **model load aborts** on the first
-host→VRAM copy:
-
-```
-ROCm error: an illegal memory access was encountered
-  in function ggml_backend_cuda_buffer_set_tensor … hipMemcpyAsync(… hipMemcpyHostToDevice)
-```
-
-It failed identically with `HSA_OVERRIDE_GFX_VERSION=10.3.0`, `GGML_CUDA_NO_PINNED=1`,
-and `--no-mmap`. Root cause: a mismatch between **ROCm 7.2's HIP/HSA userspace** and
-the host's **in-kernel amdgpu 3.64.0 (Proxmox `7.0.12-1-pve`)** — the device
-enumerates via topology, but the VRAM memory ABI doesn't match, so every `hipMemcpy`
-faults.
-
-The LXC blocker is the *shared host kernel*: an LXC can't run a different amdgpu than
-the host's, so the userspace/kernel ABIs can't be matched. RDNA 2 also has no matrix
-cores (no WMMA), so even a working ROCm wouldn't be expected to beat the tuned Vulkan
-path — a proof-of-concept confirmed exactly that.
-
-#### ROCm in a passthrough VM (PoC, 2026-06-29) — works, but slower than Vulkan
-
-A VM with the V620 passed through (`vfio-pci` → `qm set <id> --hostpci0 0000:03:00.0,pcie=1`,
-q35 + OVMF) runs its **own** kernel, so a matched `amdgpu-dkms` + ROCm stack can be
-installed and the `hipMemcpy` fault disappears. Verified end-to-end: the host→device→host
-roundtrip that aborts in the LXC returns `OK`, `rocminfo` shows `gfx1030` with a ~30 GiB
-pool, and `llama-server` (ROCm build) serves the model.
-
-**Record the exact versions** — a newer ROCm or a newer llama.cpp ROCm backend may close
-the gap, so re-run the A/B before assuming Vulkan still wins:
-
-| Component | Version (working VM) |
-| --- | --- |
-| Host | Proxmox VE 9.2.3, kernel `7.0.12-1-pve`, in-kernel amdgpu uAPI `3.64.0` |
-| Guest OS | Ubuntu 24.04 (noble), kernel `6.8.0-124-generic` |
-| amdgpu-dkms | `6.16.13` (via `amdgpu-install_7.2.70200-1`, `--usecase=rocm`) |
-| ROCm | `7.2` (`repo.radeon.com/amdgpu-install/7.2/ubuntu/noble`) |
-| llama.cpp | `b9835` — `llama-b9835-bin-ubuntu-rocm-7.2-x64` prebuilt |
-| GPU | Radeon Pro V620, Navi 21 / gfx1030 |
-
-A/B vs Vulkan at the **same** context (65536) and llama.cpp build (`b9835`), measured
-from CT 200 via `openai-direct`:
-
-| metric | Vulkan (RADV, LXC) | ROCm (VM) |
-| --- | --- | --- |
-| p1 per-req tok/s | 78.6 | 67.8 (**−14 %**) |
-| p1 TTFT p95 (s) | 0.28 | 0.19 (faster) |
-| p4 aggregate tok/s | 145.5 | 134.9 (**−7 %**) |
-| p4 per-req median tok/s | 38.0 | 34.4 |
-| p4 TTFT p95 (s) | 0.59 | 0.79 (slower) |
-
-ROCm decodes ~7–14 % slower (only single-stream prefill/TTFT was faster); on RDNA 2 the
-tuned RADV path wins. The VM also costs more to operate: the card is **exclusive** to the
-VM (`vfio-pci` claims it, so the LXC can't use it at the same time), guest RAM is pinned
-(no lxcfs sharing, ballooning off), there is no host-side fan control while the card is
-passed through, and a cold load takes ~7–9 min (slow VM disk read of the 25 GB GGUF +
-first-run ROCm kernel JIT).
-
-**Conclusion: Vulkan (RADV) is the supported backend here.** The VM/ROCm path is proven
-and reproducible if ever needed (a ROCm-only feature, or a future ROCm/llama.cpp release
-that closes the gap).
-
-Reproduction gotchas (if retried in a VM):
-- A minimal Ubuntu **cloud image lacks the DRM stack**, so `amdgpu-dkms` won't load
-  (`Unknown symbol drm_dp_mst_*`). Install `linux-modules-extra-$(uname -r)` (provides
-  `drm_display_helper`) **before** `amdgpu-install`.
-- Create the EFI disk with `pre-enrolled-keys=0` (Secure Boot off) so the unsigned
-  amdgpu-dkms module loads.
-- Serve with `--jinja --reasoning-format none` (as the LXC does) or this thinking model
-  emits into `reasoning_content`, leaving `content` empty (benchmarks report `invalid_output`).
-- Fully reversible with **no persistent host change and no reboot**: stop `gpu-fan-control`,
-  `gpu-undervolt`, and the LXC; runtime-rebind the card to `vfio-pci`; run the VM; then
-  `qm destroy` it and rebind `amdgpu` (`reset_method=bus` resets the card cleanly). A host
-  reboot is the guaranteed fallback (CT 120 is `onboot=1`; `gpu-undervolt` re-applies at boot).
-- **Re-apply the undervolt after rebinding `amdgpu`.** The rebind resets the card's OverDrive
-  state, but `gpu-undervolt` is a `RemainAfterExit` oneshot — it still reads "active" while
-  the hardware has silently reverted to stock voltage, so it will **not** re-apply on its own.
-  Once `amdgpu` is back: `systemctl restart gpu-undervolt` and verify with
-  `cat /sys/class/drm/card*/device/pp_od_clk_voltage` (expect the configured `OD_VDDGFX_OFFSET`).
-- For a future *LXC* retry instead, ROCm also needs `/dev/kfd` passed in (cgroup char
-  major 236 + an `lxc.mount.entry`) on top of `/dev/dri` — but the shared-kernel ABI
-  mismatch is the real blocker, which is why the VM is the path that works.
-
 ## Benchmarks
 
-> **Comparing the two cards against each other** is a different job from benchmarking the served
-> endpoint, and `make bench` cannot do it (CT 200 has no GPU passthrough and talks to one endpoint).
-> Use **[`gpu-ab-bench/`](gpu-ab-bench/README.md)** — a host-side, non-service harness that runs
-> `llama-bench` inside each card's own container over interleaved rounds. It established that the
-> two V620s are **not** equivalent: GPU 2 wins every prefill test yet loses ~20 % of decode, because
-> its Gen 3 x4 chipset slot costs a fixed ~3.45 ms per decoded token. Read that README before
-> re-running it — it carries the mandatory `ct123-dual-gpu.sh` revert step, the reason
-> `gpu-thermal-watchdog` cannot protect a hand-driven run, and the output-sanity gate for
-> speculative sweeps.
+Run endpoint benchmarks from the repo root with `make bench`; see
+[Ansible](../ansible/README.md) for runtime/context defaults. Results land in
+`pro-v620/results/llamacpp/parallel-<n>/`.
 
-Run the suite from the repo root with `make bench` (the defaults are now
-`RUNTIME=llamacpp`, `model_key=qwen3.6-35b-a3b`, `model_context=262144`, so no
-overrides are needed). Results land in `pro-v620/results/llamacpp/parallel-<n>/`.
-
-The throughput/prefill tables below were measured at 64k context (`--parallel 4`);
-the default is now 256k, but decode/throughput at a given *used* context length is
-unchanged by the larger ceiling. `Qwen3.6-35B-A3B-UD-Q5_K_XL`, llama.cpp `b9835`
-(Vulkan), measured from CT 200 via `openai-direct` with distinct/cold prompts.
-**All SLOs passed.**
-
-- **Single-stream baseline:** 83.1 tok/s, TTFT 0.27 s p95.
+The measurements below use Qwen3.6-35B-A3B Q5, llama.cpp **b9835**, Vulkan,
+**64k total context and four slots**, on the prior B550 platform. They document
+the original tuning; remeasure capacity on the current host/build. The baseline
+single-stream run measured 83.1 tok/s and 0.27 s p95 TTFT; the soak at concurrency
+two sustained 106.7 tok/s with no errors.
 
 **Concurrency** (cold ~512-in / 128-out, 32 req/point):
 
@@ -548,7 +181,7 @@ selected the serve defaults. Aggregate tok/s:
 - Trade-off: on a single >8k **cold** prefill, FA is marginally slower (8192-token TTFT
   ~5.0 s → ~5.5 s) — irrelevant for the concurrent/agent serving this card does.
 
-Net default: **~132 tok/s aggregate (+30% vs FA-off), 83 tok/s single-stream, ~0.13 s TTFT.**
+
 
 ### Multi-agent capacity (4 × 32k)
 
@@ -564,170 +197,21 @@ to spare. Two performance realities:
   **70–150 s to first token**. **Prefix caching** (automatic per slot) is essential:
   on follow-up turns it re-prefills only the new tokens, turning that into seconds.
 
-Guidance: treat the per-slot ceiling as a **ceiling, not the operating point** —
-trim agent history (≈4–8k keeps decode ~20–30 tok/s/agent), cap output/reasoning
-length, and reuse a stable prefix per agent so the slot cache hits. Speculative
-decoding (`--model-draft`) does **not** help — not this profile, not any: it targets
-single-stream decode (not prefill), its benefit shrinks under concurrency and at large
-context, and on this Vulkan/MoE combo the draft is inert regardless (measured — see
-*Speculative decoding* below).
+## Backend and power
 
-**Overnight long-context mode (`262144/1`)** is verified healthy — one slot owns
-the full **256k** window (25.9 GiB VRAM). A *cold* 256k prefill takes several
-minutes, so this suits a single long-running agent that grows its context
-incrementally (each turn prefix-cached, only new tokens prefilled), not repeated
-cold 256k loads. Switch with `llamacpp-reload 262144 1`, and back to `262144 4`
-for daytime concurrency.
+Vulkan/RADV is the supported backend. A 2026-06-29 comparison on b9835 found
+ROCm 7.2 in a passthrough VM decoded 7–14% slower than Vulkan at matched 64k
+context. The same ROCm userspace failed model loading in the tested LXC/host
+kernel combination. Those results are version-specific.
 
-### Speculative decoding — tested, inert on this card (2026-07-03)
-
-Speculative decoding (`--model-draft`) was A/B'd directly and gives **no speedup** here, so
-it is deliberately left out of the serve command.
-
-Setup: `llama-server` `b9835` (Vulkan), target `Qwen3.6-35B-A3B-UD-Q5_K_XL`, drafter
-`unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M` (vocab-matched, 248,320 tokens), one `/completion` per
-config — ctx 16384, `-ctk/-ctv q8_0`, greedy, 200 output tokens:
-
-| Config | Decode |
-| --- | ---: |
-| Baseline (no draft) | 79.7 tok/s |
-| `--spec-draft-n-max 8` | 79.5 tok/s |
-| `--spec-draft-n-min 48 --spec-draft-n-max 64` (forced) | 79.6 tok/s |
-
-Flat within noise — **including** the config that *forces* 48–64 draft tokens/step, which
-cannot match baseline if drafting had actually run. The draft is **inert**. Three
-independent reasons, all pointing the same way:
-
-1. **Vulkan backend limitation** — [llama.cpp #23126](https://github.com/ggml-org/llama.cpp/issues/23126):
-   with draft + target on a single Vulkan/RADV device (our exact config), the draft graph
-   serializes behind the target on one compute queue → no speedup, sometimes a large slowdown.
-2. **Even on CUDA it loses** — an RTX 3090 A/B of this *same* model measured **−39%** at 100%
-   draft acceptance ([thc1006](https://github.com/thc1006/qwen3.6-speculative-decoding-rtx3090)).
-3. **It's a 3B-active MoE** — per-token decode is already cheap, so draft/verify overhead
-   dominates; speculative decoding pays off on dense models, not this one.
-
-(The ~79.6 tok/s here is a controlled A/B baseline at `q8_0` KV / ctx 16k / greedy — slightly
-below the 83.1 tok/s headline single-stream figure the suite measures with the serve defaults.)
-
-### Model bake-off — round 1: Qwen3.5 Q4 vs Q5 vs Hermes 4.3 36B
-
-A/B at a matched config (ctx 32k, `--parallel 4`, flash-attn on, `--jinja`) with a
-small tool-calling eval (tool selection among several, argument + unit extraction,
-parallel calls, and abstaining when no tool fits):
-
-| Model | Quant | VRAM | Single-stream | Concurrency-4 agg | Tool-calling |
-| --- | --- | ---: | ---: | ---: | ---: |
-| **Qwen3.5-35B-A3B** (current) | Q4_K_XL | 21.2 GiB | **83 tok/s** | **193 tok/s** | 8/8 |
-| Qwen3.5-35B-A3B | Q5_K_XL | 25.1 GiB | 80 tok/s | 186 tok/s | 8/8 |
-| Hermes 4.3 36B (dense, Seed-OSS) | Q5_K_M | 29.8 GiB | 16 tok/s | 54 tok/s | 8/8 |
-
-- **Tool calling: all three tie 8/8** — each selects the right tool, extracts args
-  (incl. "5 minutes" → 300 s), does parallel calls, and abstains when no tool fits.
-  The eval confirms competence but is too easy to *rank* the top; separating them
-  would need a harder multi-turn / ambiguous / arg-repair set.
-- **Speed: the MoE wins ~5×.** Hermes is dense 36B (all params/token) vs the MoE's
-  ~3B active — decisive for concurrent agents.
-- **VRAM / context: the MoE wins.** Hermes is already 29.8 GiB at *32k*, so it can't
-  reach the long-context modes the MoE's cheap KV enables.
-- **Q4 vs Q5:** Q5 costs ~4% speed + ~4 GiB VRAM for lower quant error with identical
-  tool behaviour.
-
-Within the 3.5 generation Q4 was the pick (fastest, most headroom). **Round 2 below
-superseded this** — Qwen3.6 is the newer generation, so the V620 now runs
-**Qwen3.6-35B-A3B Q5** by default. The 3.5 Q4/Q5 and Hermes GGUFs are kept under
-`/models/hf` for ad-hoc use (to switch, edit `MODEL_PATH` in `/etc/llamacpp.env` and
-restart). *(These tok/s are light-prompt/decode-heavy — compare models with them, not
-as capacity figures; the cold-prompt numbers above are the realistic capacity.)*
-
-### Model bake-off — round 2: Qwen3.5 vs Qwen3.6 (chosen default)
-
-Same harness. Qwen3.6 is the newer-gen successor (same MoE shape; improved tool
-calling, coding, vision):
-
-| Model | Quant | VRAM (32k) | Single-stream | Concurrency-4 agg | Tool-calling |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Qwen3.5-35B-A3B | Q4_K_XL | 21.2 GiB | 83.2 tok/s | 193.4 tok/s | 8/8 |
-| Qwen3.6-35B-A3B | Q4_K_XL | 21.4 GiB | 82.8 tok/s | **195.7 tok/s** | 8/8 |
-| **Qwen3.6-35B-A3B (default)** | Q5_K_XL | 25.3 GiB | 79.1 tok/s | 185.0 tok/s | 8/8 |
-
-- **3.6 ≈ 3.5 on speed/VRAM** — a free generational upgrade.
-- **Tool calling: all 8/8** once given enough tokens. Note 3.6 reasons *more* before a
-  tool call (~600–960 `<think>` tokens here), so a tight `max_tokens` can truncate the
-  call — give headroom, or disable thinking for instant (~55–80 tok) clean calls.
-- **Q5 chosen as the default** for slightly better quality (~5% slower). At the 262144
-  ceiling Q5 sits at **~29.8 GiB of ~30 GiB usable (30704 MiB) — only ~0.2 GiB real
-  margin** (stress-verified, no safety buffer), keeping the 256k window always available.
-
-### GPU thermals (Radeon Pro V620, passively cooled via the `gpu-fan-control` Pump Fan)
-
-Sampled on the host every 12 s across the whole batch:
-
-| State | Junction | Edge | Mem | Power | SCLK | Fan (pwm2 / RPM) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Idle | 39 °C | 33 °C | 34 °C | 8 W | 0 | 22% / 1176 |
-| Sustained load (soak/prefill) | **83 °C** | 72 °C | 70 °C | ~250 W | 2280–2505 MHz | ~90% / ~4100 |
-| Peak observed | 84 °C | 73 °C | 70 °C | 252 W | — | 93% / 4285 |
-
-- The `gpu-fan-control` service ramps the Pump Fan (`pwm2`) 22% → ~90% as junction
-  rises; it recovers to ~46 °C within ~1 min of load ending.
-- **No thermal throttling:** SCLK held 2280–2505 MHz throughout (above the V620's
-  ~2200 MHz nominal). Junction peaked 84 °C — far below the 105 °C warn / 110 °C
-  fail SLO lines. Continuous-batching concurrency actually ran *cooler* (~68 °C,
-  ~210 W) than single-stream decode with large prefills (~83 °C, ~250 W bursts).
-
-> **Headline:** the V620 serves a 35B-parameter MoE *faster* than the RX 6700 XT
-> served the 9B dense model (single-stream ~83 vs ~56 tok/s; concurrent aggregate
-> ~128 vs ~80 tok/s) — the MoE's ~3B active params per token plus the V620's extra
-> bandwidth/compute. Compare full detail against [`../rx-6700-xt/README.md`](../rx-6700-xt/README.md#benchmarks).
-
-> **Cold-prefill caveat.** The RX 6700 XT (Navi 22 / gfx1031) exhibited a
-> RADV/Vulkan **cold-prefill garbage** bug above ~6–8k tokens (see
-> [`../rx-6700-xt/UPSTREAM-cold-prefill-garbage.md`](../rx-6700-xt/UPSTREAM-cold-prefill-garbage.md)).
-> That is a different chip; the V620 is Navi 21 / gfx1030 and the pinned llama.cpp
-> release is newer. The bug may not apply here — **verify cold-prefill correctness
-> at high context before trusting long prompts** (an input-length sweep with
-> distinct/uncached prompts is the quickest check).
-
-### Power limiting — not possible; undervolt instead (`undervolt/`)
-
-The V620's board power is **firmware-locked at 250 W**: `power1_cap` reports
-`min == max == default == 250000000` µW and any other write is rejected
-(`amdgpu: New power limit (220) is out of range [250,250]`). Enabling AMD
-OverDrive (`amdgpu.ppfeaturemask` bit `0x4000`) does **not** unlock the cap, and
-the OverDrive table exposes **no clock-ceiling knob** either (`OD_RANGE` is empty
-— no `OD_SCLK`/`OD_MCLK`). The DPM table only offers 500 or 2570 MHz (nothing
-between), so clock-step masking is useless too. **A sub-250 W cap is not
-achievable in software on this card.**
-
-The one working lever is a **GFX voltage offset** (`OD_VDDGFX_OFFSET`, exposed
-once OverDrive is on). A negative offset lowers voltage at the same clocks. A/B
-across the full benchmark batch (`make bench PARALLEL=4`, with host-side power
-sampling since the in-LXC suite cannot read AMD watts), **0 mV vs −100 mV**:
-
-| Under load | 0 mV | −100 mV | Δ |
-| --- | ---: | ---: | ---: |
-| Avg board power | 196 W | 160 W | **−18%** |
-| Peak power | 252 W | 247 W | −5 W |
-| Junction avg | 71 °C | 64 °C | **−7 °C** |
-| Junction peak | 83 °C | 75 °C | **−8 °C** |
-| Core clock (avg) | 2300 MHz | 2304 MHz | ≈ same |
-
-Throughput was unchanged in the decode / single-user / soak regime (±0.3%) and
-**+0.6–1.1%** in the cap-saturated concurrency sweep (peak 122.7 → 123.7 tok/s).
-−100 mV was fully stable (16-way concurrency, 32k-token prefills, soak — zero GPU
-faults). Decode draws only ~96–128 W single-stream (well under the cap), so it is
-*not* power-limited — that is why undervolting cuts power there instead of raising
-clocks. Net: **~8 °C cooler peaks and ~18% less power, for free.**
-
-Made persistent by the [`undervolt/`](undervolt/) service (enables OverDrive via
-`/etc/modprobe.d` + applies the offset at boot). See
-[`undervolt/README.md`](undervolt/README.md).
+The V620 power cap is firmware-locked at 250 W and its OverDrive interface has
+no clock-ceiling control. The supported power adjustment is a GFX voltage offset;
+see [undervolt/README.md](undervolt/README.md) for installation and measured power
+savings. After a driver rebind or reset, reapply the offset with
+`systemctl restart gpu-undervolt` and verify `pp_od_clk_voltage`.
 
 ## Requirements
 
-- Proxmox host with `pct` and `pveam`
-- Ubuntu 24.04 LXC template available or downloadable
-- Radeon Pro V620 visible on the Proxmox host as `/dev/dri` (with a `renderD128`
-  render node)
-- Network access from the LXC to download the llama.cpp release and the Hugging
-  Face model (~27 GB)
+- Proxmox host with `pct`, `pveam`, and an available Ubuntu 24.04 template.
+- An amdgpu-bound V620 with `/dev/dri/by-path` entries.
+- Network access for the pinned llama.cpp release and ~27 GB model download.

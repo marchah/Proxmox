@@ -1,801 +1,124 @@
-# CLAUDE.md
+# Repository guidance
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This repo provisions and operates a Proxmox AI homelab. macOS is the authoring
+machine; provisioning and host-service scripts run on the Proxmox host as root.
+Use component READMEs for deployment commands, defaults, and measurements.
 
-## What this repo is
+## Where to look
 
-A collection of Bash provisioning scripts (with embedded Python) that create and operate
-Proxmox LXC containers for a local AI homelab. There is no application to build or test
-suite to run — the "product" is the scripts themselves, executed **on the Proxmox host as
-root**. macOS is only the authoring/editing environment; the scripts run remotely against
-`pct`/`pveam`.
+- [README.md](README.md): guest inventory and VMID allocation.
+- [pro-v620/](pro-v620/README.md): CT 120, GPU passthrough and Qwen3.6 serving.
+- [qwen38-flash-next/](pro-v620/qwen38-flash-next/README.md): CT 123 and the optional
+  two-card CT 120 configuration, placement measurements and cutover procedure.
+- [hermes/](hermes/README.md): CT 121 agent gateway.
+- [kb-rag/](kb-rag/README.md): CT 140 retrieval API and corpus policy.
+- [bench-runner/](bench-runner/README.md) and [ansible/](ansible/README.md): endpoint
+  benchmarks, telemetry and reports.
+- [docker-host/](docker-host/README.md): VM 300, Compose stacks and Portainer.
+- [host-notifications/](host-notifications/README.md): Proxmox notifications to Slack.
 
-These containers form the system:
+The retired Hermes coding loop remains under [hermes/config/](hermes/config/README.md)
+and [coder-runner/](coder-runner/README.md). CT 122 was removed; those helpers require
+recreating the runner and its SSH key. Execute project builds/tests in a disposable
+runner, separate from the agent container holding credentials.
 
-- **CT 120** (`pro-v620/`): a *privileged* Ubuntu LXC — the **LLM runtime** — serving
-  `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MoE, 35B total / ~3B active) via Vulkan, exposing an
-  OpenAI-compatible API at `0.0.0.0:1234` under the id `qwen3.6-35b-a3b`. The host has
-  **two Radeon Pro V620s** (Navi 21 / gfx1030, 32 GB each): `0000:83:00.0` (top) and
-  `0000:03:00.0` (bottom), **both CPU-direct Gen4 x16** on the ROMED8-2T, each cooled by its own
-  9733 radial blower on a board fan header and driven by `pro-v620/gpu-blower-control/`. Under
-  sustained MoE load a card settles at **55 / 62 °C edge/junction at ~35 % fan** — thermals are not
-  a constraint. CT 120 is **pinned to one card alone** (`0000:03:00.0`): its
-  container bind-mounts only that card's `/dev/dri` render node (via the udev-stable `by-path`
-  symlink — the reboot-stable way to pin one of two identical cards), so llama.cpp sees a single
-  Vulkan device and runs the whole ~26.6 GB model on it. ✅ **Either card will now do** — the B550's
-  chipset-slot decode tax is gone with the platform move; all seven ROMED8-2T slots are CPU-direct.
-  **The other card (`0000:83:00.0`) runs CT 123 `gpu2`**, which since 2026-09-18 serves
-  **Qwen3.8-Flash-Next on that one card** (`pro-v620/qwen38-flash-next/`, `-ncmoe 34`); it stays
-  amdgpu-bound so the host fan/undervolt/watchdog services manage both. Both cards are undervolted −100 mV:
-  - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
-    (hostname `llamacpp`). This is the current runtime.
-    - ⚠️ **Thinking is DISABLED — `--reasoning off`** in `/usr/local/bin/llamacpp-serve`, baked
-      into the provisioning script. Hermes' default provider `custom` points here, so **this is
-      also the Hermes default** — there is no separate Hermes setting. Without it, reasoning fills
-      the whole per-slot context and returns `finish_reason: length` with no answer (the Hermes
-      "Thinking Budget Exhausted" failure).
-      - ⚠️ **`--reasoning off` ≠ `--reasoning-format`.** The latter only decides *where* thought
-        tags go; it does not stop them being generated. With thinking off the template still emits
-        an EMPTY `<think>\n\n</think>` pair, and `--reasoning-format none` leaves it in `content`
-        — which silently corrupts every generated file (a KB-ingestion run produced a file starting
-        `<think>\n\n</think>\n\n---` instead of `---`, i.e. invalid frontmatter). Must be
-        **`auto`**, which siphons the empty block into `reasoning_content`.
-      - ⚠️ The flag lives in the **serve script**, not `/etc/llamacpp.env`, so it survives
-        `llamacpp-reload` (which rewrites only ctx/parallel).
-      - `MODEL_PARALLEL=2` (131k/slot) is over-provisioned now that reasoning is off — `4`
-        (65k/slot) is viable for 2× concurrency. Deliberately left alone.
-  - `pro-v620/create-lxc-llama-swap-gpu2.sh` — ⚠️ **DECOMMISSIONED 2026-09-18: llama-swap no
-    longer runs on CT 123**, which now serves Qwen3.8-Flash-Next directly from `llama-server` on
-    `:1234`. Everything below is the recipe and the hard-won operating knowledge, kept because the
-    service is *recoverable* — the v250 binary, its `.bak` predecessors and
-    `/etc/llama-swap/config.yaml` with all six model entries are intact and the unit is merely
-    stopped+disabled, and every GGUF is still on `/models`. ⚠️ Re-enabling it needs a device
-    selector in its config first, or it will grab a card another container is using. Read the rest
-    in the past tense: **CT 123 `gpu2`** on GPU 2 ran a `llama-swap` proxy for the
-    autonomous coding loop that hot-swapped between a coder model (Qwen3.8-27B, alias
-    `qwen3.8-27b-dflash2`) and a reviewer model (ThinkingCap-Qwen3.6-27B, alias `thinkingcap-27b`),
-    one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
-    Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:83:00.0`, by-path, REAL node name) + the loud-guard.
-    The loop's dispatcher is serialized (`kanban.max_in_progress: 1`) so swaps fire only at role handoffs.
-    - 📐 **KV-cache quantisation: q8_0 is free on speed, but BREAKS thinking termination.**
-      q8_0 KV costs zero throughput (marginally faster, unchanged at 2× context) — the trade-off is
-      not speed. With reasoning ON, quantised KV perturbs the logits enough that the model never
-      emits its end-of-thinking token, so it reasons to the cap and returns **nothing**.
-      With `reasoning_effort: "none"` it is provably lossless (byte-identical output at 2× context).
-      ⚠️ **A COUPLED choice: `reasoning off + q8_0` XOR `reasoning low/medium + f16`.** Mixing gives
-      silent empty replies. **Not applied**, because a later caller sending `low` would fail
-      silently. Score any cache-type change by hashing the output — a speed-only comparison scores
-      an empty reply as a free win.
-    - 📐 **KV cache sizing — `n_layer` means FULL-ATTENTION layers only.** The formula
-      `2 × n_layer × n_head_kv × head_dim × bytes` is right, but the Qwen3.5/3.6/3.8 families are
-      hybrid: most layers are linear attention (Gated DeltaNet) whose state is fixed-size and
-      context-independent, so only `layer_types == "full_attention"` layers hold a KV cache.
-      Measured on this card: `qwen3.8-27b` 16 of 64 full-attn → 72 KiB/tok f16 (~42 at q8_0);
-      `ornith-1.5-35b-a3b` 10 of 40 → 18.3 KiB/tok.
-      - ⚠️ **A NON-hybrid model gets no such discount — the formula then applies literally.** Read
-        `layer_types` / `full_attention_interval` in `config.json` before sizing anything new.
-        Worked example: `ibm-granite/granite-4.2-30b` is plain GQA on **all 64** layers → 256
-        KiB/token f16, which caps it near **24-28k context** at Q5_K_M on one V620.
-      - Confirm with a VRAM **delta** between two context sizes, reading GTT alongside VRAM — flat
-        VRAM can mean the KV moved to host memory, not that it got cheaper.
-      - ⚠️ Below roughly **1 GiB of headroom** RADV starts spilling to GTT, which is a ~12× decode
-        collapse the loud-guard does NOT catch. Watch `mem_info_gtt_used`, not just VRAM.
-    - ✅ **Vision is enabled on the coder** via `--mmproj` in its `EXTRA_ARGS` (Qwen3.8-27B is
-      multimodal). No script change was needed — `llamaswap-guarded-serve` word-splits `EXTRA_ARGS`
-      and appends it to `llama-server` verbatim. Projector `/models/hf/Qwen3.8-27B-mmproj-F16.gguf`
-      (`unsloth/Qwen3.8-27B-GGUF` → `mmproj-F16.gguf`, sha256 `cbb841a9ee0636b2…`). Costs 884 MiB
-      of disk and **+1.11 GiB VRAM**; text throughput and output are unchanged. MTP/DFlash and
-      vision coexist. Verified with `pro-v620/gpu-ab-bench/vision-test.py`.
-      - **Why it earns its keep even unused:** without `--mmproj` the server answers `image input
-        is not supported` and an agent **keeps working regardless** — one 3-hour run had a "visual
-        critic" reasoning about screenshots it never received. This closes a silent failure mode.
-      - **VRAM is the binding constraint, not compatibility.** If something else needs room the
-        projector is the first thing to drop: `--no-mmproj-offload` keeps it on CPU for zero VRAM,
-        which frees 1.10 GiB and costs **3–5× on image encoding only** (text throughput and
-        post-image decode are unaffected). The penalty grows with resolution, so downscaling
-        recovers most of it. That GiB buys roughly +16k of context.
-      - ⚠️ **Set `cache_prompt: false` when timing image requests.** With caching on, repeated
-        identical requests report `prompt_n` of ~4 and every config looks identical — you measure
-        cache hits, not encoding.
-    - 🔴 **The coder is a THINKING model whose default effort NEVER ANSWERS.**
-      `llama-server`'s `--reasoning` defaults to `auto` and no entry overrides it, so Qwen3.8-27B
-      reasons without bound — measured at 8000 tokens / 32,901 chars of reasoning with `content`
-      still empty, `finish_reason: length`. `--n-predict 32768` is the only bound, so a request can
-      burn 32k tokens and return nothing. **Callers must send `reasoning_effort`.**
-    - ✅ **Reasoning is controllable BY THE CLIENT, per request** — better than a global server
-      flag, because the loop can pick per task:
+## Editing conventions
 
-      | client-side parameter | effect |
-      | --- | --- |
-      | `reasoning_effort: "none"` | ✅ **prefer this** — canonical OpenAI spelling, portable; byte-identical to `enable_thinking:false` |
-      | `reasoning_effort: "low"` / `"medium"` | works, and slightly faster than unset |
-      | `reasoning_effort: "high"` / unset | runs away — no answer |
-      | `chat_template_kwargs: {"enable_thinking": false}` | works, but llama.cpp-specific |
-      | `reasoning_budget: N`, `chat_template_kwargs.thinking_budget`, `/no_think` | ⚠️ silently ignored |
-      | `reasoning_effort: "minimal"` | ⚠️ **HTTP 500** — an invalid level crashes the request rather than being rejected |
+- Keep GPU/model/engine provisioning explicit in its own script. Follow the existing
+  config block → helpers → ordered `main()` pipeline, with quoted heredocs for scripts
+  sent through `pct exec ... bash -s`.
+- Update release tags and checksums together. Change repository pins when updating
+  a live installation so a rebuild reproduces it.
+- Keep model weights, generated results, caches and secrets out of git. Push secrets
+  as mode-600 files and remove temporary copies. Private channel IDs belong in env
+  files, with examples committed separately.
+- Keep docs about current behavior. Replace incorrect statements in place; delete
+  superseded instructions and duplicate explanations. Git history holds the change
+  narrative. Label measurements with the build, hardware and settings used.
+- Host services use an idempotent `install.sh`, systemd unit and `.env` file.
+  `hermes/config/` and `hermes/token-usage-collector/` installers run inside CT 121.
+- Put comments on their own lines in systemd `EnvironmentFile` files; inline
+  comments become part of the value.
 
-      - **On/off and effort are client-side; BUDGET is server-side only.** The robust shape is
-        both: clients send `reasoning_effort` per task, and the server sets `--reasoning-budget N`
-        as a floor so a client that sends nothing cannot run away.
-    - ⚠️ **It serves more than the coder/reviewer pair**, and the list is **live-only in
-      `/etc/llama-swap/config.yaml`, deliberately not baked into the script** (models change as
-      they are trialled). It has drifted from the docs twice — **read the config before trusting
-      any doc**:
-      `pct exec 123 -- bash -lc "grep -E '^  [a-z0-9.-]+:' /etc/llama-swap/config.yaml"`.
-      Currently six: `qwen3.8-27b-dflash2` (coder — own DFlash2 head + vision on GPU, ctx 65536) ·
-      `qwen3.8-27b-mtp` (previous coder, kept as a one-line rollback — ⚠️ it needs **n-max 2**, not
-      DFlash2's 8, or it collapses) · `qwen3.8-27b-mtp-maxctx`
-      (vision on **CPU** → ctx 98304) · `ornith-1.5-35b-a3b` (fastest + longest: 66.4 tok/s,
-      ctx 196608, no drafter) · `thinkingcap-27b` (reviewer) · `muse-glimmer-30b` (eval).
-      A rebuild from the script yields only the bootstrap pair — re-add the rest by hand.
-      - **`ornith-1.5-35b-a3b`** — architecturally identical to `qwen3.6-35b-a3b` (same
-        `qwen35moe`), so it needed no new llama.cpp support. 66.4 tok/s, KV 18.3 KiB/token, vision
-        working. **No drafter, deliberately**: on a ~3B-active MoE draft/verify overhead dominates.
-        - ⚠️ **Not a coder replacement.** It loses the two benchmarks closest to the loop's work
-          (Terminal-Bench 2.1 67.8 vs 73.0, SWE-bench Pro 59.6 vs 61.7). The loop is PR-gated and
-          serialised, so a task that fails review costs a whole cycle that tok/s cannot buy back.
-          Use it for **long-context repo work and fast first-pass/triage**.
-        - ⚠️ **Do not raise ctx to the native 262144.** It loads, but leaves only 0.49 GiB with GTT
-          already at 0.54 — under the ~1 GiB floor where RADV spills silently. Decode is identical
-          at 131072 and 196608, so 192k is free and 256k is not worth the risk.
-      - ⚠️ **Keep a non-speculative entry, or be ready to re-add one before any speculation
-        claim.** Comparing two speculative configs against each other measures agreement, not
-        correctness. Retiring the unaccelerated alias cost a later comparison its baseline and one
-        had to be recreated. `spec-sweep.sh` can start its own server with no `--spec-*` flags.
-      - **Current coder: DFlash2 at n-max 8** (`z-lab/Qwen3.8-27B-DFlash2-GGUF` Q8_0, 1.92 GiB —
-        smaller than the MTP head's 4.19 GiB, so it frees ~2.3 GiB of VRAM; auto-detected from the
-        checkpoint, so `--spec-type` stays `draft-dflash`). Against a no-speculation control
-        (17.03 tok/s): **+29% overall, +89% on code**, at a −4 to −9% cost on prose and list. Code
-        is what the coder emits, so that trade is deliberate. DSpark was tested and is **not**
-        better than MTP.
-    - **`muse-glimmer-30b`** — Meta Superintelligence Lab, dense 28B + 2B perception encoder,
-      Apache-2.0. Deployed quant is Meta's own `muse-glimmer-30B-kquant-dynamic.gguf` (19.65 GB,
-      ~5.64 bpw effective despite the "4-bit" label) plus Meta's `dflash-kquant.gguf` drafter
-      (1.63 GB) — chosen because it is the **only** Muse Glimmer quant with a published degradation
-      figure (0.2% average over 15 benchmarks). Unsloth publishes no accuracy numbers, so a switch
-      would trade a measured build for an unmeasured one. Three settings are **required**:
-      - `--reasoning-format auto`. With `none` the model's channel format (`to=<recipient>`,
-        `<|message|>`) leaks raw into `content` and the reply is unusable.
-      - `--spec-draft-n-max 3` (3 and 4 are statistically tied; 2 is −12%, 6 is −5%).
-        ⚠️ **muse has NO argmax-stable n-max range** — at temperature 0, changing n-max changes the
-        answer even between 2 and 3. Treat an n-max change here as an output change, not a
-        throughput knob.
-      - A generous client `max_tokens`. It reasons before answering: at 300 the reply comes back
-        with `content` **completely empty** and everything in `reasoning_content`. A low cap yields
-        empty responses, not errors.
-      - ⚠️ DFlash and **vision are mutually exclusive** upstream (llama.cpp #26108, still open), so
-        the `mmproj` projector is not deployed for this model.
-    - **Speculative decoding — the rules that generalise.** `llamaswap-guarded-serve` carries two
-      backward-compatible env hooks for it: `LLAMACPP_DIR` (pin ONE entry to a different llama.cpp
-      build without moving the shared `/opt/llamacpp/current` symlink) and `EXTRA_ARGS` (extra
-      `llama-server` flags).
-      - ⚠️ **A SPECULATIVE MODEL HAS NO SINGLE tok/s — throughput is PROMPT-DEPENDENT.** Decode
-        speed tracks draft acceptance, which tracks how predictable the output is: on one model,
-        prose 32.9 tok/s at 44.8% acceptance vs code 44.3 at 71.0%. That is a **35% spread from
-        prompt choice alone**, wider than most differences these notes are used to argue about.
-        - **Quote a range and name the prompt class**, never a bare number.
-        - **Never A/B two models or settings on different prompts** — the prompt difference can
-          exceed the effect being measured.
-        - **Judge a regression by acceptance, not tok/s** (`draft_n` / `draft_n_accepted` come back
-          in every response's `timings`). Unchanged acceptance means only the workload moved.
-        - Non-speculative entries are immune; the whole effect is a speculation artifact.
-      - ⚠️ **Interleave configs and take ≥3 reps before acting on a delta.** One rep per cell was
-        actively misleading once — it understated a cost by half and flipped the recommendation.
-      - ⚠️ **Gate every sweep on an output-sanity check.** Degenerate repetition drafts almost
-        perfectly, inflating both acceptance and tok/s, so a tok/s-only sweep can record a
-        corrupted run as a 3× win. The gate is built into `spec-probe.py` (`uniq_8gram_min`,
-        `any_degenerate`).
-      - ⚠️ **Speculation is NOT argmax-lossless here** — at temperature 0, output diverges as n-max
-        rises, and where it diverges is prompt-dependent. Hash outputs against a no-speculation
-        control, not against another speculative config.
-      - ⚠️ **`--spec-draft-n-max` never transfers between drafters.** Sweep every new one. It is a
-        drafter property, not a backend one: MTP falls off a cliff at n≥8 (acceptance drops
-        monotonically), while DFlash2 and DSpark plateau instead — which is why the coder can
-        safely run n-max 8 where MTP could not. **Do NOT set it from the drafter GGUF's
-        `dflash.block_size`** — that is the worst value tested.
-      - ⚠️ **A MATCHED drafter beats a borrowed one — search HF for `MTP` too, not just `DFlash`.**
-        Same target, same ctx, same day: no speculation 17.55 tok/s · borrowed DFlash head 23.68
-        (28.8% acceptance) · the model's own MTP head 27.73 (61.7%).
-      - ⚠️ **The drafter GGUF must declare `general.architecture = dflash`, not `dflash-draft`.**
-        Upstream registers `dflash`; several community repos ship the fork's name and fail to load
-        with `unknown model architecture` (llama.cpp #25116). Check before downloading gigabytes:
-        `curl -fsSL -r 0-1023 <url> | tr -c '[:print:]' '\n' | grep -aoE 'dflash[a-z-]*' | head -1`.
-      - **Speculation is a dense-model lever, not a universal one.** Dense 27B goes 17.6 → 43.8
-        with DFlash, but the 3B-active MoE `qwen3.6-35b-a3b` runs 63.1 tok/s with none at all — its
-        decode is already cheap, so draft/verify overhead dominates. Reach for it on dense targets.
-      - **Re-sweep speculation after every llama.cpp bump.** One build bump improved the
-        speculative path by 22–27% while unaccelerated decode stayed flat, same files and card — a
-        bump can be worth far more to a speculative entry than to a plain one.
-  - **Prior GPU (`rx-6700-xt/`, kept for reference):** the V620 replaced a Radeon RX 6700 XT
-    (12 GiB) that served `Qwen3.5-9B-Q4_K_M.gguf` (id `qwen3.5-9b`) via two interchangeable
-    engine scripts — `create-lxc-lmstudio-qwen3.5-9b.sh` (LM Studio `lms`) and
-    `create-lxc-llamacpp-qwen3.5-9b.sh` (llama.cpp). The README found llama.cpp better on
-    that card, which is why the V620 ships only the llama.cpp script.
-- **Qwen3.8-Flash-Next** (`pro-v620/qwen38-flash-next/`): `qwen4exp`, 180B total / **6B active**,
-  `UD-Q4_K_XL` **111.33 GB** — the first model here that does **not** fit in VRAM, with the PLE
-  table and a tunable share of routed experts in system RAM. ✅ **Runs on CT 123 `gpu2`, one card
-  (`0000:83:00.0`), `-ncmoe 34`, 13.01 t/s.** Deploy with
-  `VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh`.
-  📖 **That folder's `README.md` is the single detailed record** — the full placement curve, the
-  governor and threads findings, the concurrency table, four explicit retractions and the
-  corrections to the KB's sizing note all live there. Read it before changing any number below;
-  this section is deliberately only what a session needs in context.
-  - ⚠️ **A two-card CT 120 shape exists and is SLOWER.** At matched placement one card beats two
-    by **20.9% / 24.2%** (d0 / 8k) — llama.cpp **#28699**'s QSA indexer crossing, **+16.1 ms per
-    token per extra card boundary**. Card 2 buys +11% decode but **+97% prefill** (8k TTFT 104 s
-    vs 205 s), so it is a prefill purchase. `./ct120-cutover.sh to-qwen38fn` moves it there and
-    `to-qwen36` brings CT 120 back to `qwen3.6-35b-a3b`; both GGUFs and builds stay on disk.
-    Re-test two cards if #28699's per-device fix lands. **Always run a one-card control.**
-  - 🔴 **PREFILL is the binding constraint, not decode**, and no bandwidth arithmetic sees it:
-    ~72% of per-token time is fixed overhead, of which ~30 graph splits/token at ~1.07 ms is 61%.
-    Quote depth with any figure — decode degrades with context depth via the same indexer.
-  - 🔴 **The reasoning contract is INVERTED from Qwen3.8-27B.** The template resolves
-    `reasoning_effort|default('xhigh')` and **raises** on `"none"` and `"high"` — the values that
-    work on CT 123's old coder. Unset means `xhigh`, which never answers. Handled **server-side**
-    with `--reasoning off` (plus `--reasoning-format auto`, or an empty `<think>` pair lands in
-    `content` and corrupts generated files), which measurably **neutralises** the trap: all five
-    effort levels then return clean content, so a caller cannot break it.
-  - 🔴 **`b11013` is a HARD FLOOR on Vulkan, and checking the arch string tells you otherwise.**
-    `qwen4exp` is registered in b10678, but the hyper-connection ops only reached the Vulkan
-    backend in **#28988** (merged 2026-09-17); b11013 is the first build with it, b11010 is not.
-    So **b10678 is not a rollback target** even though `grep -rlx qwen4exp` hits it. ✅ **Check
-    that a backend can RUN an arch, never that the arch is registered.** ⚠️ `strings` is not
-    installed in CT 120 — it answers empty for everything and reads as "absent"; use `grep -rlx`.
-  - 🔴 **`--tensor-split` is REQUIRED alongside `--n-cpu-moe` and nothing warns you.** `-ncmoe N`
-    moves the experts of the **first** N layers to CPU, so `0..N-1` are light and `N..47` heavy
-    (~1.56 GB each), and llama.cpp's default split divides layers **evenly by count** — handing
-    card 2 all the heavy ones (measured: 9.3 GiB into GTT, 6.6 t/s). Rule:
-    **`card1 = N + (48 − N)/2 − 2`**; the `− 2` is load-bearing (without it 15/16/20 still spill)
-    and `N=48` is exempt at `48,0`. ✅ Measure demand as **`VRAM used + GTT`** — it is
-    split-invariant, which separates "too big in total" from "merely maldistributed".
-  - ⚠️ The PLE offload tensor is **`per_layer_token_embd`**; the KB's `ngram_embedding` is the
-    *safetensors* name and matches nothing in a GGUF.
-  - ⚠️ **The thermal watchdog's `GPU_SERVICE_MAP` must name the unit that actually RUNS on each
-    card.** It is `0000:03:00.0=120:llamacpp,0000:83:00.0=123:llamacpp-qwen38fn`, and
-    `ct120-cutover.sh` rewrites it to `120:llamacpp-qwen38fn` for **both** cards while CT 120
-    holds them. A map naming a stopped unit makes a thermal trip a **silent no-op**, leaving the
-    real load on an overheating card with only the 105 °C hardware reset behind it.
-  - ⚠️ **CT 120 and CT 123 must never hold the same card, and "stopped" is not enough** — a
-    stopped CT with `onboot: 1` comes straight back onto the card after a host reboot.
-    `to-qwen38fn` clears CT 123's `onboot` and `to-qwen36` restores it.
-  - ⚠️ **`gpu-ab-bench/thermal-guard.sh` and `sample-gpus.py` are B550-era** and still name
-    `0000:2d:00.0`/`0000:06:00.0`. Those paths do not exist, so the hwmon glob misses, `cat`
-    fails and `set -e` kills the guard in under a second — it fails **silently open**. Use
-    `qwen38-flash-next/thermal-guard.sh` on this platform.
-- **CT 121 `hermes`** (`hermes/`): an *unprivileged* Debian LXC running NousResearch's
-  **Hermes Agent** — the homelab's agent (NOT a model server; it *consumes* CT 120's API,
-  see the `ct120-vs-hermes` memory). It auto-discovers CT 120's IP, points Hermes at it via a
-  `provider: custom` OpenAI endpoint (no Nous Portal login), and runs a single
-  `hermes gateway run` service = messaging gateway + Hermes's own OpenAI-compatible API server
-  on `0.0.0.0:8642`. Persistent (`120-139` AI range, starts on boot); full Playwright browser
-  tools; installs + runs as root inside the unprivileged LXC. `hermes/create-lxc-hermes-agent.sh`.
-- **CT 140 `kb-rag`** (`kb-rag/`): an *unprivileged* Debian LXC that indexes the private
-  **CognitiveStack** Markdown knowledge base and serves **hybrid search** — FTS5 **BM25**
-  (keyword/exact) ⊕ `sqlite-vec` **KNN** (semantic), merged by **Reciprocal Rank Fusion** (k=60)
-  — to every agent on the box over one port: **REST *and* MCP-over-HTTP** on `0.0.0.0:8770`
-  (`/v1/search`, `/v1/doc`, `/v1/stats`, plus an unauthenticated `/health`; MCP at `/mcp/` —
-  trailing slash, `/mcp` 307-redirects — exposing `kb_search`/`kb_get`/`kb_stats`). It sits in the
-  `140-159` **databases** range because the durable artifact is a vector+FTS database, even though
-  agents are the consumers. `kb-rag/create-lxc-kb-rag.sh`; full design rationale in
-  `kb-rag/SPEC.md`.
-  - **Markdown-in-git stays the source of truth** — this CT holds only a *derived, rebuildable*
-    index, so wiping `/opt/kb-rag/data` + `kb-reindex --full` reconstructs everything. Back up the
-    CognitiveStack repo, not this container. If the vector store ever becomes where knowledge
-    *lives*, that's a regression.
-  - Embeddings are **CPU-only** (`fastembed`/ONNX, `BAAI/bge-small-en-v1.5`, 384-dim) —
-    deliberately **no GPU passthrough and no load on CT 120**: embedding one short query is
-    milliseconds on CPU and batch indexing is offline. A `kb-reindex.timer` pulls + reindexes every
-    10 min, incrementally (only chunks whose `content_hash` changed are re-embedded) and stamps the
-    source commit into the index. Corpus selection is glob-driven in `app/index.config.yaml`
-    (include `**/*.md`, exclude `personal/**` + nav/meta), not hardcoded — a new topic folder is
-    picked up automatically.
-  - Security: a **read-only deploy key** for the KB repo is **mandatory** (`DEPLOY_KEY_FILE=`, the
-    container can only pull), and every data endpoint is gated by a bearer key auto-generated at
-    provision and stored mode-600 in `/etc/kb-rag.env`. Secrets are pushed as mode-600 files and
-    the host copies removed (the hermes idiom). Reachable on its own LAN IP, by hostname.
-  - ⚠️ Changing `EMBED_MODEL`/`EMBED_DIM` later requires `kb-reindex --full` — the stored
-    `sqlite-vec` vector dimension must match.
-  - **Wired into Hermes over MCP.** CT 121's `config.yaml` carries an `mcp_servers.kb-rag` entry
-    pointing at `http://kb-rag:8770/mcp/`; verify with `hermes mcp test kb-rag`. Four things that
-    are each load-bearing:
-    - ⚠️ **The config key is `mcp_servers:`, not `mcp:`** — `mcp:` is silently ignored. Schema is
-      in `tools/mcp_tool.py`'s module docstring.
-    - ⚠️ **The trailing slash is required.** `/mcp` 307-redirects to `/mcp/`, and a redirected POST
-      is not something every MCP client replays correctly.
-    - ⚠️ **Keep the key OUT of `config.yaml`.** Hermes' `_load_mcp_config()` calls
-      `load_hermes_dotenv()` and resolves `${VAR}` (also Cursor-style `${env:VAR}`) before
-      connecting, so the entry reads `Authorization: "Bearer ${HERMES_KB_RAG_KEY}"` and the secret
-      stays in `~/.hermes/.env`. This is not cosmetic: `config.yaml` **is** in the nightly backup,
-      whose gitleaks gate is a hard `exit 1` on any finding — a literal token there would silently
-      kill the only tracked copy of the config. No other literal secret lives in that file.
-    - ⚠️ Hermes' MCP **client** is a major version behind what CT 140 serves; this works only
-      because v2 still serves the legacy 2025-06-18 handshake. Verify that stays true on any
-      future kb-rag SDK bump.
-    Validation order is worth knowing: `_filter_suspicious_mcp_servers()` runs **before**
-    interpolation, so the security check sees the placeholder, never the resolved secret.
-  - ⚠️ Its `rootfs` `backup=0` is one of the **silent no-ops** described under Conventions, so
-    this entirely rebuildable container **is** in the weekly vzdump — don't believe the "not backed
-    up" comments in `kb-rag/README.md` and `SPEC.md`. To actually skip the bulk:
-    `vzdump 140 --exclude-path /opt/kb-rag`.
-  - ⚠️ Its `kb-reindex`/`kb-stats` wrappers live in `/usr/local/bin`, so they hit the **`pct exec`
-    PATH gotcha**: `pct exec 140 -- kb-stats` fails with `Failed to exec "kb-stats"`. Wrap in
-    `bash -lc '…'` — `kb-rag/README.md`'s bare examples do not work.
-- **CT 200 `bench-runner`** (`bench-runner/`): an *unprivileged* Debian LXC that benchmarks
-  that endpoint. It auto-discovers CT 120's IP at provisioning time. It lives in the
-  `200+` test/temporary range because it is disposable — destroy it when done. The suite is
-  engine-neutral (it speaks OpenAI `/v1`), so it benchmarks either engine unchanged.
-- **VM 300 `docker-host`** (`docker-host/`): a Debian **VM** (the *only* VM here, deliberately)
-  running **Docker + Compose + Portainer CE**, which hosts the homelab's small self-contained web
-  apps as Compose stacks — currently **MealDeal**
-  ([github.com/marchah/mealdeal](https://github.com/marchah/mealdeal), the grocery-deal tracker
-  the local AI codes features for), live on `:4000`, and **work-board** on `:4100` (a Linear +
-  GitHub "what should I work on next?" board). ⚠️ work-board is the exception to the pattern
-  below: its compose file lives in its own **private** repo `marchah/work-board` rather than
-  in `docker-host/stacks/`, so Portainer needs both git and registry credentials for it.
-  Apps here **do not consume a VMID each** —
-  they are containers inside this VM, so a new project costs a compose file
-  (`docker-host/stacks/<project>/compose.yaml`) plus a Portainer git stack, not a bespoke
-  provisioning script. Stack secrets (e.g. `IMAP_PASSWORD`) are **Portainer stack env vars**,
-  never in this public repo. ⚠️ **Why a VM when everything else is an LXC:** Proxmox recommends
-  Docker in a VM; Docker-in-LXC needs `nesting=1`+`keyctl=1` (often privileged), puts `overlay2`
-  on a container filesystem, tends to break after Proxmox kernel bumps, and shares a kernel with
-  the host's own firewall rules that Docker also writes into. The GPU/LLM containers
-  stay native LXCs — they need device passthrough and gain nothing here. MealDeal **pulls a
-  prebuilt image**: its `Publish image` workflow publishes `ghcr.io/marchah/mealdeal` on every push
-  to `main` (tags `main` + `sha-<short>`, plus semver from `v*`). The package is **public**, so
-  anonymous pull works and Portainer needs no registry credentials — GHCR does not always default
-  to private. Redeploys are a ~10 s pull; rollback is pinning a `sha-` tag. ⚠️ The stack sets
-  **`pull_policy: always`** deliberately — without it a redeploy can reuse a stale local layer
-  cache and silently keep serving the old build even though `main` moved. ⚠️ **Portainer has no
-  health-gated auto-rollback** — a broken deploy stays broken until acted on (the compose
-  healthcheck makes it *visible*, not self-healing). See `docker-host/README.md`.
-  - **A per-app native LXC was tried and rejected** — one bespoke ~870-line script per app doesn't
-    scale to a fleet of small projects, which was the whole point of the pivot to compose stacks.
+### Standalone installs
 
-VMIDs `120`/`121`/`122`/`123`/`140`/`200` and hostnames are defaults overridable via env vars (`VMID=`, `LXC_HOSTNAME=`, etc.).
+Provisioners support both a local checkout and individual downloads from GitHub raw.
+When adding or renaming shipped files, update the matching download list:
 
-## Common commands
+- `bench-runner/create-lxc-bench-runner.sh`: `files=(...)` in `download_benchmark_suite`.
+- `kb-rag/create-lxc-kb-rag.sh`: `APP_FILES=(...)`.
 
-All run on the Proxmox host as root.
+### Validation
 
-```bash
-# Provision the ops LLM-runtime container (CT 120) — GPU 1 of two Radeon Pro V620
-./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
-# Qwen3.8-Flash-Next lives on CT 123 (one card) since 2026-09-18 — see below.
-# To put it on CT 120 across BOTH cards instead (slower: the inter-GPU tax costs 21% of decode):
-cd pro-v620/qwen38-flash-next && ./install.sh --download   # env/serve/unit + resume the 112 GB pull
-cd pro-v620/qwen38-flash-next && ./ct120-cutover.sh to-qwen38fn   # cut over   (to-qwen36 = full rollback)
-cd pro-v620/qwen38-flash-next && ./thermal-guard.sh & ./placement-sweep.sh   # find the best --n-cpu-moe
-# CT 123 gpu2 — Qwen3.8-Flash-Next on ONE card (the measured best single-GPU config, :1234)
-cd pro-v620/qwen38-flash-next && VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh
-# CT 123 previously ran llama-swap (6 models by name on :8080); removed 2026-09-18, script kept:
-#   ./pro-v620/create-lxc-llama-swap-gpu2.sh
-# CT 122 coder-runner was destroyed 2026-09-18 (loop moved to Multica); recipe kept:
-#   CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./coder-runner/create-lxc-coder-runner.sh
-# The loop/orchestrator config that runs INSIDE CT 121 (profiles/skills/plugins/timers) — run from within CT 121
-pct exec 121 -- bash -lc 'cd /path/to/Proxmox/hermes/config && ./install.sh'  # see hermes/config/README.md
-# The knowledge-base retrieval service (CT 140 kb-rag) — a read-only KB deploy key is REQUIRED
-DEPLOY_KEY_FILE=./cognitivestack-deploy ./kb-rag/create-lxc-kb-rag.sh
-# Prior GPU (RX 6700 XT) — kept for reference; pick ONE engine (mutually exclusive)
-./rx-6700-xt/create-lxc-lmstudio-qwen3.5-9b.sh    # LM Studio (lms)
-./rx-6700-xt/create-lxc-llamacpp-qwen3.5-9b.sh    # llama.cpp (llama-server)
+Use `bash -n` and `shellcheck` for changed shell scripts, including extensionless
+launchers. Parse/compile changed Python files. `make check` syntax-checks the Ansible
+playbook; `make bench` and `make context-sweep` operate the remote lab and are not
+local tests. There is no CI or general automated test suite.
 
-# Provision the Docker app-stack host (VM 300): Docker + Compose + Portainer CE.
-# Hosts MealDeal and future small projects as compose stacks. Portainer UI on :9443.
-./docker-host/create-vm-docker-host.sh
-./docker-host/create-vm-docker-host.sh --reinstall-docker   # re-run ONLY the in-guest install
-# Operate the app stacks — prefer the Portainer UI (https://192.168.1.250:9443); by CLI:
-ssh pve 'ssh -i /root/.ssh/docker-host debian@docker-host'    # into the VM (host holds the key)
-#   docker ps
-#   docker compose -f /opt/stacks/mealdeal/compose.yaml logs -f
-#   docker compose -f /opt/stacks/mealdeal/compose.yaml up -d --build
+## GPU operating constraints
 
-# Operate the KB retrieval service (CT 140). Same `bash -lc` PATH rule as the bench wrappers.
-pct exec 140 -- bash -lc 'kb-stats'            # index commit, embed model, chunk/doc counts
-pct exec 140 -- bash -lc 'kb-reindex'          # git pull + incremental reindex now
-pct exec 140 -- bash -lc 'kb-reindex --full'   # drop + rebuild (required after an embed-model change)
-pct exec 140 -- systemctl status kb-rag        # and: journalctl -u kb-rag / list-timers kb-reindex.timer
+The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
 
-# Provision the benchmark runner (CT 200); auto-targets CT 120's API
-./bench-runner/create-lxc-bench-runner.sh
+| PCI address | Workload | Blower |
+| --- | --- | --- |
+| `0000:03:00.0` | CT 120 `llamacpp` | FAN5 |
+| `0000:83:00.0` | CT 123 `llamacpp-qwen38fn` | FAN4 |
 
-# Run benchmarks (wrapper commands installed into the bench-runner LXC)
-# Wrap wrapper commands in `bash -lc '…'` — bare `pct exec` PATH omits /usr/local/bin
-pct exec 200 -- bash -lc 'llm-bench-baseline'     # single-user repeatable baseline
-pct exec 200 -- bash -lc 'llm-bench-concurrency'  # throughput / tail-latency
-pct exec 200 -- bash -lc 'llm-bench-soak'         # longer, surfaces thermal/memory pressure
-pct exec 200 -- bash -lc 'llm-bench-quality'      # enables lm-eval (GSM8K smoke test)
-pct exec 200 -- bash -lc 'llm-bench-env'          # print resolved config
-pct exec 200 -- bash -lc 'llm-bench-compare /results/<baseline> /results/<candidate>'
+- Pin passthrough by `/dev/dri/by-path/pci-<address>-render`, resolving the real
+  destination node name. `cardN` numbering can change after hardware/kernel changes;
+  follow the recovery procedure in `pro-v620/README.md`.
+- Verify RADV sees the expected number of devices and the intended card holds the
+  model. The startup guard catches CPU fallback, but not GTT spill. Read free VRAM
+  and GTT together after a real request.
+- CT 120 and CT 123 must never own the same card. Use `ct120-cutover.sh` for the
+  two-card alternative: it changes passthrough, CT 123's `onboot` and the watchdog
+  service map together.
+- Both servers use `--reasoning off --reasoning-format auto`. The first disables
+  thinking; the second removes empty think tags from response content. Revalidate
+  response content and tool calls when changing these flags or the KV cache type.
+- [gpu-blower-control/](pro-v620/gpu-blower-control/README.md) drives FAN4/FAN5 via
+  IPMI; [undervolt/](pro-v620/undervolt/README.md) applies −100 mV to both cards.
+  Confirm physical fan pairing after rewiring. The BMC manages CPU/DIMM cooling.
+- [gpu-thermal-watchdog/](pro-v620/gpu-thermal-watchdog/README.md) stops the mapped
+  service at 102 °C junction / 101 °C memory and leaves it stopped. A trip warrants
+  checking cooling before restarting. Keep its map aligned with the owning units.
+- The watchdog cannot stop a manually launched benchmark. Use an independent
+  thermal guard. The B550 harness in `gpu-ab-bench/` and `fan-control/` target the
+  retired board; use the ROMED8-2T guard in `qwen38-flash-next/` for current sweeps.
 
-# Override any knob per-run via env
-pct exec 200 -- bash -lc 'BENCHMARK_REQUESTS=5 BENCHMARK_CONCURRENCY=2 llm-bench-baseline'
-```
+## Benchmark conventions
 
-Both creation scripts support `--help`/`-h` and a large set of `VAR=value` overrides
-(documented in each script's `usage()` and the folder READMEs).
+- Interleave configurations with at least three repetitions. Match model hashes,
+  binary, prompt set, context depth and power settings. Check output correctness as
+  well as speed; include a non-speculative control when testing a drafter.
+- Quote decode with prompt class and depth, and report prefill separately.
+- CT 200 CPU/RAM/process telemetry describes the client. Use
+  `bench-runner/host/run-with-target-telemetry.sh` for model-server metrics; after
+  merging telemetry, regenerate reports with `finalize-run.py`.
+- The in-container suite layers local model config, profile defaults and process
+  env overrides, checks `/v1/models`, runs enabled targets, then writes JSON/JSONL
+  results and `REPORT.md`/`SLO.md`. See `bench-runner/BENCHMARKS.md` for schemas.
+- Wrappers in `/usr/local/bin` need a login shell through `pct exec`:
+  `pct exec 200 -- bash -lc 'llm-bench-baseline'`.
 
-### Linting
+## Host networking and backups
 
-Scripts use `set -Eeuo pipefail` and carry `# shellcheck disable=...` directives, so
-**shellcheck is the expected linter** for `.sh` files. There is no CI, Makefile, or
-automated test harness in the repo.
+Guests use DHCP on `vmbr0`, with LAN hostnames under `lan`. Reserve guest leases on
+the router; prefer hostnames to copied IP addresses. The host address is
+`192.168.1.93`.
 
-## Architecture
+The weekly backup job runs Sundays at 01:00 to `Synology-Backup` NFS, keeps three
+copies and covers all guests. `/models` mount points use `backup=0`; root disks
+remain included. To omit rebuildable bulk on a root disk, use the backup job's
+`--exclude-path` setting, e.g. `/opt/kb-rag` for CT 140.
 
-### Provisioning scripts share one shape
-
-Both `create-lxc-*.sh` scripts follow the same structure: top-of-file `readonly`/env-default
-config block → small helper funcs (`die`, `log`, `require_root`, `require_command`) →
-a `main()` that runs an explicit ordered pipeline (resolve template → create container →
-configure → install → summarize). Heredocs (`<<'CONTAINER_SCRIPT'`) push self-contained
-sub-scripts into the container via `pct exec ... bash -s`. Match this idiom when extending.
-
-**GPU/model/engine scripts are intentionally narrow, not generic.** Per the README, each GPU
-folder owns its own model/runtime assumptions (GPU runtime flags, context size, VRAM sizing).
-A different GPU, model, *or inference engine* should get a *new* script, not a parameterized
-mega-launcher — the RX 6700 XT has two sibling scripts (`...-lmstudio-...` and
-`...-llamacpp-...`) serving the same model on the same GPU via Vulkan, and the V620 got a
-brand-new folder/script (`pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh`) for its larger
-32 GB / MoE model rather than a flag on the 6700 XT script.
-Both GPUs use Vulkan (mesa RADV) — Navi 22/gfx1031 on the 6700 XT, Navi 21/gfx1030 on the
-V620 — the container installs `mesa-vulkan-drivers` and passes through the GPU render node. With
-**two V620s** installed, CT 120 bind-mounts **only GPU 1's** render node (by PCI address, via the
-`by-path` symlink), so llama.cpp sees one Vulkan device and runs the model on that card while GPU 2
-stays idle; plus a pinned model repo/file/SHA-256 in a privileged container. (The V620
-model is a single-file unsharded GGUF, so the download/verify path is unchanged; on 32 GB it
-defaults to ctx 262144 / `--parallel 2` (the model's ~256k native max, 128k per slot; this
-MoE's KV cache is cheap, ~20 KB/token, ~29.8 GiB total at Q5). It was `--parallel 4` (64k/slot),
-but qwen3.6's uncapped reasoning could fill a whole 64k slot with `<think>` and return
-`finish_reason='length'` with no answer (Hermes "Thinking Budget Exhausted"); 128k/slot leaves
-room for reasoning + answer. A single agent needing the whole 256k window uses
-`llamacpp-reload 262144 1`; tunable via `llamacpp-reload`.)
-
-Engine differences that matter when extending the llama.cpp script:
-- It installs a **pinned prebuilt Vulkan `llama-server` release** (tag + tarball SHA-256 in
-  the config block; bump both from the ggml-org/llama.cpp releases page). It extracts to a
-  flat `llama-<tag>/` dir and symlinks `/opt/llamacpp/current`. It also installs the
-  **libglvnd/EGL stack** (`libglvnd0 libgl1 libglx0 libegl1`) on top of `mesa-vulkan-drivers`
-  — without it the Mesa ICD loader can silently report **zero** Vulkan devices in the container.
-  - **CT 120 and CT 123 both run llama.cpp `b11018`**, and CT 123 got it 2026-09-18 by copying
-    `/opt/llamacpp/b11018-baseline` from CT 120 (same Ubuntu 24.04 / glibc 2.39, so the binary
-    moves); `qwen4exp` needs b11013+ and CT 123 was on b10678.
-    ⚠️ **Name the TREE, not the container** — CT 120 holds two: `b11018-baseline` (built here,
-    GNU 13.3.0, sha `32687325…`, byte-identical to CT 123's) and `llama-b11018` (the release
-    tarball, GNU 11.4.0, sha `4ac7aa75…`). Both report `build 11018, commit c9a5eeeb3`, so
-    "CT 120's build" is ambiguous and comparing the wrong pair reads as a mismatch.
-    llama-swap was pinned at `v250` before its removal. Prior
-    llama.cpp builds are left in `/opt/llamacpp/` and the previous llama-swap binary kept as a
-    `.bak`, so **rollback is a symlink flip / file copy**.
-    ⚠️ **Bump the pins in the scripts, not just live** — they had drifted several builds behind
-    because earlier bumps were applied on the box only. After any bump verify: both cards' RADV
-    init (the loud-guard passes), CT 120 serving, every llama-swap model registered, and
-    speculation still active on the coder.
-  - ⚠️ **`llama-bench` cannot use the production `--batch-size 4096`** on this card: with 24.76 GiB
-    of weights resident it dies with `radv/amdgpu: Not enough memory for command submission` at
-    context creation. `-b 2048 -ub 1024` is the largest configuration that fits and is what the
-    numbers above use. It also has **no `-c` flag** — context comes from the test params, and
-    `--fit-target` is the auto-fit path this repo avoids on RADV (see the GTT-spill note).
-- LM Studio hot-reloads context/parallel via `lms load`; **llama.cpp sets them as start-time
-  flags**, so its container ships a `llamacpp-reload <ctx> <parallel>` helper (rewrites
-  `/etc/llamacpp.env` + `systemctl restart`) and a `Type=simple` service running
-  `/usr/local/bin/llamacpp-serve`.
-- `llama-server --alias <id>` makes `/v1/models` report a stable id (else it reports the
-  model file path); that id is what the bench-runner records as `MODEL_IDENTIFIER` (the V620
-  serves `qwen3.6-35b-a3b`, the 6700 XT served `qwen3.5-9b`). The bench-runner auto-detects
-  it from `/v1/models` at provision time; `ansible/benchmark.yml` and `host/run-context-sweep.sh`
-  default `model_key`/`MODEL_KEY` to `qwen3.6-35b-a3b`, and the ansible run re-points an existing
-  CT 200's `MODEL_IDENTIFIER` to it each run (so a model swap can't leave preflight stale).
-
-### Dual-mode install (critical gotcha)
-
-`bench-runner/create-lxc-bench-runner.sh` installs the suite into `/opt/bench-runner`
-**two different ways** (`install_benchmark_suite`):
-
-1. **Local checkout present** → `copy_local_benchmark_suite` tars up `scripts/`, `config/`,
-   and the `*.md` docs and pushes them in.
-2. **Run standalone via `wget | bash`** (no checkout) → `download_benchmark_suite` curls
-   each file individually from GitHub raw using a **hardcoded file list**.
-
-⚠️ When you add or rename a file under `bench-runner/scripts/` or `bench-runner/config/`,
-you MUST also add it to the hardcoded `files=( ... )` array in `download_benchmark_suite`,
-or the standalone install path will silently ship an incomplete suite.
-
-`kb-rag/create-lxc-kb-rag.sh` mirrors this idiom for `kb-rag/app/` — same two paths, same trap,
-different array name: **`APP_FILES=( ... )`** near the top of the script (alongside
-`REPO_RAW_BASE`). Adding or renaming anything under `kb-rag/app/` without updating it ships a
-broken service on the standalone path.
-
-### Benchmark orchestration
-
-`bench-runner/scripts/benchmarks/run-ai-benchmark-suite.sh` is the engine. Flow:
-
-1. **Layered config** (process env wins, because every file default uses `: "${VAR:=...}"`
-   — including `MODEL_API_URL`/`MODEL_IDENTIFIER`, so a per-run override actually takes
-   effect): `config/local-model.env` (written at provisioning: the model's
-   `MODEL_API_URL`, the discovered `MODEL_IDENTIFIER`, `RUN_*` toggles) → the profile file
-   named by `BENCHMARK_PROFILE` (`config/benchmark-profiles/<name>.env`) → process env.
-2. **Preflight** (unless `BENCHMARK_PREFLIGHT=false`): GETs `<MODEL_API_URL>/models` and
-   aborts before any work if the endpoint is unreachable (exit-path "unreachable") or
-   `MODEL_IDENTIFIER` is not in the served list. This is the loud-failure guard against a
-   stale/wrong URL or model id from provisioning time.
-3. For each enabled target, `run_with_telemetry` launches `system-sampler.py` in the
-   background, runs the benchmark, then records `status.json`.
-4. Writes `manifest.json`, `versions.json`, captures before/after `system-logs/`, evaluates
-   SLOs (`evaluate-slos.py` against `config/benchmark-slos/default.json`), and renders
-   `REPORT.md` + `SLO.md` (`write-benchmark-report.py`).
-
-**Metric scope:** the bench-runner LXC is unprivileged with no GPU passthrough, but
-`system-sampler.py` still reads the host's `/sys/class/drm` + hwmon, so it *does* capture
-GPU utilization, VRAM, core clocks, and amdgpu/CPU temps (a baseline run recorded 99% GPU
-util, 7.24 GiB VRAM, 103 °C junction) — and the GPU/temperature SLO checks in `default.json`
-run from here. Caveat: `gpu_busy_percent` is only meaningful under active load and can return
-`EBUSY`, so judge GPU-vs-CPU by throughput, not an idle sample. (llama.cpp holds the model in
-VRAM, so `mem_info_vram_used` stays high even idle — the pre-allocated weights + KV — unlike
-engines that free VRAM between requests.)
-Trust the per-run telemetry peaks. `evaluate-slos.py` still skips any check whose data is
-genuinely absent. **CPU/RAM/process metrics from the in-LXC sampler are lxcfs-virtualized to
-CT 200 — they describe the benchmark *client*, not the model server (llama.cpp on CT 120).** To judge whether the model
-server itself was CPU/RAM-bound, the Ansible batch wraps each run with
-`host/run-with-target-telemetry.sh`, which samples CT 120 from the host and merges a
-`target-telemetry.jsonl` into each `/results/<run-id>/`. Don't cite the in-LXC CPU/RAM numbers
-as the server's. After merging, the wrapper re-runs `finalize-run.py` so `REPORT.md`/`SLO.md`
-incorporate the server telemetry (a "Model Server Telemetry" report section + a
-`model-server-target` SLO check) — the suite generated them in-container *before* the merge,
-so regeneration is what makes the data count. The batch sets `REQUIRE_TARGET_TELEMETRY=true`,
-so a run that captures no server samples fails (manual `run-with-target-telemetry.sh` runs
-default to opt-out).
-
-**`RUN_*` toggles gate each benchmark target**: `RUN_OPENAI_DIRECT`, `RUN_LLAMA_BENCHY`,
-`RUN_LM_EVAL`. The runner targets only the LLM runtime's OpenAI endpoint, so it runs
-`openai-direct` + `llama-benchy` by default; `lm-eval` runs only in the `quality` profile.
-The Hermes, raw `llama-bench`, and vLLM benchmark paths were removed — they couldn't run in
-this unprivileged, OpenAI-API-only LXC. The suite's built-in `SCENARIOS` (smoke/short/medium/
-long) remain only as a manual `--scenario` fallback; every profile uses the promptset.
-
-The `llm-bench-*` wrappers in `/usr/local/bin` are thin: they `source /etc/bench-runner.env`,
-set `BENCHMARK_PROFILE`/`BENCHMARK_RUN_ID`, and exec the suite. They are generated inline by
-`configure_benchmark_environment` in the creation script — edit them there, not by hand.
-
-### Bottleneck tooling (the goal is hardware/infra limits, not model quality)
-
-- **`run-sweep.py`** (wrapper `llm-bench-sweep <concurrency|input-length>`): drives
-  `benchmark-openai-api.py` across a parameter and writes `curve.json`/`curve.md`. Relies on
-  the `--synthetic-input-tokens`/`--synthetic-output-tokens` controlled-workload flags added
-  to `benchmark-openai-api.py`. Client-side; finds the saturation knee / TTFT scaling.
-- **`summarize-telemetry.py`**: reduces any `telemetry.jsonl` to peak GPU util, VRAM
-  ratio, core-clock range (throttle hint), temps, and min free RAM. AMD-DRM and NVIDIA aware.
-- **`host/` directory** — Proxmox-host orchestration, **not** shipped into the LXC (the
-  local-copy tar and the download list both exclude it; these need `pct`). `run-with-host-
-  telemetry.sh` samples a container's GPU during any bench command — largely **redundant**,
-  since the in-LXC sampler already records GPU telemetry; keep it only for sampling around a
-  non-benchmark command. `run-with-target-telemetry.sh` is the non-redundant counterpart: it
-  pushes `system-sampler.py` into the *model* container (CT 120) and runs it there during a
-  bench, so CPU/RAM/process metrics reflect the model server, llama.cpp (not the bench-runner
-  client); the Ansible batch wraps every run with it and merges `target-telemetry.jsonl` into
-  the result. `run-context-sweep.sh` reloads the model at each context length and correlates
-  VRAM with TTFT/latency/throughput — still useful, because the per-context reload is the part
-  the in-LXC suite can't do. The model-reload path is **llamacpp-only**: `ansible/benchmark.yml`'s
-  `runtimes` map carries the `llamacpp` entry (`reload_cmd` + `target_process_patterns` + results
-  `label`) and `host/run-context-sweep.sh` calls the container's `llamacpp-reload <ctx> <parallel>`
-  (restart, blocks until `/health` is ready). Drive it with `make bench` / `make context-sweep`.
-  (The prior RX 6700 XT also had an `lmstudio` runtime; it was removed with that card — the
-  `rx-6700-xt/` scripts keep it for reference.)
-
-### Results & data model
-
-Every run writes a self-contained folder `/results/<run-id>/` (run-id defaults to a UTC
-timestamp + profile). Output is plain JSON/JSONL/Markdown by design (no Prometheus/Grafana)
-so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `stdout.log`,
-`stderr.log`, `status.json`, plus benchmark-specific request JSONL/summary JSON. See
-`bench-runner/BENCHMARKS.md` for the full telemetry schema and experiment matrix.
-
-### Remote vs in-container execution
-
-- `sync-benchmark-run.sh <ssh-host> <remote-run-dir> [desc]` — copies a finished server-side
-  run back to a local checkout and regenerates `REPORT.md` (run benchmarks on the server first).
-- `run-remote-benchmark-suite.sh` — uploads suite, runs on a server over SSH, pulls results;
-  reads creds from a `config/.env` (gitignored).
-
-## Conventions
-
-- **VMID allocation** (homelab-wide scheme — pick a new script's default `VMID` from the
-  matching range):
-  - `100-119` — infra / services (currently empty; CT 110 `mealdeal` lived here until the app
-    moved into the Docker host — small web apps are now containers on VM 300, not LXCs)
-  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, GPU 1, serving
-    `qwen3.6-35b-a3b`; the prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the
-    Hermes Agent that consumes CT 120's API. CT 123 `gpu2` — GPU 2, serving
-    **Qwen3.8-Flash-Next** on one card since 2026-09-18.
-    ⚠️ **CT 122 `coder-runner` was DESTROYED 2026-09-18** — the coding loop moved to Multica, so it
-    was unused and only a maintenance burden. `coder-runner/create-lxc-coder-runner.sh` still
-    documents how to recreate it.)
-  - `140-159` — databases (CT 140 `kb-rag` — the CognitiveStack hybrid-search API; it lives here
-    rather than in the AI range because the durable artifact is a vector+FTS **database**, even
-    though its consumers are agents)
-  - `200+` — test / temporary (CT 200 `bench-runner` — disposable benchmark LXC)
-  - `300+` — **VMs** (VM 300 `docker-host`). The ranges above allocate *containers*; VMs get their
-    own range so `pct`/`qm` ids never collide. Apps running as Docker containers on VM 300 do not
-    take a VMID at all.
-- **Autonomous coding loop — CT 122 `coder-runner` is DECOMMISSIONED (destroyed 2026-09-18).**
-  The homelab ran a self-driving coder↔reviewer loop on Hermes kanban (CT 121) whose design rule was
-  that **untrusted project code executes only on a separate, generic, disposable LXC**, never inside
-  the Hermes LXC. That container is gone: the loop moved to **Multica** shelling out to the `codex`
-  CLI (see the `multica-codex-loop` memory), leaving CT 122 unused and only something to keep
-  patched. `coder-runner/create-lxc-coder-runner.sh` and `coder-runner/README.md` remain as the
-  recipe if the loop ever comes back on-box, and CT 121's `coder-runner` ssh keypair was removed
-  with it.
-  ⚠️ **The isolation rule still holds** — if project code is ever executed on this box again it
-  gets its own disposable container, not the agent's. The loop's CT-121-side config
-  (coder/reviewer profiles, `hermes/config/bin/` helpers, the `codex-review`/`completion-gate`
-  plugins, the loop skills and timers) is still committed under **`hermes/config/`** with an
-  idempotent `install.sh`; ⚠️ its `checks-on-runner` / `run-on-runner` / `verify-and-commit`
-  helpers referenced CT 122 over ssh+rsync and will not work until a runner exists again.
-  Private Slack channel IDs are parameterized to env vars sourced from `/root/.hermes/.env`
-  (see `hermes/config/hermes.env.example`); never commit the real `.env`.
-
-- **Token accounting (`hermes/token-usage-collector/`, CT 121).** llama.cpp exposes
-  `llamacpp:prompt_tokens_total`/`llamacpp:tokens_predicted_total` at `/metrics` (CT 120 runs
-  `--metrics`; without it that route 501s), but they are **counters since process start** and reset on
-  every restart — and restarting is the prompt-cache-corruption remedy, so it happens. A 5-minute
-  systemd timer inside CT 121 folds each scrape's delta into a durable daily ledger at
-  `/root/.hermes/token-usage/` (under the Hermes home so the weekly pricing job can read it).
-  Query with `pct exec 121 -- bash -lc 'token-usage-report --month
-  YYYY-MM'`. Same idempotent `install.sh` + systemd + `.env` idiom as the `pro-v620/` host services, but
-  it runs **inside CT 121**, not on the host. ⚠️ Every total is a **floor** — tokens served between the
-  last scrape and a restart are unrecoverable.
-  ⚠️ **The ledger is deliberately NOT in the git config backup**: `daily.jsonl` gains a row and
-  `state.json` is rewritten on *every* 5-minute scrape, so they churned the diff on every run, and
-  that backup is meant to show what Hermes *changed*, not operational counters. Its only off-box
-  copy is therefore the **weekly Sunday vzdump of CT 121** — a ledger loss between vzdumps is
-  unrecoverable, on top of the floor caveat above.
-  It collects **two sources with different semantics, which must never be summed**:
-  - `endpoint` — the `/metrics` scrape above. Covers **every** client of CT 120 (including OpenCode on
-    the Mac), no attribution, resets on llama-server restart.
-  - `hermes_accounted` — Hermes' own `session_model_usage` table in `state.db`, keyed by
-    `session_id|model|billing_provider|task` (unique). Covers only what **Hermes** spent, attributed per
-    model, exact, never resets, and carries cache-read/reasoning/call counts. This is the **only** place
-    cloud usage appears — a model reached over `openai-codex` (the weekly pricing cron runs on
-    `gpt-5.6-terra`) never touches CT 120. Codex rows come back `cost_status: included`, i.e. free at
-    the margin under the ChatGPT plan, so they are not "spend" the way metered API tokens are.
-    ⚠️ `TOKEN_USAGE_DB_PROVIDERS` must **exclude** `custom`/`auto`/empty — those are CT 120 traffic the
-    endpoint source already counts, so including them doubles every local token.
-  ⚠️ **CT 123 (`gpu2`) is not covered** for non-Hermes traffic. It ran llama-swap, whose
-  `:8080/metrics` was host telemetry with no token counters; since 2026-09-18 it is a plain
-  llama.cpp server on `:1234` and *could* be scraped the same way CT 120 is, but nothing does yet —
-  and Hermes does not use it (too slow), so the gap is small. (Anything *Hermes*
-  sends to a cloud provider is captured regardless of host, via the second source.)
-- Keep downloaded model weights and generated results out of git (already covered by
-  `.gitignore`: `models/`, `results/`, `artifacts/`, `bench-results*.tgz`, `.env*`).
-- Container model storage (`/models`) uses `backup=0` — weights are large and
-  re-downloadable; back up container config / service files / small state separately.
-- ⚠️ **`backup=` works on MOUNT POINTS only, never on `rootfs`.** PVE rejects it outright
-  (`rootfs.backup: property is not defined in schema`) — a container's root disk cannot be
-  excluded from `vzdump`. Several scripts here append `backup=0` to the `rootfs` line behind a
-  `>/dev/null 2>&1 || true`, so that step is a **silent no-op** (verified on pve-manager 9.2.3);
-  don't trust the comment above such a line. Note the defaults are inverted: `rootfs` is always
-  backed up, while a mount point defaults to `backup=0` and needs `backup=1` set explicitly. To
-  keep a big rootfs out of backups, exclude paths in the backup job instead:
-  `vzdump <vmid> --exclude-path /opt/<bulk>`.
-- **Backups (`Synology-Backup` NFS, weekly job Sundays 01:00, all guests, keep-last=3).** Two
-  traps here, both of which have caused a silent multi-week outage:
-  - ⚠️ **The Synology allow-lists NFS clients by IP**, so a change to the host's address breaks
-    every backup with `mount.nfs: access denied by server` — silently. Fix in DSM (Control Panel →
-    Shared Folder → NFS Permissions). It is allow-listed by the **exact IP**, so *another host IP change breaks
-    backups again* — prefer a `192.168.1.0/24` rule.
-  - ⚠️ **`vzdump` needs `tmpdir: /var/tmp` in `/etc/vzdump.conf`** (set; comment in-file). Its
-    temp dir defaults to the *target storage*, and for an **unprivileged** container `tar` runs
-    under `lxc-usernsexec` as uid 100000+, which this NAS refuses even though the share reports
-    mode 777 (root writes fine). Symptom is a mounted-and-active storage that still fails with
-    `Cannot open: Permission denied`. Only small config files go to tmpdir; archives stream
-    straight to the NAS. Verified across all four paths — stopped CT, running unprivileged CT
-    (snapshot), privileged CT, and QEMU VM.
-  - A container **rootfs cannot be excluded** from these backups (see the `backup=` note above),
-    but a `backup=0` mount point can — which is why CT 120's `/models` is not in its 3 GB archive.
-  - `Synology-Backup` is the **only** NFS storage, deliberately. To give a future container media
-    from another share, **bind-mount the path instead of adding a storage**:
-    `pct set <vmid> --mp0 /mnt/pve/<mount>,mp=/media` — an NFS storage declaring `content rootdir`
-    is a trap (LXC rootfs over NFS is slow and hits the uid-mapping problem above).
-  - The Docker host's precious state is its **volumes** (`portainer_data`,
-    `mealdeal_mealdeal-data`) — see `docker-host/README.md` for pulling those out separately.
-- **Notifications go to Slack, not just root's mailbox.** Proxmox's builtin `mail-to-root` target
-  delivers to a local mailbox nobody reads, which is how a backup outage stayed silent for weeks. A
-  `slack` webhook endpoint + `slack-all` matcher now forward **every** notification to Slack
-  *alongside* mail-to-root. Provisioned by `host-notifications/setup-slack-notifications.sh`
-  (re-run it to rotate the URL). The webhook URL path is stored as a Proxmox notification
-  **secret** — the API returns only its name, never the value, so it stays out of
-  `notifications.cfg` and out of `pvesh get` output.
-- The GPUs are driven via **Vulkan** (mesa RADV). The host now runs **two Radeon Pro V620s**
-  (Navi 21/gfx1030); the prior RX 6700 XT (Navi 22/gfx1031) is kept only for reference. The
-  container installs the Vulkan userspace (`mesa-vulkan-drivers libvulkan1 vulkan-tools`) and
-  passes through **only GPU 1's** render node (bind-mounted by PCI address via the `by-path`
-  symlink), so llama.cpp offloads all layers (`-ngl 99`) onto that single card; verify with
-  `vulkaninfo` / `llama-server --list-devices` (exactly one device) and a non-trivial
-  `mem_info_vram_used` on GPU 1 (read by PCI address — `cardN` is not stable) with GPU 2
-  near-idle. The bind's dest node name is resolved at provision, so a host DRM renumber (only
-  on a GPU add/remove or kernel change) needs GPU 1's mount re-resolved in place (rewrite the
-  two entries + restart the CT — see the README "Recovering after a DRM renumber" recipe; a
-  plain re-run is rejected while the CT exists). The `llamacpp-serve` guard turns the
-  otherwise-silent CPU fallback into a loud startup failure.
-- ✅ **Both PCIe slots are equivalent on this board.** All seven ROMED8-2T slots are CPU-direct
-  Gen4 x16, verified on both cards via `pp_dpm_pcie`. The B550's chipset-slot penalty — a fixed
-  ~4 ms per decoded token, i.e. **−22% on this MoE** and the reason the model had to live on GPU 1 —
-  **no longer applies**, so either card can host either workload.
-  - ⚠️ **`current_link_speed` / `current_link_width` still are not trustworthy in general.** On the
-    B550 both reported `16.0 GT/s x16` while one card was really Gen3 x4. Ground truth is the
-    **starred line of `pp_dpm_pcie`**; check that, not the friendly file.
-  - The mechanism is worth keeping: an interconnect round-trip is a **fixed per-token cost**, so it
-    hurts FAST models most — ~4 ms on a 12 ms MoE token is −22%, on a dense 27B's 53 ms token only
-    −7%. Prefill batches thousands of tokens per submission and amortises it away; decode pays it
-    every token. Re-measure before trusting any slot to be free.
-  - Harness: **`pro-v620/gpu-ab-bench/`** (host-side, NOT a service). Read its README before
-    re-running: it carries the interleaving method, the "verify every control" checklist, the
-    ⚠️ **revert `ct123-dual-gpu.sh` before production returns** rule, and the output-sanity gate.
-- **V620 host-side GPU services live under `pro-v620/` and run on the Proxmox host (NOT in the
-  LXC)**, each with an idempotent `install.sh` + systemd unit + `.env`.
-  **`pro-v620/gpu-blower-control/`** drives each card's blower from that card's amdgpu temps by
-  writing **BMC fan duty over in-band IPMI** (`ipmitool raw 0x3a 0xd6`, `/dev/ipmi0`). Control law
-  is the B550 one — linear ramp on **edge** temp plus a hotspot override on the hottest of
-  junction/mem — and a missing sensor or failed write forces 100%.
-  ⚠️ **The BMC has no GPU temperature sensor**, so its own fan tables can never cool a passive
-  card; this service is the only thing closing that loop.
-  ✅ **But it DOES monitor the CPU and every DIMM, and acts on them — so those need no host
-  service.** The GPU is the *only* thermal gap on this board, which is exactly why
-  `gpu-blower-control` exists and why there is no CPU/RAM equivalent. Read them with
-  `ipmitool sdr type Temperature`: `CPU Temp`, `MB Temp`, `Card Side Temp`, `Onboard LAN Temp`,
-  and **one sensor per memory channel, `TEMP_CPU1_DDR4A` through `…DDR4H`** — an unpopulated
-  channel reports `No Reading`, which is how to tell which slots are filled without opening the
-  case (`dmidecode`'s `Locator` is useless here: ASRock reports every slot as `DIMM 0`).
-  Baseline measured 2026-09-17 under the qwen4exp placement sweep, **4 of 8 channels populated
-  (C, D, G, H) — a CORRECT, deliberate placement** chosen from the board documentation and
-  validated by the owner's own tests, all four at `Configured Memory Speed: 3200 MT/s`; don't
-  "fix" it and don't reason about it from generic one-per-quadrant folklore: DIMMs **45-50 °C** (H hottest, G coolest, ~4 °C spread from airflow position),
-  CPU **41 °C**, fans 1200-2400 RPM. DDR4 RDIMMs throttle near 85 °C, so that is ~35 °C of
-  headroom, and the BMC exposes **no upper threshold** on the DIMM sensors to trip on.
-  ⚠️ Expect **+5-10 °C when the other four sticks land** — A/B/E/F are currently acting as
-  airflow gaps, and filling them both adds heat sources and restricts flow.
-  ✅ **Flat DIMM temps are a useful independent check on whether a workload is really
-  memory-bandwidth-bound.** They did not budge while CPU utilisation swung 2% → 50%, which
-  corroborates, from a completely different sensor, the finding that the hybrid qwen4exp
-  placement is latency-bound rather than saturating the ~92 GB/s the sizing note assumes.
-  🔴 **Do NOT infer which blower cools which card from PCI bus order — here it is reversed**
-  (`FAN4`→`0000:83:00.0` top, `FAN5`→`0000:03:00.0` bottom). Getting it backwards is nearly
-  undiagnosable: each card's blower ramps on the *other* card's heat, both cards appear to "fail to
-  cool" identically, and shroud/airflow/undervolt/PCIe all test clean. Verify by **starving one
-  blower under load** — see that service's README.
-  ⚠️ **A tach reading proves NOTHING about control**: confirm by driving a channel down and
-  checking the fan actually slows.
-  ⚠️ `pro-v620/fan-control/` (out-of-tree `nct6687` PWM sysfs) is the **B550-era predecessor and
-  does not work on this board** — no server board has that Super I/O chip. Kept for reference.
-  `pro-v620/undervolt/` applies a persistent GFX **voltage offset** to **every** V620
-  (both at −100 mV). The V620's board power
-  is **firmware-locked at 250 W** (`power1_cap` write of any other value → `-EINVAL`) and
-  OverDrive exposes no clock-ceiling knob, so an undervolt is the only power/thermal lever
-  (−100 mV ≈ −18 % power / −8 °C peak junction at flat throughput). The undervolt installer also
-  enables OverDrive via `/etc/modprobe.d/amdgpu-overdrive.conf` (needs a reboot to take effect).
-- **A last-resort GPU over-temp watchdog lives under `pro-v620/gpu-thermal-watchdog/`** (also
-  host-side, NOT in an LXC; same idempotent `install.sh` + systemd unit + `.env` idiom, but no
-  kernel module — it only *reads* amdgpu hwmon). It watches junction/mem on both V620s and, if
-  either crosses a trip temp (default **102 °C** junction / 101 °C mem — deliberately **above**
-  the 100 °C hardware throttle, **below** the 105 °C emergency reset), gracefully stops the LLM
-  server (`pct exec 120 -- systemctl stop llamacpp`) so the card cools before the hardware has to
-  reset it (a MODE1 reset corrupts the running inference). Failure philosophy is the **opposite**
-  of the fan controller's: stopping the model is disruptive, so a missing sensor is logged and
-  skipped rather than treated as over-temp (the 105 °C hardware emergency is the final backstop).
-  ⚠️ **Treat a trip as a real fault** (a seized blower, a detached hub lead), not as normal
-  saturation — with a blower per card, both saturated at once settle around 62/73 °C on the
-  production curve with fan headroom left.
-  ⚠️ **A DENSE model, not big-context MoE prefill, is the thermal worst case** — a dense 27B pins
-  the firmware-locked 250 W cap (peaks ~84/88 °C) while the 3B-active MoE is memory-bound and never
-  reaches it (~73/74 °C at ~220 W). Margin to the 102 °C trip is ~28 °C on the MoE but only
-  **~14 °C on a dense model**, so do not quote the MoE figure as the worst case.
-  ⚠️ **It CANNOT protect a hand-driven load.** It stops the CT's model *service*
-  (`systemctl stop llamacpp` / `llama-swap`), which is a no-op against a `llama-bench` or
-  `llama-server` you launched yourself — the 105 °C hardware MODE1 reset then becomes the only
-  backstop. Run an independent guard alongside any manual benchmark: poll `temp2_input` on both
-  cards every 2 s and `pkill -f llama-bench` at ~100 °C.
-- **Host networking.** The host is on the LAN at static **`192.168.1.93`**, with `vmbr0` bridging
-  its NIC. Containers and VMs keep `ip=dhcp` and each takes **its own lease from the LAN router**,
-  so every service is reached directly on its own IP and by hostname (the router serves DHCP
-  hostnames under domain `lan`). ⚠️ Give each guest a **DHCP reservation on the router** — the
-  leases are dynamic, and anything pinned to an address goes stale when one moves.
+- `/etc/vzdump.conf` needs `tmpdir: /var/tmp`: the NAS rejects the mapped UID used
+  for unprivileged LXC temporary files. Archives still stream to NFS.
+- Allow-list the NAS's NFS clients by subnet (`192.168.1.0/24`), not by the host's
+  exact IP: an exact-IP entry breaks every backup silently with `mount.nfs: access
+  denied by server` the next time the host address changes. Set it in DSM under
+  Control Panel → Shared Folder → NFS Permissions.
+- Back up Docker volumes for restores that do not roll back the whole VM.
+- The token ledger under `/root/.hermes/token-usage/` is excluded from the git
+  config backup; its off-box copy is CT 121's weekly vzdump. It cannot be rebuilt.
+- Use a bind mount when exposing another NAS share to a container.

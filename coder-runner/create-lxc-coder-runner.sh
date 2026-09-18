@@ -26,14 +26,8 @@ START_ON_BOOT="${START_ON_BOOT:-1}"
 NODE_VERSION="${NODE_VERSION:-v26.7.0}"
 NODE_SHA256="${NODE_SHA256:-982aa24dd8be4c889c6a8ab337ddff3b0896645b20f4239356e80552c16277ee}"
 
-# pnpm — mealdeal is a pnpm monorepo, so the runner needs it to run `pnpm ci`/build/tests.
-# Installed from the npm registry (which verifies its own package integrity hashes), NOT via
-# corepack: corepack is no longer bundled with Node (gone from Node core as of 25), so the
-# `corepack enable` this script used to rely on was a silent no-op on Node 26 and pnpm was
-# never actually installed — it had to be added by hand on CT 122. Default `latest` avoids a
-# stale pin; set an explicit version for a reproducible rebuild.
-# ⚠️ Do NOT pin 11.13.1-11.16.0: those tarballs shipped without most of their compiled files
-# (pnpm#13164) and were republished as 11.17.0.
+# Install pnpm from npm; Node 26 does not bundle corepack.
+# Set an explicit version for a reproducible rebuild.
 PNPM_VERSION="${PNPM_VERSION:-latest}"
 
 # Public key of the caller (CT 121 hermes) that will drive this runner over ssh.

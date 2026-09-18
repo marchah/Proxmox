@@ -4,24 +4,18 @@ A Debian VM running **Docker + Compose + Portainer CE**. It hosts the homelab's 
 self-contained web apps as Compose stacks — currently MealDeal and work-board — so a
 new project costs a compose file instead of a bespoke provisioning script. A stack's
 compose file usually lives in `stacks/` here; work-board's lives in its own repo, and
-`## work-board specifics` says why.
+[work-board specifics](#work-board-specifics) covers its setup.
 
-Apps here no longer consume a VMID each: they are containers inside this one VM.
+Apps share this VM and do not consume individual VMIDs.
 
-## Why this is a VM, and the only VM
-
-Everything else in this repo is a native LXC, and that is right for the GPU/LLM containers —
-they need host device passthrough and gain nothing from Docker. This is the deliberate exception.
-
-Proxmox recommends running Docker in a VM. Docker-in-LXC needs `nesting=1` + `keyctl=1` (and is
-frequently run privileged), which weakens namespace isolation, puts Docker's `overlay2` on top of
-a container filesystem — the classic breakage — tends to need its nesting/AppArmor tweaks redone
-after a Proxmox kernel bump, and shares a kernel with the host's own firewall rules that Docker
-also writes into. A VM walls all of that off for
-about 4 GB of RAM, which this host has spare.
-
-**VMID 300:** this repo's `100-119`/`120-139`/… ranges allocate *containers*. VMs get their own
-`300+` range so the two numbering schemes never collide.
+**Why a VM, and the only one here.** Proxmox recommends running Docker in a VM, and
+that is what this is: its own kernel and its own firewall rules, isolated from the
+host's. Docker-in-LXC instead needs `nesting=1` + `keyctl=1` (often privileged), puts
+`overlay2` on top of a container filesystem, tends to need those tweaks redone after a
+Proxmox kernel bump, and shares a kernel with the host's firewall rules that Docker
+also writes into. The cost is about 4 GB of RAM, which this host has spare. The GPU
+model servers stay native LXCs — they need device passthrough and gain nothing here.
+VMs use the repo's `300+` VMID range so container and VM ids never collide.
 
 ## Provision (on the Proxmox host, as root)
 
@@ -78,7 +72,7 @@ ssh pve 'ssh -i /root/.ssh/docker-host debian@docker-host'
 # From the guest
 docker ps
 docker compose -f /opt/stacks/<project>/compose.yaml logs -f
-docker compose -f /opt/stacks/<project>/compose.yaml up -d --build   # rebuild + restart
+docker compose -f /opt/stacks/<project>/compose.yaml up -d   # pull + restart per pull_policy
 ```
 
 Day-to-day, prefer the Portainer UI: it does logs, console, env-var edits, redeploys, and volume
@@ -101,6 +95,8 @@ docker pull portainer/portainer-ce:<newer> && docker rm -f portainer && \
 Stack: [`stacks/mealdeal/compose.yaml`](stacks/mealdeal/compose.yaml). Live at
 **`http://192.168.1.250:4000`** (SPA + GraphQL at `/graphql`).
 
+Extraction uses CT 120 at `http://llamacpp:1234/v1`, model `qwen3.6-35b-a3b`.
+
 **Ingest is off until you add mailbox credentials.** Blank `IMAP_USER`/`IMAP_PASSWORD` make the
 app disable ingest entirely rather than crash, so the stack comes up clean. To enable it, set
 these as Portainer stack env vars and redeploy:
@@ -120,9 +116,7 @@ docker exec mealdeal sh -c 'wget -qO- --post-data="" \
 
 ### Image source — pulls a published image
 
-Since 2026-07-26 the stack **pulls a prebuilt image** from GHCR, published by mealdeal's
-`Publish image` workflow ([marchah/mealdeal#36](https://github.com/marchah/mealdeal/pull/36),
-merged). The package is **public**, so anonymous pull works and Portainer needs no registry
+The stack pulls `ghcr.io/marchah/mealdeal`, published by the app's `Publish image` workflow. The package is **public**, so anonymous pull works and Portainer needs no registry
 credentials. Nothing is built on this host — a redeploy is a ~10 s pull.
 
 | Tag | Use |
@@ -139,11 +133,6 @@ of fetching the new `main`.
 ```yaml
 image: ghcr.io/marchah/mealdeal:sha-b63ad81
 ```
-
-> It previously built from the git repo with `build:` + `pull_policy: build`, because no image was
-> published yet. (An earlier note here blamed a GitHub Actions billing lock — that was wrong; the
-> account is plan `free` and public repos get free minutes, so every line item nets $0.00. The
-> image was merely unpublished.)
 
 ## work-board specifics
 
@@ -162,18 +151,11 @@ and registry, to pull the image — where MealDeal needs neither. Details live i
 README; the general lesson for this one is to **check a stack's repo and package visibility
 before assuming anonymous access**, rather than generalising from MealDeal.
 
-## What you give up versus the old per-app LXC
+## Health and rollback
 
-The retired `mealdeal/create-lxc-mealdeal.sh` health-checked each new release and
-**automatically restored the previous one** on failure. Portainer has no health-gated rollback: a
-broken deploy leaves a broken stack until you act. Now that the stack pulls published tags, acting
-is a ~10 s redeploy pinning the previous `sha-` tag — which is why publishing images was worth
-doing. Still, nothing rolls back *by itself*; that was the conscious trade for not maintaining one
-bespoke provisioning script per app.
-
-The compose file does define a healthcheck (a GraphQL `{__typename}` probe, since the app has no
-`/health` route), so a wedged container is at least *visible* as unhealthy in `docker ps` and in
-the Portainer UI — it just won't self-heal.
+The MealDeal healthcheck queries GraphQL `{__typename}`. An unhealthy deployment
+is visible in Docker and Portainer; rollback requires selecting a known-good
+image tag and redeploying.
 
 ## Backups
 

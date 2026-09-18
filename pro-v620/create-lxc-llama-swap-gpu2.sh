@@ -2,19 +2,9 @@
 
 set -Eeuo pipefail
 
-# This script is intentionally specific (like its CT-120 sibling). It stands up a
-# SECOND Radeon Pro V620 service on GPU 2 for the autonomous coding loop: a
-# `llama-swap` proxy that hot-swaps between the loop's models — a dedicated coder
-# (Qwen3.8-27B) and a reviewer (ThinkingCap-Qwen3.6-27B) — one resident at a time
-# (both can't co-reside on one 32 GB card). CT 120's qwen3.6 on GPU 1 stays the
-# untouched ops server; the loop's dispatcher is serialized to one task at a time
-# so the swap only fires at coder<->reviewer handoffs. Serves an OpenAI-compatible
-# API at 0.0.0.0:8080; clients pick the model by name ("qwen3.8-27b" /
-# "thinkingcap-27b").
-#
-# This pair is only the BOOTSTRAP. The live container serves eight models, all
-# added by hand to /etc/llama-swap/config.yaml and deliberately not baked here —
-# see the note in CLAUDE.md. A rebuild gives you these two and nothing else.
+# Reference recipe for the retired CT 123 llama-swap runtime: one V620, a coder
+# and reviewer swapped by model name on :8080. CT 123 now serves Flash-Next directly.
+# This recipe provisions only the pair below. Use an unused container/card.
 readonly GPU_NAME="Radeon Pro V620"
 # This container is pinned to one card (0000:83:00.0). The other (0000:03:00.0)
 # runs CT 120 (qwen3.6 ops). Passthrough binds ONLY GPU 2's DRM nodes — the only
@@ -38,54 +28,22 @@ readonly LLAMASWAP_ASSET="llama-swap_${LLAMASWAP_VERSION}_linux_amd64.tar.gz"
 readonly LLAMASWAP_ASSET_URL="https://github.com/mostlygeek/llama-swap/releases/download/v${LLAMASWAP_VERSION}/${LLAMASWAP_ASSET}"
 readonly LLAMASWAP_SHA256="1675b0bcdb0791f6172d22993ab22a8097c25a0adda4bb8467d2c31871fb77a0"
 
-# --- Coder model: Qwen3.8-27B (dense 27B, multimodal, thinking). Released 2026-08-14
-# and adopted the same day: SWE-bench Pro 61.7 vs 53.5 for Qwen3.6-27B, on the one
-# SWE-bench variant that covers TS/JS. UD-Q5_K_XL ~20.9 GB. Apache-2.0.
-# ⚠️ unsloth REQUANTISED this file on 2026-08-20 (20.2 -> 20.9 GB); the pin below moved
-# from revision fdd03b8b to 4ca72078 on 2026-08-22. The chat template is byte-identical
-# between the two (sha 12827f24b742ea4e), so only tensor quantisation changed.
-# Architecturally IDENTICAL to Qwen3.6-27B (same config.json), so it is a drop-in:
-# same KV cost, same footprint, and llama.cpp already supported it on release day.
-# ⚠️ Qwen ships NO DFlash drafter for it. Borrowing Qwen3.6-27B's works but only
-# partially — acceptance roughly halves and the gain is ~1.34x on code, versus 2.5x
-# for a matched pair. That drafter is a live-only addition, not provisioned here:
-# its provenance could not be established (the local file matches no published repo).
+# Coder: Qwen3.8-27B, Q5 (~20.9 GB), pinned to a specific quant revision.
 readonly CODER_REPO="unsloth/Qwen3.8-27B-GGUF"
 readonly CODER_FILE="Qwen3.8-27B-UD-Q5_K_XL.gguf"
 readonly CODER_SHA256="8601193d3d5760c37fb8ce1b43afebc69df5fb24e1fbc5a547c32e2200305276"
 readonly CODER_REVISION="4ca720788d1e01f1bff70c033e0d0028fd02e502"
 readonly CODER_ALIAS="qwen3.8-27b-dflash2"
 
-# --- Coder accelerators, both bootstrapped so a rebuild matches production ---------------
-# Qwen3.8's OWN DFlash2 head as the drafter (llama.cpp #27342, in the pinned build). A MATCHED
-# drafter is the whole story, and DFlash2 beats the MTP head this entry used to bootstrap:
-# measured 2026-08-28, 3 reps, 3 prompts, temp 0, against a no-speculation control (17.03 tok/s)
-#              code    prose   list    overall
-#   MTP  n=2   35.44   29.19   31.72   32.12
-#   DFl2 n=8   67.14   26.72   30.47   41.44    +29 % overall, +89 % on code
-# Code is what the coder emits, so the prose/list losses are an acceptable trade. The DFlash2
-# head is also SMALLER: 1.92 GiB vs the MTP head's 4.19 GiB.
-#
-# DFlash2 is auto-detected from the checkpoint, so --spec-type stays draft-dflash.
-#
-# ⚠️ n-max 8 here does NOT contradict the n>=8 cliff documented in CLAUDE.md: that cliff is an
-# MTP property, not a backend threshold. DFlash2's acceptance is IDENTICAL at n=7/8/10 (52.1 %)
-# because the drafter saturates its own block length, so it plateaus (40.93 / 41.40 / 41.43)
-# instead of collapsing. Re-sweep if the drafter changes; never copy an n-max between drafters.
+# Matched DFlash2 drafter; auto-detected with --spec-type draft-dflash.
+# n-max=8 was selected for this head. Rerun an output-checked sweep if it changes.
 readonly CODER_DRAFT_REPO="z-lab/Qwen3.8-27B-DFlash2-GGUF"
 readonly CODER_DRAFT_FILE="Qwen3.8-27B-DFlash2-Q8_0.gguf"
 readonly CODER_DRAFT_SHA256="c18e800daedc59ca68fd13b6a856d795746af6d399a9279ac6a277d1d422f87e"
 readonly CODER_DRAFT_REVISION="2d9571f8ce46e151f61c6499c99dee6079e1d610"
 readonly CODER_DRAFT_NMAX="${CODER_DRAFT_NMAX:-8}"
 
-# Vision projector. Qwen3.8-27B is multimodal and WITHOUT this the server answers
-# "image input is not supported" while the caller carries on regardless — a silent failure
-# mode that once cost a 3-hour agent run reasoning about screenshots it never received.
-# Measured cost on this card: +1.11 GiB VRAM, no GTT spill, text-only decode 32.2 -> 32.0
-# tok/s with BYTE-IDENTICAL output, and speculation stays active on image requests (6/6
-# accepted; measured with the MTP head, which the DFlash2 head replaced).
-# ⚠️ VRAM is the binding constraint (2.12 GiB headroom at ctx 65536). If it ever runs out,
-# `--mmproj-device none` keeps the projector on CPU for zero VRAM.
+# Vision projector, approximately 1.1 GiB VRAM. Validate image input after changes.
 readonly CODER_MMPROJ_REPO="unsloth/Qwen3.8-27B-GGUF"
 readonly CODER_MMPROJ_FILE="mmproj-F16.gguf"
 readonly CODER_MMPROJ_LOCAL="Qwen3.8-27B-mmproj-F16.gguf"   # renamed: /models/hf is shared
@@ -93,42 +51,10 @@ readonly CODER_MMPROJ_SHA256="cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c61265
 readonly CODER_CTX="${CODER_CTX:-65536}"           # explicit — `auto`/--fit over-commits, see below
 readonly CODER_NPREDICT="${CODER_NPREDICT:-32768}" # thinking model — 8k truncates mid-reason
 
-# ⚠️ DO NOT SET CTX BACK TO `auto`. `auto` makes llamaswap-guarded-serve pass `--fit on`
-# instead of --ctx-size, so llama-server loads the model's native maximum and shrinks it
-# to what it *calculates* will fit. On RADV/Vulkan that calculation OVER-COMMITS, and the
-# excess does not fail — amdgpu silently places it in GTT (host RAM reached over PCIe).
-# The result is a server that starts clean, passes /health, reports a huge n_ctx, and
-# then runs an order of magnitude slow because every token streams weights/KV across the
-# bus. GPU 2 sits in the chipset x4 slot, which makes it worse.
-# Measured on CT 123, 2026-08-15, qwen3.8-27b-dflash, same box same day:
-#            --fit on (n_ctx 156416)   ctx 65536      ratio
-#   prefill      41.9 tok/s             294.0 tok/s    7.0x
-#   decode        2.0 tok/s              23.7 tok/s   11.8x
-#   VRAM/GTT   28.93 GiB + 5.83 GiB    25.66 GiB + 0.33 GiB
-# It ran that way in production for a day: coding-loop requests in the journal took
-# 25-45 MINUTES each. The plain twin at ctx 65536 gives 321.2 / 17.55 tok/s, and that
-# 17.55 reproduces the 17.6 recorded for this model unaccelerated — i.e. 65536 restores
-# exactly the documented behaviour, and DFlash is worth 1.35x decode on top of it.
-# The earlier note here listed the values --fit RESOLVED to (ornith 262144, thinkingcap
-# 217088, qwen3.6-35b-a3b 212224, qwen3.8-27b 170240, qwen3.6-27b 167936,
-# qwen3.8-27b-dflash 156416, qwen3.6-27b-dflash 149248, muse-glimmer 131072). Those were
-# never verified to FIT — they are what the broken calculation returned. Treat them as a
-# record of the bug, not as targets.
-# ⚠️ The llamaswap-guarded-serve guard does NOT catch this. It only fails loudly when the
-# GPU is missing entirely (CPU/software fallback). A GTT spill keeps every layer nominally
-# "on GPU", so the guard passes. Verify a new ctx by hand after loading the model:
-#   cat /sys/bus/pci/devices/0000:83:00.0/mem_info_{vram_used,gtt_used}
-# gtt_used must stay small (~0.3 GiB is normal host-visible scratch); hundreds of MB is
-# fine, GiB means the context is too big for this card. Raise ctx only with that check.
+# Keep explicit context sizes: RADV automatic fitting can spill KV to GTT while
+# /health remains green. Check VRAM and GTT under load before increasing context.
 
-# --- Reviewer model: ThinkingCap-Qwen3.6-27B — a Qwen3.6-27B fine-tune that cuts
-# thinking tokens ~46% out-of-domain for -0.8 points of macro accuracy, evaluated with
-# 5 seeds and 95% CIs against the base model under identical settings. Q4_K_M ~16.8 GB.
-# Apache-2.0. Reasoning-per-token is what a reviewer is paid for.
-# ⚠️ This model was previously dropped from the loop for "running away". That was
-# measured inside a loop with NO coding harness and an uncapped output; its own
-# headline result is that thinking-trace truncation falls 2.9% -> 0.4%. It is
-# reinstated deliberately, with --n-predict capped below.
+# Reviewer: ThinkingCap-Qwen3.6-27B, Q4 (~16.8 GB), with bounded output.
 readonly REVIEWER_REPO="bottlecapai/ThinkingCap-Qwen3.6-27B-GGUF"
 readonly REVIEWER_FILE="ThinkingCap-Qwen3.6-27B-Q4_K_M.gguf"
 readonly REVIEWER_SHA256="b0651e28555bde7d2459ce99f091319b1a547143463e8d49f2aa7f572675fe67"
