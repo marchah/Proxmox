@@ -146,7 +146,7 @@ split_headroom() {  # <label> <ncmoe> <c1> [kv] [mmproj_on_cpu] -> verdict on st
 
 s2b_split() {
   note ""
-  note "## Tensor-split correction (\`c1 = ncmoe + (48-ncmoe)/2 - 1\`)"
+  note "## Tensor-split correction (\`c1 = ncmoe + (48-ncmoe)/2 - 2\`)"
   note ""
   note "The documented rule balances by WEIGHT alone, and the resulting imbalance is larger"
   note "than one layer and **grows with \`-ncmoe\`**. Measured, counting GTT as demand that"
@@ -322,9 +322,13 @@ PY
 }
 
 s2c_context() {
-  local NC C1
-  if [ -s "${RUN}/best_split.txt" ]; then read -r NC C1 < "${RUN}/best_split.txt"
-  else NC=20; C1=33; fi
+  # 🔴 FOUR fields. best_split.txt carries the whole shape (ncmoe, c1, kv, mmproj), and a
+  # two-variable `read` silently absorbed the rest into C1 -- which then blew up in
+  # $(( 48 - c1 )) two calls later. The shape fields are unused here (each cell sets its
+  # own KV type) but they must still be consumed.
+  local NC C1 _KV _MP
+  if [ -s "${RUN}/best_split.txt" ]; then read -r NC C1 _KV _MP < "${RUN}/best_split.txt"
+  else NC=20; C1=32; fi
   note ""
   note "## Context: how long a window, and what it costs"
   note ""
@@ -474,6 +478,16 @@ s3_mtp() {
   printf '%s %s\n' "${KV:--}" "${MP:--}" >"${RUN}/best_shape.txt"
 
   pct start "$BUILDER" >/dev/null 2>&1 || true; sleep 15
+  if [ "${MTP_SKIP_BUILD:-false}" = true ] \
+     && pct exec "$BUILDER" -- test -x /root/builds/mtp-b11018/llama-server; then
+    echo "MTP_SKIP_BUILD=true and /root/builds/mtp-b11018 exists — reusing it"
+    # Re-assert the two guards anyway: reusing an artifact is only safe if it still has
+    # the flag and the backend that were the whole point of building it.
+    pct exec "$BUILDER" -- bash -lc \
+      '/root/builds/mtp-b11018/llama-server --help 2>&1 | grep -q draft-mtp \
+       && ls /root/builds/mtp-b11018 | grep -q ggml-vulkan' \
+      || { echo "🔴 the existing build lacks draft-mtp or ggml-vulkan"; return 4; }
+  else
   pct exec "$BUILDER" -- bash -s <<'BUILD'
 set -Eeuo pipefail
 cd /root/llama.cpp
@@ -508,6 +522,7 @@ ls "$d" | grep -q 'ggml-vulkan' \
   || { echo "🔴 no ggml-vulkan in the build output"; exit 4; }
 echo "OK: --spec-type draft-mtp present, Vulkan backend present"
 BUILD
+  fi
   local brc=$?
   if [ "$brc" -ne 0 ]; then
     note ""; note "## MTP — NOT TESTED"; note ""
@@ -524,7 +539,7 @@ BUILD
     pct stop "$BUILDER" >/dev/null 2>&1 || true
     return 3
   fi
-  pct exec "$BUILDER" -- bash -lc "cd /root/builds && tar czf /root/mtp.tgz pr28097-mtp"
+  pct exec "$BUILDER" -- bash -lc "cd /root/builds && tar czf /root/mtp.tgz mtp-b11018"
   pct pull "$BUILDER" /root/mtp.tgz /tmp/mtp.tgz
   pct push "$CT" /tmp/mtp.tgz /tmp/mtp.tgz
   pct exec "$CT" -- bash -lc "tar xzf /tmp/mtp.tgz -C /opt/llamacpp/ && rm -f /tmp/mtp.tgz"
