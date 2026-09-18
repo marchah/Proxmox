@@ -369,7 +369,7 @@ mtp_set_placement() {  # <ncmoe> [c1] [kv] [mmproj_on_cpu]
   # c1 defaults to the CORRECTED rule (documented minus two layers -- see the split stage).
   local nc="$1" c1="${2:-$(( $1 + (48 - $1) / 2 - 2 ))}" kv="${3:-}" mp="${4:-}"
   setv MODEL_CPU_MOE "$nc"; setv MODEL_TENSOR_SPLIT "${c1},$(( 48 - c1 ))"
-  local BTH; BTH=$(cat "${RUN}/best_threads.txt" 2>/dev/null || echo 8)
+  local BTH; BTH=$(cat "${RUN}/best_threads.txt" 2>/dev/null || echo 16)
   setv MODEL_THREADS "$BTH"; setv MODEL_PARALLEL 1; setv MODEL_GPU_LAYERS 99
   setv MODEL_EXPECTED_GPUS 2; setv MODEL_KV_TYPE "$kv"; setv MODEL_MMPROJ_ON_CPU "$mp"
   setv MODEL_OT_OVERRIDE "per_layer_token_embd=CPU"; setv MODEL_LOAD_MODE ""
@@ -633,12 +633,14 @@ PY
   done
   setv MODEL_PARALLEL 1; setv MODEL_CONTEXT_LENGTH 65536
 
-  # Publish the best single-stream thread count for the restore stage. Measured at
-  # -ncmoe 20, 8 threads beat 32 by +3.5% decode at flat prefill -- the CPU-side expert FFN
-  # is bandwidth-bound GEMV, and STREAM already showed 8 threads saturating the four
-  # populated channels (80.3 GB/s) where 32 measured WORSE (74.8). So more threads is
-  # contention here, not throughput, and restoring the inherited 32 would leave the box
-  # slower than measured for no reason.
+  # Publish the best single-stream thread count for the restore stage. Thread count is an
+  # inverted U at -ncmoe 20, not monotonic: 8 -> 13.13/11.87, **16 -> 13.19/12.11**,
+  # 32 -> 12.69/11.53 (d0/d8k). So 32 is clearly contention (-4 to -5%) while 8 and 16 sit
+  # within ~2% of each other, 16 ahead at depth. STREAM corroborates the shape from a
+  # different direction: 8 threads saturated the four populated channels at 80.3 GB/s where
+  # 32 measured WORSE at 74.8 -- the CPU-side expert FFN is bandwidth-bound GEMV, so past
+  # saturation more threads only contend. Restoring the inherited 32 would leave the box
+  # measurably slower for no reason; this picks from what the sweep actually measured.
   python3 - "$RUN" >"${RUN}/best_threads.txt" <<'PY'
 import glob, json, os, re, statistics as st, sys
 run, best = sys.argv[1], None
@@ -653,7 +655,7 @@ for f in glob.glob(os.path.join(run, "par1-t*-c65536.json")):
     v = d.get("per_stream_tps") or 0
     if v and (best is None or v > best[1]):
         best = (int(m.group(1)), v)
-print(best[0] if best else 8)
+print(best[0] if best else 16)
 PY
   echo "best single-stream thread count: $(cat "${RUN}/best_threads.txt")"
 }
