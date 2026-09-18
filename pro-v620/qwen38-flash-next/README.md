@@ -122,74 +122,127 @@ ONE_GPU=true NCMOE_LIST="34 40 48" ./placement-sweep.sh   # is one card faster? 
 and a `SUMMARY.md` carrying the decode table, the **VRAM-freed-versus-decode-lost trade**,
 the depth curve, and the template-contract result.
 
-## Measured, 2026-09-17 — first run of this architecture on RADV
+## Measured, 2026-09-18 — at full clock
 
-✅ **It works.** Output is coherent, non-degenerate (8-gram ratio 1.0) and reproducible
-across reps at temperature 0. As far as this KB can tell these are the first
-Qwen3.8-Flash-Next numbers on a Vulkan/RDNA2 target anywhere — upstream validated CPU and
-CUDA only, and the Vulkan hyper-connection ops merged hours before this ran.
+🔴 **Every number in this file before 2026-09-18 was taken with the CPU governor pinned to
+`powersave`, which on `acpi-cpufreq` parks all 64 threads at 1500 MHz against a 3308 MHz
+maximum.** That cost ~30% of decode and blew run-to-run spread out to as much as 36%. It
+also changed two conclusions' *direction*, not just their magnitude — see below. The
+governor is now `schedutil`, made persistent by `cpu-governor.service`, and everything here
+is re-measured.
 
-🔴 **But it is ~4x slower than the sizing note predicts, and the note's whole method is
-why.** At `--n-cpu-moe 20`, ctx 65536, two cards:
+| governor | decode d0 | decode d8k | picked |
+| --- | ---: | ---: | --- |
+| `performance` | 12.82 | 11.36 | |
+| **`schedutil`** | **12.57** | **11.36** | ✅ within 2%, and it idles cheap with no toggle to fail silently |
+| `ondemand` | 12.17 | 10.99 | |
+| `powersave` | 8.77 | 8.23 | 🔴 the old default |
 
-| | decode | note's prediction | my prediction |
-| --- | ---: | ---: | ---: |
-| 2 cards, `-ncmoe 20` | **11.7 t/s** | 51 t/s | 56 t/s |
+✅ **The model works on RADV.** Output is coherent, non-degenerate (8-gram ratio 1.0) and
+reproducible at d0 across reps at temperature 0. As far as this KB can tell these remain
+the first Qwen3.8-Flash-Next numbers on a Vulkan/RDNA2 target anywhere.
 
-Both estimates model decode as *active bytes ÷ bandwidth*. The measurement says that is
-the wrong model for a hybrid placement — see the utilisation trace below.
+⚠️ **Output is NOT bit-reproducible at DEPTH.** Reps at d0 always agree; a d8000 cell
+disagrees with itself intermittently, one prompt class at a time, ~3% apart, even at
+temperature 0 with `top_k 1`. Hybrid CPU/GPU expert reduction order varies with thread
+scheduling and ~5.8k tokens of accumulated state is enough to flip a token. **Consequence:
+compare output hashes at d0 only.** Medians at depth are fine; hashes there are not a gate.
 
-### The full two-GPU sweep — 10 configs, round-robin, 2 reps
+### The placement curve, `--threads 32`, ctx 65536, two cards, b11018
 
-`ctx 65536` · `parallel 1` · `n_predict 192` · `--tensor-split` derived per row · b11018
-
-| `-ncmoe` | VRAM used | free for a guest | max GTT | decode @ d0 | decode @ d8000 | |
+| `-ncmoe` | decode d0 | decode d8k | **prefill d8k** | VRAM used | free for a guest | headroom |
 | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 15 | 57.5 GiB | 6.5 GiB | 2198 MiB | **13.0** | 10.1 | ⚠️ spill |
-| 20 | 52.1 GiB | 11.9 GiB | 238 MiB | 11.7 | **10.3** | ok |
-| 28 | 40.4 GiB | **23.6 GiB** | 238 MiB | 10.1 | 9.2 | ok |
-| 34 | 31.3 GiB | 32.7 GiB | 238 MiB | 8.4 | 7.9 | ok |
-| 48 | 9.2 GiB | 54.8 GiB | 238 MiB | 8.6 | 8.2 | ⚠️ *see below* |
+| 15 | **13.68** | **13.57** | **78.9** | 58089 MiB | 6.3 GiB | 🔴 spilled, 2060 MiB in GTT |
+| 20 | 12.69 | 11.53 | 63.6 | 52540 MiB | 11.7 GiB | 🔴 spilled, 101 MiB, 823 MiB free |
+| 28 | 11.29 | 10.56 | 47.4 | 40527 MiB | **23.4 GiB** | ok |
+| 34 | 10.45 | 9.44 | 38.8 | 31267 MiB | 32.5 GiB | ok |
+| 48 | 10.18 | 8.70 | 29.0 | **9443 MiB** | **54.8 GiB** | ok, but single-GPU — see below |
 
-🔴 **VRAM has almost no leverage past a point.** `-ncmoe 48`, holding **9.2 GiB** of VRAM,
-matches `-ncmoe 34` holding **31.3 GiB** — 8.6 vs 8.4 at d0, 8.2 vs 7.9 at depth. **22 GiB
-of VRAM buys nothing across that span.** All the leverage is between 34 and 15, and even
-there it is modest: +48 GiB of VRAM is +51% at d0 but only **+23% at depth 8000**.
-**VRAM's value halves at realistic context depth** — which is the finding that should
-reshape the sizing note's purchase argument, since that note prices cards on short-prompt
-arithmetic.
+### 🔴 PREFILL is the binding constraint, not decode
 
-⚠️ **The `-ncmoe 48` row is effectively SINGLE-GPU and must not be read as a two-card
-point.** With no heavy layers left the derived split is `48,0`, so card 2 holds nothing
-(measured: GPU2 at 16 MiB). That is the right placement — splitting the non-expert layers
-would only add an inter-GPU hop — but the sweep now logs it and records the row in
-`.single_gpu_rows` rather than letting it pass as two-card data. **`-ncmoe 34` is the
-honest two-vs-one comparison point.**
+The column nobody was watching. Across that curve **prefill falls 63% where decode falls
+only 36%**, and in absolute terms prefill is what makes this model feel slow:
+
+| `-ncmoe` | prefill d8k | time to first token on an 8k prompt |
+| ---: | ---: | ---: |
+| 15 | 78.9 t/s | **101 s** |
+| 28 | 47.4 t/s | 169 s |
+| 48 | 29.0 t/s | **276 s** |
+
+Decode at 13.7 t/s is perfectly usable. Waiting 1.7–4.6 minutes before the first token is
+not. **So there is no single best placement**: long-prompt or agentic work wants `-ncmoe`
+as low as fits because prefill dominates, while short-prompt chat can take `-ncmoe 48` for
+−2.6% of decode and free 54.8 GiB.
+
+⚠️ **Do not quote the d0 prefill figures** (20–36 t/s). Those prompts are ~30 tokens, so the
+number is fixed per-request overhead, not throughput. Only the d8k column means anything.
 
 ### What it costs to reserve VRAM for a second model
 
-Moving `-ncmoe 20` → `28` frees ~12 GiB more (23.6 GiB total, comfortably a 27B guest at
-Q4/Q5) for **−14% at d0 and −11% at depth**. So the answer to "can another model take
-20 GB and leave the rest to Qwen" is **yes, for about 11-14%**.
+| move | frees | decode d0 | decode d8k | prefill d8k |
+| --- | ---: | ---: | ---: | ---: |
+| `-ncmoe 20 → 28` | +11.7 GiB | −11.0% | −8.4% | −25% |
+| `-ncmoe 28 → 34` | +9.1 GiB | −7.4% | −10.6% | −18% |
+| `-ncmoe 34 → 48` | +21.8 GiB | **−2.6%** | −7.8% | −25% |
 
-⚠️ **Cost per GiB is NON-monotonic** — 0.04 → 0.12 → 0.11 → 0.06 t/s per GiB across the
-row order above. VRAM is nearly free to give away below `-ncmoe 20` and above `-ncmoe 34`;
-the expensive region is the middle. Don't interpolate.
+**Giving away VRAM is cheap on decode and expensive on prefill.** `-ncmoe 34 → 48` frees
+21.8 GiB for −2.6% of decode — which is why "leave room for another model" is a good deal
+*if* your prompts are short, and a bad one if they are long.
 
-### Depth costs 5-22%, and inversely to how much is offloaded
+⚠️ **`-ncmoe 48` is effectively SINGLE-GPU and is not a two-card data point.** With no heavy
+layers left the derived split is `48,0`, so card 2 holds nothing. That is the right
+placement — splitting the non-expert layers would only add an inter-GPU hop — but it means
+the whole model runs in **9.4 GiB on one card**, leaving the *other card entirely free*.
+`-ncmoe 34` is the honest two-vs-one comparison point.
 
-| `-ncmoe` | d0 → d8000 |
-| ---: | --- |
-| 15 | 13.0 → 10.1 (**−22%**) |
-| 20 | 11.7 → 10.3 (−12%) |
-| 28 | 10.1 → 9.2 (−9%) |
-| 34 | 8.4 → 7.9 (−6%) |
-| 48 | 8.6 → 8.2 (−5%) |
+### 🔴 Depth hurts MORE the more is offloaded — the inverse of what the downclocked data said
 
-**The more that sits on the CPU, the less depth hurts proportionally** — CPU expert time
-dominates, so the QSA indexer is a smaller share of the total. Consistent with #28699
-being the depth cost.
+| `-ncmoe` | d0 → d8000 | at 1500 MHz this read |
+| ---: | --- | --- |
+| 15 | 13.68 → 13.57 (**−0.8%**) | −22% |
+| 20 | 12.69 → 11.53 (−9.1%) | −12% |
+| 28 | 11.29 → 10.56 (−6.5%) | −9% |
+| 34 | 10.45 → 9.44 (−9.7%) | −6% |
+| 48 | 10.18 → 8.70 (**−14.5%**) | −5% |
 
+The old table read a clean monotonic "the more that sits on the CPU, the *less* depth hurts"
+and that was an artifact of every core being parked at 1500 MHz. At full clock the trend
+runs the other way. ⚠️ The `-ncmoe 15` row is the one to distrust: it was spilling 2060 MiB
+to GTT, which depresses its d0 and flatters the ratio.
+
+### ⚠️ q8_0 KV is NOT free on this architecture — it costs ~14% at depth
+
+This repo's standing note says quantised KV "costs zero throughput". That was measured on
+CT 123's `qwen3.8-27b` and **does not transfer to `qwen4exp`**. Same placement, same threads:
+
+| KV / projector | decode d0 | decode d8k | VRAM |
+| --- | ---: | ---: | ---: |
+| f16 / GPU | 12.69 | 11.53 | 52540 MiB |
+| `q8_0` / CPU | 12.17 | **9.87** | 50639 MiB |
+| | −4.1% | **−14.4%** | −1901 MiB |
+
+The cost scales with depth, which is what this architecture predicts: decode is dominated by
+the QSA indexer rescoring the cached context every token (llama.cpp #28699), so a quantised
+cache is dequantised on every indexer pass. At d0 there is little context to rescore.
+
+✅ **The confound points the wrong way, which is why this is believable.** The `q8_0` cell had
+~1900 MiB *more* headroom and less GTT than the f16 control, so spill pressure would have
+made it the faster of the two. It was slower anyway, and −14.4% is an order of magnitude
+above the ~1.4% spread at full clock.
+
+### `--threads` is an inverted U with the peak at 16, not 32
+
+| threads | decode d0 | decode d8k | prefill d8k |
+| ---: | ---: | ---: | ---: |
+| 8 | 13.13 | 11.87 | 63.8 |
+| **16** | **13.19** | **12.11** | 63.7 |
+| 32 (the inherited default) | 12.69 | 11.53 | 63.6 |
+
+**32 threads is contention, worth −4 to −5%.** STREAM corroborates it from a completely
+different direction: 8 threads saturated the four populated channels at 80.3 GB/s while 32
+measured *worse* at 74.8 — the CPU-side expert FFN is bandwidth-bound GEMV, so past
+saturation extra threads only fight each other. Prefill is flat across all three, so this is
+free. ⚠️ 8 and 16 are within ~2% at n=1; 32 is the clear loser, 16 the likely winner.
 ### 🔴 `--tensor-split` is REQUIRED with `--n-cpu-moe`, and nothing warns you
 
 The single biggest effect found, and it is a configuration bug rather than a hardware
@@ -206,11 +259,58 @@ mostly heavy ones:
 **+78% decode and ~3x prefill, from rebalancing alone.** The cards were never short of
 memory *in total* — 53 GiB of demand against 60 GiB of capacity. It was pure
 maldistribution, and the symptom was a 9.3 GiB GTT spill on one card while the other sat
-17 GiB idle. Rule of thumb, now derived automatically by `placement-sweep.sh`:
+17 GiB idle.
+
+#### 🔴 …and the rule of thumb is ~2 layers off, which was hiding a second spill
+
+The rule this file used to give — `card1 = N + (48 - N) / 2` — balances by **weight alone**,
+and that is not what fills a card. Measured across three placements, counting GTT as demand
+that did not fit:
+
+| `-ncmoe` | split | card 1 | card 2 | total | spare of 65536 | imbalance |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 15 | `31,17` | 34789 | 29506 | 64295 | 1241 | **+5283** |
+| 20 | `34,14` | 32046 | 24741 | 56787 | 8749 | **+7305** |
+| 28 | `38,10` | 26521 | 18254 | 44775 | 20761 | **+8267** |
+
+The imbalance is not one layer and **it grows with `-ncmoe`**. At ~1500 MiB of expert weight
+per layer — derived from the 15→20 pair, against the ~1.56 GB assumed above — one moved
+layer shifts the imbalance by ~2× that, so the correction is roughly **−2 layers**:
 
 ```
-card1_layers = N + (48 - N) / 2      # -ts card1_layers,(48 - card1_layers)
+card1_layers = N + (48 - N) / 2 - 2      # -ts card1_layers,(48 - card1_layers)
 ```
+
+What the weight-only rule misses, all of which lands on the card owning the layer:
+
+- **the KV cache** — 12 of the 48 blocks are full attention (QSA every 4th), and card 1 owns
+  more of them than card 2 at every split in the table
+- **the vision projector**, +1.11 GiB, which goes to a single device
+- per-device compute buffers
+
+⚠️ **This mattered in practice, not just in theory.** At `-ncmoe 15` card 1 sat at
+**39 MiB free with 2060 MiB in GTT** while card 2 had 3280 MiB free — and that cell still
+posted the *fastest* decode of the sweep (13.68 t/s). A spilled cell reads as "a slow
+placement" rather than "a broken one", and the startup loud-guard does not catch it.
+**Always read `mem_info_vram_free` and `mem_info_gtt_used` together; "used" looks
+unremarkable right up to the cliff.**
+
+#### 🔴 `-ncmoe 15` does not safely fit at all in the production shape
+
+Total demand at 15 is 64295 MiB against 65536 of capacity: **~620 MiB per card even
+perfectly balanced**, under the ~1024 MiB where RADV starts spilling. So no split rescues
+it with f16 KV and the projector resident. The candidates, computed and then load-checked:
+
+| candidate | total MiB | balanced/card | verdict |
+| --- | ---: | ---: | --- |
+| `15`, f16, projector GPU | 64295 | 620 | 🔴 spills at any split |
+| `14`, q8_0, projector CPU | 63895 | 820 | 🔴 still spills — measured 11.54 t/s |
+| `15`, q8_0, projector CPU | 62394 | 1571 | fits, but pays ~14% at depth |
+| **`16`, f16, projector GPU** | **62794** | **1371** | fits, no depth penalty, vision stays resident |
+
+The frugal shape does **not** buy a whole placement step: `q8_0` + `--no-mmproj-offload`
+saves ~1900 MiB while one layer of experts costs ~1500. So dropping one layer of experts
+(`-ncmoe 16`) beats quantising the cache, because it avoids the 14% depth cost entirely.
 
 ### 🔴 Nothing is saturated — this is serialization-bound, not bandwidth-bound
 
