@@ -53,16 +53,29 @@ PY
 
 # ---------------------------------------------------------------- 3. MTP
 # ---------------------------------------------------------------- 3. MTP
-# ⚠️ ONE branch, not two cherry-picks. PR #28097 already CONTAINS #27836's three commits
-# (same subjects, rebased SHAs), and #28097 is the one that teaches the loader the
-# draft-head-only GGUF layout unsloth actually ships. Both report mergeable:false against
-# current master, so cherry-picking them onto b11018 was the wrong shape — checking out
-# #28097 directly is both simpler and the only combination its author tested.
+# 🔴 A PLAIN CHECKOUT OF PR #28097 WOULD BUILD A BINARY THAT CANNOT RUN THIS MODEL.
+# #28097 already contains #27836's three commits rebased, so one branch is the right
+# shape — but its base is **307 commits behind b11018**, and what it lacks includes
+# `35822afe5 vulkan: support qwen4exp hc ops (#28988)`, which is the commit that makes
+# qwen4exp's hyper-connection ops work on Vulkan at all. Building the PR as-is produces a
+# server that cannot offload this architecture, so the measurement would be meaningless.
+# (It also lacks #25483 "skip unneeded MoE work in mul_mm coopmat1" and #28996, both
+# directly relevant to a Vulkan MoE.)
 #
-# Because that binary is NOT b11018, a no-speculation control is run ON THE SAME BINARY.
-# This repo's own rule: comparing two speculative configs measures agreement, not
-# correctness. The control row also prices master drift against b11018-baseline for free.
-MTPDIR=/opt/llamacpp/pr28097-mtp
+# So the four MTP commits are REBASED ONTO b11018 instead, as branch `mtp-b11018` on the
+# builder, with the conflict resolution saved under mtp-patches/. Two files conflicted
+# because b11018 moved on underneath the PR:
+#   * n_ff_exp became a per-layer array (n_ff_exp_arr + an n_ff_exp(il) accessor)
+#   * every hc_*_norm / ple_norm_* / hc_head_norm gamma was reshaped from {hc_dim} to
+#     {n_embd, hc} with TENSOR_ALLOW_RESHAPE, so the grouped norm needs no graph reshape
+#   * b11018's PLE row-count block became a strict superset of the PR's, so only the PR's
+#     `!mtp_only` guard was taken from it
+# Resolution rule throughout: keep b11018's shapes and logic, OR in the PR's flags.
+#
+# A no-speculation control still runs ON THE SAME BINARY — comparing two speculative
+# configs measures agreement, not correctness — and it doubles as a check that the rebase
+# did not change anything: it should land on top of b11018-baseline.
+MTPDIR=/opt/llamacpp/mtp-b11018
 DRAFT_PLAIN="${MODELDIR}/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf"
 DRAFT_SHARED="${MODELDIR}/mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf"
 
@@ -151,32 +164,49 @@ s3_mtp() {
   pct exec "$BUILDER" -- bash -s <<'BUILD'
 set -Eeuo pipefail
 cd /root/llama.cpp
-git fetch --quiet origin
-# #28097 supersedes #27836: it carries the same three NextN/MTP commits rebased, plus the
-# draft-head-only (unsloth) layout support and the -md path fix. One checkout, no picks.
-git fetch --quiet origin pull/28097/head:pr-28097 --force
-git checkout --quiet --force pr-28097
+
+# The rebase was done and syntax-checked ahead of time (see mtp-patches/). Do NOT re-create
+# it here: a fresh `git checkout pr-28097` would silently discard it and build a binary
+# that cannot offload qwen4exp to Vulkan.
+git rev-parse --verify mtp-b11018 >/dev/null 2>&1 || {
+  echo "🔴 branch mtp-b11018 is missing — re-apply mtp-patches/*.patch onto b11018"; exit 5; }
+git checkout --quiet --force mtp-b11018
 git clean -qfd
+# Assert the shape rather than trusting the branch name: exactly 4 commits on top of
+# b11018, and b11018 itself an ancestor.
+n=$(git rev-list --count b11018..mtp-b11018)
+[ "$n" = 4 ] || { echo "🔴 mtp-b11018 has $n commits over b11018, expected 4"; exit 5; }
+git merge-base --is-ancestor b11018 mtp-b11018 || { echo "🔴 b11018 is not an ancestor"; exit 5; }
 git log --oneline -4
+
 rm -rf build
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_NATIVE=ON \
   -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF >/dev/null
 cmake --build build -j "$(nproc)" 2>&1 | tail -3
-d=/root/builds/pr28097-mtp; rm -rf "$d"; mkdir -p "$d"
+d=/root/builds/mtp-b11018; rm -rf "$d"; mkdir -p "$d"
 find build/bin -maxdepth 1 -type f -exec cp {} "$d/" \; 2>/dev/null || true
 find build -name "*.so*" -exec cp -P {} "$d/" \; 2>/dev/null || true
 chmod +x "$d"/llama-* 2>/dev/null || true
-# Loud check: the whole point of this build is that flag value existing.
+# Two loud checks: the new flag exists, and the Vulkan backend the whole rebase was for is
+# actually in the binary.
 "$d/llama-server" --help 2>&1 | grep -q 'draft-mtp' \
-  && echo "OK: --spec-type draft-mtp is present" \
   || { echo "🔴 draft-mtp ABSENT from the built server"; exit 4; }
+ls "$d" | grep -q 'ggml-vulkan' \
+  || { echo "🔴 no ggml-vulkan in the build output"; exit 4; }
+echo "OK: --spec-type draft-mtp present, Vulkan backend present"
 BUILD
   local brc=$?
   if [ "$brc" -ne 0 ]; then
     note ""; note "## MTP — NOT TESTED"; note ""
-    note "🔴 The build failed (rc=${brc}). \`--spec-type draft-mtp\` for \`qwen4exp\` comes from"
-    note "llama.cpp PR **#28097** (which already contains #27836). Both are **open** and report"
-    note "\`mergeable: false\` against master, so this may need the PR to be rebased upstream."
+    note "🔴 The build failed (rc=${brc})."
+    note ""
+    note "\`--spec-type draft-mtp\` for \`qwen4exp\` comes from llama.cpp PR **#28097** (which"
+    note "already contains #27836's commits rebased). Both are still **open**, and #28097's base"
+    note "is **307 commits behind b11018** — critically it predates"
+    note "\`vulkan: support qwen4exp hc ops\` (#28988), so the PR as published cannot run this"
+    note "architecture on Vulkan at all. The four commits were therefore rebased onto b11018 by"
+    note "hand (resolution saved as \`mtp-patches/*.patch\`) and that rebase passed a"
+    note "syntax check, so a failure here is a **build or runtime** problem, not a merge one."
     note "The 4.70 GB of drafters are downloaded and waiting at \`${MODELDIR}/mtp-*.gguf\`."
     pct stop "$BUILDER" >/dev/null 2>&1 || true
     return 3
