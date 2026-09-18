@@ -281,6 +281,48 @@ window. It halves the cache (12 KiB/token against f16's 24), so `--ctx-size 1310
 the recommended placement instead of spilling — confirmed by the `--parallel` stage running
 131072 at that shape with no spill at all.
 
+### 🔴 MTP speculation: BLOCKED, and the reason is specific
+
+The rebase of llama.cpp PR **#28097** onto b11018 (see `mtp-patches/`) **builds, loads the
+target model and serves normally** — the no-speculation control on that exact binary gives
+**13.88 t/s** against 14.17 for the `b11018-baseline` build at the same placement, so the
+build is healthy. But **both drafter GGUFs abort the moment the MTP graph is constructed**:
+
+```
+/root/llama.cpp/ggml/src/ggml.c:2264: GGML_ASSERT(ggml_can_repeat(b, a)) failed
+  llama_model_qwen4exp::graph::build_hc_mix(...)
+  llama_model_qwen4exp::graph_mtp::graph_mtp(...)
+```
+
+**This follows from the conflict resolution, and resolving it the other way does not help.**
+b11018 reshaped every hyper-connection gamma from `{hc_dim}` to `{n_embd, hc}` with
+`TENSOR_ALLOW_RESHAPE`, and updated its **trunk** graph to match. The resolution kept
+b11018's shapes, which is correct — the trunk works, as the control proves. But PR #28097's
+**MTP** graph (`graph_mtp` → `build_hc_mix`) predates that reshape and is written against
+`{hc_dim}`, so it broadcasts mismatched shapes and aborts. Taking the PR's shapes instead
+would merely move the failure into the trunk, which is the path that must work.
+
+**The real fix is to port the PR's MTP graph to b11018's hyper-connection convention** — a
+code change to the MTP caller of `build_hc_mix`, not a merge decision. That belongs upstream,
+or in a patch written with the hc layout actually in hand; guessing risks producing wrong
+*output* rather than a clean crash, which is far worse than no measurement.
+
+⚠️ **The pre-flight that passed was necessary but not sufficient.** Confirming both drafters
+carry the metadata the loader's `mtp_only` probe needs (`nextn_predict_layers 1`,
+`block_count 49`, arch `qwen4exp`, 32–34 tensors) validated the **loader** path and said
+nothing about the **graph** path, which is where this fails. Metadata satisfying a loader
+does not establish that the graph built from it is shape-correct.
+
+✅ **Everything is staged for a one-command retry when #28097 rebases**, so this is a re-test
+rather than a re-investigation:
+
+| | |
+| --- | --- |
+| drafters | `mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf` (2.79 GB, 34 tensors) and `-shared-` (1.91 GB, 32) |
+| build | `/root/builds/mtp-b11018` on CT 201, 58 MB, `draft-mtp` + `ggml-vulkan` asserted present |
+| patches | `mtp-patches/*.patch` — 4 commits, `git am` onto b11018 |
+| runner | `./mtp-standalone.sh` with `MTP_SKIP_BUILD=true` |
+
 ### Concurrency: 4 streams give 2.3x the throughput, and the context comes free
 
 At the winning placement (`-ncmoe 16`, split `30,18`, `q8_0` KV, projector on CPU). ⚠️ These
