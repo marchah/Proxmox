@@ -255,6 +255,69 @@ different direction: 8 threads saturated the four populated channels at 80.3 GB/
 measured *worse* at 74.8 — the CPU-side expert FFN is bandwidth-bound GEMV, so past
 saturation extra threads only fight each other. Prefill is flat across all three, so this is
 free. ⚠️ 8 and 16 are within ~2% at n=1; 32 is the clear loser, 16 the likely winner.
+### Concurrency: 4 streams give 2.3x the throughput, and the context comes free
+
+At the winning placement (`-ncmoe 16`, split `30,18`, `q8_0` KV, projector on CPU). ⚠️ These
+figures come from `concurrency-probe.py`, which uses a different prompt set from
+`placement-probe.py` — **compare within this table only**, not against the placement numbers.
+
+| `--parallel` | `--threads` | `--ctx-size` | ctx/slot | per-stream t/s | aggregate t/s |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 32 | 65536 | 65536 | 13.22 | 13.22 |
+| 1 | 16 | 65536 | 65536 | 14.09 | 14.09 |
+| 1 | **8** | 65536 | 65536 | **14.25** | 14.25 |
+| 2 | 32 | 65536 | 32768 | 10.23 | 20.46 |
+| 2 | **16** | 65536 | 32768 | **11.05** | **22.10** |
+| 4 | 32 | 65536 | 16384 | 7.67 | 30.46 |
+| 4 | **16** | 65536 | 16384 | 7.73 | **30.88** |
+| 4 | 8 | 65536 | 16384 | 7.38 | 29.37 |
+| 4 | 32 | **131072** | **32768** | 7.66 | 30.52 |
+
+**Scaling: 1 → 2 streams is 1.55×, 1 → 4 is 2.30×**, at 58% of the solo per-stream rate.
+Four concurrent callers is a good trade for batch work and a poor one for a single
+interactive user.
+
+✅ **Doubling the total context budget at 4 streams is FREE.** `--ctx-size 131072` gives each
+of four slots **32k instead of 16k** for 30.52 vs 30.46 t/s aggregate — identical within
+noise. Concurrency and context are not in tension here, because the KV cache is only
+12 KiB/token at `q8_0` (24 at f16), so the extra 0.75 GiB fits the winning placement's
+headroom. **Do not run `--parallel 4` at `--ctx-size 65536`**: it buys nothing and leaves
+each caller a 16k window.
+
+### 🔴 `--threads` inverts with load — do not tune it single-stream
+
+| `--threads` | par 1 | par 2 | par 4 |
+| ---: | ---: | ---: | ---: |
+| 8 | **14.25** | — | 29.37 |
+| **16** | 14.09 | **22.10** | **30.88** |
+| 32 | 13.22 | 20.46 | 30.46 |
+
+8 threads wins solo — it already saturates the four populated memory channels, which is what
+STREAM predicted — and **loses 4.9% at four streams**, because four concurrent streams
+present more parallel work than 8 threads can cover. **16 is the right default**: within 1%
+of best solo, best at both 2 and 4 streams.
+
+⚠️ **The general trap: a knob tuned at one concurrency level can be actively wrong at
+another, and single-stream benchmarking is the default that hides it.** This bit the
+pipeline's own selection logic, which scored `--threads` on single-stream rows and would have
+applied 8 to a server of unknown concurrency.
+
+✅ And the effect shrinks as load rises — the 16-vs-32 gap is +6.6% at 1 stream, +8.0% at 2,
+**+1.4% at 4**. Once the batch is large enough, fewer threads still saturate bandwidth and
+the setting stops mattering.
+
+### What concurrency says about the fixed-overhead floor
+
+Fitting per-token time as **F** (serialisable, amortises across streams) + **V** (real
+per-stream work) to the `--threads 32` pair gives **F = 53.5 ms, V = 22.1 ms — 71% fixed**,
+which independently corroborates the ~43 ms floor found earlier by two other routes.
+
+⚠️ **But V is not constant, so treat 71% as a floor on the amortisable share rather than an
+exact split.** That fit predicts 28.2 t/s at four streams; the measurement is **30.46, 8%
+better**. llama.cpp batches concurrent decode, so the per-stream work itself shrinks with
+batch size (V falls to ~19.4 ms at four streams). A two-term model is the right shape and
+slightly too pessimistic.
+
 ### 🔴 `--tensor-split` is REQUIRED with `--n-cpu-moe`, and nothing warns you
 
 The single biggest effect found, and it is a configuration bug rather than a hardware
