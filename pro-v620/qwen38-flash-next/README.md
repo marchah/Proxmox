@@ -288,7 +288,7 @@ That advice was right; it now has a number.
 | | why |
 | --- | --- |
 | CPU-only (`-ngl 0`) | 6.04 t/s, **−57%** — and pointless, since `-ncmoe 48` frees a whole card at 10.18 |
-| `--threads 32` | −4 to −5% solo; 16 is best across every concurrency level |
+| `--threads 32` | −4 to −5% solo; 16 is best at 2+ streams (8 edges it ~1% solo, then loses 4.9% at 4) |
 | the documented `--tensor-split` | ~2 layers off; spills at `-ncmoe` 15/16/20 and costs up to −11% |
 | f16 KV at `--ctx-size 131072` | spills at `-ncmoe 16` and costs −21% of decode at depth |
 | `-ncmoe` below 16 | does not fit, in any shape, at any split |
@@ -429,7 +429,7 @@ that *the shape* is free, not that q8_0 specifically is.
 - `--no-mmproj-offload` costs 3–5× on **image encoding only** (text is unaffected). If
   vision latency matters, take the f16/projector-on-GPU row and its 1.6 GiB less headroom.
 
-### `--threads` is an inverted U with the peak at 16, not 32
+### `--threads`: 32 is contention — but do NOT conclude a winner from these rows
 
 | threads | decode d0 | decode d8k | prefill d8k |
 | ---: | ---: | ---: | ---: |
@@ -441,7 +441,14 @@ that *the shape* is free, not that q8_0 specifically is.
 different direction: 8 threads saturated the four populated channels at 80.3 GB/s while 32
 measured *worse* at 74.8 — the CPU-side expert FFN is bandwidth-bound GEMV, so past
 saturation extra threads only fight each other. Prefill is flat across all three, so this is
-free. ⚠️ 8 and 16 are within ~2% at n=1; 32 is the clear loser, 16 the likely winner.
+free.
+
+🔴 **What survives here is only "32 is contention". The 8-vs-16 question cannot be settled
+single-stream, and this table is single-stream** — the two are within 0.5% at n=1, which an
+earlier revision of this section read as "an inverted U with the peak at 16". Measured across
+concurrency, **8 actually wins solo and loses 4.9% at four streams**; see
+[`--threads` inverts with load](#---threads-inverts-with-load--do-not-tune-it-single-stream),
+which is the section to trust. 16 is the right default, for a reason this table cannot see.
 ### A spill costs DECODE, not prefill — and more at depth
 
 Measured directly, same placement (`-ncmoe 16`, split `30,18`, f16 KV), only the context
@@ -636,12 +643,28 @@ it with f16 KV and the projector resident. The candidates, computed and then loa
 | --- | ---: | ---: | --- |
 | `15`, f16, projector GPU | 64295 | 620 | 🔴 spills at any split |
 | `14`, q8_0, projector CPU | 63895 | 820 | 🔴 still spills — measured 11.54 t/s |
-| `15`, q8_0, projector CPU | 62394 | 1571 | fits, but pays ~14% at depth |
-| **`16`, f16, projector GPU** | **62794** | **1371** | fits, no depth penalty, vision stays resident |
+| `15`, q8_0, projector CPU | 62394 | 1571 | computes as fitting — ⚠️ never load-checked |
+| **`16`, q8_0, projector CPU** | **60691** ✅measured | **2422** | ✅ **14.17 / 13.45 — the best cell** |
+| `16`, f16, projector GPU | 62794 computed / 62605 measured | 1371 | 14.16 / 13.07; vision stays resident |
 
-The frugal shape does **not** buy a whole placement step: `q8_0` + `--no-mmproj-offload`
-saves ~1900 MiB while one layer of experts costs ~1500. So dropping one layer of experts
-(`-ncmoe 16`) beats quantising the cache, because it avoids the 14% depth cost entirely.
+🔴 **This table's verdicts were written against the retracted "q8_0 costs ~14% at depth"
+figure and they came out backwards.** With the clean pair measured at one placement that
+fits (see [that retraction](#-q8_0-kv--projector-on-cpu-is-free-at-a-placement-that-fits)),
+`q8_0` + projector-on-CPU is **better on both axes at once**: +2.9% decode at depth
+(13.45 vs 13.07) *and* 1.6 GiB more headroom (59.3 vs 61.1 GiB of demand). It is what the
+deployed config runs. Take the f16 / projector-on-GPU row only if **image-encoding latency**
+matters, which is the one thing it actually buys.
+
+⚠️ **The retraction re-opens `-ncmoe 15`, and nobody re-tested it.** 15 with `q8_0` +
+`--no-mmproj-offload` computes to 1571 MiB/card balanced — *above* the ~1024 MiB RADV spill
+floor — and the only recorded reason for rejecting it was the 14% depth cost that turned out
+not to exist. ⚠️ It also contradicts the summary line above claiming `-ncmoe` below 16 "does
+not fit, in any shape, at any split", which was true of the f16 / projector-GPU shape that
+was measured and is unproven for this one. **Treat 15 as an untested candidate, not as
+excluded** — it is worth one load-check and a depth probe.
+
+The frugal shape still does **not** buy a whole placement step: `q8_0` +
+`--no-mmproj-offload` saves ~1900 MiB while one layer of experts costs ~1500.
 
 ### ⛔ CPU-only is not worth it — and you do not need it to free a card
 
@@ -686,7 +709,7 @@ walks 20 CPU expert layers, then card 1's layers, then card 2's, synchronising a
 handoff — 48 layers of serial dependency with three participants. That is a *latency*
 cost, and it is invisible to any `bytes ÷ bandwidth` model. ✅ **This is the finding that
 matters for the purchase decision in the sizing note: its arithmetic cannot predict a
-hybrid placement, and measured reality is 4x below it.**
+hybrid placement, and measured reality is ~5x below it.**
 
 ### ⚠️ `--load-mode none` is llama.cpp's own advice and it is WRONG here
 

@@ -44,8 +44,15 @@ These containers form the system:
         `llamacpp-reload` (which rewrites only ctx/parallel).
       - `MODEL_PARALLEL=2` (131k/slot) is over-provisioned now that reasoning is off — `4`
         (65k/slot) is viable for 2× concurrency. Deliberately left alone.
-  - `pro-v620/create-lxc-llama-swap-gpu2.sh` — **CT 123 `gpu2`** on GPU 2: a `llama-swap` proxy for the
-    autonomous coding loop that hot-swaps between a coder model (Qwen3.8-27B, alias
+  - `pro-v620/create-lxc-llama-swap-gpu2.sh` — ⚠️ **DECOMMISSIONED 2026-09-18: llama-swap no
+    longer runs on CT 123**, which now serves Qwen3.8-Flash-Next directly from `llama-server` on
+    `:1234`. Everything below is the recipe and the hard-won operating knowledge, kept because the
+    service is *recoverable* — the v250 binary, its `.bak` predecessors and
+    `/etc/llama-swap/config.yaml` with all six model entries are intact and the unit is merely
+    stopped+disabled, and every GGUF is still on `/models`. ⚠️ Re-enabling it needs a device
+    selector in its config first, or it will grab a card another container is using. Read the rest
+    in the past tense: **CT 123 `gpu2`** on GPU 2 ran a `llama-swap` proxy for the
+    autonomous coding loop that hot-swapped between a coder model (Qwen3.8-27B, alias
     `qwen3.8-27b-dflash2`) and a reviewer model (ThinkingCap-Qwen3.6-27B, alias `thinkingcap-27b`),
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:83:00.0`, by-path, REAL node name) + the loud-guard.
@@ -248,7 +255,10 @@ These containers form the system:
     and `N..47` are heavy (~1.56 GB each); llama.cpp's default split divides 48 layers **evenly by
     count** and hands card 2 all the heavy ones. Measured at `-ncmoe 20`: default split put GPU 1
     at 13.4 GiB and pinned GPU 2 at 30.7 GiB **spilling 9.3 GiB to GTT → 6.6 t/s**, while
-    `--tensor-split 34,14` gave 25.1/21.2 GiB, **no spill, 11.74 t/s (+78%)**. The cards were never
+    `--tensor-split 34,14` gave 25.1/21.2 GiB and **11.74 t/s (+78%)**. ⚠️ That was recorded as
+    "no spill" and it was not quite — against a 9.3 GiB spill it looked clean, but `34,14` at
+    `-ncmoe 20` still held 101 MiB in GTT with only 823 MiB free, under the ~1024 MiB where RADV
+    starts spilling. The corrected `32,16` fits with 4.0/4.9 GiB free. The cards were never
     short of memory in total (53 GiB of demand vs 60 GiB capacity) — pure maldistribution.
     🔴 **The obvious rule `card1 = N + (48 − N)/2` still spills** — card 1 also holds the output
     head and a larger KV share, which a layer count cannot see, so it silently overcommitted at
