@@ -255,6 +255,32 @@ different direction: 8 threads saturated the four populated channels at 80.3 GB/
 measured *worse* at 74.8 — the CPU-side expert FFN is bandwidth-bound GEMV, so past
 saturation extra threads only fight each other. Prefill is flat across all three, so this is
 free. ⚠️ 8 and 16 are within ~2% at n=1; 32 is the clear loser, 16 the likely winner.
+### A spill costs DECODE, not prefill — and more at depth
+
+Measured directly, same placement (`-ncmoe 16`, split `30,18`, f16 KV), only the context
+budget changed:
+
+| ctx | d0 decode | d8k decode | d8k prefill | headroom |
+| ---: | ---: | ---: | ---: | --- |
+| 65536 | 14.16 | 13.07 | 77.0 | 1337 / 1553 MiB free, no spill |
+| 131072 | 12.92 | 10.34 | **76.7** | 226 / 573 MiB free, 183 MiB GTT |
+| | −8.8% | **−20.9%** | **−0.4%** | |
+
+**Prefill is untouched; decode pays, and pays roughly twice as much at depth.** That is the
+right shape mechanically: prefill streams weights in large batches, whereas decode at depth
+touches the KV cache on every token, so a cache partly in GTT means a host round-trip per
+token rather than per batch.
+
+⚠️ **Do not infer a spill's cost from wall-clock time.** A slow-looking cell invites the
+story "prefill collapsed", and `prefill_tps_median` is in every probe's JSON to settle it.
+This repo's ~12× GTT figure came from a case where the **whole KV** was in GTT at a much
+larger over-commit; a marginal 183 MiB spill is a different regime and behaves differently.
+
+✅ **The practical consequence is unchanged, for a better reason:** use `q8_0` for a long
+window. It halves the cache (12 KiB/token against f16's 24), so `--ctx-size 131072` fits at
+the recommended placement instead of spilling — confirmed by the `--parallel` stage running
+131072 at that shape with no spill at all.
+
 ### Concurrency: 4 streams give 2.3x the throughput, and the context comes free
 
 At the winning placement (`-ncmoe 16`, split `30,18`, `q8_0` KV, projector on CPU). ⚠️ These
