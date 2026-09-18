@@ -51,7 +51,114 @@ print(best)
 PY
 }
 
-# ---------------------------------------------------------------- 3. MTP
+# ------------------------------------------------- 2b. the tensor-split correction
+# 🔴 FOUND MID-RUN by an external sampler, and it invalidates the VRAM-hungry end of the
+# curve. At -ncmoe 15 with this repo's documented split rule
+#   c1 = ncmoe + (48 - ncmoe) / 2          -> 31,17
+# card 1 sat at 30665 MiB with **39 MiB free and 2060 MiB spilled to GTT**, while card 2
+# had 3280 MiB free. A GTT spill is a ~12x decode collapse that the startup loud-guard does
+# NOT catch, so such a cell reads as "a slow placement" rather than "a broken one".
+#
+# The imbalance measures 1620 MiB and one heavy layer is ~1640 MiB — i.e. **exactly one
+# layer**. The documented rule balances by WEIGHT alone, but three other things live on the
+# card that owns a layer:
+#   * the KV cache — 12 of the 48 layers are full-attention (QSA every 4th), and at c1=31
+#     card 1 owns 7 of them against card 2's 5
+#   * the vision projector, +1.11 GiB, which lands on a single device
+#   * per-device compute buffers
+#
+# So the corrected rule is  c1 = ncmoe + (48 - ncmoe) / 2 - 1.  This stage tests it where it
+# matters — the placements at or over the edge — and records VRAM headroom and GTT for both
+# cards, which cell() does not.
+split_cell() {  # <label> <ncmoe> <c1>
+  local label="$1" nc="$2" c1="$3"
+  setv MODEL_GPU_LAYERS 99; setv MODEL_EXPECTED_GPUS 2
+  setv MODEL_CPU_MOE "$nc"; setv MODEL_TENSOR_SPLIT "${c1},$(( 48 - c1 ))"
+  setv MODEL_THREADS 32; setv MODEL_PARALLEL 1; setv MODEL_CONTEXT_LENGTH 65536
+  setv MODEL_KV_TYPE ""; setv MODEL_MMPROJ_ON_CPU ""
+  setv MODEL_OT_OVERRIDE "per_layer_token_embd=CPU"; setv MODEL_LOAD_MODE ""
+  setv EXTRA_ARGS ""; setv LLAMACPP_DIR /opt/llamacpp/b11018-baseline
+  pct exec "$CT" -- systemctl restart llamacpp-qwen38fn
+  if ! wait_up 1500; then note "| ${nc} | ${c1},$(( 48 - c1 )) | DIED | - | - | - | - |"; return 0; fi
+  ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 64 --depths 0,8000 >/dev/null 2>&1 || true
+  ./placement-probe.py "http://$(ip):1234" --reps 2 --n-predict 160 --depths 0,8000 \
+    >"${RUN}/${label}.json" 2>/dev/null || true
+  local A=/sys/bus/pci/devices/0000:03:00.0 B=/sys/bus/pci/devices/0000:83:00.0
+  # FREE VRAM and GTT, not used VRAM: "used" looks healthy right up to the spill.
+  local f1 g1 f2 g2
+  f1=$(( ($(cat $A/mem_info_vram_total) - $(cat $A/mem_info_vram_used))/1048576 ))
+  g1=$(( $(cat $A/mem_info_gtt_used)/1048576 ))
+  f2=$(( ($(cat $B/mem_info_vram_total) - $(cat $B/mem_info_vram_used))/1048576 ))
+  g2=$(( $(cat $B/mem_info_gtt_used)/1048576 ))
+  python3 - "${RUN}/${label}.json" "$nc" "${c1},$(( 48 - c1 ))" "$f1" "$g1" "$f2" "$g2" >>"$RESULTS" <<'PY'
+import json, statistics as st, sys
+_, path, nc, split, f1, g1, f2, g2 = sys.argv
+try: s = json.load(open(path))["summary"]
+except Exception:
+    print("| %s | %s | probe failed | - | - | - | - |" % (nc, split)); raise SystemExit
+def med(pre):
+    v = [x["decode_tps_median"] for k, x in s.items()
+         if k.startswith(pre) and x.get("decode_tps_median")]
+    return st.median(v) if v else 0.0
+# The verdict is HEADROOM, not throughput: under ~1 GiB free RADV spills silently, and a
+# non-zero GTT on a card whose tensors should all be resident IS the spill.
+free_min, gtt_max = min(int(f1), int(f2)), max(int(g1), int(g2))
+if gtt_max > 256 or free_min < 1024: verdict = "**SPILLED**"
+elif free_min < 2048:                verdict = "tight"
+else:                                verdict = "fits"
+print("| %s | %s | %.2f | %.2f | %s / %s | %s / %s | %s |" % (
+    nc, split, med("d0/"), med("d8000/"), f1, f2, g1, g2, verdict))
+PY
+}
+
+s2b_split() {
+  note ""
+  note "## Tensor-split correction (\`c1 = ncmoe + (48-ncmoe)/2 - 1\`)"
+  note ""
+  note "The documented rule balances by weight alone and overloads card 1 by **one heavy"
+  note "layer** (measured: 1620 MiB of imbalance against ~1640 MiB per layer). The KV cache"
+  note "is the main reason — 12 of 48 layers are full-attention and card 1 owned 7 of them —"
+  note "plus the 1.11 GiB vision projector landing on a single device."
+  note ""
+  note "| -ncmoe | split | d0 t/s | d8000 t/s | VRAM free c1/c2 MiB | GTT c1/c2 MiB | verdict |"
+  note "| --- | --- | ---: | ---: | ---: | ---: | --- |"
+  split_cell "split-nc15-c31-documented" 15 31
+  split_cell "split-nc14-c30-corrected"  14 30
+  split_cell "split-nc15-c30-corrected"  15 30
+  split_cell "split-nc16-c31-corrected"  16 31
+  split_cell "split-nc20-c33-corrected"  20 33
+  note ""
+  note "⚠️ Judge these by **headroom**, not tok/s. Below ~1 GiB of free VRAM RADV starts"
+  note "spilling to GTT, and a spilled cell can still post a plausible-looking number."
+
+  # Publish the fastest NON-SPILLING placement for every stage after this one.
+  python3 - "$RUN" >"${RUN}/best_split.txt" <<'PY'
+import glob, json, os, re, statistics as st, sys
+run = sys.argv[1]
+best = None
+for f in glob.glob(os.path.join(run, "split-nc*-c*.json")):
+    m = re.match(r"split-nc(\d+)-c(\d+)-", os.path.basename(f))
+    if not m:
+        continue
+    try:
+        d = json.load(open(f))
+    except Exception:
+        continue
+    su = d.get("summary", {})
+    a = [v["decode_tps_median"] for k, v in su.items()
+         if k.startswith("d0/") and v.get("decode_tps_median")]
+    if not a or d.get("any_degenerate"):   # never rank a degenerate cell
+        continue
+    v = st.median(a)
+    if best is None or v > best[2]:
+        best = (int(m.group(1)), int(m.group(2)), v)
+# Fall back to the incumbent at the CORRECTED split, not the documented one.
+print("%d %d" % (best[0], best[1]) if best else "20 33")
+PY
+  echo "best non-spilling placement: $(cat "${RUN}/best_split.txt")"
+}
+stage splitfix 7200 s2b_split
+
 # ---------------------------------------------------------------- 3. MTP
 # 🔴 A PLAIN CHECKOUT OF PR #28097 WOULD BUILD A BINARY THAT CANNOT RUN THIS MODEL.
 # #28097 already contains #27836's three commits rebased, so one branch is the right
@@ -79,8 +186,9 @@ MTPDIR=/opt/llamacpp/mtp-b11018
 DRAFT_PLAIN="${MODELDIR}/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf"
 DRAFT_SHARED="${MODELDIR}/mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf"
 
-mtp_set_placement() {  # <ncmoe>
-  local nc="$1" c1=$(( $1 + (48 - $1) / 2 ))
+mtp_set_placement() {  # <ncmoe> [c1]
+  # c1 defaults to the CORRECTED rule (documented minus one layer).
+  local nc="$1" c1="${2:-$(( $1 + (48 - $1) / 2 - 1 ))}"
   setv MODEL_CPU_MOE "$nc"; setv MODEL_TENSOR_SPLIT "${c1},$(( 48 - c1 ))"
   setv MODEL_THREADS 32; setv MODEL_PARALLEL 1; setv MODEL_GPU_LAYERS 99
   setv MODEL_EXPECTED_GPUS 2; setv MODEL_KV_TYPE ""; setv MODEL_MMPROJ_ON_CPU ""
@@ -157,8 +265,19 @@ PY
 }
 
 s3_mtp() {
-  local NC; NC=$(best_ncmoe); echo "best -ncmoe from re-validation: ${NC}"
+  # Prefer stage 2b's winner: the fastest placement VERIFIED not to be spilling to GTT.
+  # best_ncmoe() ranks the re-validation data, which was taken before the spill was found,
+  # so at the VRAM-hungry end it can rank a broken cell first.
+  local NC C1
+  if [ -s "${RUN}/best_split.txt" ]; then
+    read -r NC C1 < "${RUN}/best_split.txt"
+    echo "placement from the split-correction stage: -ncmoe ${NC}, split ${C1},$(( 48 - C1 ))"
+  else
+    NC=$(best_ncmoe); C1=$(( NC + (48 - NC) / 2 - 1 ))
+    echo "no split-stage result; falling back to -ncmoe ${NC} at the corrected split ${C1}"
+  fi
   echo "$NC" >"${RUN}/best_ncmoe.txt"
+  echo "$C1" >"${RUN}/best_c1.txt"
 
   pct start "$BUILDER" >/dev/null 2>&1 || true; sleep 15
   pct exec "$BUILDER" -- bash -s <<'BUILD'
@@ -217,7 +336,7 @@ BUILD
   pct exec "$CT" -- bash -lc "tar xzf /tmp/mtp.tgz -C /opt/llamacpp/ && rm -f /tmp/mtp.tgz"
   rm -f /tmp/mtp.tgz; pct stop "$BUILDER" >/dev/null 2>&1 || true
 
-  mtp_set_placement "$NC"
+  mtp_set_placement "$NC" "$C1"
   setv LLAMACPP_DIR "$MTPDIR"
 
   note ""
@@ -275,7 +394,8 @@ stage mtp 18000 s3_mtp
 # ---------------------------------------------------------------- 4. --parallel
 s4_parallel() {
   local NC; NC=$(cat "${RUN}/best_ncmoe.txt" 2>/dev/null || echo 20)
-  local c1=$(( NC + (48 - NC) / 2 ))
+  # The CORRECTED split, read back from the split stage when it ran.
+  local c1; c1=$(cat "${RUN}/best_c1.txt" 2>/dev/null || echo $(( NC + (48 - NC) / 2 - 1 )))
   note ""
   note "## Concurrency (\`--parallel\`) at \`-ncmoe ${NC}\`"
   note ""
@@ -355,7 +475,8 @@ stage graphsplits 3600 s5_splits
 # ---------------------------------------------------------------- 6. restore
 s6_restore() {
   local NC; NC=$(cat "${RUN}/best_ncmoe.txt" 2>/dev/null || echo 20)
-  local c1=$(( NC + (48 - NC) / 2 ))
+  # The CORRECTED split, read back from the split stage when it ran.
+  local c1; c1=$(cat "${RUN}/best_c1.txt" 2>/dev/null || echo $(( NC + (48 - NC) / 2 - 1 )))
   setv MODEL_CPU_MOE "$NC"; setv MODEL_TENSOR_SPLIT "${c1},$(( 48 - c1 ))"
   setv MODEL_THREADS 32; setv MODEL_PARALLEL 1; setv MODEL_GPU_LAYERS 99
   setv MODEL_EXPECTED_GPUS 2; setv EXTRA_ARGS ""; setv MODEL_KV_TYPE ""

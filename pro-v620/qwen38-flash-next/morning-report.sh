@@ -106,6 +106,36 @@ speed_tps = st.median(ranked[0][1]["a"]) if ranked else 0.0
 frugal = next((k for k, _ in ranked if k.startswith("ncmoe48")), None)
 frugal_tps = st.median(cells[frugal]["a"]) if frugal else 0.0
 
+# ---------------------------------------------------------------- tensor split
+# The documented split rule overloads card 1 by exactly one heavy layer, so the VRAM-hungry
+# end of the placement curve was measuring a GTT spill. These cells test the correction.
+split = {}
+for f in sorted(glob.glob(os.path.join(run, "split-nc*-c*.json"))):
+    m = re.match(r"split-nc(\d+)-c(\d+)-(\w+)\.json$", os.path.basename(f))
+    d = load(f)
+    if not m or not d:
+        continue
+    split[(int(m.group(1)), int(m.group(2)), m.group(3))] = d
+
+if split:
+    print("## Tensor split: the documented rule is one layer off")
+    print()
+    print("| -ncmoe | split | rule | d0 t/s | d8000 t/s | gate |")
+    print("| --- | --- | --- | ---: | ---: | --- |")
+    for key in sorted(split):
+        nc, c1, kind = key
+        d = split[key]
+        print("| %d | %d,%d | %s | %s | %s | %s |" % (
+            nc, c1, 48 - c1, kind,
+            ("%.2f" % dec(d, "d0/")) if dec(d, "d0/") else "DIED",
+            ("%.2f" % dec(d, "d8000/")) if dec(d, "d8000/") else "—",
+            gates(d)))
+    print()
+    print("⚠️ The headroom/GTT verdict per cell is in the stage table above — read that, not")
+    print("these medians. A card with <1 GiB of free VRAM spills to GTT silently, and the")
+    print("spilled cell still reports a plausible number.")
+    print()
+
 # ---------------------------------------------------------------- MTP
 def shas_d0(d):
     """🔴 d0 ONLY. A d8000 cell disagrees with itself intermittently at temperature 0 on
@@ -221,12 +251,19 @@ print("## The answer")
 print()
 print("| want | configuration | measured |")
 print("| --- | --- | ---: |")
+bestsplit = ""
+try:
+    bs = open(os.path.join(run, "best_split.txt")).read().split()
+    if len(bs) == 2:
+        bestsplit = " `--n-cpu-moe %s --tensor-split %s,%d`" % (bs[0], bs[1], 48 - int(bs[1]))
+except Exception:
+    pass
 if speed:
     extra = ""
     if best_mtp:
         extra = " + MTP (`%s`)" % best_mtp[0]
-    print("| **Fastest** | `%s`%s, governor `%s` | %.2f t/s |"
-          % (speed, extra, gov, best_mtp[1] if best_mtp else speed_tps))
+    print("| **Fastest** | `%s`%s%s, governor `%s` | %.2f t/s |"
+          % (speed, bestsplit, extra, gov, best_mtp[1] if best_mtp else speed_tps))
 if frugal:
     print("| **Most VRAM left for other models** | `%s` (attention-only on GPU) | %.2f t/s |"
           % (frugal, frugal_tps))
