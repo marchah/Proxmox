@@ -753,7 +753,10 @@ s6_restore() {
     [ "$BKV" = "-" ] && BKV=""; [ "$BMP" = "-" ] && BMP=""
   fi
   setv MODEL_CPU_MOE "$NC"; setv MODEL_TENSOR_SPLIT "${c1},$(( 48 - c1 ))"
-  setv MODEL_THREADS 32; setv MODEL_PARALLEL 1; setv MODEL_GPU_LAYERS 99
+  # The measured all-round thread count, not the inherited 32. Written by the concurrency
+  # stage; 16 is the fallback because it is best at 2 and 4 streams and within 1% solo.
+  local BTH; BTH=$(cat "${RUN}/best_threads.txt" 2>/dev/null || echo 16)
+  setv MODEL_THREADS "$BTH"; setv MODEL_PARALLEL 1; setv MODEL_GPU_LAYERS 99
   setv MODEL_EXPECTED_GPUS 2; setv EXTRA_ARGS ""; setv MODEL_KV_TYPE "$BKV"
   setv MODEL_MMPROJ_ON_CPU "$BMP"; setv MODEL_LOAD_MODE ""
   setv MODEL_OT_OVERRIDE "per_layer_token_embd=CPU"
