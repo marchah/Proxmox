@@ -56,31 +56,76 @@ caller can trip either trap, and `placement-probe.py --contract` asserts all of 
 still emits an **empty** `<think>\n\n</think>` pair, and `none` leaves it in `content` —
 which silently corrupts every generated file. `auto` siphons it into `reasoning_content`.
 
-## The placement dial
+## The placement dial — what each `--n-cpu-moe` actually does
 
 `111.3 GB` does not fit `2 × 32 GB`. Two things come off the GPU, for different reasons:
 
-1. **The PLE n-gram table** — `-ot per_layer_token_embd=CPU`. ~51B of the 180B
-   checkpoint, ~28.7 GB at Q4, but it is a **row lookup, not a matmul**: a handful of
-   rows per token, so it costs almost nothing in host RAM. This alone takes the GPU-side
-   model from 111.3 GB to **~82.6 GB**, and it is why Q4 is reachable at all.
-2. **Routed experts, layer by layer** — `--n-cpu-moe N` keeps the experts of the **first
-   N** of 48 MoE layers in host RAM, ~1.56 GB of Q4 expert weight each. **This is the
-   dial**, and the subject of `placement-sweep.sh`. (`-cmoe` is the all-48 shorthand.)
+1. **The PLE n-gram table** — `-ot per_layer_token_embd=CPU`, **always on, not a dial.**
+   ~51B of the 180B checkpoint, ~28.7 GB at Q4, but it is a **row lookup, not a matmul**:
+   a handful of rows per token, so it costs almost nothing in host RAM. This alone takes
+   the GPU-side model from 111.3 GB to **~82.6 GB**, and it is why Q4 is reachable at all.
+2. **Routed experts, layer by layer** — `--n-cpu-moe N` keeps the routed experts of the
+   **first N** of the 48 layers in host RAM, ~1.5 GiB of Q4 expert weight each.
+   **This is the dial.** (`-cmoe` is the all-48 shorthand.)
 
-| `--n-cpu-moe` | VRAM for the model | free for a second model | why you'd pick it |
-|---:|---:|---:|---|
-| 15 | ~59 GB | ~5 GB | fastest that fits two cards |
-| 20 | ~51 GB | ~13 GB | default — room for KV growth |
-| 28 | ~39 GB | **~25 GB** | a 27B guest model fits alongside |
-| 34 | ~29 GB | ~35 GB | runs on **one** card |
-| 48 | ~8 GB | ~56 GB | control: all experts in RAM |
+### What stays on the GPU, at every setting
 
-**Why giving VRAM back is cheap here.** Only **1.46 GB/token** of expert weight is read —
-10 of 512 experts plus 1 shared, across 48 layers
-(`11 × 640 × 2560 × 3 × 48` = 2.60B params at Q4). Experts are read *sparsely*, so the
-cost of offloading scales with the **fraction** moved, not the bytes moved. A dense model
-of this size would be unusable in the same arrangement.
+`--n-cpu-moe` moves **only the routed experts**. Everything else is resident regardless of
+N — which is what `-ncmoe 48` leaves behind, and why 48 is not "nothing on the GPU":
+
+| always on the GPU | read per token |
+| --- | --- |
+| **attention for all 48 layers** — 12 Qwen Sparse Attention + 36 Gated DeltaNet | in full |
+| the per-layer **shared** expert and the router | in full |
+| norms, hyper-connection tensors, `output` | in full |
+| the KV cache (12 full-attention layers only — 24 KiB/token f16, 12 at `q8_0`) | grows with ctx |
+
+So **`-ncmoe 48` = attention + the dense path on the GPU (9.4 GiB), all routed experts in
+RAM.** That is the floor of GPU residency for this model, not an "off" switch.
+
+### ✅ Why the experts are the right thing to move, and attention is not
+
+| | share of the model | read per token |
+| --- | ---: | ---: |
+| routed experts | ~61% | **2.0%** — only topk 10 of 512 fire |
+| shared expert + router | 0.2% | 100% |
+| attention | — | 100% |
+
+61% of the weights account for only ~1.2 GiB of reads per token, because each token routes
+to 10 of 512 experts. Attention and the dense path are read *in full* every token.
+
+⚠️ **Measured, not assumed:** moving whole **layers** (attention included) to CPU cost
+**−42%**, against **−28%** for moving only the experts at the same VRAM saving. Same memory
+freed, very different penalty — which is why `--n-cpu-moe` exists as a separate flag from
+`-ot`, and why a dense model of this size would be unusable in the same arrangement.
+
+### Every setting tested, with measured VRAM
+
+Two cards, the **corrected** split (`N + (48−N)/2 − 2`), ctx 65536. VRAM is **used**, read
+after a load plus one completion so lazily-allocated buffers are included:
+
+| `-ncmoe` | split | KV / projector | card 1 | card 2 | total | headroom | decode d0 / d8k |
+| ---: | --- | --- | ---: | ---: | ---: | --- | ---: |
+| 15 | `29,19` | f16 / GPU | 31094 M | 32715 M | 62.3 G | 🔴 **SPILLED** at every split | — |
+| **16** | `30,18` | **q8_0 / CPU** | 29848 M | 30843 M | **59.3 G** | tight (2.9/1.9 G free) | **14.17 / 13.45** |
+| 16 | `30,18` | f16 / GPU | 31431 M | 31174 M | 61.1 G | tight (1.3/1.6 G free) | 14.16 / 13.07 |
+| 20 | `32,16` | f16 / GPU | 28738 M | 27864 M | 55.3 G | fits (4.0/4.9 G free) | 13.03 / 12.06 |
+| 28 | `36,12` | f16 / GPU | 23216 M | 21381 M | 43.6 G | fits (9.6/11.4 G free) | ~11.3 / ~10.6 |
+
+**One card** (`--device Vulkan0`, no split), `q8_0` + projector on CPU:
+
+| `-ncmoe` | VRAM used | free on that card | decode d0 / d8k | prefill 8k |
+| ---: | ---: | ---: | ---: | ---: |
+| **34** | **31100 M (30.4 G)** | 1668 M | **13.01 / 12.23** | 39.1 |
+| 36 | 28097 M (27.4 G) | 4671 M | 12.43 / 11.81 | 37.1 |
+| 48 | **9443 M (9.2 G)** | **23.3 G** | 10.18 / 8.70 | 29.0 |
+
+🔴 **`-ncmoe 15` and below cannot fit two cards in any shape at any split** — total demand
+is 64.2 GiB against 64 GiB of capacity, leaving ~620 MiB per card even perfectly balanced,
+under the ~1024 MiB where RADV starts spilling to GTT. **16 is the floor.**
+
+🔴 **`-ncmoe 34` is the floor for one card**, at 30.4 GiB of 32. Below that a single card
+cannot hold it; above it you are trading decode for headroom at ~0.29 t/s per layer.
 
 ### About "dynamic" allocation
 
@@ -156,20 +201,68 @@ which is what lets `--ctx-size 131072` fit. ⚠️ Safe **only** because the ser
 projector on CPU — text is unaffected. If vision latency matters, drop `--no-mmproj-offload`
 and `--cache-type-*`, accept 14.16 / 13.07 and 1.3 / 1.5 GiB free.
 
-### Leave room for a second model
+### Leave room for a second model — and the one-card option is better than it looks
 
-| `-ncmoe` | split | decode d0 | d8k | prefill d8k | VRAM freed | cost |
+Two ways to free capacity, and they are not the same thing:
+
+**(a) Keep both cards, move experts to RAM** — frees VRAM on both:
+
+| `-ncmoe` | split | decode d0 | d8k | prefill 8k | VRAM freed | cost |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: |
 | 16 | `30,18` | 14.17 | 13.45 | 76.9 | — | — |
-| 20 | `32,16` | 13.03 | 12.06 | 63.6 | ~8.7 GiB | −8.0% |
-| 28 | `36,12` | ~11.3 | ~10.6 | 47.4 | ~20.9 GiB | −20% |
-| 48 | `48,0` | 10.18 | 8.70 | 29.0 | **54.8 GiB, one card entirely** | −28% |
+| 20 | `32,16` | 13.03 | 12.06 | 63.6 | ~8.9 GiB | −8.0% |
+| 28 | `36,12` | ~11.3 | ~10.6 | 47.4 | ~20.6 GiB | −20% |
 
-**`-ncmoe 48` is the one to know about**: the whole model runs in **9.4 GiB on a single
-card**, leaving the other completely free, for −28% of decode. That is the configuration to
-use if CT 123 needs a card back.
-⚠️ The 28 and 48 rows were measured at the documented split; expect a few percent better at
-the corrected one.
+**(b) Give a whole card back** — run on one card with `--device Vulkan0`:
+
+| `-ncmoe` | VRAM on the one card | decode d0 | d8k | prefill 8k | cost vs 2-card best |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| **34** | 30.4 G (1.7 G free) | **13.01** | **12.23** | 39.1 | **−10%** |
+| 36 | 27.4 G (4.6 G free) | 12.43 | 11.81 | 37.1 | −14% |
+| 48 | **9.2 G (23.3 G free)** | 10.18 | 8.70 | 29.0 | −30% |
+
+🔴 **`-ncmoe 34` on one card is the right way to hand CT 123 a card back** — 13.01 t/s, only
+−10% off the two-card best, with card 2 completely idle. An earlier version of this file
+recommended `-ncmoe 48` for that; at 10.18 t/s it is 28% slower than necessary. Pick 48 only
+when you also want ~23 GiB spare *on the remaining card*.
+
+⚠️ **Decode and prefill do not agree on which option to take.** Giving a card back costs
+−10% of decode but **−49% of prefill** (77.2 → 39.1 t/s, i.e. 8k time-to-first-token 104 s →
+205 s). If your prompts are long, keep both cards; if they are short, one card is nearly free.
+
+### 🔴 The second card is a DECODE PENALTY and a PREFILL WIN
+
+Measured as a matched pair — same placement, same shape, same thread count, only the device
+count differs:
+
+| `-ncmoe 34`, `q8_0`/projCPU | decode d0 | decode d8k | prefill 8k |
+| --- | ---: | ---: | ---: |
+| **one card** | **13.01** | **12.23** | 39.1 |
+| two cards (`34,14`) | 10.76 | 9.85 | 38.9 |
+| | **+20.9%** | **+24.2%** | +0.5% |
+
+**One card is 21–24% faster at the same placement, and prefill is identical.** That
+asymmetry is the signature of a fixed per-token cost, the same shape as this repo's PCIe
+decode-tax finding: prefill batches thousands of tokens per submission so the per-layer
+crossing amortises away, while decode pays it on every token. It is exactly what llama.cpp
+**#28699** describes — the QSA indexer shipping pooled rows across the inter-GPU link every
+layer — and the per-device fix there is still an open draft.
+
+So what the second card is worth, net:
+
+| | decode d0 | prefill 8k |
+| --- | ---: | ---: |
+| 2 cards @ `-ncmoe 16` | 14.46 | 77.2 |
+| 1 card @ `-ncmoe 34` | 13.01 | 39.1 |
+| **gain from card 2** | **+11%** | **+97%** |
+
+It gives with one hand and takes with the other: 18 more expert layers resident, minus a
+~21% inter-GPU decode tax. **Prefill pays no tax, so that is where the second card earns its
+place** — it halves time-to-first-token. ✅ If #28699's per-device fix lands, the two-card
+configuration should recover most of that 21%, and this table should be re-measured.
+
+⚠️ This is why `CLAUDE.md` says to run a one-GPU control before concluding two cards help.
+That advice was right; it now has a number.
 
 ### Concurrency
 
