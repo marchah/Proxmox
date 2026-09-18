@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+# Sweep Qwen3.8-Flash-Next placements on CT 120's two V620s and report, per config,
+# decode/prefill by prompt class and context depth plus per-card VRAM and GTT.
+# Runs on the Proxmox HOST as root, from this directory.
+#
+#   ./placement-sweep.sh                            # the default matrix
+#   NCMOE_LIST="20 28 34" CTX=65536 ./placement-sweep.sh
+#   ONE_GPU=true NCMOE_LIST="34 40 48" ./placement-sweep.sh
+#
+# What it answers: how much VRAM can be handed back to a second model before decode
+# degrades unacceptably — i.e. which placement is the most VERSATILE, not just fastest.
+#
+# ⚠️ Method rules this encodes, each learned the hard way on this box:
+#   * INTERLEAVE and take >=3 reps. One rep per cell understated a cost by half here
+#     once and flipped a recommendation. Configs run ROUND-ROBIN, not blocked, so drift
+#     cannot be mistaken for an effect.
+#   * Read GTT alongside VRAM. Below roughly 1 GiB of VRAM headroom RADV spills to GTT —
+#     a ~12x decode collapse the startup guard does NOT catch. Flat VRAM can mean the KV
+#     moved to host memory, not that it got cheaper.
+#   * Gate on output sanity: degenerate repetition is cheap to generate and reads as a
+#     win on a tok/s-only sweep. placement-probe.py carries the 8-gram gate.
+#   * Run ./thermal-guard.sh alongside. The production watchdog stops the container's
+#     *service*; this sweep restarts that service itself, so keep an independent guard.
+set -Eeuo pipefail
+
+VMID="${VMID:-120}"
+PORT="${PORT:-1234}"
+CTX="${CTX:-65536}"
+PARALLEL="${PARALLEL:-1}"
+REPS="${REPS:-3}"
+N_PREDICT="${N_PREDICT:-256}"
+DEPTHS="${DEPTHS:-0,8000,32000}"
+ONE_GPU="${ONE_GPU:-false}"
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-1800}"
+# auto | none | mmap | mlock. llama.cpp warns that CPU tensor overrides + mmap is slower
+# and suggests `none`; empty leaves the default.
+LOAD_MODE="${LOAD_MODE:-}"
+# Override the derived layer split (see start_server). Empty = derive from n_cpu_moe.
+TENSOR_SPLIT="${TENSOR_SPLIT:-}"
+# llama-server --threads. Empty leaves whatever the env file already has.
+# ⚠️ Worth sweeping: STREAM measured 8 threads saturating four channels (80.3 GB/s) and 32
+# being WORSE (74.8), and the CPU-side expert FFN is memory-bound GEMV — so the inherited
+# --threads 32 may be contention rather than throughput.
+THREADS="${THREADS:-}"
+# 48 MoE layers, ~1.56 GB of Q4 expert weight each, so each +1 hands ~1.56 GB back:
+#   15 = minimum that fits two cards · 20 = ~8 GB spare · 28 = ~20 GB spare
+#   34 = fits one card · 48 = all experts in RAM (the no-GPU-experts control)
+NCMOE_LIST="${NCMOE_LIST:-15 20 28 34 48}"
+OUT_DIR="${OUT_DIR:-/root/qwen38-flash-next/sweep-$(date -u +%Y%m%dT%H%M%SZ)}"
+
+readonly GPU1_PCI=0000:03:00.0
+readonly GPU2_PCI=0000:83:00.0
+readonly CARD_MIB=32768
+readonly ENVFILE=/etc/llamacpp-qwen38fn.env
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+log() { printf '==> %s\n' "$*"; }
+
+[ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"
+# Be location-independent: systemd-run and cron do not inherit a working directory, and the
+# helper scripts are resolved relative to this one.
+cd "$(dirname "$(readlink -f "$0")")"
+[ -x ./placement-probe.py ]   || die "placement-probe.py not found or not executable"
+[ -x ./summarize-sweep.py ]   || die "summarize-sweep.py not found or not executable"
+mkdir -p "$OUT_DIR"
+
+if [ "${CPU_ONLY:-false}" = "true" ]; then
+  # Everything on the CPU. The 111.3 GB model fits the container's 160 GiB cap with room for
+  # KV and compute buffers. --n-cpu-moe and --tensor-split become meaningless and are cleared.
+  EXPECTED_GPUS=0
+  SERVER_EXTRA=""
+elif [ "$ONE_GPU" = "true" ]; then
+  EXPECTED_GPUS=1
+  # Confine llama.cpp to one Vulkan device rather than detaching a card: reversible and
+  # needs no container restart. Confirm in the unit log that only one device is listed.
+  SERVER_EXTRA="--device Vulkan0"
+else
+  EXPECTED_GPUS=2
+  SERVER_EXTRA=""
+fi
+
+CT_IP="$(pct exec "$VMID" -- hostname -I 2>/dev/null | awk '{print $1}')"
+[ -n "$CT_IP" ] || die "could not resolve CT ${VMID}'s IP"
+BASE="http://${CT_IP}:${PORT}"
+log "CT ${VMID} at ${BASE}; results -> ${OUT_DIR}"
+
+vram_mib() { echo $(( $(cat "/sys/bus/pci/devices/$1/mem_info_vram_used" 2>/dev/null || echo 0) / 1048576 )); }
+gtt_mib()  { echo $(( $(cat "/sys/bus/pci/devices/$1/mem_info_gtt_used"  2>/dev/null || echo 0) / 1048576 )); }
+
+# Rewrite one KEY=value in the container's env file, appending if absent.
+#
+# 🔴 The value MUST land QUOTED. llamacpp-serve-qwen38fn does
+# `set -a; source /etc/llamacpp-qwen38fn.env`, so an unquoted value containing a space is
+# parsed as an assignment followed by a COMMAND: writing `EXTRA_ARGS=--device Vulkan0`
+# made bash try to run `Vulkan0`, the serve script exited 127, and systemd crash-looped
+# the unit while the ONE_GPU control died on its first config.
+#
+# json.dumps does the quoting and escaping, and the python below contains no single quotes
+# so it survives being wrapped in them. sed would need & and | escaped as well, plus
+# another shell quoting layer on top — that is what broke the first time.
+set_env_var() {
+  local key="$1" val="$2"
+  pct exec "$VMID" -- python3 -c '
+import json, os, re, sys
+path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
+line = key + "=" + json.dumps(val)
+src = open(path).read() if os.path.exists(path) else ""
+src, n = re.subn(r"(?m)^" + re.escape(key) + r"=.*$", lambda m: line, src)
+if not n:
+    src = src.rstrip("\n") + "\n" + line + "\n"
+open(path, "w").write(src)
+' "$ENVFILE" "$key" "$val"
+}
+
+start_server() {
+  local ncmoe="$1"
+  pct exec "$VMID" -- systemctl stop llamacpp-qwen38fn 2>/dev/null || true
+
+  # Wait for VRAM to actually drain. Starting the next config on top of the previous
+  # one's buffers is how a sweep measures a spill it created itself.
+  local waited=0
+  while [ "$(vram_mib "$GPU1_PCI")" -gt 2000 ] && [ "$waited" -lt 90 ]; do
+    sleep 3; waited=$((waited + 3))
+  done
+
+  if [ "${CPU_ONLY:-false}" = "true" ]; then
+    set_env_var MODEL_GPU_LAYERS 0
+    set_env_var MODEL_CPU_MOE    ""
+  else
+    set_env_var MODEL_GPU_LAYERS "${GPU_LAYERS:-99}"
+    set_env_var MODEL_CPU_MOE    "$ncmoe"
+  fi
+  # 🔴 Derive the split from ncmoe — a FIXED split is wrong for every other value.
+  # --n-cpu-moe N makes layers 0..N-1 light (experts on CPU) and N..47 heavy, so an even
+  # split by layer COUNT gives card 2 every heavy one: at ncmoe 20 that pinned GPU 2 at
+  # 30.7 GiB and spilled 9.3 GiB to GTT for 6.6 t/s.
+  # ⚠️ The `- 2` is load-bearing. Card 1 also carries the output head and a larger KV share,
+  # which a layer count cannot see, so "light layers + half the heavy ones" overcommits it by
+  # ~2 layers and spills anyway — silently, at ncmoe 15/16/20. Validated where the spilling
+  # was: 16 -> "30,18" (the deployed config, 14.46 t/s), 20 -> "32,16", 28 -> "36,12". Above
+  # that range card 1 has room either way. Override with TENSOR_SPLIT= to sweep the split.
+  if [ "${CPU_ONLY:-false}" = "true" ]; then
+    set_env_var MODEL_TENSOR_SPLIT ""
+  elif [ "$EXPECTED_GPUS" -ge 2 ]; then
+    if [ -n "${TENSOR_SPLIT:-}" ]; then
+      ts="$TENSOR_SPLIT"
+    else
+      if [ "$ncmoe" -ge 48 ]; then
+        # No heavy layers left to rebalance, so the -2 would hand card 2 two LIGHT layers
+        # and an inter-GPU hop for nothing. Keep this case exact so the "*,0" single-GPU
+        # detection below still fires.
+        c1=48
+      else
+        c1=$(( ncmoe + (48 - ncmoe) / 2 - 2 ))
+        # Defensive clamp; ncmoe >= 5 already makes it unreachable. Written as a full `if`
+        # rather than `[ ... ] && c1=1` out of habit, not necessity: that construct is only
+        # a `set -e` hazard when it is the LAST command of a FUNCTION (the function then
+        # returns 1 and the call site dies). In a loop body or an if-branch like this one it
+        # is harmless -- verified, because this repo has previously chased it as the cause of
+        # a failure it was not.
+      fi
+      ts="${c1},$(( 48 - c1 ))"
+    fi
+    set_env_var MODEL_TENSOR_SPLIT "$ts"
+    log "tensor-split ${ts} (derived from n_cpu_moe ${ncmoe})"
+    # ⚠️ At n_cpu_moe 48 there are no heavy layers left, so the formula yields "48,0" and
+    # card 2 gets NOTHING. That is arguably the right placement — splitting the non-expert
+    # layers would only add an inter-GPU hop — but it makes the row effectively
+    # SINGLE-GPU, so it must not be read as a two-card data point. Recorded, not silently
+    # allowed.
+    case "$ts" in
+      *,0) log "⚠️  card 2 gets 0 layers — this row is effectively SINGLE-GPU"
+           printf '%s\n' "$ncmoe" >>"${OUT_DIR}/.single_gpu_rows" ;;
+    esac
+  else
+    set_env_var MODEL_TENSOR_SPLIT ""
+  fi
+  set_env_var MODEL_LOAD_MODE      "${LOAD_MODE:-}"
+  [ -n "$THREADS" ] && set_env_var MODEL_THREADS "$THREADS"
+  [ -n "${BATCH:-}" ]   && set_env_var MODEL_BATCH_SIZE  "$BATCH"
+  [ -n "${UBATCH:-}" ]  && set_env_var MODEL_UBATCH_SIZE "$UBATCH"
+  # q8_0 KV halves the cache. ⚠️ The KB's "q8_0 breaks thinking termination" warning does NOT
+  # apply here: this server runs --reasoning off, which that same note identifies as the
+  # provably-lossless case. Output hashes still get compared by the probe.
+  [ -n "${KV_TYPE:-}" ] && set_env_var MODEL_KV_TYPE     "$KV_TYPE"
+  [ -n "${MMPROJ_CPU:-}" ] && set_env_var MODEL_MMPROJ_ON_CPU "$MMPROJ_CPU"
+  # llamacpp-serve-qwen38fn sources the env file under `set -a`, so anything written here is
+  # EXPORTED to llama-server. That is how upstream env knobs get through — e.g.
+  # LLAMA_PLE_RESIDENT, which appears in llama.cpp #28623's description and is undocumented.
+  set_env_var LLAMA_PLE_RESIDENT "${PLE_RESIDENT:-}"
+  set_env_var MODEL_CONTEXT_LENGTH "$CTX"
+  set_env_var MODEL_PARALLEL       "$PARALLEL"
+  set_env_var MODEL_EXPECTED_GPUS  "$EXPECTED_GPUS"
+  # This is what actually carries --device into llama-server; the serve script
+  # word-splits EXTRA_ARGS and appends it verbatim.
+  set_env_var EXTRA_ARGS           "$SERVER_EXTRA"
+
+  pct exec "$VMID" -- systemctl restart llamacpp-qwen38fn
+
+  log "waiting for /health (a 111 GB model is slow to load cold)"
+  local t=0
+  until curl -fsS --max-time 5 "${BASE}/health" >/dev/null 2>&1; do
+    if ! pct exec "$VMID" -- systemctl is-active --quiet llamacpp-qwen38fn; then
+      pct exec "$VMID" -- journalctl -u llamacpp-qwen38fn --no-pager -n 40 -o cat >&2
+      die "server exited while loading (n_cpu_moe=${ncmoe}) — see log above"
+    fi
+    sleep 5; t=$((t + 5))
+    [ "$t" -ge "$HEALTH_TIMEOUT" ] && {
+      pct exec "$VMID" -- journalctl -u llamacpp-qwen38fn --no-pager -n 40 -o cat >&2
+      die "not healthy after ${HEALTH_TIMEOUT}s (n_cpu_moe=${ncmoe})"; }
+  done
+  log "healthy after ${t}s"
+}
+
+cat >"${OUT_DIR}/manifest.json" <<JSON
+{
+ "when": "$(date -u +%FT%TZ)",
+ "ctx": ${CTX}, "parallel": ${PARALLEL}, "reps": ${REPS},
+ "n_predict": ${N_PREDICT}, "depths": "${DEPTHS}",
+ "one_gpu": ${ONE_GPU}, "expected_gpus": ${EXPECTED_GPUS},
+ "load_mode": "${LOAD_MODE}", "tensor_split_override": "${TENSOR_SPLIT}",
+ "threads_override": "${THREADS}", "cpu_only": ${CPU_ONLY:-false},
+ "batch_override": "${BATCH:-}", "ubatch_override": "${UBATCH:-}",
+ "kv_type_override": "${KV_TYPE:-}", "mmproj_cpu": "${MMPROJ_CPU:-}",
+ "ple_resident": "${PLE_RESIDENT:-}",
+ "server_extra": "${SERVER_EXTRA}", "ncmoe_list": "${NCMOE_LIST}",
+ "llamacpp_dir": "$(pct exec "$VMID" -- bash -lc "grep -m1 '^LLAMACPP_DIR=' ${ENVFILE} | cut -d= -f2")",
+ "host_ram_gib": $(free -g | awk '/^Mem:/{print $2}'),
+ "dimms_64gb": $(dmidecode -t memory 2>/dev/null | grep -c 'Size: 64 GB' || true)
+}
+JSON
+
+# Round-robin, so thermal or cache drift spreads across configs instead of favouring
+# whichever ran first.
+for round in $(seq 1 "$REPS"); do
+  for ncmoe in $NCMOE_LIST; do
+    tag="ncmoe${ncmoe}-r${round}"
+    log "=== ${tag} (ctx ${CTX}, one_gpu=${ONE_GPU}) ==="
+    start_server "$ncmoe"
+
+    v1="$(vram_mib "$GPU1_PCI")"; g1="$(gtt_mib "$GPU1_PCI")"
+    v2="$(vram_mib "$GPU2_PCI")"; g2="$(gtt_mib "$GPU2_PCI")"
+    log "GPU1 vram=${v1}MiB gtt=${g1}MiB | GPU2 vram=${v2}MiB gtt=${g2}MiB"
+
+    # 🔴 The spill check: under ~1 GiB of headroom on a 32 GiB card RADV silently moves
+    # allocations to GTT and decode collapses. Record it as a flag, not a footnote.
+    spill=false
+    for pair in "${v1}:${g1}" "${v2}:${g2}"; do
+      vv="${pair%%:*}"; gg="${pair##*:}"
+      if [ "$vv" -gt 1000 ] && [ $(( CARD_MIB - vv )) -lt 1024 ]; then spill=true; fi
+      if [ "$gg" -gt 1536 ]; then spill=true; fi
+    done
+    if [ "$spill" = "true" ]; then log "⚠️  possible GTT spill — treat this row's decode as suspect"; fi
+
+    probe_args=( "$BASE" --reps 1 --n-predict "$N_PREDICT" --depths "$DEPTHS" )
+    # The template-contract assertions only need running once per sweep.
+    [ "$round" = "1" ] && [ "$ncmoe" = "${NCMOE_LIST%% *}" ] && probe_args+=( --contract )
+
+    ./placement-probe.py "${probe_args[@]}" \
+      >"${OUT_DIR}/${tag}.json" 2>"${OUT_DIR}/${tag}.rows.jsonl" \
+      || log "probe FAILED for ${tag} (row kept, marked)"
+
+    python3 - "${OUT_DIR}/${tag}.json" "$ncmoe" "$v1" "$g1" "$v2" "$g2" "$spill" <<'PYADD'
+import json, pathlib, sys
+path, ncmoe, v1, g1, v2, g2, spill = sys.argv[1:8]
+p = pathlib.Path(path)
+try:
+    d = json.loads(p.read_text())
+except Exception as e:
+    d = {"error": "probe produced no parsable output: %r" % (e,)}
+d["placement"] = {
+    "n_cpu_moe": int(ncmoe),
+    "gpu1_vram_mib": int(v1), "gpu1_gtt_mib": int(g1),
+    "gpu2_vram_mib": int(v2), "gpu2_gtt_mib": int(g2),
+    "vram_total_mib": int(v1) + int(v2),
+    "vram_free_for_a_guest_mib": (32768 - int(v1)) + (32768 - int(v2)),
+    "possible_gtt_spill": spill == "true",
+}
+p.write_text(json.dumps(d, indent=1))
+PYADD
+  done
+done
+
+pct exec "$VMID" -- systemctl stop llamacpp-qwen38fn 2>/dev/null || true
+log "sweep complete — ${OUT_DIR}"
+./summarize-sweep.py "$OUT_DIR" | tee "${OUT_DIR}/SUMMARY.md"

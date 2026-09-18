@@ -24,9 +24,9 @@ These containers form the system:
   symlink — the reboot-stable way to pin one of two identical cards), so llama.cpp sees a single
   Vulkan device and runs the whole ~26.6 GB model on it. ✅ **Either card will now do** — the B550's
   chipset-slot decode tax is gone with the platform move; all seven ROMED8-2T slots are CPU-direct.
-  **The other card (`0000:83:00.0`) runs CT 123 `gpu2`**
-  (a `llama-swap` server for the autonomous coding loop — see below); it stays amdgpu-bound so the host
-  fan/undervolt/watchdog services manage both. Both cards are undervolted −100 mV:
+  **The other card (`0000:83:00.0`) runs CT 123 `gpu2`**, which since 2026-09-18 serves
+  **Qwen3.8-Flash-Next on that one card** (`pro-v620/qwen38-flash-next/`, `-ncmoe 34`); it stays
+  amdgpu-bound so the host fan/undervolt/watchdog services manage both. Both cards are undervolted −100 mV:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
     (hostname `llamacpp`). This is the current runtime.
     - ⚠️ **Thinking is DISABLED — `--reasoning off`** in `/usr/local/bin/llamacpp-serve`, baked
@@ -44,8 +44,15 @@ These containers form the system:
         `llamacpp-reload` (which rewrites only ctx/parallel).
       - `MODEL_PARALLEL=2` (131k/slot) is over-provisioned now that reasoning is off — `4`
         (65k/slot) is viable for 2× concurrency. Deliberately left alone.
-  - `pro-v620/create-lxc-llama-swap-gpu2.sh` — **CT 123 `gpu2`** on GPU 2: a `llama-swap` proxy for the
-    autonomous coding loop that hot-swaps between a coder model (Qwen3.8-27B, alias
+  - `pro-v620/create-lxc-llama-swap-gpu2.sh` — ⚠️ **DECOMMISSIONED 2026-09-18: llama-swap no
+    longer runs on CT 123**, which now serves Qwen3.8-Flash-Next directly from `llama-server` on
+    `:1234`. Everything below is the recipe and the hard-won operating knowledge, kept because the
+    service is *recoverable* — the v250 binary, its `.bak` predecessors and
+    `/etc/llama-swap/config.yaml` with all six model entries are intact and the unit is merely
+    stopped+disabled, and every GGUF is still on `/models`. ⚠️ Re-enabling it needs a device
+    selector in its config first, or it will grab a card another container is using. Read the rest
+    in the past tense: **CT 123 `gpu2`** on GPU 2 ran a `llama-swap` proxy for the
+    autonomous coding loop that hot-swapped between a coder model (Qwen3.8-27B, alias
     `qwen3.8-27b-dflash2`) and a reviewer model (ThinkingCap-Qwen3.6-27B, alias `thinkingcap-27b`),
     one resident at a time (OpenAI API `0.0.0.0:8080`, pick model by name).
     Same single-GPU pin idiom (`GPU_PCI_ADDRESS=0000:83:00.0`, by-path, REAL node name) + the loud-guard.
@@ -204,6 +211,57 @@ These containers form the system:
     engine scripts — `create-lxc-lmstudio-qwen3.5-9b.sh` (LM Studio `lms`) and
     `create-lxc-llamacpp-qwen3.5-9b.sh` (llama.cpp). The README found llama.cpp better on
     that card, which is why the V620 ships only the llama.cpp script.
+- **Qwen3.8-Flash-Next** (`pro-v620/qwen38-flash-next/`): `qwen4exp`, 180B total / **6B active**,
+  `UD-Q4_K_XL` **111.33 GB** — the first model here that does **not** fit in VRAM, with the PLE
+  table and a tunable share of routed experts in system RAM. ✅ **Runs on CT 123 `gpu2`, one card
+  (`0000:83:00.0`), `-ncmoe 34`, 13.01 t/s.** Deploy with
+  `VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh`.
+  📖 **That folder's `README.md` is the single detailed record** — the full placement curve, the
+  governor and threads findings, the concurrency table, four explicit retractions and the
+  corrections to the KB's sizing note all live there. Read it before changing any number below;
+  this section is deliberately only what a session needs in context.
+  - ⚠️ **A two-card CT 120 shape exists and is SLOWER.** At matched placement one card beats two
+    by **20.9% / 24.2%** (d0 / 8k) — llama.cpp **#28699**'s QSA indexer crossing, **+16.1 ms per
+    token per extra card boundary**. Card 2 buys +11% decode but **+97% prefill** (8k TTFT 104 s
+    vs 205 s), so it is a prefill purchase. `./ct120-cutover.sh to-qwen38fn` moves it there and
+    `to-qwen36` brings CT 120 back to `qwen3.6-35b-a3b`; both GGUFs and builds stay on disk.
+    Re-test two cards if #28699's per-device fix lands. **Always run a one-card control.**
+  - 🔴 **PREFILL is the binding constraint, not decode**, and no bandwidth arithmetic sees it:
+    ~72% of per-token time is fixed overhead, of which ~30 graph splits/token at ~1.07 ms is 61%.
+    Quote depth with any figure — decode degrades with context depth via the same indexer.
+  - 🔴 **The reasoning contract is INVERTED from Qwen3.8-27B.** The template resolves
+    `reasoning_effort|default('xhigh')` and **raises** on `"none"` and `"high"` — the values that
+    work on CT 123's old coder. Unset means `xhigh`, which never answers. Handled **server-side**
+    with `--reasoning off` (plus `--reasoning-format auto`, or an empty `<think>` pair lands in
+    `content` and corrupts generated files), which measurably **neutralises** the trap: all five
+    effort levels then return clean content, so a caller cannot break it.
+  - 🔴 **`b11013` is a HARD FLOOR on Vulkan, and checking the arch string tells you otherwise.**
+    `qwen4exp` is registered in b10678, but the hyper-connection ops only reached the Vulkan
+    backend in **#28988** (merged 2026-09-17); b11013 is the first build with it, b11010 is not.
+    So **b10678 is not a rollback target** even though `grep -rlx qwen4exp` hits it. ✅ **Check
+    that a backend can RUN an arch, never that the arch is registered.** ⚠️ `strings` is not
+    installed in CT 120 — it answers empty for everything and reads as "absent"; use `grep -rlx`.
+  - 🔴 **`--tensor-split` is REQUIRED alongside `--n-cpu-moe` and nothing warns you.** `-ncmoe N`
+    moves the experts of the **first** N layers to CPU, so `0..N-1` are light and `N..47` heavy
+    (~1.56 GB each), and llama.cpp's default split divides layers **evenly by count** — handing
+    card 2 all the heavy ones (measured: 9.3 GiB into GTT, 6.6 t/s). Rule:
+    **`card1 = N + (48 − N)/2 − 2`**; the `− 2` is load-bearing (without it 15/16/20 still spill)
+    and `N=48` is exempt at `48,0`. ✅ Measure demand as **`VRAM used + GTT`** — it is
+    split-invariant, which separates "too big in total" from "merely maldistributed".
+  - ⚠️ The PLE offload tensor is **`per_layer_token_embd`**; the KB's `ngram_embedding` is the
+    *safetensors* name and matches nothing in a GGUF.
+  - ⚠️ **The thermal watchdog's `GPU_SERVICE_MAP` must name the unit that actually RUNS on each
+    card.** It is `0000:03:00.0=120:llamacpp,0000:83:00.0=123:llamacpp-qwen38fn`, and
+    `ct120-cutover.sh` rewrites it to `120:llamacpp-qwen38fn` for **both** cards while CT 120
+    holds them. A map naming a stopped unit makes a thermal trip a **silent no-op**, leaving the
+    real load on an overheating card with only the 105 °C hardware reset behind it.
+  - ⚠️ **CT 120 and CT 123 must never hold the same card, and "stopped" is not enough** — a
+    stopped CT with `onboot: 1` comes straight back onto the card after a host reboot.
+    `to-qwen38fn` clears CT 123's `onboot` and `to-qwen36` restores it.
+  - ⚠️ **`gpu-ab-bench/thermal-guard.sh` and `sample-gpus.py` are B550-era** and still name
+    `0000:2d:00.0`/`0000:06:00.0`. Those paths do not exist, so the hwmon glob misses, `cat`
+    fails and `set -e` kills the guard in under a second — it fails **silently open**. Use
+    `qwen38-flash-next/thermal-guard.sh` on this platform.
 - **CT 121 `hermes`** (`hermes/`): an *unprivileged* Debian LXC running NousResearch's
   **Hermes Agent** — the homelab's agent (NOT a model server; it *consumes* CT 120's API,
   see the `ct120-vs-hermes` memory). It auto-discovers CT 120's IP, points Hermes at it via a
@@ -303,10 +361,17 @@ All run on the Proxmox host as root.
 ```bash
 # Provision the ops LLM-runtime container (CT 120) — GPU 1 of two Radeon Pro V620
 ./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
-# Autonomous coding loop's GPU-2 model server (CT 123 gpu2) — llama-swap on GPU 2
-./pro-v620/create-lxc-llama-swap-gpu2.sh          # qwen3.8-27b-dflash2 coder + thinkingcap-27b reviewer, swapped by name (:8080)
-# The loop's execution sandbox (CT 122 coder-runner; runs npm/build/tests, needs CT 121's ssh pubkey)
-CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./coder-runner/create-lxc-coder-runner.sh
+# Qwen3.8-Flash-Next lives on CT 123 (one card) since 2026-09-18 — see below.
+# To put it on CT 120 across BOTH cards instead (slower: the inter-GPU tax costs 21% of decode):
+cd pro-v620/qwen38-flash-next && ./install.sh --download   # env/serve/unit + resume the 112 GB pull
+cd pro-v620/qwen38-flash-next && ./ct120-cutover.sh to-qwen38fn   # cut over   (to-qwen36 = full rollback)
+cd pro-v620/qwen38-flash-next && ./thermal-guard.sh & ./placement-sweep.sh   # find the best --n-cpu-moe
+# CT 123 gpu2 — Qwen3.8-Flash-Next on ONE card (the measured best single-GPU config, :1234)
+cd pro-v620/qwen38-flash-next && VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh
+# CT 123 previously ran llama-swap (6 models by name on :8080); removed 2026-09-18, script kept:
+#   ./pro-v620/create-lxc-llama-swap-gpu2.sh
+# CT 122 coder-runner was destroyed 2026-09-18 (loop moved to Multica); recipe kept:
+#   CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./coder-runner/create-lxc-coder-runner.sh
 # The loop/orchestrator config that runs INSIDE CT 121 (profiles/skills/plugins/timers) — run from within CT 121
 pct exec 121 -- bash -lc 'cd /path/to/Proxmox/hermes/config && ./install.sh'  # see hermes/config/README.md
 # The knowledge-base retrieval service (CT 140 kb-rag) — a read-only KB deploy key is REQUIRED
@@ -392,7 +457,14 @@ Engine differences that matter when extending the llama.cpp script:
   flat `llama-<tag>/` dir and symlinks `/opt/llamacpp/current`. It also installs the
   **libglvnd/EGL stack** (`libglvnd0 libgl1 libglx0 libegl1`) on top of `mesa-vulkan-drivers`
   — without it the Mesa ICD loader can silently report **zero** Vulkan devices in the container.
-  - **Both CT 120 and CT 123 run llama.cpp `b10678`; llama-swap is pinned at `v250`.** Prior
+  - **CT 120 and CT 123 both run llama.cpp `b11018`**, and CT 123 got it 2026-09-18 by copying
+    `/opt/llamacpp/b11018-baseline` from CT 120 (same Ubuntu 24.04 / glibc 2.39, so the binary
+    moves); `qwen4exp` needs b11013+ and CT 123 was on b10678.
+    ⚠️ **Name the TREE, not the container** — CT 120 holds two: `b11018-baseline` (built here,
+    GNU 13.3.0, sha `32687325…`, byte-identical to CT 123's) and `llama-b11018` (the release
+    tarball, GNU 11.4.0, sha `4ac7aa75…`). Both report `build 11018, commit c9a5eeeb3`, so
+    "CT 120's build" is ambiguous and comparing the wrong pair reads as a mismatch.
+    llama-swap was pinned at `v250` before its removal. Prior
     llama.cpp builds are left in `/opt/llamacpp/` and the previous llama-swap binary kept as a
     `.bak`, so **rollback is a symlink flip / file copy**.
     ⚠️ **Bump the pins in the scripts, not just live** — they had drifted several builds behind
@@ -531,11 +603,13 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   matching range):
   - `100-119` — infra / services (currently empty; CT 110 `mealdeal` lived here until the app
     moved into the Docker host — small web apps are now containers on VM 300, not LXCs)
-  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, pinned to GPU 1 of two V620s; the
-    prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the Hermes Agent that
-    consumes CT 120's API. CT 122 `coder-runner` — the coding loop's execution sandbox; CT 123 `gpu2` —
-    a `llama-swap` server on GPU 2 for the loop (`qwen3.8-27b-dflash2` coder + `thinkingcap-27b`
-    reviewer, swapped one at a time))
+  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, GPU 1, serving
+    `qwen3.6-35b-a3b`; the prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the
+    Hermes Agent that consumes CT 120's API. CT 123 `gpu2` — GPU 2, serving
+    **Qwen3.8-Flash-Next** on one card since 2026-09-18.
+    ⚠️ **CT 122 `coder-runner` was DESTROYED 2026-09-18** — the coding loop moved to Multica, so it
+    was unused and only a maintenance burden. `coder-runner/create-lxc-coder-runner.sh` still
+    documents how to recreate it.)
   - `140-159` — databases (CT 140 `kb-rag` — the CognitiveStack hybrid-search API; it lives here
     rather than in the AI range because the durable artifact is a vector+FTS **database**, even
     though its consumers are agents)
@@ -543,26 +617,23 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   - `300+` — **VMs** (VM 300 `docker-host`). The ranges above allocate *containers*; VMs get their
     own range so `pct`/`qm` ids never collide. Apps running as Docker containers on VM 300 do not
     take a VMID at all.
-- **Autonomous coding loop / execution isolation (`coder-runner/`, CT 122).** The homelab runs a
-  self-driving coder↔reviewer loop on **Hermes kanban** (CT 121): coder/reviewer *profiles* work each task
-  in an isolated git worktree/branch, PR-gated (no auto-merge to public `main`). The loop's design rule is
-  that **untrusted project code executes only on a separate, generic, disposable LXC — CT 122
-  `coder-runner`** (Node + pnpm + git + toolchain, holds no secrets), never inside the Hermes LXC. CT 121 drives
-  it over **ssh+rsync** via `checks-on-runner`/`run-on-runner`/`verify-and-commit` helpers (committed under
-  `hermes/config/bin/` and deployed into CT 121 by `hermes/config/install.sh`). Key facts learned the hard
-  way: Hermes does **not**
-  auto-commit managed worktrees and the local model won't reliably run `git`, so commits are made
-  deterministically by `verify-and-commit` (checks on CT 122 → commit on the CT 121 host on green); a fix
-  task must use `--workspace worktree:<absolute-repo-path>` (plain `worktree`+`--project` fails when created
-  from inside a worker); keep worktrees out of the repo tree to avoid `git add -A` swallowing them as
-  gitlinks. `coder-runner/create-lxc-coder-runner.sh` provisions CT 122 (once; repo-agnostic — add repos via
-  `hermes project`, never a new LXC). See `coder-runner/README.md` and the `autonomous-coding-loop` memory.
-  The loop's CT-121-side config (coder/reviewer profiles, the loop helper scripts under `hermes/config/bin/`,
-  the `codex-review`/`completion-gate` plugins, the loop's `scope-and-plan`/`review-pr` skills, and the
-  `loop-watchdog`/`backlog-tick`/`pr-revise-tick` systemd timers) is committed under **`hermes/config/`**
-  (loop/orchestrator only — the box's unrelated KB/homelab automations are not tracked) with an idempotent
-  `install.sh` — run it inside CT 121 to (re)deploy. Private Slack channel IDs are parameterized to env vars
-  sourced from `/root/.hermes/.env` (see `hermes/config/hermes.env.example`); never commit the real `.env`.
+- **Autonomous coding loop — CT 122 `coder-runner` is DECOMMISSIONED (destroyed 2026-09-18).**
+  The homelab ran a self-driving coder↔reviewer loop on Hermes kanban (CT 121) whose design rule was
+  that **untrusted project code executes only on a separate, generic, disposable LXC**, never inside
+  the Hermes LXC. That container is gone: the loop moved to **Multica** shelling out to the `codex`
+  CLI (see the `multica-codex-loop` memory), leaving CT 122 unused and only something to keep
+  patched. `coder-runner/create-lxc-coder-runner.sh` and `coder-runner/README.md` remain as the
+  recipe if the loop ever comes back on-box, and CT 121's `coder-runner` ssh keypair was removed
+  with it.
+  ⚠️ **The isolation rule still holds** — if project code is ever executed on this box again it
+  gets its own disposable container, not the agent's. The loop's CT-121-side config
+  (coder/reviewer profiles, `hermes/config/bin/` helpers, the `codex-review`/`completion-gate`
+  plugins, the loop skills and timers) is still committed under **`hermes/config/`** with an
+  idempotent `install.sh`; ⚠️ its `checks-on-runner` / `run-on-runner` / `verify-and-commit`
+  helpers referenced CT 122 over ssh+rsync and will not work until a runner exists again.
+  Private Slack channel IDs are parameterized to env vars sourced from `/root/.hermes/.env`
+  (see `hermes/config/hermes.env.example`); never commit the real `.env`.
+
 - **Token accounting (`hermes/token-usage-collector/`, CT 121).** llama.cpp exposes
   `llamacpp:prompt_tokens_total`/`llamacpp:tokens_predicted_total` at `/metrics` (CT 120 runs
   `--metrics`; without it that route 501s), but they are **counters since process start** and reset on
@@ -589,9 +660,10 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
     the margin under the ChatGPT plan, so they are not "spend" the way metered API tokens are.
     ⚠️ `TOKEN_USAGE_DB_PROVIDERS` must **exclude** `custom`/`auto`/empty — those are CT 120 traffic the
     endpoint source already counts, so including them doubles every local token.
-  ⚠️ **CT 123 (`gpu2`) is deliberately not covered** for non-Hermes traffic:
-  llama-swap's `:8080/metrics` is host telemetry (CPU/memory/swap) with no token counters, and it
-  unloads/reloads models on demand so per-model counters would reset on every swap. (Anything *Hermes*
+  ⚠️ **CT 123 (`gpu2`) is not covered** for non-Hermes traffic. It ran llama-swap, whose
+  `:8080/metrics` was host telemetry with no token counters; since 2026-09-18 it is a plain
+  llama.cpp server on `:1234` and *could* be scraped the same way CT 120 is, but nothing does yet —
+  and Hermes does not use it (too slow), so the gap is small. (Anything *Hermes*
   sends to a cloud provider is captured regardless of host, via the second source.)
 - Keep downloaded model weights and generated results out of git (already covered by
   `.gitignore`: `models/`, `results/`, `artifacts/`, `bench-results*.tgz`, `.env*`).
@@ -667,6 +739,25 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   junction/mem — and a missing sensor or failed write forces 100%.
   ⚠️ **The BMC has no GPU temperature sensor**, so its own fan tables can never cool a passive
   card; this service is the only thing closing that loop.
+  ✅ **But it DOES monitor the CPU and every DIMM, and acts on them — so those need no host
+  service.** The GPU is the *only* thermal gap on this board, which is exactly why
+  `gpu-blower-control` exists and why there is no CPU/RAM equivalent. Read them with
+  `ipmitool sdr type Temperature`: `CPU Temp`, `MB Temp`, `Card Side Temp`, `Onboard LAN Temp`,
+  and **one sensor per memory channel, `TEMP_CPU1_DDR4A` through `…DDR4H`** — an unpopulated
+  channel reports `No Reading`, which is how to tell which slots are filled without opening the
+  case (`dmidecode`'s `Locator` is useless here: ASRock reports every slot as `DIMM 0`).
+  Baseline measured 2026-09-17 under the qwen4exp placement sweep, **4 of 8 channels populated
+  (C, D, G, H) — a CORRECT, deliberate placement** chosen from the board documentation and
+  validated by the owner's own tests, all four at `Configured Memory Speed: 3200 MT/s`; don't
+  "fix" it and don't reason about it from generic one-per-quadrant folklore: DIMMs **45-50 °C** (H hottest, G coolest, ~4 °C spread from airflow position),
+  CPU **41 °C**, fans 1200-2400 RPM. DDR4 RDIMMs throttle near 85 °C, so that is ~35 °C of
+  headroom, and the BMC exposes **no upper threshold** on the DIMM sensors to trip on.
+  ⚠️ Expect **+5-10 °C when the other four sticks land** — A/B/E/F are currently acting as
+  airflow gaps, and filling them both adds heat sources and restricts flow.
+  ✅ **Flat DIMM temps are a useful independent check on whether a workload is really
+  memory-bandwidth-bound.** They did not budge while CPU utilisation swung 2% → 50%, which
+  corroborates, from a completely different sensor, the finding that the hybrid qwen4exp
+  placement is latency-bound rather than saturating the ~92 GB/s the sizing note assumes.
   🔴 **Do NOT infer which blower cools which card from PCI bus order — here it is reversed**
   (`FAN4`→`0000:83:00.0` top, `FAN5`→`0000:03:00.0` bottom). Getting it backwards is nearly
   undiagnosable: each card's blower ramps on the *other* card's heat, both cards appear to "fail to
