@@ -221,8 +221,9 @@ the depth curve, and the template-contract result.
 
 All figures at full clock (`schedutil`), b11018, two V620s, measured 2026-09-18.
 **`-ncmoe 16` is the floor** — below it, only `15` + q8_0 + projector-CPU is even arithmetically
-close, and it fails this folder's ≥2048 MiB/card headroom policy (and spilled at the one split
-measured). See [the closure](#--ncmoe-15--closed-by-policy-not-by-physics).
+close, and it fails the ≥2048 MiB/card rule **for a new or unvalidated placement** (and spilled
+at the one split measured). ⚠️ That rule does not apply retroactively — several shipped
+configurations sit below it with a measured per-card minimum instead. See [the closure](#--ncmoe-15--closed-by-policy-not-by-physics).
 
 ### ✅ Default — fastest, and it also has the most headroom
 
@@ -335,7 +336,7 @@ That advice was right; it now has a number.
 | `--threads 32` | −4 to −5% solo; 16 is best at 2+ streams (8 edges it ~1% solo, then loses 4.9% at 4) |
 | the documented `--tensor-split` | ~2 layers off; spills at `-ncmoe` 15/16/20 and costs up to −11% |
 | f16 KV at `--ctx-size 131072` | spills at `-ncmoe 16` and costs −21% of decode at depth |
-| `-ncmoe` below 16 | fails the ≥2048 MiB/card headroom policy; `15`+q8_0+projCPU spilled at the one split measured |
+| `-ncmoe` below 16 | fails the ≥2048 MiB/card rule for a NEW placement; `15`+q8_0+projCPU spilled at the one split measured |
 | `--load-mode none` | −5%, despite llama.cpp suggesting it at startup |
 | `powersave` governor | −30%, and it was the single largest factor found |
 
@@ -721,7 +722,7 @@ What the record actually supports:
 ✅ **Closure**: at `-ncmoe 15`, q8_0 KV and CPU projector, split `29,19` was measured and failed
 the headroom check. Other splits remain unvalidated. Further testing is **deprioritized**: the
 projected decode gain is ~2%, the estimated balanced headroom of 1571 MiB/card fails this
-folder's **≥2048 MiB/card acceptance policy**, and larger-batch configurations at `-ncmoe 16`
+folder's **≥2048 MiB/card rule for a new or unvalidated placement**, and larger-batch configurations at `-ncmoe 16`
 offer the more promising prefill improvement. **Not a supported production configuration** — and
 that is a headroom-policy decision, not a claim that the model cannot fit.
 
