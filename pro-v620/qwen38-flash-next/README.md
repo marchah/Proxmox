@@ -210,25 +210,37 @@ and that was an artifact of every core being parked at 1500 MHz. At full clock t
 runs the other way. ⚠️ The `-ncmoe 15` row is the one to distrust: it was spilling 2060 MiB
 to GTT, which depresses its d0 and flatters the ratio.
 
-### ⚠️ q8_0 KV is NOT free on this architecture — it costs ~14% at depth
+### ✅ q8_0 KV + projector-on-CPU is FREE at a placement that fits
 
-This repo's standing note says quantised KV "costs zero throughput". That was measured on
-CT 123's `qwen3.8-27b` and **does not transfer to `qwen4exp`**. Same placement, same threads:
+⚠️ **This section previously claimed q8_0 cost ~14% at depth. That was wrong**, and the
+error is instructive: it generalised from a pair of cells that were both on the documented
+(spilling) `--tensor-split`. Re-measured as a clean pair at a placement that fits —
+`-ncmoe 16`, split `30,18`, neither cell spilling, same thread count:
 
-| KV / projector | decode d0 | decode d8k | VRAM |
+| shape | decode d0 | decode d8k | VRAM free c1 / c2 |
 | --- | ---: | ---: | ---: |
-| f16 / GPU | 12.69 | 11.53 | 52540 MiB |
-| `q8_0` / CPU | 12.17 | **9.87** | 50639 MiB |
-| | −4.1% | **−14.4%** | −1901 MiB |
+| f16 / projector on GPU | 14.16 | 13.07 | 1305 / 1553 MiB |
+| **`q8_0` / projector on CPU** | **14.17** | **13.45** | **2881 / 1878 MiB** |
+| | +0.1% | **+2.9%** | +1.6 GiB |
 
-The cost scales with depth, which is what this architecture predicts: decode is dominated by
-the QSA indexer rescoring the cached context every token (llama.cpp #28699), so a quantised
-cache is dequantised on every indexer pass. At d0 there is little context to rescore.
+Identical at d0 and *marginally faster* at depth, while freeing ~1.6 GiB — which is what
+this repo's original note said all along ("marginally faster, unchanged at 2× context").
+The −14% belonged to the spilled `-ncmoe 20` configuration, not to the architecture.
 
-✅ **The confound points the wrong way, which is why this is believable.** The `q8_0` cell had
-~1900 MiB *more* headroom and less GTT than the f16 control, so spill pressure would have
-made it the faster of the two. It was slower anyway, and −14.4% is an order of magnitude
-above the ~1.4% spread at full clock.
+🔴 **The lesson is about method, not about KV.** A spilled configuration does not degrade
+uniformly: it cost that pair far more at depth than at d0, which looked exactly like a
+depth-scaling penalty and was not. **Never characterise a knob using cells that are
+spilling — establish a fitting placement first, then vary one thing.** The earlier
+comparison also varied two things at once (KV type *and* projector placement), so even its
+sign was not attributable; that is still true of the pair above, so the honest claim is
+that *the shape* is free, not that q8_0 specifically is.
+
+⚠️ Two reasons to keep this shape deliberate rather than automatic:
+- `q8_0` KV is only safe here because the server runs `--reasoning off`. The coupling is a
+  hard XOR on this box — `reasoning off + q8_0` **or** `reasoning low/medium + f16`. Mixing
+  gives silent empty replies.
+- `--no-mmproj-offload` costs 3–5× on **image encoding only** (text is unaffected). If
+  vision latency matters, take the f16/projector-on-GPU row and its 1.6 GiB less headroom.
 
 ### `--threads` is an inverted U with the peak at 16, not 32
 
