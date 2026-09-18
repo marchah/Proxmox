@@ -83,6 +83,14 @@ if revals:
 
 print("## Placement, re-validated at full clock")
 print()
+print("🔴 **This table ranks by throughput and its `gate` column knows nothing about VRAM")
+print("headroom, so a SPILLED configuration can sit at the top.** That is exactly the trap")
+print("this run was built to expose: a cell holding GiB in GTT still posts a plausible")
+print("number. Every one of these cells used the DOCUMENTED `--tensor-split`, which is ~2")
+print("layers off, so `-ncmoe` 15 and 20 were both spilling here. Read the split table")
+print("below, or `./attribute-telemetry.py <run>`, for the headroom verdicts — and treat")
+print("this table as the shape of the curve, not as a ranking of usable configs.")
+print()
 print("| config | d0 t/s | d8000 t/s | n | gate |")
 print("| --- | ---: | ---: | ---: | --- |")
 ranked = sorted(((k, v) for k, v in cells.items() if v["a"]),
@@ -97,6 +105,9 @@ for k, v in sorted(cells.items()):
         print("| `%s` | **DIED / no data** | — | 0 | — |" % k)
 print()
 
+# ⚠️ Deliberately NOT taken from the placement table: that ranks cells measured at the
+# DOCUMENTED split, spills included. The headline comes from best_split.txt, which the split
+# stage wrote only after refusing every candidate whose verdict was SPILLED.
 speed = ranked[0][0] if ranked else None
 speed_tps = st.median(ranked[0][1]["a"]) if ranked else 0.0
 
@@ -111,14 +122,16 @@ frugal_tps = st.median(cells[frugal]["a"]) if frugal else 0.0
 # end of the placement curve was measuring a GTT spill. These cells test the correction.
 split = {}
 for f in sorted(glob.glob(os.path.join(run, "split-nc*-c*.json"))):
-    m = re.match(r"split-nc(\d+)-c(\d+)-(\w+)\.json$", os.path.basename(f))
+    # ⚠️ The shape suffix is OPTIONAL: an f16 / projector-on-GPU cell is just
+    # `split-nc16-c30.json`, so a mandatory third group silently dropped half the table.
+    m = re.match(r"split-nc(\d+)-c(\d+)(?:-(.+))?\.json$", os.path.basename(f))
     d = load(f)
     if not m or not d:
         continue
-    split[(int(m.group(1)), int(m.group(2)), m.group(3))] = d
+    split[(int(m.group(1)), int(m.group(2)), m.group(3) or "f16 / proj GPU")] = d
 
 if split:
-    print("## Tensor split: the documented rule is one layer off")
+    print("## Tensor split: the documented rule is ~2 layers off")
     print()
     print("| -ncmoe | split | rule | d0 t/s | d8000 t/s | gate |")
     print("| --- | --- | --- | ---: | ---: | --- |")
@@ -137,27 +150,43 @@ if split:
     print()
 
 # ---------------------------------------------------------------- context
+# ⚠️ Each context cell writes TWO files: the shallow probe (3 prompt classes at d0/d8k) and
+# a `-deep` one (1 class at 32k, because a 32k prefill costs ~13 min per request). The deep
+# file must be JOINED to its sibling, not counted as another cell -- a bare ctx*.json glob
+# would list every configuration twice, once with no d0 and once with no d32k.
 ctxcells = {}
 for f in sorted(glob.glob(os.path.join(run, "ctx*.json"))):
-    m = re.match(r"ctx(\d+)-(f16|q8)-(\S+?)\.json$", os.path.basename(f))
+    base = os.path.basename(f)
+    if base.endswith("-deep.json"):
+        continue
+    m = re.match(r"ctx(\d+)-(f16|q8)-(.+)\.json$", base)
     d = load(f)
     if not m or not d:
         continue
-    ctxcells[(int(m.group(1)), m.group(2), m.group(3))] = d
+    deep = load(f[: -len(".json")] + "-deep.json")
+    ctxcells[(int(m.group(1)), m.group(2), m.group(3))] = (d, deep)
 
 if ctxcells:
     print("## Longest usable context")
     print()
-    print("| ctx | KV | placement | d0 t/s | d8k t/s | d32k t/s | gate |")
-    print("| --- | --- | --- | ---: | ---: | ---: | --- |")
+    print("| ctx | KV | placement | d0 t/s | d8k t/s | d32k t/s | d32k prefill | gate |")
+    print("| --- | --- | --- | ---: | ---: | ---: | ---: | --- |")
     for key in sorted(ctxcells):
         c, kv, place = key
-        d = ctxcells[key]
-        print("| %d | %s | %s | %s | %s | %s | %s |" % (
+        d, deep = ctxcells[key]
+        d32 = dec(deep, "d32000/") if deep else None
+        pf32 = None
+        if deep:
+            su = deep.get("summary", {})
+            v = [x.get("prefill_tps_median") for k, x in su.items()
+                 if k.startswith("d32000/") and x.get("prefill_tps_median")]
+            pf32 = st.median(v) if v else None
+        print("| %d | %s | %s | %s | %s | %s | %s | %s |" % (
             c, kv, place,
             ("%.2f" % dec(d, "d0/")) if dec(d, "d0/") else "DID NOT LOAD",
             ("%.2f" % dec(d, "d8000/")) if dec(d, "d8000/") else "—",
-            ("%.2f" % dec(d, "d32000/")) if dec(d, "d32000/") else "—",
+            ("%.2f" % d32) if d32 else "—",
+            ("%.1f" % pf32) if pf32 else "—",
             gates(d)))
     print()
     print("KV is **24.0 KiB/token at f16** — only 12 of 48 blocks hold a cache, the other 36")
@@ -275,6 +304,33 @@ try:
     gov = open(os.path.join(run, "governor.txt")).read().strip()
 except Exception:
     pass
+bth = "?"
+try:
+    bth = open(os.path.join(run, "best_threads.txt")).read().strip()
+except Exception:
+    pass
+
+headline = None       # (label, ncmoe, c1, kv, mp, d0, d8k)
+try:
+    bs = open(os.path.join(run, "best_split.txt")).read().split()
+except Exception:
+    bs = []
+if len(bs) >= 2:
+    want_nc, want_c1 = int(bs[0]), int(bs[1])
+    want_kv = "" if len(bs) < 3 or bs[2] == "-" else bs[2]
+    want_mp = "" if len(bs) < 4 or bs[3] == "-" else bs[3]
+    for (nc, c1, kind), d in split.items():
+        if nc != want_nc or c1 != want_c1:
+            continue
+        is_q8 = "q8" in kind
+        if bool(want_kv) != is_q8:
+            continue
+        headline = ("-ncmoe %d --tensor-split %d,%d%s%s" % (
+            nc, c1, 48 - c1,
+            " --cache-type-k q8_0 --cache-type-v q8_0" if want_kv else "",
+            " --no-mmproj-offload" if want_mp == "true" else ""),
+            nc, c1, want_kv, want_mp, dec(d, "d0/"), dec(d, "d8000/"))
+        break
 
 print("## The answer")
 print()
@@ -287,12 +343,13 @@ try:
         bestsplit = " `--n-cpu-moe %s --tensor-split %s,%d`" % (bs[0], bs[1], 48 - int(bs[1]))
 except Exception:
     pass
-if speed:
-    extra = ""
-    if best_mtp:
-        extra = " + MTP (`%s`)" % best_mtp[0]
-    print("| **Fastest** | `%s`%s%s, governor `%s` | %.2f t/s |"
-          % (speed, bestsplit, extra, gov, best_mtp[1] if best_mtp else speed_tps))
+if headline:
+    extra = " + MTP (`%s`)" % best_mtp[0] if best_mtp else ""
+    print("| **Recommended** | `%s`%s, `--threads %s`, governor `%s` | **%.2f / %.2f t/s** (d0/d8k) |"
+          % (headline[0], extra, bth, gov, headline[5] or 0, headline[6] or 0))
+elif speed:
+    print("| **Fastest measured (⚠️ at the documented split, may be spilling)** | `%s`, governor `%s` | %.2f t/s |"
+          % (speed, gov, speed_tps))
 if frugal:
     print("| **Most VRAM left for other models** | `%s` (attention-only on GPU) | %.2f t/s |"
           % (frugal, frugal_tps))
