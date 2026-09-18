@@ -312,6 +312,34 @@ The frugal shape does **not** buy a whole placement step: `q8_0` + `--no-mmproj-
 saves ~1900 MiB while one layer of experts costs ~1500. So dropping one layer of experts
 (`-ncmoe 16`) beats quantising the cache, because it avoids the 14% depth cost entirely.
 
+### ⛔ CPU-only is not worth it — and you do not need it to free a card
+
+The question was whether running this model entirely on the CPU, leaving both V620s for
+other services, costs little enough to be worth it. It does not:
+
+| config | decode d0 | decode d8k | prefill d8k | 8k TTFT | VRAM held |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `-ncmoe 20`, `--threads 16` | **13.19** | **12.11** | 63.6 | **126 s** | 52540 MiB, both cards |
+| `-ncmoe 48` | 10.18 | 8.70 | 29.0 | 276 s | **9443 MiB, ONE card** |
+| `-ngl 0` (CPU-only), `--threads 16` | 6.04 | 5.51 | 26.4 | 303 s | 2181 MiB (projector only) |
+
+**−54% against the fastest fitting GPU config, −41% against `-ncmoe 48`.**
+
+But the percentage is not the argument. **`-ncmoe 48` already runs the whole model in 9.4 GiB
+on a single card** — the derived split is `48,0`, so the second card holds nothing at all and
+is free for another service, with ~23 GiB still spare on the first. So there is never a
+reason to reach for CPU-only to free a GPU: `-ncmoe 48` frees one outright and is **69%
+faster**.
+
+✅ **Where the GPU actually earns its place is DECODE, not prefill.** CPU-only costs only −9%
+of prefill against `-ncmoe 48` (26.4 vs 29.0 t/s), because at `-ncmoe 48` prefill is already
+CPU-bound on the experts. The cards' contribution at that placement is almost entirely the
+attention and non-expert path during decode, and that is worth +69%.
+
+⚠️ **"Both cards free" is not literally true as measured.** `reset_env` leaves the vision
+projector resident, so ~2.1 GiB stays on a card. `--no-mmproj-offload` frees that too, at a
+cost to image encoding only (3–5×) and none to text.
+
 ### 🔴 Nothing is saturated — this is serialization-bound, not bandwidth-bound
 
 Sampled during a 300-token decode:
