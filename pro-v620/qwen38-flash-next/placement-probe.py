@@ -155,9 +155,17 @@ def main():
     ap.add_argument("--depths", default="0",
                     help="comma-separated approximate prompt-token depths, e.g. 0,8000,32000")
     ap.add_argument("--contract", action="store_true")
+    # Limit which prompt classes run. The WARM pass does not need all three -- warming is
+    # about weights, the graph and the deep-prefill indexer state, none of which is
+    # prompt-class specific -- and at depth each class costs a full 8k prefill, which is
+    # more than half a cell's wall-clock. The MEASURE pass must keep all three: decode
+    # speed is prompt-dependent, so a single class is not this model's throughput.
+    ap.add_argument("--classes", default="",
+                    help="comma-separated subset of %s (default: all)" % ",".join(PROMPTS))
     a = ap.parse_args()
 
-    result = {"base": a.base, "reps": a.reps, "n_predict": a.n_predict}
+    result = {"base": a.base, "reps": a.reps, "n_predict": a.n_predict,
+              "classes": a.classes or "all"}
     if a.contract:
         result["contract"] = contract_check(a.base)
 
@@ -165,7 +173,12 @@ def main():
     for depth in [int(d) for d in a.depths.split(",")]:
         # ~4 chars/token is close enough; the measured prompt_n is what gets reported.
         pad = FILLER * max(0, (depth * 4) // len(FILLER)) if depth else ""
-        for cls, p in PROMPTS.items():
+        want = [c.strip() for c in a.classes.split(",") if c.strip()] or list(PROMPTS)
+        unknown = [c for c in want if c not in PROMPTS]
+        if unknown:
+            raise SystemExit("unknown prompt class(es) %s; have %s"
+                             % (",".join(unknown), ",".join(PROMPTS)))
+        for cls, p in ((c, PROMPTS[c]) for c in want):
             for rep in range(a.reps):
                 try:
                     m = one(a.base, pad + p, a.n_predict)

@@ -80,7 +80,8 @@ split_cell() {  # <label> <ncmoe> <c1> [kv_type] [mmproj_on_cpu]
   setv EXTRA_ARGS ""; setv LLAMACPP_DIR /opt/llamacpp/b11018-baseline
   pct exec "$CT" -- systemctl restart llamacpp-qwen38fn
   if ! wait_up 1500; then note "| ${nc} | ${c1},$(( 48 - c1 )) | DIED | - | - | - | - |"; return 0; fi
-  ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 64 --depths 0,8000 >/dev/null 2>&1 || true
+  ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 64 --depths 0,8000 \
+    --classes code >/dev/null 2>&1 || true
   ./placement-probe.py "http://$(ip):1234" --reps 2 --n-predict 160 --depths 0,8000 \
     >"${RUN}/${label}.json" 2>/dev/null || true
   local A=/sys/bus/pci/devices/0000:03:00.0 B=/sys/bus/pci/devices/0000:83:00.0
@@ -228,7 +229,8 @@ ctx_cell() {  # <label> <ncmoe> <c1> <ctx> <kvtype>
     note "| ${ctx} | ${kv:-f16} | ${nc} / ${c1},$(( 48 - c1 )) | **DID NOT LOAD** | - | - | - |"
     return 0
   fi
-  ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 64 --depths 0,8000 >/dev/null 2>&1 || true
+  ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 64 --depths 0,8000 \
+    --classes code >/dev/null 2>&1 || true
   # A deep probe as well: a long window is pointless if throughput collapses in it. 32k is
   # the deepest that still fits every configuration tested here.
   ./placement-probe.py "http://$(ip):1234" --reps 2 --n-predict 160 --depths 0,8000,32000 \
@@ -331,7 +333,8 @@ mtp_cell() {  # <label> <extra-args>
   # progress line has to go to stderr or "$r" starts with whitespace and every parse of it
   # silently yields the empty string.
   if ! wait_up 1500 >&2; then echo "DIED"; return 0; fi
-  ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 64 --depths 0,8000 >/dev/null 2>&1 || true
+  ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 64 --depths 0,8000 \
+    --classes code >/dev/null 2>&1 || true
   ./placement-probe.py "http://$(ip):1234" --reps 2 --n-predict 160 --depths 0,8000 \
     >"${RUN}/${label}.json" 2>/dev/null || true
   python3 - "${RUN}/${label}.json" <<'PY'
