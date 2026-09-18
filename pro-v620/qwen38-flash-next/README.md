@@ -137,10 +137,18 @@ All figures at full clock (`schedutil`), b11018, two V620s, measured 2026-09-18.
 
 | | |
 | --- | ---: |
-| decode, short prompt | **14.17 t/s** |
-| decode, 8k context | **13.45 t/s** |
-| prefill, 8k | 76.9 t/s → **104 s to first token** |
-| VRAM free | 2.3 / 1.3 GiB, no spill |
+| decode, short prompt | **14.46 t/s** |
+| decode, 8k context | **13.37 t/s** |
+| prefill, 8k | 77.2 t/s → **104 s to first token** |
+| VRAM free | 2297 / 1255 MiB, no spill |
+
+✅ **Verified end-to-end on the live server**, not assembled from separate cells: the split
+stage measured this placement at `--ctx-size 65536` (14.17 / 13.45) and this row is the
+delivered config at **131072**, re-probed afterwards. Doubling the window is free — d0 is
+even marginally higher, and prefill is identical. The contract assertions pass too: bare
+chat answers, **no `<think>` leak into `content`**, and **no `reasoning_effort` value a
+caller might send breaks the server**, which matters because this template raises on
+`"none"` and `"high"` — the exact values CT 123's coder sends.
 
 `q8_0` + projector-on-CPU is free here (identical at d0, +2.9% at depth) and frees 1.6 GiB,
 which is what lets `--ctx-size 131072` fit. ⚠️ Safe **only** because the server runs
