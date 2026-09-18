@@ -21,14 +21,6 @@ echo "RUN=${RUN}"
 exec 9>/var/lock/qwen38fn-overnight.lock
 flock -n 9 || { echo "another overnight pipeline holds the lock — refusing to start"; exit 1; }
 
-# Kill the older, narrower chain if it is still armed. It waits on the same governor test
-# and would run revalidate.sh concurrently with part 1's copy.
-if pgrep -f "chain-reval.sh" >/dev/null 2>&1; then
-  echo "superseding chain-reval.sh (it would race part 1's revalidate)"
-  pkill -f "chain-reval.sh" || true
-  sleep 2
-fi
-
 # The thermal guard must be alive for the whole night: a dense-style CPU+GPU load is the
 # worst case on this box and the watchdog cannot protect a hand-driven benchmark.
 if ! pgrep -f "thermal-guard.sh" >/dev/null 2>&1; then

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Run the MTP / NextN speculation stage on its own. Proxmox HOST, root.
 #
-# Why: the stage BUILT successfully (585 targets, `--spec-type draft-mtp` and ggml-vulkan
-# both asserted present) and then failed rc=2 copying its own output, because the build
-# directory had been renamed to mtp-b11018 while the tar still said pr28097-mtp. The
-# artifact is intact on the builder, so this re-runs the stage with MTP_SKIP_BUILD=true and
-# spends the time on measurement instead of a rebuild.
+# Runs the MTP stage on its own, so a retry does not mean re-running the whole night. With
+# MTP_SKIP_BUILD=true it reuses an existing /root/builds/mtp-b11018 on the builder instead
+# of rebuilding, which is what you want when only the measurement needs repeating.
+#
+# 🔴 As of 2026-09-18 this stage CANNOT succeed: the rebased PR #28097 builds and serves but
+# its MTP graph aborts on a shape mismatch against b11018's reshaped hyper-connection
+# tensors. See the README. Re-try when #28097 rebases upstream.
 #
 # ⚠️ MTP_SKIP_BUILD re-asserts both guards against the existing artifact before trusting
 # it — reusing a build is only safe if it still has the flag and the backend it was built for.
@@ -21,7 +23,7 @@ MODELDIR=/models/hf/qwen3.8-flash-next
 MTPDIR=/opt/llamacpp/mtp-b11018
 DRAFT_PLAIN="${MODELDIR}/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf"
 DRAFT_SHARED="${MODELDIR}/mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf"
-SRC="${SRC:-./overnight-part2-fixed.sh}"
+SRC="${SRC:-./overnight-part2.sh}"
 export MTP_SKIP_BUILD=true
 [ -r "$SRC" ] || { echo "FATAL: $SRC not readable"; exit 1; }
 exec > >(tee -a "${RUN}/mtp.log") 2>&1
