@@ -72,23 +72,55 @@ for fn in s2c_context s3_mtp s2b_split; do
   fi
 done
 
-# The watchdog-based runner in stagelib.sh was never exercised here, which the follow-up
-# review called out. One negative control: a stage that fails internally must be reported as
-# a failure by `stage()` too, not just by the direct calls above.
+# Negative control for stagelib.sh's watchdog-based runner.
+# 🔴 THE FIRST VERSION OF THIS CONTROL PASSED WITHOUT RUNNING ITS BODY, three ways at once:
+#   1. `stage` takes <name> <timeout-seconds> <function>; `stage boom` left $2 unset, so it
+#      aborted on `local to="$2"` under `set -u` before reaching the body.
+#   2. The harness hid stderr, so that invocation error read as "the failure was caught".
+#   3. `stage()` returns 0 BY DESIGN after recording a failure, so its exit status can never
+#      be the assertion in the first place — the RECORD is what carries the result.
+#   4. The harness stubs `sleep() { :; }`, which makes the watchdog fire instantly.
+# So: call it with the real signature, restore `sleep` inside the control, assert on the
+# recorded note AND on a post-failure sentinel, and prove the control is not vacuous by
+# running a SUCCEEDING body through the same path and requiring the opposite result.
 if [ -f stagelib.sh ]; then
   # shellcheck source=/dev/null
   . ./stagelib.sh 2>/dev/null || true
   if declare -F stage >/dev/null; then
-    boom() { false; echo "unreachable"; }
-    set +e
-    ( set -Eeuo pipefail; stage boom ) >/dev/null 2>&1
-    rc=$?
-    set -e
-    if [ "$rc" -eq 0 ]; then
-      echo "  🔴 FAIL stage() reported success for a stage that failed internally"
-      fails=$((fails + 1))
+    CTL="$RUN/stagectl"; mkdir -p "$CTL"
+    ctl_fail() { false; : >"$CTL/sentinel"; }
+    ctl_ok()   { : >"$CTL/sentinel"; }
+    run_stage_ctl() {
+      : >"$CTL/notes"; rm -f "$CTL/sentinel"
+      # ⚠️ NO `set +e` here. An earlier version wrapped this in set +e / set -e, which
+      # propagated into stage()'s own `( "$@" ) &` subshell and disabled the very errexit
+      # the control exists to test — so the failing body ran to completion and was recorded
+      # as a success. `stage()` always returns 0, so nothing here can kill the parent anyway.
+      ( unset -f sleep                                   # real sleep, or the watchdog trips
+        note() { printf '%s\n' "$*" >>"$CTL/notes"; }
+        say()  { :; }
+        stage ctl 30 "$1" ) >/dev/null 2>&1
+    }
+
+    run_stage_ctl ctl_fail
+    if grep -q 'FAILED (rc=' "$CTL/notes" 2>/dev/null && [ ! -e "$CTL/sentinel" ]; then
+      echo "  OK   stage() records a failing stage and its body stops at the failure"
     else
-      echo "  OK   stage() surfaces an internal failure (rc=${rc})"
+      echo "  🔴 FAIL stage() did not record the failure, or ran past it"
+      echo "        notes: $(cat "$CTL/notes" 2>/dev/null || echo '<none>')"
+      echo "        sentinel present: $([ -e "$CTL/sentinel" ] && echo yes || echo no)"
+      fails=$((fails + 1))
+    fi
+
+    run_stage_ctl ctl_ok
+    if grep -q 'FAILED (rc=' "$CTL/notes" 2>/dev/null; then
+      echo "  🔴 FAIL the control reports FAILED for a SUCCEEDING body — it is vacuous"
+      fails=$((fails + 1))
+    elif [ -e "$CTL/sentinel" ]; then
+      echo "  OK   stage() records success for a succeeding body (control is not vacuous)"
+    else
+      echo "  🔴 FAIL the succeeding body never ran — the control proves nothing"
+      fails=$((fails + 1))
     fi
   else
     echo "  ⚠️  stagelib.sh defines no stage() — skipped that control"

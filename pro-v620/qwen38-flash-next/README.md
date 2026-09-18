@@ -159,9 +159,19 @@ any shape at any split", on a demand of "64.2 GiB against 64 GiB" — both wrong
   floor, so not excluded by capacity. Measured at split **`29,19`: SPILLED**, 3256 / **89 MiB**
   free — starved by maldistribution. **That split is excluded by measurement; other splits are
   unvalidated.**
-- ✅ **The operative rule is a headroom POLICY, not a capacity proof**: this folder accepts a
-  placement at **≥2048 MiB free on every card** (below that is marked "tight" throughout). 15's
-  best balanced estimate of 1571 MiB/card fails that policy, which is why 16 is the floor.
+- ✅ **The operative rule is a headroom POLICY, not a capacity proof** — but stated carefully,
+  because the blunt version was wrong. 🔴 **An earlier revision of this bullet claimed a global
+  "≥2048 MiB free on every card", which rejects the configurations this very file ships**: the
+  two-card default's minimum is 1878 MiB, the one-card default's 1739, and the 131072-context
+  row 1255. A universal rule invented in the paragraph that needed it is not a policy.
+  The rule that actually applies:
+  - **A NEW or UNVALIDATED placement needs ≥2048 MiB free on every card** to be adopted without
+    an end-to-end load check. 15's best balanced *estimate* of 1571 MiB/card does not clear it.
+  - **An existing placement below that is acceptable only with a measured minimum**, recorded
+    here, per card, at its shipped batch size. The three exceptions above are exactly that, and
+    the `4096/1024` run is what a config looks like when it fails: 877 MiB and GTT off its floor.
+  - ⚠️ **Estimated-balanced is not measured-minimum.** Conflating them is what shipped the
+    marginal default in the first place.
   See [the `-ncmoe 15` closure](#--ncmoe-15--closed-by-policy-not-by-physics).
 
 🔴 **`-ncmoe 34` is the floor for one card**, at 30.4 GiB of 32. Below that a single card
@@ -835,9 +845,11 @@ cold load implies. Still far too slow to do per-request; fine at a role handoff.
   experts must stay resident; paging them back from the SATA 860 EVO turns a bandwidth
   measurement into a disk measurement. `swap` is also 0 on the container.
 - ⚠️ **The watchdog service map must point both cards at CT 120** while it holds both.
-  `ct120-cutover.sh` does this, because the stock map sends a GPU-2 trip to
-  `123:llama-swap` — a **no-op** now that CT 123 is stopped, which would leave the real
-  load cooking an overheating card. `to-qwen36` puts the map back.
+  `ct120-cutover.sh` does this. ⚠️ **The "stock map sends GPU 2 to `123:llama-swap`" warning
+  here is now historical** — both the committed default and the live map name
+  `123:llamacpp-qwen38fn`, fixed 2026-09-18 after llama-swap was removed. The hazard it
+  describes is real and general: **a map naming a unit that is not running makes a trip a
+  no-op**, leaving the real load on an overheating card. `to-qwen36` puts the map back.
 - ⚠️ **`gpu-ab-bench/thermal-guard.sh` and `sample-gpus.py` are B550-era** and still name
   `0000:2d:00.0` / `0000:06:00.0`. Those paths do not exist here, so the guard's hwmon
   glob never matches, `cat` fails, and `set -e` kills it within a second — it fails

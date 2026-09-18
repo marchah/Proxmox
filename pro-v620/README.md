@@ -151,7 +151,8 @@ compounds), which is exactly where the MoE's speed pays off.
 
 It fits 32 GB at Q5 (~26.6 GB weights) with ~5 GB left for the KV cache — i.e. it
 fits **one** V620 comfortably, which is why CT 120 is pinned to GPU 1 alone; the
-second card runs the coding loop's `llama-swap` server (CT 123, see the note at the
+second card runs **Qwen3.8-Flash-Next** (CT 123; it ran the coding loop's `llama-swap`
+server until 2026-09-18 — see the note at the
 top). The dense alternatives that
 also fit (`Qwen3.5-27B`, `Qwen3-32B`) are documented in the repo history if you
 want to trade speed for a dense model — each would be its own script, not a flag on
@@ -290,7 +291,11 @@ per month" has been unanswerable.
 > needs something that accumulates deltas over time; that does not exist yet.
 > Pair a reading with `systemctl show llamacpp -p ActiveEnterTimestamp --value`.
 
-**CT 123 (`gpu2`) cannot do this.** Its `:8080/metrics` is llama-swap's *own*
+⚠️ **CT 123 (`gpu2`) is not covered yet, though it now COULD be.** Since 2026-09-18 it runs
+llama-server directly on `:1234` with `--metrics`, so it exposes
+`llamacpp:prompt_tokens_total` / `llamacpp:tokens_predicted_total` exactly as CT 120 does —
+nothing scrapes them, and Hermes does not use that endpoint, so the gap is small. **The reason
+below is historical**: while it ran llama-swap, its `:8080/metrics` was llama-swap's *own*
 process telemetry (CPU, memory, swap) with no token counters, and because
 llama-swap unloads and reloads models on demand, per-model llama.cpp counters
 would reset on every swap. Token accounting there needs a different mechanism.

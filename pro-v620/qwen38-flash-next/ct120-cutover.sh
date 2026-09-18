@@ -82,11 +82,15 @@ ct123_restore() {
 # process has open, and it says nothing about intermediate or post-reboot states — an
 # end-of-script assertion structurally cannot. That is what a mocked transition test is for.
 assert_map_owns_cards() {
-  local map addr svc vm unit conf bad=0 seen=""
+  local map addr svc vm unit conf ct_state bad=0 seen=""
   map="$(grep -m1 '^GPU_SERVICE_MAP=' "$WATCHDOG_ENV" 2>/dev/null | cut -d= -f2-)"
   [ -n "$map" ] || { log "🔴 watchdog map EMPTY — a trip on either card sheds no load"; return 1; }
-  local IFS=','
-  for pair in $map; do
+  # ⚠️ Narrow the IFS change to the split itself. Left function-wide it also rewrites `$*`
+  # for every command invoked below, which is a trap for anything added later (and it broke
+  # a mocked test of this very function). Split once, restore, then use the array.
+  local -a pairs=()
+  local oldifs="$IFS"; IFS=','; read -ra pairs <<<"$map"; IFS="$oldifs"
+  for pair in "${pairs[@]}"; do
     addr="${pair%%=*}"; svc="${pair#*=}"; vm="${svc%%:*}"; unit="${svc#*:}"
     seen="${seen} ${addr}"
     conf="/etc/pve/lxc/${vm}.conf"
@@ -95,7 +99,17 @@ assert_map_owns_cards() {
       bad=1
       continue
     fi
-    if pct exec "$vm" -- systemctl is-active "$unit" >/dev/null 2>&1; then
+    # 🔴 `pct exec` CANNOT RUN IN A STOPPED CONTAINER, and the ordinary rollback leaves
+    # CT 123 stopped on purpose (it tells you to start it afterwards). So both service
+    # queries failed, the "CONFIGURED but not serving" state was unreachable for exactly the
+    # container that needs it, and `to-qwen36` raised a false protection alarm and exited 1
+    # on a completely correct setup. Container-stopped and unit-inactive are different
+    # states and must be reported differently.
+    ct_state="$(pct status "$vm" 2>/dev/null | awk '{print $2}')"
+    if [ "$ct_state" != "running" ]; then
+      log "  ${addr} -> ${vm}:${unit} — binding and map correct; CT ${vm} is ${ct_state:-unknown},"
+      log "      so runtime service state is DEFERRED (not verifiable from outside a stopped CT)"
+    elif pct exec "$vm" -- systemctl is-active "$unit" >/dev/null 2>&1; then
       log "  ${addr} -> ${vm}:${unit} — owns the card, unit ACTIVE"
     elif pct exec "$vm" -- systemctl is-enabled "$unit" >/dev/null 2>&1; then
       log "  ${addr} -> ${vm}:${unit} — owns the card, unit CONFIGURED but not serving"
