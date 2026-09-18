@@ -42,10 +42,57 @@ assert_ct123_stopped() {
   [ "$st" = "stopped" ] || die "CT 123 is '${st}' — stop it first (pct stop 123). Two containers must never hold the same card."
 }
 
-# The watchdog stops the service OWNING the hot card. While CT 120 drives both cards the
-# map must point BOTH at 120:llamacpp — otherwise a trip on GPU 2 tries to stop CT 123's
-# the wrong container's service, which is a no-op, and the real load keeps cooking an
-# overheating card.
+# 🔴 A ONE-SHOT "is it stopped?" CHECK DOES NOT HOLD. CT 123 keeps onboot=1, its own GPU-2
+# mounts and an enabled model service, so the next host reboot starts it straight back onto
+# the card CT 120 now holds — two llama-servers, one GPU, no warning. Stopping it by hand is
+# not enough; its autostart and its unit have to be disabled for as long as CT 120 owns the
+# card, and restored on the way back.
+ct123_release_gpu2() {
+  log "disabling CT 123 autostart + model unit so a host reboot cannot re-take GPU 2"
+  printf '%s\n' "$(pct config 123 2>/dev/null | grep -E '^onboot' || echo 'onboot: 0')" \
+    >"${BAK_DIR}/123.onboot.before-cutover"
+  pct set 123 --onboot 0 || die "could not clear CT 123 onboot — refusing to proceed"
+  pct exec 123 -- systemctl disable llamacpp-qwen38fn 2>/dev/null \
+    || log "  (CT 123 is stopped, so its unit stays enabled on disk — autostart off is the guard)"
+}
+
+ct123_restore() {
+  log "restoring CT 123 autostart + model unit"
+  pct set 123 --onboot 1 || log "  WARN: could not restore CT 123 onboot — set it by hand"
+  pct exec 123 -- systemctl enable llamacpp-qwen38fn 2>/dev/null \
+    || log "  (CT 123 not running; enable llamacpp-qwen38fn after 'pct start 123')"
+}
+
+# The invariant the map exists to satisfy, checked rather than assumed: a mapped service must
+# be enabled-or-active in a container that actually holds that card.
+assert_map_owns_cards() {
+  local map addr svc vm unit bad=0
+  map="$(grep -m1 '^GPU_SERVICE_MAP=' "$WATCHDOG_ENV" 2>/dev/null | cut -d= -f2-)"
+  [ -n "$map" ] || { log "WARN: watchdog map empty — cannot verify ownership"; return 0; }
+  local IFS=','
+  for pair in $map; do
+    addr="${pair%%=*}"; svc="${pair#*=}"; vm="${svc%%:*}"; unit="${svc#*:}"
+    if ! pct exec "$vm" -- systemctl is-enabled "$unit" >/dev/null 2>&1 \
+      && ! pct exec "$vm" -- systemctl is-active "$unit" >/dev/null 2>&1; then
+      log "🔴 MAP MISMATCH: ${addr} -> ${vm}:${unit}, which is neither enabled nor active"
+      bad=1
+    fi
+  done
+  [ "$bad" -eq 0 ] && log "watchdog map verified: every mapped unit exists and is live" || \
+    log "🔴 the watchdog would be a NO-OP for at least one card — fix the map before loading"
+  return 0
+}
+
+# The watchdog stops the service OWNING the hot card, so the map must name the unit that is
+# actually RUNNING, per card.
+# 🔴 THIS WAS WRONG UNTIL 2026-09-18 and it disabled thermal protection on both cards at
+# once. The forward cutover mapped both cards to `120:llamacpp`, then disabled that very
+# unit and started `120:llamacpp-qwen38fn` instead — so a trip stopped a dead unit, the real
+# load kept running, and the 105 °C hardware MODE1 reset became the only backstop. On the
+# one configuration that drives BOTH cards. The map must be `120:llamacpp-qwen38fn` while
+# CT 120 serves qwen4exp, and `120:llamacpp` only after the revert re-enables that unit.
+# ✅ Invariant to preserve: every mapped service must own the card it is mapped to. There is
+# a check for it at the end of this script.
 set_watchdog_map() {
   local want="$1"
   [ -f "$WATCHDOG_ENV" ] || { log "watchdog env absent — skipping map update"; return 0; }
@@ -64,6 +111,7 @@ case "${1:-status}" in
     require_root
     mkdir -p "$BAK_DIR"
     assert_ct123_stopped
+    ct123_release_gpu2
 
     [ -e "/dev/dri/by-path/pci-${GPU2_PCI}-render" ] \
       || die "GPU 2 by-path render node missing on the host"
@@ -101,10 +149,11 @@ case "${1:-status}" in
     log "restarting CT ${VMID} to pick up GPU 2 and the cpuset"
     pct stop "$VMID"; sleep 4; pct start "$VMID"; sleep 15
 
-    set_watchdog_map "${GPU1_PCI}=120:llamacpp,${GPU2_PCI}=120:llamacpp"
+    set_watchdog_map "${GPU1_PCI}=120:llamacpp-qwen38fn,${GPU2_PCI}=120:llamacpp-qwen38fn"
 
     log "enabling the qwen4exp server"
     pct exec "$VMID" -- systemctl enable --now llamacpp-qwen38fn
+    assert_map_owns_cards
     ;;
 
   to-qwen36)
@@ -132,6 +181,8 @@ case "${1:-status}" in
 
     log "enabling the qwen3.6 server"
     pct exec "$VMID" -- systemctl enable --now llamacpp
+    ct123_restore
+    assert_map_owns_cards
     log "GPU 2 released — CT 123 can be started again (pct start 123)"
     ;;
 
@@ -160,6 +211,16 @@ echo "--- CT 123 (must be stopped while CT 120 holds GPU 2) ---"
 printf '  %s\n' "$(pct status 123 2>/dev/null || echo 'unknown')"
 echo "--- watchdog service map ---"
 grep -m1 '^GPU_SERVICE_MAP=' "$WATCHDOG_ENV" 2>/dev/null | sed 's/^/  /' || echo "  (unset)"
+# Reboot exclusivity is invisible in `pct status`, so surface it: CT 123 stopped but still
+# onboot=1 is the state that silently re-takes GPU 2 on the next host boot.
+printf 'CT 123: status=%s  %s\n' \
+  "$(pct status 123 2>/dev/null | awk '{print $2}')" \
+  "$(pct config 123 2>/dev/null | grep -E '^onboot' || echo 'onboot: 0 (unset)')"
+if gpu2_attached && [ "$(pct config 123 2>/dev/null | awk '/^onboot/{print $2}')" = "1" ]; then
+  echo "  🔴 CT 120 holds GPU 2 while CT 123 is set to autostart — a host reboot puts two"
+  echo "     servers on one card. Run: pct set 123 --onboot 0"
+fi
+assert_map_owns_cards
 echo "--- per-card VRAM / GTT ---"
 for pci in "$GPU1_PCI" "$GPU2_PCI"; do
   d="/sys/bus/pci/devices/${pci}"

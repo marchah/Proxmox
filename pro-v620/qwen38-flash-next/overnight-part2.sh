@@ -67,7 +67,7 @@ PY
 #   * the vision projector, +1.11 GiB, which lands on a single device
 #   * per-device compute buffers
 #
-# So the corrected rule is  c1 = ncmoe + (48 - ncmoe) / 2 - 1.  This stage tests it where it
+# So the corrected rule is  c1 = ncmoe + (48 - ncmoe) / 2 - 2.  This stage tests it where it
 # matters — the placements at or over the edge — and records VRAM headroom and GTT for both
 # cards, which cell() does not.
 split_cell() {  # <label> <ncmoe> <c1> [kv_type] [mmproj_on_cpu]
@@ -110,6 +110,14 @@ elif free_min < 2048:                verdict = "tight"
 else:                                verdict = "fits"
 # Recorded so the winner picker can refuse a spilled cell -- tok/s alone would crown one.
 open(path.replace(".json", ".verdict"), "w").write(verdict.strip("*") + "\n")
+# 🔴 Record the ACTUAL shape beside the result. The winner selector used to infer it from
+# the filename ("-q8" / "projcpu" substrings), so a cell whose name did not encode its
+# config was silently recorded as f16/projector-GPU — and the next stage would then run f16
+# at a placement that only fits with q8_0, i.e. straight into a GTT spill.
+_kv, _mp = (shape.split(" / ") + ["proj GPU"])[:2]
+open(path.replace(".json", ".shape"), "w").write("%s %s\n" % (
+    "-" if _kv.strip() == "f16" else _kv.strip(),
+    "true" if "CPU" in _mp else "-"))
 print("| %s | %s | %s | %.2f | %.2f | %s / %s | %s / %s | %s |" % (
     nc, split, shape, med("d0/"), med("d8000/"), f1, f2, g1, g2, verdict))
 PY
@@ -215,8 +223,13 @@ import glob, json, os, re, statistics as st, sys
 run = sys.argv[1]
 best = None
 for f in glob.glob(os.path.join(run, "split-nc*-c*.json")):
-    m = re.match(r"split-nc(\d+)-c(\d+)-", os.path.basename(f))
+    # ⚠️ No trailing hyphen required: the old pattern silently dropped any cell named
+    # `split-nc16-c30.json`, and a dropped candidate was invisible because this loop just
+    # `continue`d. Every skip is now logged with its reason.
+    m = re.match(r"split-nc(\d+)-c(\d+)", os.path.basename(f))
     if not m:
+        print("SKIP %s: name does not match split-nc<N>-c<C>" % os.path.basename(f),
+              file=sys.stderr)
         continue
     try:
         d = json.load(open(f))
@@ -237,9 +250,18 @@ for f in glob.glob(os.path.join(run, "split-nc*-c*.json")):
         continue
     # The shape is part of the answer: q8_0 / projector-on-CPU is what makes the tightest
     # placements fit at all, so it has to travel with the ncmoe/split pair.
+    # 🔴 Read it from the recorded sidecar, NOT from the filename. Filename inference
+    # silently mislabelled any cell whose name did not encode its config.
     name = os.path.basename(f)
-    kv = "q8_0" if "-q8" in name else ""
-    mp = "true" if "projcpu" in name else ""
+    try:
+        kv, mp = open(f.replace(".json", ".shape")).read().split()
+        kv = "" if kv == "-" else kv
+        mp = "" if mp == "-" else mp
+    except Exception:
+        kv = "q8_0" if "-q8" in name else ""
+        mp = "true" if "projcpu" in name else ""
+        print("WARN: no .shape for %s — fell back to filename inference (kv=%r mp=%r)"
+              % (name, kv, mp), file=sys.stderr)
     v = st.median(a)
     if best is None or v > best[4]:
         best = (int(m.group(1)), int(m.group(2)), kv, mp, v)

@@ -211,113 +211,56 @@ These containers form the system:
     engine scripts — `create-lxc-lmstudio-qwen3.5-9b.sh` (LM Studio `lms`) and
     `create-lxc-llamacpp-qwen3.5-9b.sh` (llama.cpp). The README found llama.cpp better on
     that card, which is why the V620 ships only the llama.cpp script.
-- **CT 120's second shape — Qwen3.8-Flash-Next on BOTH cards** (`pro-v620/qwen38-flash-next/`):
-  the same container, repurposed to serve `qwen4exp` (180B total / **6B active**, `UD-Q4_K_XL`
-  **111.33 GB**) across both V620s with the PLE table and a tunable share of routed experts in
-  system RAM. The **first model here that does not fit in VRAM** — it exists because the EPYC
-  platform has 251 GiB (512 GB once the other four sticks land). `/models` grown to 320G;
-  ⚠️ **As of 2026-09-18 this shape is NOT deployed on CT 120.** The full placement study is done
-  (see that folder's `README.md`) and the conclusion was that **one card beats two by 21-24% on
-  decode** for this architecture, so the model moved to **CT 123 alone** (`-ncmoe 34`, 13.01 t/s)
-  and CT 120 went back to `qwen3.6-35b-a3b`, which is 5x faster and what Hermes needs.
-  The two-card path stays fully reversible — both GGUFs and both llama.cpp builds are on CT 120's
-  disk and `./ct120-cutover.sh to-qwen38fn` re-attaches GPU 2 (CT 123 must be stopped first).
-  Re-test it if llama.cpp #28699's per-device indexer fix lands, which is what would make two
-  cards fast again.
+- **Qwen3.8-Flash-Next** (`pro-v620/qwen38-flash-next/`): `qwen4exp`, 180B total / **6B active**,
+  `UD-Q4_K_XL` **111.33 GB** — the first model here that does **not** fit in VRAM, with the PLE
+  table and a tunable share of routed experts in system RAM. ✅ **Runs on CT 123 `gpu2`, one card
+  (`0000:83:00.0`), `-ncmoe 34`, 13.01 t/s.** Deploy with
+  `VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh`.
+  📖 **That folder's `README.md` is the single detailed record** — the full placement curve, the
+  governor and threads findings, the concurrency table, four explicit retractions and the
+  corrections to the KB's sizing note all live there. Read it before changing any number below;
+  this section is deliberately only what a session needs in context.
+  - ⚠️ **A two-card CT 120 shape exists and is SLOWER.** At matched placement one card beats two
+    by **20.9% / 24.2%** (d0 / 8k) — llama.cpp **#28699**'s QSA indexer crossing, **+16.1 ms per
+    token per extra card boundary**. Card 2 buys +11% decode but **+97% prefill** (8k TTFT 104 s
+    vs 205 s), so it is a prefill purchase. `./ct120-cutover.sh to-qwen38fn` moves it there and
+    `to-qwen36` brings CT 120 back to `qwen3.6-35b-a3b`; both GGUFs and builds stay on disk.
+    Re-test two cards if #28699's per-device fix lands. **Always run a one-card control.**
+  - 🔴 **PREFILL is the binding constraint, not decode**, and no bandwidth arithmetic sees it:
+    ~72% of per-token time is fixed overhead, of which ~30 graph splits/token at ~1.07 ms is 61%.
+    Quote depth with any figure — decode degrades with context depth via the same indexer.
   - 🔴 **The reasoning contract is INVERTED from Qwen3.8-27B.** The template resolves
-    `reasoning_effort|default('xhigh')` and **raises** on `"none"` and `"high"` — exactly the
-    values that work on CT 123's coder, where `"none"` is the documented off switch. Unset means
-    `xhigh`, which never answers. Handled **server-side** with `--reasoning off` so no caller can
-    trip it; `placement-probe.py --contract` asserts it rather than assuming.
-  - 🔴 **`b11013` is a HARD FLOOR for this model on Vulkan, and checking the arch string will
-    tell you otherwise.** `qwen4exp` is registered in b10678, but the architecture uses
-    hyper-connections and `vulkan: support qwen4exp hc ops` (llama.cpp **#28988**) only merged
-    **2026-09-17 04:34** — b11013 is the first build with it, b11010 is not. So the model could
-    not run on this box's Vulkan stack before that day, and **b10678 is not a rollback target**
-    even though `grep -rlx qwen4exp /opt/llamacpp/llama-b10678` hits. The KB's "exactly one build
-    short / b10679+" is wrong in both directions: the string landed earlier, the *backend* much
-    later. ✅ **Check that a backend can run an arch, never that the arch is merely registered.**
-    ⚠️ `strings` is **not installed** in CT 120, so `strings … | grep` answers empty for every
-    query and reads as "absent". Use `grep -rlx`.
-  - ✅ **Both provisioning scripts and CT 120's `/opt/llamacpp/current` are on b11018**
-    (2026-09-17, from b10678). Beyond the qwen4exp floor above, this range carries
-    `models : fix GDN normalization from max to rsqrt` (#28068) — **Qwen3.6-35B-A3B is a
-    Gated-DeltaNet hybrid, so that is a correctness fix for CT 120's own ops model**, plus
-    `memory : avoid allocating V cache for indexer` (#28330), `qwen4exp: enable rms_norm + mul
-    fusion` (#28896) and several Vulkan wins that touch both models (sparse FA #28105,
-    topk_moe prefill fusion #28422, type-aligned GET_ROWS #28253 — which is the op the PLE
-    lookup uses, small-M matrix opts for qwen #28457). Verified: qwen3.6 serves clean output on
-    b11018. ✅ **CT 123 was brought to b11018 on 2026-09-18** by copying
-    `/opt/llamacpp/b11018-baseline` from CT 120 (identical Ubuntu 24.04 / glibc 2.39). It had been
-    on b10678, which cannot run `qwen4exp` on Vulkan at all — b11013 is the floor.
-  - 🔴 **`--tensor-split` is REQUIRED alongside `--n-cpu-moe`, and nothing warns you.**
-    `--n-cpu-moe N` moves the experts of the **first** N layers to the CPU, so `0..N-1` are light
-    and `N..47` are heavy (~1.56 GB each); llama.cpp's default split divides 48 layers **evenly by
-    count** and hands card 2 all the heavy ones. Measured at `-ncmoe 20`: default split put GPU 1
-    at 13.4 GiB and pinned GPU 2 at 30.7 GiB **spilling 9.3 GiB to GTT → 6.6 t/s**, while
-    `--tensor-split 34,14` gave 25.1/21.2 GiB and **11.74 t/s (+78%)**. ⚠️ That was recorded as
-    "no spill" and it was not quite — against a 9.3 GiB spill it looked clean, but `34,14` at
-    `-ncmoe 20` still held 101 MiB in GTT with only 823 MiB free, under the ~1024 MiB where RADV
-    starts spilling. The corrected `32,16` fits with 4.0/4.9 GiB free. The cards were never
-    short of memory in total (53 GiB of demand vs 60 GiB capacity) — pure maldistribution.
-    🔴 **The obvious rule `card1 = N + (48 − N)/2` still spills** — card 1 also holds the output
-    head and a larger KV share, which a layer count cannot see, so it silently overcommitted at
-    `-ncmoe` 15/16/20. Corrected: **`card1 = N + (48 − N)/2 − 2`**, derived automatically by
-    `placement-sweep.sh` and validated where the spilling was (16 → `30,18`, which is the
-    deployed best config; 20 → `32,16`; 28 → `36,12`). ⚠️ `-ncmoe 48` is exempt — with no heavy
-    layers the split must stay `48,0`, or card 2 gets two light layers and an inter-GPU hop for
-    nothing. ✅ **Measure demand as `VRAM used + GTT`** and check it is split-invariant (64192 /
-    64192 / 64190 MiB across three splits): that separates "too big in total, no split helps"
-    from "merely maldistributed".
-  - 🔴 **Measured decode is ~5x BELOW the sizing note, and the reason invalidates its method.**
-    The best two-card placement is **14.46 t/s** at depth 0 / 13.37 at 8k (`-ncmoe 16`, split
-    `30,18`) against the note's predicted 72; one card at `-ncmoe 34` does **13.01 / 12.23**. (The
-    11.74 above is a mid-curve point from the tensor-split A/B, not the best config.) During decode
-    **nothing is saturated** — the cards alternate (6–83% each), the host CPU sits at 33–43%, and
-    the DIMM temperatures never leave idle — because every token walks the CPU expert layers, then
-    card 1's, then card 2's, synchronising at each handoff. `GGML_SCHED_DEBUG` names the
-    mechanism: **~30 graph splits per token at ~1.07 ms**, 61% of a fixed term that is itself
-    ~72% of the token. That is a **latency** cost, invisible to the note's
-    `active bytes ÷ bandwidth` model.
-    📐 The replacement, fitted within 1.3%:
-    **`ms/token = 25.9 + 1.52 × (CPU-resident expert layers) + 16.1 × (extra GPU boundaries)`**.
-    ✅ `large-moe-build-shapes.md` is corrected in CognitiveStack PR #487 — read that, not the
-    pre-measurement version.
-  - 🔴 **PREFILL is the binding constraint, not decode, and one card BEATS two.** Across the
-    placement curve prefill falls 63% where decode falls 36%: an 8k prompt costs **104 s to first
-    token on two cards, 205 s on one**. And at *matched* placement (`-ncmoe 34`) one card beats two
-    by **20.9% at depth 0 / 24.2% at 8k** with prefill tied (+0.5%) — llama.cpp #28699's
-    inter-GPU indexer tax, measured here at **+16.1 ms/token per extra card boundary**. So the
-    second card is worth **+11% decode but +97% prefill**; judge it on prefill. This is why the
-    model ships on CT 123's single card.
-  - ⚠️ **`--load-mode none` is llama.cpp's own startup advice for this config and it is WRONG
-    here**: 11.18 t/s vs 11.74 on `auto`, and it pulls **31.6 GiB into GTT**. Kept on `auto`.
-    Treat that hint as a hypothesis.
-  - ✅ **`--reasoning off` NEUTRALISES the template trap** — measured, and the opposite of what the
-    template alone implies. With it set, `reasoning_effort` of `none`/`high`/`low`/`medium`/`xhigh`
-    **all return clean content**; the raising values never reach the template. So a caller carrying
-    CT 123's settings over cannot break this server. `reasoning_content` is `''`, confirming
-    `--reasoning-format auto` siphons the empty `<think>` pair.
-  - Load times, which bound any elastic-reallocation scheme: **2 m 38 s cold** (111 GB off the SATA
-    SSD), **40–46 s warm** once the 160 GiB cap holds the file in page cache.
-  - 🔴 **Multi-GPU is the *penalised* path for this arch, inverting "more cards is better".**
-    llama.cpp #28699 measured the QSA indexer's pooled rows crossing inter-GPU links every layer
-    at **2x decode cost** on a layer split; the per-device fix is an **open draft**, and #28623
-    ("multi gpu & buffer size issues") was closed incomplete. Always run `ONE_GPU=true` as a
-    control before concluding two cards help.
-  - ⚠️ **Decode degrades with context DEPTH** (the same indexer), a cost no bandwidth arithmetic
-    models — so a short-prompt tok/s figure is not this model's throughput. Quote depth always.
-  - ⚠️ The PLE offload tensor is **`per_layer_token_embd`**; the KB's `ngram_embedding`
-    alternative is the *safetensors* name and matches nothing in a GGUF.
-  ⚠️ **The thermal watchdog's `GPU_SERVICE_MAP` must name the service that actually owns each
-  card.** It reads `0000:03:00.0=120:llamacpp,0000:83:00.0=123:llamacpp-qwen38fn` since
-  2026-09-18; it said `123:llama-swap` until that service was removed, and **a map naming a dead
-  service turns a thermal trip into a no-op** that leaves the real load cooking an overheating
-  card. `ct120-cutover.sh` sets and restores it, pointing both cards at `120:llamacpp` while
-  CT 120 holds both.
+    `reasoning_effort|default('xhigh')` and **raises** on `"none"` and `"high"` — the values that
+    work on CT 123's old coder. Unset means `xhigh`, which never answers. Handled **server-side**
+    with `--reasoning off` (plus `--reasoning-format auto`, or an empty `<think>` pair lands in
+    `content` and corrupts generated files), which measurably **neutralises** the trap: all five
+    effort levels then return clean content, so a caller cannot break it.
+  - 🔴 **`b11013` is a HARD FLOOR on Vulkan, and checking the arch string tells you otherwise.**
+    `qwen4exp` is registered in b10678, but the hyper-connection ops only reached the Vulkan
+    backend in **#28988** (merged 2026-09-17); b11013 is the first build with it, b11010 is not.
+    So **b10678 is not a rollback target** even though `grep -rlx qwen4exp` hits it. ✅ **Check
+    that a backend can RUN an arch, never that the arch is registered.** ⚠️ `strings` is not
+    installed in CT 120 — it answers empty for everything and reads as "absent"; use `grep -rlx`.
+  - 🔴 **`--tensor-split` is REQUIRED alongside `--n-cpu-moe` and nothing warns you.** `-ncmoe N`
+    moves the experts of the **first** N layers to CPU, so `0..N-1` are light and `N..47` heavy
+    (~1.56 GB each), and llama.cpp's default split divides layers **evenly by count** — handing
+    card 2 all the heavy ones (measured: 9.3 GiB into GTT, 6.6 t/s). Rule:
+    **`card1 = N + (48 − N)/2 − 2`**; the `− 2` is load-bearing (without it 15/16/20 still spill)
+    and `N=48` is exempt at `48,0`. ✅ Measure demand as **`VRAM used + GTT`** — it is
+    split-invariant, which separates "too big in total" from "merely maldistributed".
+  - ⚠️ The PLE offload tensor is **`per_layer_token_embd`**; the KB's `ngram_embedding` is the
+    *safetensors* name and matches nothing in a GGUF.
+  - ⚠️ **The thermal watchdog's `GPU_SERVICE_MAP` must name the unit that actually RUNS on each
+    card.** It is `0000:03:00.0=120:llamacpp,0000:83:00.0=123:llamacpp-qwen38fn`, and
+    `ct120-cutover.sh` rewrites it to `120:llamacpp-qwen38fn` for **both** cards while CT 120
+    holds them. A map naming a stopped unit makes a thermal trip a **silent no-op**, leaving the
+    real load on an overheating card with only the 105 °C hardware reset behind it.
+  - ⚠️ **CT 120 and CT 123 must never hold the same card, and "stopped" is not enough** — a
+    stopped CT with `onboot: 1` comes straight back onto the card after a host reboot.
+    `to-qwen38fn` clears CT 123's `onboot` and `to-qwen36` restores it.
   - ⚠️ **`gpu-ab-bench/thermal-guard.sh` and `sample-gpus.py` are B550-era** and still name
-    `0000:2d:00.0`/`0000:06:00.0`. Those paths do not exist, so the guard's hwmon glob misses,
-    `cat` fails and `set -e` kills it in under a second — it fails **silently open**. Use
+    `0000:2d:00.0`/`0000:06:00.0`. Those paths do not exist, so the hwmon glob misses, `cat`
+    fails and `set -e` kills the guard in under a second — it fails **silently open**. Use
     `qwen38-flash-next/thermal-guard.sh` on this platform.
 - **CT 121 `hermes`** (`hermes/`): an *unprivileged* Debian LXC running NousResearch's
   **Hermes Agent** — the homelab's agent (NOT a model server; it *consumes* CT 120's API,

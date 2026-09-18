@@ -39,8 +39,19 @@ echo "$(date -u +%FT%TZ) guard armed: cards=[${CARDS}] limit=${LIMIT}C patterns=
 while :; do
   for pci in $CARDS; do
     h="$(hwmon_for "$pci")" || continue
-    j=$(( $(cat "${h}/temp2_input" 2>/dev/null || echo 0) / 1000 ))
-    m=$(( $(cat "${h}/temp3_input" 2>/dev/null || echo 0) / 1000 ))
+    # 🔴 `|| echo 0` made an unreadable sensor read as 0 °C — below every threshold, so the
+    # guard sailed past a card it could not see. That is failing OPEN, and the comment above
+    # promises the opposite. A missing sensor is now treated as over-temp: this guard exists
+    # precisely because the systemd watchdog cannot protect a hand-driven benchmark, so if it
+    # cannot see a card it must shed load rather than assume the card is cold.
+    jr="$(cat "${h}/temp2_input" 2>/dev/null || true)"
+    mr="$(cat "${h}/temp3_input" 2>/dev/null || true)"
+    case "${jr}${mr}" in
+      *[!0-9]*|"")
+        echo "$(date -u +%FT%TZ) 🔴 ${pci}: junction/mem sensor unreadable (junction='${jr}' mem='${mr}') — treating as OVER-TEMP" | tee -a "$LOG"
+        j=999; m=999 ;;
+      *) j=$(( jr / 1000 )); m=$(( mr / 1000 )) ;;
+    esac
     hot=$(( j > m ? j : m ))
     if [ "$hot" -ge "$LIMIT" ]; then
       echo "$(date -u +%FT%TZ) THERMAL GUARD: ${pci} junction=${j}C mem=${m}C >= ${LIMIT}C — killing [${PATTERNS}]" \

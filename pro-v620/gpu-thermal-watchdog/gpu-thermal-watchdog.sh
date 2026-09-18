@@ -63,7 +63,10 @@ RESUME_CMD="${RESUME_CMD:-}"
 # single-service behavior). PROTECT_CMD/RESUME_CMD still override everything.
 # NB: `-` not `:-` so an explicit empty value (GPU_SERVICE_MAP=) reaches the legacy
 # single-service fallback below; `:-` would substitute the default map on empty.
-GPU_SERVICE_MAP="${GPU_SERVICE_MAP-0000:2d:00.0=120:llamacpp,0000:06:00.0=123:llama-swap}"
+# 🔴 The in-script fallback was doubly stale: B550-era PCI addresses that do not exist on
+# the ROMED8-2T (0000:2d / 0000:06) AND the removed llama-swap unit. Both cards would miss
+# and every trip would fall through to the "not in map" branch. Current addresses + units.
+GPU_SERVICE_MAP="${GPU_SERVICE_MAP-0000:03:00.0=120:llamacpp,0000:83:00.0=123:llamacpp-qwen38fn}"
 # Leave the server DOWN after a trip (default) or auto-restart it once cooled.
 # Default false: reaching the trip temp means cooling could not keep up, so resuming
 # into the same load risks a loop — require a human to confirm it is safe.

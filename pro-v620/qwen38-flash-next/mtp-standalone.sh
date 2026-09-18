@@ -13,6 +13,9 @@
 # it — reusing a build is only safe if it still has the flag and the backend it was built for.
 #
 # The stage logic is EXTRACTED from the canonical script, not copied, so they cannot drift.
+# Fixture/config variables below are consumed by the helper bodies this script eval's,
+# which shellcheck cannot see. File-scoped disable (must precede the first command).
+# shellcheck disable=SC2034
 set -Eeuo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 

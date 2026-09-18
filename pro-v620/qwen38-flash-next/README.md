@@ -1,33 +1,49 @@
-# `qwen38-flash-next/` — CT 120 serving Qwen3.8-Flash-Next on both V620s
+# `qwen38-flash-next/` — Qwen3.8-Flash-Next (`qwen4exp`) on the V620s
 
-Moves **CT 120** from `qwen3.6-35b-a3b` (one card, fully GPU-resident) to
-**Qwen3.8-Flash-Next** (`qwen4exp`, 180B total / 6B active) across **both** Radeon Pro
-V620s with the PLE table and a tunable share of the routed experts in system RAM.
+**Qwen3.8-Flash-Next** — `qwen4exp`, 180B total / 6B active, `UD-Q4_K_XL` **111.33 GB** — with
+the PLE table and a tunable share of the routed experts in system RAM. The first model on this
+box that does **not** fit in VRAM; it is here because the EPYC platform has the RAM for it, and
+~28.7 GB of it is a lookup table that belongs in host memory anyway.
 
-This is the first model on this box that does **not** fit in VRAM. It is here because the
-EPYC platform has the RAM for it: `UD-Q4_K_XL` is **111.3 GB**, of which ~28.7 GB is a
-lookup table that belongs in host memory anyway.
+## ✅ Where it actually runs, as of 2026-09-18
+
+🔴 **CT 123 `gpu2`, on ONE card (`0000:83:00.0`), at `-ncmoe 34`.** Not CT 120, and not across
+both cards. An earlier revision of this file described the two-card CT 120 shape as current and
+told you to keep CT 123 stopped — **following that today would stop the server that is actually
+serving this model.**
+
+| | current deployment | the two-card alternative |
+| --- | --- | --- |
+| Container | **CT 123** `gpu2` | CT 120 `llamacpp`, 48 cores, 160 GiB, swap 0 |
+| GPUs | **one** — `0000:83:00.0` | both — `0000:03:00.0` + `0000:83:00.0` |
+| Placement | `-ncmoe 34`, no split | `-ncmoe 16`, `--tensor-split 30,18` |
+| Decode | **13.01 / 12.23** t/s (d0 / 8k) | 14.46 / 13.37 |
+| Prefill 8k | 39.1 t/s → **205 s** TTFT | 77.2 t/s → **104 s** TTFT |
+| Deploy | `VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh` | `VMID=120 ./install.sh` then `./ct120-cutover.sh to-qwen38fn` |
+
+**Why one card won.** At *matched* placement one card beats two by **20.9% at d0 / 24.2% at 8k**
+with prefill tied — llama.cpp [#28699](https://github.com/ggml-org/llama.cpp/pull/28699)'s QSA
+indexer crossing, **+16.1 ms/token per extra card boundary**. The second card is worth +11%
+decode and +97% prefill, and costs a whole card that CT 120 uses for `qwen3.6-35b-a3b` (~5x
+faster, and what the Hermes agent actually talks to). Re-test two cards if #28699's per-device
+fix lands.
+
+| | |
+|---|---|
+| Model | `unsloth/Qwen3.8-Flash-Next-GGUF` `UD-Q4_K_XL`, 4 shards, **111.33 GB** |
+| Vision | `mmproj-F16.gguf`, 0.90 GB, ~1.1 GiB VRAM (on CPU in both shipped configs) |
+| Engine | llama.cpp **b11018** — ⚠️ **b11013 is a hard floor**, see [the build floor](#corrections-to-the-sizing-note) |
+| API | OpenAI-compatible on `0.0.0.0:1234`, alias `qwen3.8-flash-next` |
+| Disk | CT 120 `/models` 320G · CT 123 `/models` 236G, ⚠️ **88% full, 27G free** — it holds this 111 GB model plus six retained llama-swap GGUFs |
+
+⚠️ **The two containers must never hold the same card.** `ct120-cutover.sh to-qwen38fn` stops
+CT 123 *and* clears its `onboot`, because a stopped container with `onboot: 1` comes straight
+back onto the card after a host reboot. `to-qwen36` restores it.
 
 The sizing analysis this implements lives in CognitiveStack
 `personal/large-moe-build-shapes.md`. ⚠️ **Several of that note's premises turned out to be
 wrong — see [Corrections](#corrections-to-the-sizing-note) before using its numbers to
-justify a purchase.**
-
-## The shape
-
-| | |
-|---|---|
-| Container | **CT 120** `llamacpp`, privileged, 48 cores, **160 GiB** RAM, swap 0 |
-| GPUs | **both** — `0000:03:00.0` (GPU 1) + `0000:83:00.0` (GPU 2) |
-| Model | `unsloth/Qwen3.8-Flash-Next-GGUF` `UD-Q4_K_XL`, 4 shards, **111.33 GB** |
-| Vision | `mmproj-F16.gguf`, 0.90 GB, ~1.1 GiB VRAM |
-| Engine | llama.cpp **b11018**, pinned per-model via `LLAMACPP_DIR` |
-| API | OpenAI-compatible on `0.0.0.0:1234`, alias `qwen3.8-flash-next` |
-| Disk | `/models` grown 180G → **320G** |
-
-⚠️ **CT 123 `gpu2` must stay stopped.** Its `llama-swap` config passes no device
-selector, so it would grab whichever card Vulkan enumerates first — possibly one CT 120
-is mid-inference on. `./ct120-cutover.sh to-qwen36` is what releases GPU 2.
+justify a purchase.** Purchasing and DIMM discussion belongs there, not here.
 
 ## 🔴 The reasoning contract is inverted from every other model here
 
@@ -50,7 +66,12 @@ This is the single most dangerous fact in this folder. Read from `chat_template.
 **A caller that carries settings over from the CT 123 coder breaks outright**, in both
 directions. The serve script therefore sets `--reasoning off` **server-side**, so no
 caller can trip either trap, and `placement-probe.py --contract` asserts all of it
-(bare chat answers; `"none"` and `"high"` are both rejected) rather than assuming it.
+(bare chat answers, and `"none"`/`"high"` are *harmless*) rather than assuming it.
+🔴 **An earlier revision of this line said the probe asserts those two values are REJECTED.
+It asserts the opposite, and the difference is the whole point of the server flag**: with
+`--reasoning off` set, llama.cpp never hands the effort through to the template, so all five
+levels return HTTP 200 with clean content. The probe fails if a level comes back non-200 or
+empty — i.e. if the shield has regressed — not if it is accepted.
 
 ⚠️ `--reasoning-format auto` is separately load-bearing: with thinking off the template
 still emits an **empty** `<think>\n\n</think>` pair, and `none` leaves it in `content` —
@@ -793,6 +814,46 @@ cold load implies. Still far too slow to do per-request; fine at a role handoff.
   to pay for a drafter with no merged runtime. At 6B active, draft/verify overhead would
   likely dominate anyway.
 
+## ✅ End-to-end verification of the shipped two-card default — 2026-09-18
+
+Every throughput number above came from `placement-sweep.sh`, which pins **batch/ubatch
+1024/256**. The launcher defaults to **4096/1024**, and neither env file said so — so the shipped
+default ran at 4x the batch of the run that validated it. A code review flagged that as a
+verification gap. It was real. The exact `install.sh` two-card default was loaded end-to-end on
+CT 120 (CT 123 stopped, thermal guard armed, reverted afterwards):
+
+```
+--threads 16 --batch-size 4096 --ubatch-size 1024 --n-cpu-moe 16 --tensor-split 30,18 --cache-type-k q8_0
+healthy after 111 s
+```
+
+| batch/ubatch | min free card1 / card2 | max GTT card1 / card2 | decode d8k | prefill d8k |
+| --- | ---: | ---: | ---: | ---: |
+| 1024/256 (the sweep) | 2881 / 1878 MiB | no spill | 13.37 | 77.2 |
+| **4096/1024 (launcher default)** | 2922 / **877 MiB** 🔴 | **306** / 18 MiB 🔴 | 12.65-12.79 | **173-236** |
+
+🔴 **The default was marginal.** Card 2 fell to **877 MiB free, under the ~1024 MiB RADV spill
+floor**, and card 1's GTT rose to **306 MiB against a ~70 MiB idle floor**. So the bigger compute
+buffers cost roughly a gigabyte on the card holding the heavy layers. The env now pins
+**1024/256** — the combination actually measured with this split — rather than shipping the
+marginal one.
+
+✅ **The finding worth keeping: the right `--tensor-split` is BATCH-SIZE DEPENDENT.** The compute
+buffer scales with batch and lands on whichever card holds the heavy layers, so batch size and
+split are coupled knobs, not independent ones. That is also *why* the `− 2` correction exists:
+it was derived at 1024/256. At 4096/1024 this placement wants roughly **`31,17`** — one heavy
+layer moved off card 2, ~1.5 GiB — and that is **untested**.
+
+⚠️ **And 4096/1024 is 2-3x faster at prefill** (173-236 vs 77.2 t/s), which is the binding
+constraint for this model. So the tempting configuration is `-ncmoe 16` + `31,17` + `4096/1024`.
+**Test it before shipping it** — verify both cards' free VRAM *and* GTT, not throughput. Shipping
+an unverified marginal config is the mistake this file already made once.
+
+⚠️ Ignore the d0 prefill figures from that run (4.4-12.8 t/s): those prompts are ~30 tokens, so
+the number is fixed per-request overhead, not throughput. Only the d8k column means anything.
+
+✅ The template contract held throughout: `bare_chat ok=True`, no `<think>` leakage.
+
 ## Corrections to the sizing note
 
 Found while implementing. All three would mislead a purchase decision.
@@ -836,7 +897,17 @@ Two more, less load-bearing:
 ## Linting
 
 `shellcheck` for `.sh` and `llamacpp-serve-qwen38fn`; `python3 -m py_compile` for `.py`.
-All clean as committed.
+⚠️ **Not "all clean" — that claim was wrong.** `shellcheck -S warning` (0.11.0) reports
+**10 × SC2034** across `mtp-standalone.sh` and `stage-harness.sh`: fixture variables consumed
+by stage bodies pulled in with `eval`, which shellcheck cannot see. They are false positives,
+not ten defects, and are now silenced with file-scoped directives carrying that reason, so the
+command is clean. ✅ **Verify with the exact command**, because a loop over
+`git diff --name-only` after committing iterates an empty list and prints nothing — which is
+how the false claim was produced:
+
+```sh
+git ls-files '*.sh' | xargs shellcheck -S warning
+```
 
 ## Memory bandwidth and latency — measured 2026-09-17
 
@@ -890,34 +961,23 @@ baseline to re-run, not as evidence.
 
 ### ✅ Does the 3DS substitution cost latency? Probably not — and refresh likely favours it
 
-The installed modules are Samsung `M393A8K40B22-CAE`, **2S2Rx4 3DS** (SPD `Rank: 4`), against the
-advertised flat 2Rx4 `M393A8G40AB2-CWE`. Three mechanisms, per JEDEC JESD79-4:
+Condensed: the full JEDEC derivation is purchasing analysis, not a finding about this model, and
+belongs in CognitiveStack `personal/hardware.md` / `large-moe-build-shapes.md`. The conclusions:
 
-1. ✅ **The core latency chain is unchanged.** Every die in a 3DS stack is a standard DDR4 die at
-   the same speed bin, so CL / tRCD / tRP / tRAS are identical. **3DS does not raise idle latency
-   by design.**
-2. ✅ **3DS adds `_slr` / `_dlr` (same / different logical rank) timing variants** — `tRRD_dlr`,
-   `tFAW_dlr`, `tCCD_L_dlr` — which do not exist on a flat DIMM. These are inter-die activate
-   constraints and are generally **more relaxed** than their same-rank equivalents, because rows
-   on different dies do not contend for the same bank resources. Net effect on parallelism is
-   positive, not negative.
-3. 🔴 **Refresh is the real cost, and it INVERTS the concern.** Deriving die density from the
-   organisation at 64 GB and x4:
-
-   | part | logical ranks | per rank | **die density** | tRFC / tREFI | **refresh overhead** |
-   | --- | ---: | ---: | ---: | --- | ---: |
-   | delivered 2S2Rx4 3DS | 4 | 16 GB | **8 Gb** | ~350 ns / 7812.5 ns | **~4.5%** |
-   | advertised 2Rx4 flat | 2 | 32 GB | **16 Gb** | ~550 ns / 3906 ns | **~14.1%** |
-
-   **Stacking 8 Gb dies avoids the monolithic-16 Gb refresh penalty that the part actually
-   ordered would have carried.** ⚠️ Partly offset because 3DS refreshes per logical rank — four
-   instead of two — but each is shorter and a refresh to one rank overlaps with access to
-   another.
-
-**So the substitution is not a latency liability and may be a small refresh advantage**, and the
-measured 78.4% of theoretical peak is ordinary DDR4 behaviour with no anomaly to explain.
-⚠️ **None of this changes the qwen4exp findings**: the sweep already showed bandwidth is not the
-constraint (`-ncmoe 48` matches `-ncmoe 34`), and one card beating two has no memory path in it.
+- The installed modules are Samsung `M393A8K40B22-CAE`, **2S2Rx4 3DS** (SPD `Rank: 4`), against
+  the advertised flat 2Rx4 `M393A8G40AB2-CWE`.
+- ✅ **No latency liability by design** — every die in a 3DS stack is a standard DDR4 die at the
+  same speed bin, so CL/tRCD/tRP/tRAS are identical; and the `_slr`/`_dlr` inter-die variants it
+  adds are *more* relaxed than their same-rank equivalents.
+- 🔴 **Refresh inverts the concern**: stacking 8 Gb dies carries ~4.5% refresh overhead against
+  ~14.1% for the monolithic 16 Gb dies the advertised part would have used. The measured 78.4% of
+  theoretical peak is ordinary DDR4 behaviour with nothing anomalous to explain.
+- ⚠️ **None of this changes the qwen4exp findings.** The sweep already showed bandwidth is not
+  the constraint, and one card beating two has no memory path in it. This sentence used to cite
+  "`-ncmoe 48` matches `-ncmoe 34`" as its evidence; it does not — the matched one-card rows are
+  **10.18 vs 13.01 t/s**, that apparent tie compared a one-card `48` against a *two-card* `34`
+  and was a downclocked-governor artifact. Withdrawn; the argument stands on the
+  alternating-device and flat-DIMM evidence instead.
 
 ### ⛔ The 8-stick test could not run
 

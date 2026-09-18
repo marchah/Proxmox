@@ -7,7 +7,8 @@
 # amd-pstate-epp" — but that is the trap. Under amd-pstate-epp, `powersave` is DYNAMIC and
 # the EPP hint tunes it. Under acpi-cpufreq, which this Zen 2 EPYC actually uses,
 # `powersave` PINS CORES TO THE MINIMUM 1500 MHz forever, against a 3308 MHz maximum.
-# Measured cost: -54% decode at short prompt, -26% at depth, and variance blowing out from
+# Measured cost: ~-30% decode at short prompt (an early -54%/-52% reading came from one
+# noisy pre-warm-up arm), -26% at depth, and variance blowing out from
 # ~1.4% to ~36%.
 #
 # The open question this answers: does a DYNAMIC governor (schedutil / ondemand) recover the

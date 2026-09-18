@@ -101,7 +101,10 @@ args=(
 # (53 GiB of demand against 60 GiB of capacity); it was purely maldistribution.
 #
 # Rough sizing: give card 1 all N light layers plus half the heavy ones, i.e.
-#   card1_layers = N + (48 - N) / 2      ->  -ts card1_layers,(48 - card1_layers)
+#   card1_layers = N + (48 - N) / 2 - 2  ->  -ts card1_layers,(48 - card1_layers)
+#   🔴 the `- 2` is load-bearing: without it card 1 is ~2 layers overcommitted and spills
+#   anyway (measured at N=20: 34,14 held 101 MiB in GTT with 823 MiB free; 32,16 fits with
+#   4.0/4.9 GiB). N=48 is exempt and stays 48,0.
 # At N=20 that is 34,14. Verify with per-card VRAM and GTT, never by assuming.
 [ -n "${MODEL_TENSOR_SPLIT:-}" ] && args+=( --tensor-split "${MODEL_TENSOR_SPLIT}" )
 

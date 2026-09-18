@@ -1,5 +1,14 @@
 # MTP / NextN patches for `qwen4exp` on b11018
 
+> 🔴 **NOT APPLIED, AND NOT WORKING. This is a staged artifact for a future retry.**
+> The rebase builds and the server starts, but a request **aborts in the MTP graph**:
+> `GGML_ASSERT(ggml_can_repeat(b, a))` in `build_hc_mix`, reached via `graph_mtp`. b11018
+> reshaped the hyper-connection gammas from `{hc_dim}` to `{n_embd, hc}`, and no resolution of
+> the conflict below satisfies both the main graph and the MTP graph. **The blocker is in the
+> GRAPH, not the loader** — so a clean build and a registered `--spec-type draft-mtp` are not
+> evidence that it works. Retry when #28097 rebases onto a build whose gamma shape it expects.
+> Patch correctness beyond that conflict was never reviewed.
+
 llama.cpp PR **#28097** adds `--spec-type draft-mtp` for Qwen3.8-Flash-Next and teaches
 the loader the draft-head-only GGUF layout unsloth ships. It already contains #27836's
 three commits, rebased, so it is the only PR needed.

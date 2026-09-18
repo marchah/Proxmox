@@ -42,7 +42,11 @@ open(path, "w").write(src)' "$ENVF" "$1" "$2"; }
 # were found still set from an earlier extreme run, inherited by everything after them).
 reset_env() {
   setv MODEL_GPU_LAYERS 99; setv MODEL_EXPECTED_GPUS 2
-  setv MODEL_CPU_MOE 20; setv MODEL_TENSOR_SPLIT "34,14"; setv MODEL_THREADS 32
+  # 🔴 32,16 not 34,14. cell() derives the corrected split, so leaving the baseline on the
+  # uncorrected one made the q8_0 arm (which only overrides the KV keys) run at a DIFFERENT
+  # placement from the f16 arm — recreating the exact spill confound that produced the
+  # retracted "q8_0 costs 14% at depth" claim. Both arms must share one placement.
+  setv MODEL_CPU_MOE 20; setv MODEL_TENSOR_SPLIT "32,16"; setv MODEL_THREADS 32
   setv MODEL_PARALLEL 1; setv MODEL_CONTEXT_LENGTH 65536
   setv MODEL_OT_OVERRIDE "per_layer_token_embd=CPU"; setv MODEL_LOAD_MODE ""
   setv MODEL_KV_TYPE ""; setv MODEL_MMPROJ_ON_CPU ""
