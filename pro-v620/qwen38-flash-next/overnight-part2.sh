@@ -115,6 +115,35 @@ print("| %s | %s | %s | %.2f | %.2f | %s / %s | %s / %s | %s |" % (
 PY
 }
 
+# Phase 1: load only, then read headroom. No inference -- "does it fit" is a memory
+# question, and answering it with a 12-minute throughput probe is pure waste.
+split_headroom() {  # <label> <ncmoe> <c1> [kv] [mmproj_on_cpu] -> verdict on stdout
+  local label="$1" nc="$2" c1="$3" kv="${4:-}" mp="${5:-}"
+  setv MODEL_GPU_LAYERS 99 >&2; setv MODEL_EXPECTED_GPUS 2 >&2
+  setv MODEL_CPU_MOE "$nc" >&2; setv MODEL_TENSOR_SPLIT "${c1},$(( 48 - c1 ))" >&2
+  setv MODEL_THREADS 32 >&2; setv MODEL_PARALLEL 1 >&2; setv MODEL_CONTEXT_LENGTH 65536 >&2
+  setv MODEL_KV_TYPE "$kv" >&2; setv MODEL_MMPROJ_ON_CPU "$mp" >&2
+  setv MODEL_OT_OVERRIDE "per_layer_token_embd=CPU" >&2; setv MODEL_LOAD_MODE "" >&2
+  setv EXTRA_ARGS "" >&2; setv LLAMACPP_DIR /opt/llamacpp/b11018-baseline >&2
+  pct exec "$CT" -- systemctl restart llamacpp-qwen38fn >&2
+  if ! wait_up 1500 >&2; then echo "DID-NOT-LOAD 0 0 0 0"; return 0; fi
+  # One tiny request, so the compute buffers and the KV are really allocated. Reading
+  # headroom straight after /health reports OK would miss buffers llama.cpp allocates lazily.
+  curl -fsS -m 120 "http://$(ip):1234/completion" -H 'Content-Type: application/json' \
+    -d '{"prompt":"hi","n_predict":8,"temperature":0,"cache_prompt":false}' >/dev/null 2>&1 || true
+  local A=/sys/bus/pci/devices/0000:03:00.0 B=/sys/bus/pci/devices/0000:83:00.0
+  local f1 g1 f2 g2
+  f1=$(( ($(cat $A/mem_info_vram_total) - $(cat $A/mem_info_vram_used))/1048576 ))
+  g1=$(( $(cat $A/mem_info_gtt_used)/1048576 ))
+  f2=$(( ($(cat $B/mem_info_vram_total) - $(cat $B/mem_info_vram_used))/1048576 ))
+  g2=$(( $(cat $B/mem_info_gtt_used)/1048576 ))
+  local fm=$(( f1 < f2 ? f1 : f2 )) gm=$(( g1 > g2 ? g1 : g2 )) v
+  if   [ "$gm" -gt 256 ] || [ "$fm" -lt 1024 ]; then v=SPILLED
+  elif [ "$fm" -lt 2048 ]; then v=tight
+  else v=fits; fi
+  printf '%s %s %s %s %s\n' "$v" "$f1" "$f2" "$g1" "$g2"
+}
+
 s2b_split() {
   note ""
   note "## Tensor-split correction (\`c1 = ncmoe + (48-ncmoe)/2 - 1\`)"
@@ -137,23 +166,44 @@ s2b_split() {
   note ""
   note "| -ncmoe | split | shape | d0 t/s | d8000 t/s | VRAM free c1/c2 | GTT c1/c2 | verdict |"
   note "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |"
-  # The documented value, as the control that reproduces the spill.
+  # ---- phase 1: headroom for every candidate, load-only (~2 min each)
+  note "### Phase 1 — does it fit? (load only)"
+  note ""
+  note "| -ncmoe | split | shape | VRAM free c1/c2 | GTT c1/c2 | verdict |"
+  note "| --- | --- | --- | ---: | ---: | --- |"
+  : >"${RUN}/split-candidates.txt"
+  local spec lbl nc c1 kv mp res v f1 f2 g1 g2
+  for spec in \
+      "15 31 - -"   "15 30 - -"   "15 29 - -"   "16 30 - -" \
+      "20 32 - -"   "28 36 - -" \
+      "15 29 q8_0 true"  "14 29 q8_0 true"  "16 30 q8_0 true"; do
+    read -r nc c1 kv mp <<<"$spec"
+    [ "$kv" = "-" ] && kv=""; [ "$mp" = "-" ] && mp=""
+    lbl="nc${nc}-c${c1}$([ -n "$kv" ] && echo "-q8")$([ "$mp" = true ] && echo "-projcpu")"
+    res=$(split_headroom "$lbl" "$nc" "$c1" "$kv" "$mp")
+    read -r v f1 f2 g1 g2 <<<"$res"
+    note "| ${nc} | ${c1},$(( 48 - c1 )) | ${kv:-f16} / $([ "$mp" = true ] && echo "proj CPU" || echo "proj GPU") | ${f1} / ${f2} | ${g1} / ${g2} | ${v} |"
+    echo "$nc $c1 ${kv:--} ${mp:--} $v" >>"${RUN}/split-candidates.txt"
+  done
+  note ""
+
+  # ---- phase 2: measure ONLY what fits, lowest -ncmoe first (most experts on GPU = fastest)
+  note "### Phase 2 — throughput of the shapes that fit"
+  note ""
+  note "| -ncmoe | split | shape | d0 t/s | d8000 t/s | VRAM free c1/c2 | GTT c1/c2 | verdict |"
+  note "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |"
+  local n=0
+  while read -r nc c1 kv mp v; do
+    [ "$v" = "fits" ] || [ "$v" = "tight" ] || continue
+    [ "$n" -lt 3 ] || break
+    [ "$kv" = "-" ] && kv=""; [ "$mp" = "-" ] && mp=""
+    split_cell "split-nc${nc}-c${c1}$([ -n "$kv" ] && echo "-q8")$([ "$mp" = true ] && echo "-projcpu")" \
+               "$nc" "$c1" "$kv" "$mp"
+    n=$(( n + 1 ))
+  done < <(sort -k1,1n "${RUN}/split-candidates.txt")
+  # And the documented split at 15 as the control that reproduces the spill, measured so the
+  # cost of getting the split wrong is a number rather than an assertion.
   split_cell "split-nc15-c31-documented" 15 31
-  # Bracket the balance point at the VRAM-hungry end. -2 is the derived correction; -1 and
-  # -3 bracket it so this finds the optimum instead of testing a single guess.
-  split_cell "split-nc15-c30-minus1"     15 30
-  split_cell "split-nc15-c29-minus2"     15 29
-  split_cell "split-nc16-c30-minus2"     16 30
-  # The correction GROWS with ncmoe, so test it where the curve actually lives too.
-  split_cell "split-nc20-c32-minus2"     20 32
-  split_cell "split-nc28-c36-minus2"     28 36
-  # 🔴 The real max-VRAM candidates. -ncmoe 15 CANNOT safely fit on f16 KV with the
-  # projector on GPU whatever the split: measured demand is 64295 MiB against 65536 of
-  # capacity, i.e. ~620 MiB per card even perfectly balanced, below the ~1024 MiB where
-  # RADV spills. Freeing 1.86 GiB (q8_0 KV, which is lossless here because the server runs
-  # --reasoning off, plus --no-mmproj-offload) raises that to ~1573 MiB and can.
-  split_cell "split-nc15-c29-q8-projcpu" 15 29 q8_0 true
-  split_cell "split-nc14-c29-q8-projcpu" 14 29 q8_0 true
   note ""
   note "⚠️ Judge these by **headroom**, not tok/s. Below ~1 GiB of free VRAM RADV starts"
   note "spilling to GTT, and a spilled cell can still post a plausible-looking number."
@@ -233,7 +283,7 @@ ctx_cell() {  # <label> <ncmoe> <c1> <ctx> <kvtype>
     --classes code >/dev/null 2>&1 || true
   # A deep probe as well: a long window is pointless if throughput collapses in it. 32k is
   # the deepest that still fits every configuration tested here.
-  ./placement-probe.py "http://$(ip):1234" --reps 2 --n-predict 160 --depths 0,8000,32000 \
+  ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 160 --depths 0,8000,32000 \
     >"${RUN}/${label}.json" 2>/dev/null || true
   local A=/sys/bus/pci/devices/0000:03:00.0 B=/sys/bus/pci/devices/0000:83:00.0
   local u1 f1 g1 u2 f2 g2
@@ -325,8 +375,8 @@ mtp_set_placement() {  # <ncmoe> [c1] [kv] [mmproj_on_cpu]
 }
 
 # Measure one arm. Writes its JSON and echoes "<d0> <accept>" or "DIED".
-mtp_cell() {  # <label> <extra-args>
-  local label="$1" extra="$2"
+mtp_cell() {  # <label> <extra-args> [reps]
+  local label="$1" extra="$2" reps="${3:-2}"
   setv EXTRA_ARGS "$extra" >&2
   pct exec "$CT" -- systemctl restart llamacpp-qwen38fn >&2
   # ⚠️ stdout of this function IS its return value (it is read with $(...)), so wait_up's
@@ -335,7 +385,7 @@ mtp_cell() {  # <label> <extra-args>
   if ! wait_up 1500 >&2; then echo "DIED"; return 0; fi
   ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 64 --depths 0,8000 \
     --classes code >/dev/null 2>&1 || true
-  ./placement-probe.py "http://$(ip):1234" --reps 2 --n-predict 160 --depths 0,8000 \
+  ./placement-probe.py "http://$(ip):1234" --reps "$reps" --n-predict 160 --depths 0,8000 \
     >"${RUN}/${label}.json" 2>/dev/null || true
   python3 - "${RUN}/${label}.json" <<'PY'
 import json, statistics as st, sys
@@ -489,7 +539,7 @@ BUILD
   local best_draft="" best_v=0 r v
   for pair in "shared:${DRAFT_SHARED}" "plain:${DRAFT_PLAIN}"; do
     local tag="${pair%%:*}" path="${pair#*:}"
-    r=$(mtp_cell "mtp-${tag}-nmax3" "--spec-type draft-mtp --model-draft ${path} --spec-draft-n-max 3 --spec-draft-ngl 99")
+    r=$(mtp_cell "mtp-${tag}-nmax3" "--spec-type draft-mtp --model-draft ${path} --spec-draft-n-max 3 --spec-draft-ngl 99" 1)
     echo "drafter ${tag}: ${r}"
     mtp_row "\`${tag}\` drafter, n-max 3" "mtp-${tag}-nmax3"
     v="${r%% *}"
