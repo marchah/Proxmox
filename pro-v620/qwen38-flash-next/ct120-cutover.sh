@@ -44,6 +44,26 @@ require_root() { [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"; 
 
 gpu2_attached() { grep -q "${GPU2_PCI}-render" "$CONF"; }
 
+# 🔴 Retiring the OUTGOING workload is a precondition, not a courtesy. This was
+# `systemctl disable --now X 2>/dev/null || true` in both directions, which swallowed a
+# FAILED retirement: the script carried on attaching GPU 2, restarting the container,
+# rewriting the watchdog map and enabling the incoming unit, leaving BOTH units enabled and
+# active. They then contend for the card and for port 1234, and the map points only at the
+# incoming one — so a thermal trip sheds the wrong load.
+# ⚠️ The `|| true` on the disable itself stays, and deliberately: the unit may legitimately
+# be absent (a fresh install, or a direction already taken). What is not optional is the
+# CHECK. Tolerate the command failing; never tolerate the unit surviving.
+retire_unit() {  # <vmid> <unit>
+  local vm="$1" unit="$2"
+  pct exec "$vm" -- systemctl disable --now "$unit" >/dev/null 2>&1 || true
+  if pct exec "$vm" -- systemctl is-enabled "$unit" >/dev/null 2>&1; then
+    die "CT ${vm}: ${unit} is still ENABLED after disabling it — it would restart with the container and fight the incoming server for the card and port 1234. Retire it by hand, then re-run."
+  fi
+  if pct exec "$vm" -- systemctl is-active "$unit" >/dev/null 2>&1; then
+    die "CT ${vm}: ${unit} is still ACTIVE after stopping it — two model servers on one card. Stop it by hand, then re-run."
+  fi
+}
+
 assert_ct123_stopped() {
   local st
   st="$(pct status 123 2>/dev/null | awk '{print $2}')"
@@ -180,8 +200,8 @@ case "${1:-status}" in
         [ -f "${s}.verified" ] || { echo "shard ${i} not verified: ${s}.verified missing"; exit 1; }
       done' || die "model download incomplete or unverified — see qwen38fn-download.sh"
 
-    log "stopping the qwen3.6 server"
-    pct exec "$VMID" -- systemctl disable --now llamacpp 2>/dev/null || true
+    log "retiring the qwen3.6 server"
+    retire_unit "$VMID" llamacpp
 
     if gpu2_attached; then
       log "GPU 2 already attached to CT ${VMID}"
@@ -213,8 +233,8 @@ case "${1:-status}" in
     require_root
     mkdir -p "$BAK_DIR"
 
-    log "stopping the qwen4exp server"
-    pct exec "$VMID" -- systemctl disable --now llamacpp-qwen38fn 2>/dev/null || true
+    log "retiring the qwen4exp server"
+    retire_unit "$VMID" llamacpp-qwen38fn
 
     if gpu2_attached; then
       cp -a "$CONF" "${BAK_DIR}/120.conf.before-revert.$(date -u +%Y%m%dT%H%M%SZ)"

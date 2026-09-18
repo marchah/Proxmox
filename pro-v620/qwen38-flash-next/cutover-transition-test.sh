@@ -69,7 +69,10 @@ case "$sub" in
   status)  echo "status: $(cat "$T/status.$1")" ;;
   config)  cat "$T/lxc/$1.conf" ;;
   stop)    echo stopped >"$T/status.$1" ;;
-  start)   echo running >"$T/status.$1" ;;
+  start)   echo running >"$T/status.$1"
+           # a started container brings its ENABLED units back — this is what makes
+           # "still enabled" a real hazard rather than a bookkeeping detail
+           sed -i.bak "s/^$1 \\([a-z0-9-]*\\) enabled .*/$1 \\1 enabled active/" "$T/units" ;;
   set)
     vm="$1"; shift
     [ "${FAIL_ON_PCT_SET:-}" = "$vm" ] && { echo "mock: pct set $vm failed on purpose" >&2; exit 1; }
@@ -95,6 +98,7 @@ case "$sub" in
                sed -i.bak "s/^$vm $unit [a-z]* /$vm $unit enabled /" "$T/units"
                [ "${3:-}" = --now ] && sed -i.bak "s/^$vm $unit \\([a-z]*\\) .*/$vm $unit \\1 active/" "$T/units"; : ;;
       disable) [ "$unit" = --now ] && unit="$4"
+               [ "${FAIL_DISABLE:-}" = "$unit" ] && { echo "mock: disable $unit failed" >&2; exit 1; }
                sed -i.bak "s/^$vm $unit [a-z]* /$vm $unit disabled /" "$T/units"
                sed -i.bak "s/^$vm $unit \\([a-z]*\\) .*/$vm $unit \\1 inactive/" "$T/units"; : ;;
       *) : ;;
@@ -107,7 +111,7 @@ PCT
 set_unit() { sed -i.bak "/^$1 $2 /d" "$T/units" 2>/dev/null || true; printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >>"$T/units"; }
 run_cutover() {
   PATH="$T/bin:$PATH" CONF="$T/lxc/120.conf" BAK_DIR="$T/bak" WATCHDOG_ENV="$T/wd.env" \
-    LXC_CONF_DIR="$T/lxc" DRI_BY_PATH="$T/dri" VMID=120 "$SCRIPT" "$1" >>"$T/out.log" 2>&1
+    LXC_CONF_DIR="$T/lxc" DRI_BY_PATH="$T/dri" VMID=120 FAIL_DISABLE="${FAIL_DISABLE:-}" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
 }
 gpu2_on_120() { grep -q "pci-${GPU2}-render" "$T/lxc/120.conf"; }
 onboot_123()  { awk '/^onboot:/{print $2}' "$T/lxc/123.conf"; }
@@ -141,6 +145,12 @@ case "$(map)" in
   *) bad "GPU 2 map is '$(map)'" ;;
 esac
 grep -q "^120 llamacpp-qwen38fn enabled active$" "$T/units" && ok "qwen38fn unit is live" || bad "qwen38fn unit not live"
+# 🔴 The outgoing unit must be GONE, not merely unmentioned. If it survives enabled it comes
+# back with the container, fights the incoming server for the card and port 1234, and the
+# watchdog — mapped to the incoming unit — would shed the wrong load on a trip.
+grep -q "^120 llamacpp disabled inactive$" "$T/units" \
+  && ok "outgoing qwen3.6 unit retired (disabled AND inactive)" \
+  || bad "outgoing unit survived: $(grep '^120 llamacpp ' "$T/units")"
 # ordering: the release must be logged before the attach
 # ⚠️ `|| true` is load-bearing. With no match, grep exits 1, pipefail propagates it, the
 # assignment inherits that status and `set -e` KILLS THIS TEST instead of reporting a
@@ -188,6 +198,18 @@ gpu2_on_120 && bad "GPU 2 still attached after rollback from a partial state" \
 [ "$(onboot_123)" = 1 ] && ok "CT 123 autostart restored by the rollback" || bad "CT 123 onboot is $(onboot_123)"
 rm -rf "$T"
 
+echo "=== 3c. the OUTGOING service cannot be retired ==="
+new_host; echo stopped >"$T/status.123"
+FAIL_DISABLE=llamacpp run_cutover to-qwen38fn \
+  && bad "cut over while the old model server was still enabled — two servers, one card" \
+  || ok "refused to proceed when the outgoing unit could not be retired"
+gpu2_on_120 && bad "GPU 2 was attached despite the failed retirement" \
+  || ok "GPU 2 untouched — retirement is a precondition, not a cleanup step"
+grep -q "^120 llamacpp-qwen38fn enabled" "$T/units" \
+  && bad "the incoming unit was enabled alongside a surviving outgoing unit" \
+  || ok "incoming unit not enabled, so the two can never both be live"
+rm -rf "$T"
+
 echo "=== 4. reverse cutover, with CT 123 deliberately left stopped ==="
 new_host; echo stopped >"$T/status.123"; run_cutover to-qwen38fn || true
 run_cutover to-qwen36 || bad "rollback exited non-zero (the false protection alarm regression)"
@@ -198,6 +220,9 @@ case "$(map)" in
   *) bad "map is '$(map)'" ;;
 esac
 grep -q "^120 llamacpp enabled active$" "$T/units" && ok "qwen3.6 unit is live again" || bad "qwen3.6 unit not live"
+grep -q "^120 llamacpp-qwen38fn disabled inactive$" "$T/units" \
+  && ok "outgoing qwen4exp unit retired (disabled AND inactive)" \
+  || bad "outgoing unit survived: $(grep '^120 llamacpp-qwen38fn ' "$T/units")"
 rm -rf "$T"
 
 echo

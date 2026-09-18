@@ -860,29 +860,49 @@ cold load implies. Still far too slow to do per-request; fine at a role handoff.
   to pay for a drafter with no merged runtime. At 6B active, draft/verify overhead would
   likely dominate anyway.
 
-## ✅ End-to-end verification of the shipped two-card default — 2026-09-18
+## ⚠️ End-to-end load check of the PREVIOUS two-card default — 2026-09-18
 
 Every throughput number above came from `placement-sweep.sh`, which pins **batch/ubatch
 1024/256**. The launcher defaults to **4096/1024**, and neither env file said so — so the shipped
 default ran at 4x the batch of the run that validated it. A code review flagged that as a
-verification gap. It was real. The exact `install.sh` two-card default was loaded end-to-end on
-CT 120 (CT 123 stopped, thermal guard armed, reverted afterwards):
+verification gap. It was real, and the load check below settled it — but read what it covers
+carefully, because **it is not a verification of what ships today.** What loaded on CT 120
+(CT 123 stopped, thermal guard armed, reverted afterwards) was the *then*-default at 4096/1024;
+the replacement pinned afterwards is 1024/256, and that pair has never been run.
 
 ```
 --threads 16 --batch-size 4096 --ubatch-size 1024 --n-cpu-moe 16 --tensor-split 30,18 --cache-type-k q8_0
 healthy after 111 s
 ```
 
-| batch/ubatch | min free card1 / card2 | max GTT card1 / card2 | decode d8k | prefill d8k |
-| --- | ---: | ---: | ---: | ---: |
-| 1024/256 (the sweep) | 2881 / 1878 MiB | no spill | 13.37 | 77.2 |
-| **4096/1024 (launcher default)** | 2922 / **877 MiB** 🔴 | **306** / 18 MiB 🔴 | 12.65-12.79 | **173-236** |
+| batch/ubatch | binary | min free card1 / card2 | max GTT | decode d8k | prefill d8k |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1024/256 (the sweep) | `b11018-baseline` | 2881 / 1878 MiB | no spill | 13.37 | 77.2 |
+| **4096/1024 (then-default)** | `llama-b11018` | 2922 / **877 MiB** 🔴 | **306** / 18 MiB 🔴 | 12.65-12.79 | **173-236** |
+| **1024/256 — what ships now** | `llama-b11018` | ⚠️ **never run as a pair** | ⚠️ | ⚠️ | ⚠️ |
+
+🔴 **Those two measured rows cross two different binaries, and the shipped combination is
+neither of them.** Both report `build 11018, commit c9a5eeeb3`, but they are separate builds:
+`llama-b11018` is the release tarball (GNU 11.4.0, sha `4ac7aa75…`) and `b11018-baseline` was
+built here (GNU 13.3.0, sha `32687325…`).
+
+| | exercised? |
+| --- | --- |
+| the release binary | yes — at 4096/1024, the run that found 877 MiB |
+| 1024/256 | yes — on `b11018-baseline`, the sweep |
+| **the release binary AT 1024/256 (what ships)** | **no** |
+
+⚠️ **The reduced-batch mitigation is an argument, not an observation.** Smaller compute buffers
+cannot use *more* memory than the 4096/1024 run that already fit, so the shipped pair should have
+strictly more headroom than the 877 MiB above. Sound inference; still not a measurement. **Do not
+quote 2881 / 1878 MiB as this configuration's headroom** — that came from a different binary. And
+pin the same binary on both sides before A/B'ing anything against the sweep.
 
 🔴 **The default was marginal.** Card 2 fell to **877 MiB free, under the ~1024 MiB RADV spill
 floor**, and card 1's GTT rose to **306 MiB against a ~70 MiB idle floor**. So the bigger compute
 buffers cost roughly a gigabyte on the card holding the heavy layers. The env now pins
-**1024/256** — the combination actually measured with this split — rather than shipping the
-marginal one.
+**1024/256**, the batch actually measured with this split, rather than shipping the marginal one
+— subject to the binary caveat above.
 
 ✅ **The finding worth keeping: the right `--tensor-split` is BATCH-SIZE DEPENDENT.** The compute
 buffer scales with batch and lands on whichever card holds the heavy layers, so batch size and
