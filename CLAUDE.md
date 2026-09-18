@@ -114,7 +114,10 @@ remain included. To omit rebuildable bulk on a root disk, use the backup job's
 
 - `/etc/vzdump.conf` needs `tmpdir: /var/tmp`: the NAS rejects the mapped UID used
   for unprivileged LXC temporary files. Archives still stream to NFS.
-- Update the NAS NFS client allow-list if the host IP changes.
+- Allow-list the NAS's NFS clients by subnet (`192.168.1.0/24`), not by the host's
+  exact IP: an exact-IP entry breaks every backup silently with `mount.nfs: access
+  denied by server` the next time the host address changes. Set it in DSM under
+  Control Panel → Shared Folder → NFS Permissions.
 - Back up Docker volumes for restores that do not roll back the whole VM.
 - The token ledger under `/root/.hermes/token-usage/` is excluded from the git
   config backup; its off-box copy is CT 121's weekly vzdump. It cannot be rebuilt.

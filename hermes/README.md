@@ -108,6 +108,9 @@ user allowlist (without an allowlist Hermes denies all incoming users).
   resolves the newest **release tag** from the GitHub releases API before any work starts,
   then fetches `scripts/install.sh` from that tag's raw URL and runs it with
   `--branch <tag>`, so the installer and the checked-out code are the same tagged commit.
+  It resolves the newest **release**, not main HEAD — upstream lands roughly 2k commits
+  between releases, and this container installs and runs them as root with full terminal
+  access, so `latest` is an unreviewed upgrade on every rebuild.
   - Pin an explicit tag for a reproducible rebuild (`HERMES_VERSION=v2026.7.20`), using the
     **git tag**, **not** the `v0.19.0` marketing title (it is not a valid git ref). Only then
     can you also set `HERMES_INSTALLER_SHA256` to verify that tag's installer — a checksum

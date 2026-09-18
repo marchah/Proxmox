@@ -8,8 +8,14 @@ compose file usually lives in `stacks/` here; work-board's lives in its own repo
 
 Apps share this VM and do not consume individual VMIDs.
 
-Docker has its own kernel and firewall inside VM 300. GPU model servers use
-native LXCs with device passthrough. VMs use the repo's `300+` VMID range.
+**Why a VM, and the only one here.** Proxmox recommends running Docker in a VM, and
+that is what this is: its own kernel and its own firewall rules, isolated from the
+host's. Docker-in-LXC instead needs `nesting=1` + `keyctl=1` (often privileged), puts
+`overlay2` on top of a container filesystem, tends to need those tweaks redone after a
+Proxmox kernel bump, and shares a kernel with the host's firewall rules that Docker
+also writes into. The cost is about 4 GB of RAM, which this host has spare. The GPU
+model servers stay native LXCs — they need device passthrough and gain nothing here.
+VMs use the repo's `300+` VMID range so container and VM ids never collide.
 
 ## Provision (on the Proxmox host, as root)
 
