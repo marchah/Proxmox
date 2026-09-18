@@ -8,9 +8,12 @@
 # Fully reversible: both GGUFs stay on /models, both llama.cpp builds stay in
 # /opt/llamacpp, and the qwen3.6 unit is left installed. Rollback is this script.
 #
-# ⚠️ CT 123 (gpu2) MUST stay stopped while CT 120 holds GPU 2. Its llama-swap config
-# passes no device selector, so it would grab whichever card Vulkan enumerates first —
-# including the one CT 120 is mid-inference on. `to-qwen36` is what releases the card.
+# ⚠️ CT 123 (gpu2) MUST stay stopped while CT 120 holds GPU 2, so the two never contend
+# for the same card. `to-qwen36` is what releases it.
+# (Historically the hazard was sharper: CT 123 ran llama-swap, which passed no device
+# selector and would grab whichever card Vulkan enumerated first. llama-swap was removed
+# 2026-09-18 and CT 123 now serves Qwen3.8-Flash-Next pinned with `--device Vulkan0`, so it
+# takes only GPU 2 — but two servers on one card is still wrong, so the guard stays.)
 set -Eeuo pipefail
 
 readonly CONF=/etc/pve/lxc/120.conf
@@ -41,7 +44,8 @@ assert_ct123_stopped() {
 
 # The watchdog stops the service OWNING the hot card. While CT 120 drives both cards the
 # map must point BOTH at 120:llamacpp — otherwise a trip on GPU 2 tries to stop CT 123's
-# llama-swap, which is a no-op, and the real load keeps cooking an overheating card.
+# the wrong container's service, which is a no-op, and the real load keeps cooking an
+# overheating card.
 set_watchdog_map() {
   local want="$1"
   [ -f "$WATCHDOG_ENV" ] || { log "watchdog env absent — skipping map update"; return 0; }
@@ -124,7 +128,7 @@ case "${1:-status}" in
     log "restarting CT ${VMID}"
     pct stop "$VMID"; sleep 4; pct start "$VMID"; sleep 15
 
-    set_watchdog_map "${GPU1_PCI}=120:llamacpp,${GPU2_PCI}=123:llama-swap"
+    set_watchdog_map "${GPU1_PCI}=120:llamacpp,${GPU2_PCI}=123:llamacpp-qwen38fn"
 
     log "enabling the qwen3.6 server"
     pct exec "$VMID" -- systemctl enable --now llamacpp

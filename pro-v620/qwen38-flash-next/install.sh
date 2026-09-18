@@ -5,11 +5,20 @@
 #   ./install.sh                # env + serve script + unit, download NOT started
 #   ./install.sh --download     # also start/resume the 112 GB GGUF download
 #
-# This only installs. It does not attach GPU 2, change the container's limits, or stop
-# the qwen3.6 server — ./ct120-cutover.sh to-qwen38fn does all of that, reversibly.
+# Two deployments use this, and they differ only in the env file:
+#
+#   VMID=120                                  ./install.sh   # two cards, -ncmoe 16 (qwen38fn.env)
+#   VMID=123 ENV_FILE=qwen38fn-gpu2.env       ./install.sh   # ONE card, -ncmoe 34
+#
+# This only installs. It does not attach a GPU, change the container's limits, or stop
+# the qwen3.6 server — ./ct120-cutover.sh does all of that, reversibly.
 set -Eeuo pipefail
 
 VMID="${VMID:-120}"
+# Which config to push. qwen38fn.env is the two-card CT 120 shape; qwen38fn-gpu2.env is the
+# single-card CT 123 shape. Separate files rather than flags, because this repo keeps
+# GPU/model/engine assumptions narrow and explicit instead of parameterising one launcher.
+ENV_FILE="${ENV_FILE:-qwen38fn.env}"
 DO_DOWNLOAD=false
 [ "${1:-}" = "--download" ] && DO_DOWNLOAD=true
 
@@ -18,12 +27,12 @@ log() { printf '==> %s\n' "$*"; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"
 [ "$(pct status "$VMID" | awk '{print $2}')" = "running" ] || die "CT ${VMID} is not running"
-for f in qwen38fn.env llamacpp-serve-qwen38fn qwen38fn-download.sh; do
+for f in "$ENV_FILE" llamacpp-serve-qwen38fn qwen38fn-download.sh; do
   [ -f "$f" ] || die "missing ${f} — run from this directory"
 done
 
-log "pushing /etc/llamacpp-qwen38fn.env"
-pct push "$VMID" qwen38fn.env /etc/llamacpp-qwen38fn.env --perms 0644
+log "pushing /etc/llamacpp-qwen38fn.env (from ${ENV_FILE})"
+pct push "$VMID" "$ENV_FILE" /etc/llamacpp-qwen38fn.env --perms 0644
 
 log "pushing /usr/local/bin/llamacpp-serve-qwen38fn"
 pct push "$VMID" llamacpp-serve-qwen38fn /usr/local/bin/llamacpp-serve-qwen38fn --perms 0755

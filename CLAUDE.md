@@ -24,9 +24,9 @@ These containers form the system:
   symlink — the reboot-stable way to pin one of two identical cards), so llama.cpp sees a single
   Vulkan device and runs the whole ~26.6 GB model on it. ✅ **Either card will now do** — the B550's
   chipset-slot decode tax is gone with the platform move; all seven ROMED8-2T slots are CPU-direct.
-  **The other card (`0000:83:00.0`) runs CT 123 `gpu2`**
-  (a `llama-swap` server for the autonomous coding loop — see below); it stays amdgpu-bound so the host
-  fan/undervolt/watchdog services manage both. Both cards are undervolted −100 mV:
+  **The other card (`0000:83:00.0`) runs CT 123 `gpu2`**, which since 2026-09-18 serves
+  **Qwen3.8-Flash-Next on that one card** (`pro-v620/qwen38-flash-next/`, `-ncmoe 34`); it stays
+  amdgpu-bound so the host fan/undervolt/watchdog services manage both. Both cards are undervolted −100 mV:
   - `pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh` — llama.cpp's `llama-server`
     (hostname `llamacpp`). This is the current runtime.
     - ⚠️ **Thinking is DISABLED — `--reasoning off`** in `/usr/local/bin/llamacpp-serve`, baked
@@ -209,9 +209,14 @@ These containers form the system:
   **111.33 GB**) across both V620s with the PLE table and a tunable share of routed experts in
   system RAM. The **first model here that does not fit in VRAM** — it exists because the EPYC
   platform has 251 GiB (512 GB once the other four sticks land). `/models` grown to 320G;
-  CT 120 runs 48 cores / **160 GiB** / swap 0. **CT 123 is stopped** to free GPU 2 and must stay
-  stopped — its `llama-swap` passes no device selector and would grab a card CT 120 is using.
-  Rollback is `./ct120-cutover.sh to-qwen36`; both GGUFs and both llama.cpp builds stay on disk.
+  ⚠️ **As of 2026-09-18 this shape is NOT deployed on CT 120.** The full placement study is done
+  (see that folder's `README.md`) and the conclusion was that **one card beats two by 21-24% on
+  decode** for this architecture, so the model moved to **CT 123 alone** (`-ncmoe 34`, 13.01 t/s)
+  and CT 120 went back to `qwen3.6-35b-a3b`, which is 5x faster and what Hermes needs.
+  The two-card path stays fully reversible — both GGUFs and both llama.cpp builds are on CT 120's
+  disk and `./ct120-cutover.sh to-qwen38fn` re-attaches GPU 2 (CT 123 must be stopped first).
+  Re-test it if llama.cpp #28699's per-device indexer fix lands, which is what would make two
+  cards fast again.
   - 🔴 **The reasoning contract is INVERTED from Qwen3.8-27B.** The template resolves
     `reasoning_effort|default('xhigh')` and **raises** on `"none"` and `"high"` — exactly the
     values that work on CT 123's coder, where `"none"` is the documented off switch. Unset means
@@ -235,8 +240,9 @@ These containers form the system:
     fusion` (#28896) and several Vulkan wins that touch both models (sparse FA #28105,
     topk_moe prefill fusion #28422, type-aligned GET_ROWS #28253 — which is the op the PLE
     lookup uses, small-M matrix opts for qwen #28457). Verified: qwen3.6 serves clean output on
-    b11018. ⚠️ **CT 123 is stopped and its container is still on b10678** — its script pin
-    moved, so a rebuild is correct, but a plain `pct start 123` brings back the old build.
+    b11018. ✅ **CT 123 was brought to b11018 on 2026-09-18** by copying
+    `/opt/llamacpp/b11018-baseline` from CT 120 (identical Ubuntu 24.04 / glibc 2.39). It had been
+    on b10678, which cannot run `qwen4exp` on Vulkan at all — b11013 is the floor.
   - 🔴 **`--tensor-split` is REQUIRED alongside `--n-cpu-moe`, and nothing warns you.**
     `--n-cpu-moe N` moves the experts of the **first** N layers to the CPU, so `0..N-1` are light
     and `N..47` are heavy (~1.56 GB each); llama.cpp's default split divides 48 layers **evenly by
@@ -270,9 +276,12 @@ These containers form the system:
     models — so a short-prompt tok/s figure is not this model's throughput. Quote depth always.
   - ⚠️ The PLE offload tensor is **`per_layer_token_embd`**; the KB's `ngram_embedding`
     alternative is the *safetensors* name and matches nothing in a GGUF.
-  - ⚠️ **The thermal watchdog's `GPU_SERVICE_MAP` must point BOTH cards at `120:llamacpp`** while
-    CT 120 holds both. The stock map sends a GPU-2 trip to `123:llama-swap` — a no-op now — which
-    would leave the real load on an overheating card. `ct120-cutover.sh` sets and restores it.
+  ⚠️ **The thermal watchdog's `GPU_SERVICE_MAP` must name the service that actually owns each
+  card.** It reads `0000:03:00.0=120:llamacpp,0000:83:00.0=123:llamacpp-qwen38fn` since
+  2026-09-18; it said `123:llama-swap` until that service was removed, and **a map naming a dead
+  service turns a thermal trip into a no-op** that leaves the real load cooking an overheating
+  card. `ct120-cutover.sh` sets and restores it, pointing both cards at `120:llamacpp` while
+  CT 120 holds both.
   - ⚠️ **`gpu-ab-bench/thermal-guard.sh` and `sample-gpus.py` are B550-era** and still name
     `0000:2d:00.0`/`0000:06:00.0`. Those paths do not exist, so the guard's hwmon glob misses,
     `cat` fails and `set -e` kills it in under a second — it fails **silently open**. Use
@@ -376,14 +385,17 @@ All run on the Proxmox host as root.
 ```bash
 # Provision the ops LLM-runtime container (CT 120) — GPU 1 of two Radeon Pro V620
 ./pro-v620/create-lxc-llamacpp-qwen3.6-35b-a3b.sh # llama.cpp (llama-server), Qwen3.6-35B-A3B MoE
-# Move CT 120 to Qwen3.8-Flash-Next on BOTH cards (hybrid GPU+RAM). Reversible; CT 123 must be stopped.
+# Qwen3.8-Flash-Next lives on CT 123 (one card) since 2026-09-18 — see below.
+# To put it on CT 120 across BOTH cards instead (slower: the inter-GPU tax costs 21% of decode):
 cd pro-v620/qwen38-flash-next && ./install.sh --download   # env/serve/unit + resume the 112 GB pull
 cd pro-v620/qwen38-flash-next && ./ct120-cutover.sh to-qwen38fn   # cut over   (to-qwen36 = full rollback)
 cd pro-v620/qwen38-flash-next && ./thermal-guard.sh & ./placement-sweep.sh   # find the best --n-cpu-moe
-# Autonomous coding loop's GPU-2 model server (CT 123 gpu2) — llama-swap on GPU 2
-./pro-v620/create-lxc-llama-swap-gpu2.sh          # qwen3.8-27b-dflash2 coder + thinkingcap-27b reviewer, swapped by name (:8080)
-# The loop's execution sandbox (CT 122 coder-runner; runs npm/build/tests, needs CT 121's ssh pubkey)
-CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./coder-runner/create-lxc-coder-runner.sh
+# CT 123 gpu2 — Qwen3.8-Flash-Next on ONE card (the measured best single-GPU config, :1234)
+cd pro-v620/qwen38-flash-next && VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh
+# CT 123 previously ran llama-swap (6 models by name on :8080); removed 2026-09-18, script kept:
+#   ./pro-v620/create-lxc-llama-swap-gpu2.sh
+# CT 122 coder-runner was destroyed 2026-09-18 (loop moved to Multica); recipe kept:
+#   CODER_SSH_PUBKEY="$(pct exec 121 -- cat /root/.ssh/coder-runner.pub)" ./coder-runner/create-lxc-coder-runner.sh
 # The loop/orchestrator config that runs INSIDE CT 121 (profiles/skills/plugins/timers) — run from within CT 121
 pct exec 121 -- bash -lc 'cd /path/to/Proxmox/hermes/config && ./install.sh'  # see hermes/config/README.md
 # The knowledge-base retrieval service (CT 140 kb-rag) — a read-only KB deploy key is REQUIRED
@@ -469,7 +481,10 @@ Engine differences that matter when extending the llama.cpp script:
   flat `llama-<tag>/` dir and symlinks `/opt/llamacpp/current`. It also installs the
   **libglvnd/EGL stack** (`libglvnd0 libgl1 libglx0 libegl1`) on top of `mesa-vulkan-drivers`
   — without it the Mesa ICD loader can silently report **zero** Vulkan devices in the container.
-  - **Both CT 120 and CT 123 run llama.cpp `b10678`; llama-swap is pinned at `v250`.** Prior
+  - **CT 120 and CT 123 both run llama.cpp `b11018`** (CT 123 got it 2026-09-18 by copying
+    `/opt/llamacpp/b11018-baseline` from CT 120 — same Ubuntu 24.04 / glibc 2.39, so the binary
+    moves; `qwen4exp` needs b11013+ and CT 123 was on b10678). llama-swap was pinned at `v250`
+    before its removal. Prior
     llama.cpp builds are left in `/opt/llamacpp/` and the previous llama-swap binary kept as a
     `.bak`, so **rollback is a symlink flip / file copy**.
     ⚠️ **Bump the pins in the scripts, not just live** — they had drifted several builds behind
@@ -608,11 +623,13 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   matching range):
   - `100-119` — infra / services (currently empty; CT 110 `mealdeal` lived here until the app
     moved into the Docker host — small web apps are now containers on VM 300, not LXCs)
-  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, pinned to GPU 1 of two V620s; the
-    prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the Hermes Agent that
-    consumes CT 120's API. CT 122 `coder-runner` — the coding loop's execution sandbox; CT 123 `gpu2` —
-    a `llama-swap` server on GPU 2 for the loop (`qwen3.8-27b-dflash2` coder + `thinkingcap-27b`
-    reviewer, swapped one at a time))
+  - `120-139` — AI/LLM containers (CT 120 LLM runtime, hostname `llamacpp`, GPU 1, serving
+    `qwen3.6-35b-a3b`; the prior 6700 XT also offered an `lmstudio` variant. CT 121 `hermes` — the
+    Hermes Agent that consumes CT 120's API. CT 123 `gpu2` — GPU 2, serving
+    **Qwen3.8-Flash-Next** on one card since 2026-09-18.
+    ⚠️ **CT 122 `coder-runner` was DESTROYED 2026-09-18** — the coding loop moved to Multica, so it
+    was unused and only a maintenance burden. `coder-runner/create-lxc-coder-runner.sh` still
+    documents how to recreate it.)
   - `140-159` — databases (CT 140 `kb-rag` — the CognitiveStack hybrid-search API; it lives here
     rather than in the AI range because the durable artifact is a vector+FTS **database**, even
     though its consumers are agents)
@@ -620,26 +637,23 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
   - `300+` — **VMs** (VM 300 `docker-host`). The ranges above allocate *containers*; VMs get their
     own range so `pct`/`qm` ids never collide. Apps running as Docker containers on VM 300 do not
     take a VMID at all.
-- **Autonomous coding loop / execution isolation (`coder-runner/`, CT 122).** The homelab runs a
-  self-driving coder↔reviewer loop on **Hermes kanban** (CT 121): coder/reviewer *profiles* work each task
-  in an isolated git worktree/branch, PR-gated (no auto-merge to public `main`). The loop's design rule is
-  that **untrusted project code executes only on a separate, generic, disposable LXC — CT 122
-  `coder-runner`** (Node + pnpm + git + toolchain, holds no secrets), never inside the Hermes LXC. CT 121 drives
-  it over **ssh+rsync** via `checks-on-runner`/`run-on-runner`/`verify-and-commit` helpers (committed under
-  `hermes/config/bin/` and deployed into CT 121 by `hermes/config/install.sh`). Key facts learned the hard
-  way: Hermes does **not**
-  auto-commit managed worktrees and the local model won't reliably run `git`, so commits are made
-  deterministically by `verify-and-commit` (checks on CT 122 → commit on the CT 121 host on green); a fix
-  task must use `--workspace worktree:<absolute-repo-path>` (plain `worktree`+`--project` fails when created
-  from inside a worker); keep worktrees out of the repo tree to avoid `git add -A` swallowing them as
-  gitlinks. `coder-runner/create-lxc-coder-runner.sh` provisions CT 122 (once; repo-agnostic — add repos via
-  `hermes project`, never a new LXC). See `coder-runner/README.md` and the `autonomous-coding-loop` memory.
-  The loop's CT-121-side config (coder/reviewer profiles, the loop helper scripts under `hermes/config/bin/`,
-  the `codex-review`/`completion-gate` plugins, the loop's `scope-and-plan`/`review-pr` skills, and the
-  `loop-watchdog`/`backlog-tick`/`pr-revise-tick` systemd timers) is committed under **`hermes/config/`**
-  (loop/orchestrator only — the box's unrelated KB/homelab automations are not tracked) with an idempotent
-  `install.sh` — run it inside CT 121 to (re)deploy. Private Slack channel IDs are parameterized to env vars
-  sourced from `/root/.hermes/.env` (see `hermes/config/hermes.env.example`); never commit the real `.env`.
+- **Autonomous coding loop — CT 122 `coder-runner` is DECOMMISSIONED (destroyed 2026-09-18).**
+  The homelab ran a self-driving coder↔reviewer loop on Hermes kanban (CT 121) whose design rule was
+  that **untrusted project code executes only on a separate, generic, disposable LXC**, never inside
+  the Hermes LXC. That container is gone: the loop moved to **Multica** shelling out to the `codex`
+  CLI (see the `multica-codex-loop` memory), leaving CT 122 unused and only something to keep
+  patched. `coder-runner/create-lxc-coder-runner.sh` and `coder-runner/README.md` remain as the
+  recipe if the loop ever comes back on-box, and CT 121's `coder-runner` ssh keypair was removed
+  with it.
+  ⚠️ **The isolation rule still holds** — if project code is ever executed on this box again it
+  gets its own disposable container, not the agent's. The loop's CT-121-side config
+  (coder/reviewer profiles, `hermes/config/bin/` helpers, the `codex-review`/`completion-gate`
+  plugins, the loop skills and timers) is still committed under **`hermes/config/`** with an
+  idempotent `install.sh`; ⚠️ its `checks-on-runner` / `run-on-runner` / `verify-and-commit`
+  helpers referenced CT 122 over ssh+rsync and will not work until a runner exists again.
+  Private Slack channel IDs are parameterized to env vars sourced from `/root/.hermes/.env`
+  (see `hermes/config/hermes.env.example`); never commit the real `.env`.
+
 - **Token accounting (`hermes/token-usage-collector/`, CT 121).** llama.cpp exposes
   `llamacpp:prompt_tokens_total`/`llamacpp:tokens_predicted_total` at `/metrics` (CT 120 runs
   `--metrics`; without it that route 501s), but they are **counters since process start** and reset on
@@ -666,9 +680,10 @@ so runs diff and archive cleanly. Per-target subdirs hold `telemetry.jsonl`, `st
     the margin under the ChatGPT plan, so they are not "spend" the way metered API tokens are.
     ⚠️ `TOKEN_USAGE_DB_PROVIDERS` must **exclude** `custom`/`auto`/empty — those are CT 120 traffic the
     endpoint source already counts, so including them doubles every local token.
-  ⚠️ **CT 123 (`gpu2`) is deliberately not covered** for non-Hermes traffic:
-  llama-swap's `:8080/metrics` is host telemetry (CPU/memory/swap) with no token counters, and it
-  unloads/reloads models on demand so per-model counters would reset on every swap. (Anything *Hermes*
+  ⚠️ **CT 123 (`gpu2`) is not covered** for non-Hermes traffic. It ran llama-swap, whose
+  `:8080/metrics` was host telemetry with no token counters; since 2026-09-18 it is a plain
+  llama.cpp server on `:1234` and *could* be scraped the same way CT 120 is, but nothing does yet —
+  and Hermes does not use it (too slow), so the gap is small. (Anything *Hermes*
   sends to a cloud provider is captured regardless of host, via the second source.)
 - Keep downloaded model weights and generated results out of git (already covered by
   `.gitignore`: `models/`, `results/`, `artifacts/`, `bench-results*.tgz`, `.env*`).
