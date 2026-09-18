@@ -369,7 +369,8 @@ mtp_set_placement() {  # <ncmoe> [c1] [kv] [mmproj_on_cpu]
   # c1 defaults to the CORRECTED rule (documented minus two layers -- see the split stage).
   local nc="$1" c1="${2:-$(( $1 + (48 - $1) / 2 - 2 ))}" kv="${3:-}" mp="${4:-}"
   setv MODEL_CPU_MOE "$nc"; setv MODEL_TENSOR_SPLIT "${c1},$(( 48 - c1 ))"
-  setv MODEL_THREADS 32; setv MODEL_PARALLEL 1; setv MODEL_GPU_LAYERS 99
+  local BTH; BTH=$(cat "${RUN}/best_threads.txt" 2>/dev/null || echo 8)
+  setv MODEL_THREADS "$BTH"; setv MODEL_PARALLEL 1; setv MODEL_GPU_LAYERS 99
   setv MODEL_EXPECTED_GPUS 2; setv MODEL_KV_TYPE "$kv"; setv MODEL_MMPROJ_ON_CPU "$mp"
   setv MODEL_OT_OVERRIDE "per_layer_token_embd=CPU"; setv MODEL_LOAD_MODE ""
 }
@@ -599,8 +600,10 @@ s4_parallel() {
   # only 16k per slot, too small for real work -- so the VRAM cost of a usable slot size is
   # priced rather than assumed affordable.
   local spec par th ctx
-  for spec in "1 32 65536" "1 16 65536" "2 32 65536" "2 16 65536" \
-              "4 32 65536" "4 16 65536" "4 32 131072"; do
+  for spec in "1 32 65536" "1 16 65536" "1 8 65536" \
+              "2 32 65536" "2 16 65536" \
+              "4 32 65536" "4 16 65536" "4 8 65536" \
+              "4 32 131072"; do
     read -r par th ctx <<<"$spec"
     setv MODEL_CPU_MOE "$NC"; setv MODEL_TENSOR_SPLIT "${c1},$(( 48 - c1 ))"
     setv MODEL_THREADS "$th"; setv MODEL_PARALLEL "$par"
@@ -629,6 +632,30 @@ print("| %s | %s | %s | %.2f | %.2f | %.2f%s |" % (
 PY
   done
   setv MODEL_PARALLEL 1; setv MODEL_CONTEXT_LENGTH 65536
+
+  # Publish the best single-stream thread count for the restore stage. Measured at
+  # -ncmoe 20, 8 threads beat 32 by +3.5% decode at flat prefill -- the CPU-side expert FFN
+  # is bandwidth-bound GEMV, and STREAM already showed 8 threads saturating the four
+  # populated channels (80.3 GB/s) where 32 measured WORSE (74.8). So more threads is
+  # contention here, not throughput, and restoring the inherited 32 would leave the box
+  # slower than measured for no reason.
+  python3 - "$RUN" >"${RUN}/best_threads.txt" <<'PY'
+import glob, json, os, re, statistics as st, sys
+run, best = sys.argv[1], None
+for f in glob.glob(os.path.join(run, "par1-t*-c65536.json")):
+    m = re.match(r"par1-t(\d+)-c65536\.json$", os.path.basename(f))
+    if not m:
+        continue
+    try:
+        d = json.load(open(f))
+    except Exception:
+        continue
+    v = d.get("per_stream_tps") or 0
+    if v and (best is None or v > best[1]):
+        best = (int(m.group(1)), v)
+print(best[0] if best else 8)
+PY
+  echo "best single-stream thread count: $(cat "${RUN}/best_threads.txt")"
 }
 stage parallel 18000 s4_parallel
 
@@ -682,7 +709,7 @@ s6_restore() {
   note ""
   note "## Final state"
   note ""
-  note "- CT 120 serving \`-ncmoe ${NC}\`, threads 32, parallel 1, b11018-baseline"
+  note "- CT 120 serving \`-ncmoe ${NC}\`, split \`${c1},$(( 48 - c1 ))\`, threads \`${BTH}\`, parallel 1, b11018-baseline"
   note "- CT 121 (Hermes) **started** — ⚠️ its 22:00 backup cron was missed tonight, trigger by hand"
   note "- CT 123 left **stopped** (it would grab a card from CT 120)"
   note "- CT 201 (builder) stopped; destroy with \`pct destroy 201\` when done"
