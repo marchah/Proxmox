@@ -136,6 +136,35 @@ if split:
     print("spilled cell still reports a plausible number.")
     print()
 
+# ---------------------------------------------------------------- context
+ctxcells = {}
+for f in sorted(glob.glob(os.path.join(run, "ctx*.json"))):
+    m = re.match(r"ctx(\d+)-(f16|q8)-(\S+?)\.json$", os.path.basename(f))
+    d = load(f)
+    if not m or not d:
+        continue
+    ctxcells[(int(m.group(1)), m.group(2), m.group(3))] = d
+
+if ctxcells:
+    print("## Longest usable context")
+    print()
+    print("| ctx | KV | placement | d0 t/s | d8k t/s | d32k t/s | gate |")
+    print("| --- | --- | --- | ---: | ---: | ---: | --- |")
+    for key in sorted(ctxcells):
+        c, kv, place = key
+        d = ctxcells[key]
+        print("| %d | %s | %s | %s | %s | %s | %s |" % (
+            c, kv, place,
+            ("%.2f" % dec(d, "d0/")) if dec(d, "d0/") else "DID NOT LOAD",
+            ("%.2f" % dec(d, "d8000/")) if dec(d, "d8000/") else "—",
+            ("%.2f" % dec(d, "d32000/")) if dec(d, "d32000/") else "—",
+            gates(d)))
+    print()
+    print("KV is **24.0 KiB/token at f16** — only 12 of 48 blocks hold a cache, the other 36")
+    print("being Gated DeltaNet with a fixed-size state. So 65536 costs 1.50 GiB, 131072 costs")
+    print("3.00, and the native 262144 costs 6.00 (half each at `q8_0`).")
+    print()
+
 # ---------------------------------------------------------------- MTP
 def shas_d0(d):
     """🔴 d0 ONLY. A d8000 cell disagrees with itself intermittently at temperature 0 on

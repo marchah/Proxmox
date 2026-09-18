@@ -159,6 +159,94 @@ PY
 }
 stage splitfix 7200 s2b_split
 
+# ------------------------------------------------- 2c. how much CONTEXT can it hold
+# "Versatile" is not only VRAM left for another model — it is also how long a window this
+# thing can serve. That is now a computable question rather than a guess:
+#
+#   48 blocks, `full_attention_interval 4` -> only **12 layers hold a KV cache** (the other
+#   36 are Gated DeltaNet, whose state is fixed-size and context-independent).
+#   head_count_kv 2, key_length 256, value_length 256
+#     => 2 * 12 * 2 * (256 + 256) * 2 B = **24.0 KiB/token at f16**, 12.0 at q8_0
+#
+#   ctx      f16        q8_0
+#   65536    1.50 GiB   0.75 GiB
+#   131072   3.00 GiB   1.50 GiB
+#   262144   6.00 GiB   3.00 GiB     <- the model's native maximum
+#
+# ⚠️ Those are metadata estimates. This stage CONFIRMS them with a VRAM delta, which is the
+# only trustworthy method: flat VRAM between two context sizes can mean the KV moved to
+# host memory, not that it got cheaper — so GTT is read alongside it every time.
+ctx_cell() {  # <label> <ncmoe> <c1> <ctx> <kvtype>
+  local label="$1" nc="$2" c1="$3" ctx="$4" kv="$5"
+  setv MODEL_GPU_LAYERS 99; setv MODEL_EXPECTED_GPUS 2
+  setv MODEL_CPU_MOE "$nc"; setv MODEL_TENSOR_SPLIT "${c1},$(( 48 - c1 ))"
+  setv MODEL_THREADS 32; setv MODEL_PARALLEL 1; setv MODEL_CONTEXT_LENGTH "$ctx"
+  setv MODEL_KV_TYPE "$kv"; setv MODEL_MMPROJ_ON_CPU ""
+  setv MODEL_OT_OVERRIDE "per_layer_token_embd=CPU"; setv MODEL_LOAD_MODE ""
+  setv EXTRA_ARGS ""; setv LLAMACPP_DIR /opt/llamacpp/b11018-baseline
+  pct exec "$CT" -- systemctl restart llamacpp-qwen38fn
+  if ! wait_up 1800; then
+    note "| ${ctx} | ${kv:-f16} | ${nc} / ${c1},$(( 48 - c1 )) | **DID NOT LOAD** | - | - | - |"
+    return 0
+  fi
+  ./placement-probe.py "http://$(ip):1234" --reps 1 --n-predict 64 --depths 0,8000 >/dev/null 2>&1 || true
+  # A deep probe as well: a long window is pointless if throughput collapses in it. 32k is
+  # the deepest that still fits every configuration tested here.
+  ./placement-probe.py "http://$(ip):1234" --reps 2 --n-predict 160 --depths 0,8000,32000 \
+    >"${RUN}/${label}.json" 2>/dev/null || true
+  local A=/sys/bus/pci/devices/0000:03:00.0 B=/sys/bus/pci/devices/0000:83:00.0
+  local u1 f1 g1 u2 f2 g2
+  u1=$(( $(cat $A/mem_info_vram_used)/1048576 )); g1=$(( $(cat $A/mem_info_gtt_used)/1048576 ))
+  f1=$(( ($(cat $A/mem_info_vram_total) - $(cat $A/mem_info_vram_used))/1048576 ))
+  u2=$(( $(cat $B/mem_info_vram_used)/1048576 )); g2=$(( $(cat $B/mem_info_gtt_used)/1048576 ))
+  f2=$(( ($(cat $B/mem_info_vram_total) - $(cat $B/mem_info_vram_used))/1048576 ))
+  echo "$(( u1 + u2 ))" >"${RUN}/${label}.vramtotal"
+  python3 - "${RUN}/${label}.json" "$ctx" "${kv:-f16}" "${nc} / ${c1},$(( 48 - c1 ))" \
+           "$(( u1 + u2 ))" "$f1" "$f2" "$g1" "$g2" >>"$RESULTS" <<'PY'
+import json, statistics as st, sys
+_, path, ctx, kv, place, vram, f1, f2, g1, g2 = sys.argv
+try: s = json.load(open(path))["summary"]
+except Exception:
+    print("| %s | %s | %s | probe failed | - | - | - |" % (ctx, kv, place)); raise SystemExit
+def med(pre):
+    v = [x["decode_tps_median"] for k, x in s.items()
+         if k.startswith(pre) and x.get("decode_tps_median")]
+    return st.median(v) if v else 0.0
+free_min, gtt_max = min(int(f1), int(f2)), max(int(g1), int(g2))
+flag = " **SPILLED**" if (gtt_max > 256 or free_min < 1024) else (" tight" if free_min < 2048 else "")
+print("| %s | %s | %s | %.2f | %.2f | %.2f | %s MiB, free %s/%s, gtt %s/%s%s |" % (
+    ctx, kv, place, med("d0/"), med("d8000/"), med("d32000/"), vram, f1, f2, g1, g2, flag))
+PY
+}
+
+s2c_context() {
+  local NC C1
+  if [ -s "${RUN}/best_split.txt" ]; then read -r NC C1 < "${RUN}/best_split.txt"
+  else NC=20; C1=33; fi
+  note ""
+  note "## Context: how long a window, and what it costs"
+  note ""
+  note "\`full_attention_interval 4\` means only **12 of the 48 blocks hold a KV cache** — the"
+  note "other 36 are Gated DeltaNet, whose state is fixed-size and context-independent. With"
+  note "\`head_count_kv 2\` and key/value length 256 that is **24.0 KiB/token at f16**:"
+  note "1.50 GiB at 65536, 3.00 at 131072, **6.00 at the native 262144** — or half of each at"
+  note "\`q8_0\`, which is safe here only because the server runs \`--reasoning off\`."
+  note ""
+  note "| ctx | KV type | -ncmoe / split | d0 t/s | d8k t/s | d32k t/s | VRAM |"
+  note "| --- | --- | --- | ---: | ---: | ---: | --- |"
+  # At the fastest placement: double the window, then go for the full native one on q8_0.
+  ctx_cell "ctx131072-f16-best"   "$NC" "$C1" 131072 ""
+  ctx_cell "ctx262144-q8-best"    "$NC" "$C1" 262144 "q8_0"
+  # And the full native window at f16 on a roomier placement, to price the alternative of
+  # giving up GPU-resident experts instead of quantising the cache.
+  ctx_cell "ctx262144-f16-ncmoe28" 28 37 262144 ""
+  note ""
+  note "⚠️ Compare against the 65536 rows in the split table above for the delta. A context"
+  note "change that leaves VRAM FLAT has not got cheaper — the KV has moved to host memory,"
+  note "which is why GTT is printed on every row."
+}
+stage contextsweep 7200 s2c_context
+
 # ---------------------------------------------------------------- 3. MTP
 # 🔴 A PLAIN CHECKOUT OF PR #28097 WOULD BUILD A BINARY THAT CANNOT RUN THIS MODEL.
 # #28097 already contains #27836's three commits rebased, so one branch is the right
