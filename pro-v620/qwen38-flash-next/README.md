@@ -118,7 +118,15 @@ after a load plus one completion so lazily-allocated buffers are included:
 | ---: | ---: | ---: | ---: | ---: |
 | **34** | **31100 M (30.4 G)** | 1668 M | **13.01 / 12.23** | 39.1 |
 | 36 | 28097 M (27.4 G) | 4671 M | 12.43 / 11.81 | 37.1 |
+| 40 | 22089 M (21.6 G) | 10679 M | 11.40 / 10.94 | 33.7 |
 | 48 | **9443 M (9.2 G)** | **23.3 G** | 10.18 / 8.70 | 29.0 |
+
+✅ **Expert weight is ~1.5 GiB per layer and the figure is stable**, which is what makes the
+dial predictable: measured 1502 MiB/layer over 34→36, 1502 over 36→40 and 1581 over 40→48,
+averaging **1547 MiB**. Every VRAM prediction made from that average during the sweep landed
+within ~120 MiB of the measurement, across four different shapes. ⚠️ Read the figures from
+one consistent moment — a reading taken mid-cell versus after it differs by ~2 GiB of
+transient compute buffer, which is enough to invent a non-uniformity that is not there.
 
 🔴 **`-ncmoe 15` and below cannot fit two cards in any shape at any split** — total demand
 is 64.2 GiB against 64 GiB of capacity, leaving ~620 MiB per card even perfectly balanced,
@@ -219,6 +227,7 @@ Two ways to free capacity, and they are not the same thing:
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | **34** | 30.4 G (1.7 G free) | **13.01** | **12.23** | 39.1 | **−10%** |
 | 36 | 27.4 G (4.6 G free) | 12.43 | 11.81 | 37.1 | −14% |
+| 40 | 21.6 G (10.4 G free) | 11.40 | 10.94 | 33.7 | −21% |
 | 48 | **9.2 G (23.3 G free)** | 10.18 | 8.70 | 29.0 | −30% |
 
 🔴 **`-ncmoe 34` on one card is the right way to hand CT 123 a card back** — 13.01 t/s, only
