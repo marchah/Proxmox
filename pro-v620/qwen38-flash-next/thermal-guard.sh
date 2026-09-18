@@ -40,15 +40,10 @@ while :; do
   for pci in $CARDS; do
     # This guard exists because the systemd watchdog cannot protect a hand-driven benchmark,
     # so anything it cannot SEE must shed load rather than be assumed cold.
-    #
-    # 🔴 Two fail-open bugs lived here, the second one introduced while fixing the first.
-    #   1. `|| echo 0` made an unreadable sensor read as 0 °C.
-    #   2. The replacement validated the CONCATENATION `${jr}${mr}`, so one empty reading
-    #      beside one numeric reading concatenated to a numeric string, passed validation,
-    #      and the empty one became 0 in the arithmetic. Only BOTH sensors missing tripped —
-    #      which is the single case the test covered. Validate each reading SEPARATELY.
-    # ✅ Losing the hwmon directory mid-run is the same class and routes the same way: the
-    #    startup check only proves it existed at startup.
+    # ⚠️ Validate each reading SEPARATELY. Testing `${jr}${mr}` lets one empty reading beside
+    # one numeric reading concatenate to a numeric string and pass, after which the empty one
+    # becomes 0 °C and never trips. A missing hwmon directory routes the same way — the
+    # startup check only proves it existed at startup.
     unreadable=""
     if ! h="$(hwmon_for "$pci")"; then
       unreadable="hwmon directory gone"

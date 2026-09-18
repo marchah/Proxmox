@@ -152,10 +152,9 @@ grep -q "^120 llamacpp disabled inactive$" "$T/units" \
   && ok "outgoing qwen3.6 unit retired (disabled AND inactive)" \
   || bad "outgoing unit survived: $(grep '^120 llamacpp ' "$T/units")"
 # ordering: the release must be logged before the attach
-# ⚠️ `|| true` is load-bearing. With no match, grep exits 1, pipefail propagates it, the
-# assignment inherits that status and `set -e` KILLS THIS TEST instead of reporting a
-# failure — which is how a mutation that removed the release read as "not caught". Same
-# trap the harness in this folder already hit once.
+# ⚠️ `|| true` is load-bearing: with no match grep exits 1, pipefail propagates it, the
+# assignment inherits that status and `set -e` kills this test instead of reporting a
+# failure — so a real defect reads as "not caught".
 rel="$(grep -n 'set 123 --onboot 0' "$T/pct.log" | head -1 | cut -d: -f1 || true)"
 att="$(grep -n 'set 120 --cores' "$T/pct.log" | head -1 | cut -d: -f1 || true)"
 if [ -n "$rel" ] && [ -n "$att" ] && [ "$rel" -lt "$att" ]; then

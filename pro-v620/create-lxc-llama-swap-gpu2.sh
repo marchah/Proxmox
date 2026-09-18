@@ -384,9 +384,7 @@ if ! "${LS}/llama-server" --list-devices 2>/dev/null | grep -qiE 'V620|RADV'; th
 fi
 # --n-predict caps tokens generated per request (-1 = unlimited). Bound it (e.g. 8192) so a model that
 # runs away can't fill its whole ctx window and stall the loop.
-# ⚠️ CORRECTED 2026-08-22: this used to claim "the loop's models are non-thinking so 8k is
-# ample", which contradicted CODER_NPREDICT's own comment above and is simply false.
-# Qwen3.8-27B IS a thinking model and its default effort runs away: measured 8000 tokens /
+# 🔴 Qwen3.8-27B IS a thinking model and its default effort runs away: measured 8000 tokens /
 # 32,901 chars of reasoning with `content` STILL EMPTY. The bound below is a backstop, not a
 # fix — reasoning is controlled per-request by the client (see the reasoning matrix in
 # CLAUDE.md) or server-side via --reasoning-budget.

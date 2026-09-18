@@ -681,16 +681,14 @@ PY
   done
   setv MODEL_PARALLEL 1; setv MODEL_CONTEXT_LENGTH 65536
 
-  # Publish the best thread count for the restore stage. ⚠️ Do NOT read a winner out of the
-  # single-stream rows: at -ncmoe 20 they are 8 -> 13.13/11.87, 16 -> 13.19/12.11,
-  # 32 -> 12.69/11.53 (d0/d8k), i.e. 32 is clearly contention (-4 to -5%) but 8 and 16 are
-  # within 0.5% and an earlier version of this comment called that an "inverted U with the
-  # peak at 16". The concurrency stage settles it instead: 8 wins solo and loses 4.9% at
-  # four streams, so 16 is the right default for a server of unknown concurrency. STREAM corroborates the shape from a
-  # different direction: 8 threads saturated the four populated channels at 80.3 GB/s where
-  # 32 measured WORSE at 74.8 -- the CPU-side expert FFN is bandwidth-bound GEMV, so past
-  # saturation more threads only contend. Restoring the inherited 32 would leave the box
-  # measurably slower for no reason; this picks from what the sweep actually measured.
+  # Publish the best thread count for the restore stage.
+  # ⚠️ Do NOT read a winner out of the single-stream rows. At -ncmoe 20 they are
+  # 8 -> 13.13/11.87, 16 -> 13.19/12.11, 32 -> 12.69/11.53 (d0/d8k): 32 is clearly
+  # contention (-4 to -5%), but 8 and 16 sit within 0.5%, which is not a result. The
+  # concurrency stage settles it — 8 wins solo and loses 4.9% at four streams — so 16 is the
+  # right default for a server of unknown concurrency. STREAM agrees from another direction:
+  # 8 threads saturated the four populated channels at 80.3 GB/s where 32 measured WORSE at
+  # 74.8, the CPU-side expert FFN being bandwidth-bound GEMV.
   python3 - "$RUN" >"${RUN}/best_threads.txt" <<'PY'
 import glob, json, os, re, statistics as st, sys
 

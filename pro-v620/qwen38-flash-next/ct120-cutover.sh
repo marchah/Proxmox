@@ -91,13 +91,7 @@ ct123_restore() {
     || log "  (CT 123 not running; enable llamacpp-qwen38fn after 'pct start 123')"
 }
 
-# 🔴 An earlier version of this was named for ownership and checked none of it: it never read
-# any container's GPU bindings, accepted `is-enabled` OR `is-active` (so an enabled-but-dead
-# unit passed), never checked that BOTH cards had entries, and returned 0 on every path —
-# while logging "every mapped unit exists and is live". That is the same defect class this
-# whole review is about: a claim asserting something the code does not do.
-#
-# What it checks now, and reports as three DISTINCT states rather than one:
+# What this checks, reported as three DISTINCT states:
 #   - both known cards have a map entry at all;
 #   - the target container actually has that card's render node bound in its config;
 #   - the unit is active (serving), enabled-but-inactive (configured, not serving — the
@@ -154,16 +148,13 @@ assert_map_owns_cards() {
   return 0
 }
 
-# The watchdog stops the service OWNING the hot card, so the map must name the unit that is
-# actually RUNNING, per card.
-# 🔴 THIS WAS WRONG UNTIL 2026-09-18 and it disabled thermal protection on both cards at
-# once. The forward cutover mapped both cards to `120:llamacpp`, then disabled that very
-# unit and started `120:llamacpp-qwen38fn` instead — so a trip stopped a dead unit, the real
-# load kept running, and the 105 °C hardware MODE1 reset became the only backstop. On the
-# one configuration that drives BOTH cards. The map must be `120:llamacpp-qwen38fn` while
-# CT 120 serves qwen4exp, and `120:llamacpp` only after the revert re-enables that unit.
-# ✅ Invariant to preserve: every mapped service must own the card it is mapped to. There is
-# a check for it at the end of this script.
+# 🔴 The watchdog stops the service OWNING the hot card, so each entry must name the unit
+# that is actually RUNNING on that card. A map naming a stopped or disabled unit makes a
+# thermal trip a silent NO-OP — the real load keeps cooking the card with only the 105 °C
+# hardware MODE1 reset behind it. While CT 120 serves qwen4exp both entries are
+# `120:llamacpp-qwen38fn`; `120:llamacpp` is correct only after the revert re-enables it.
+# ✅ Invariant, checked by assert_map_owns_cards: every mapped service owns the card it is
+# mapped to.
 set_watchdog_map() {
   local want="$1"
   [ -f "$WATCHDOG_ENV" ] || { log "watchdog env absent — skipping map update"; return 0; }

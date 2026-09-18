@@ -5,10 +5,9 @@ gfx1030, RDNA 2, **32 GB** GDDR6, 72 CUs). The V620 **replaces the RX 6700 XT** 
 the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 
 > **Two V620s, both in use:** the host runs **two V620s** — `0000:03:00.0`
-> ("GPU 1") and `0000:83:00.0` ("GPU 2"). ⚠️ **This line used to read "PCIe-3 (chipset) slot
-> `0000:06:00.0`", which is the B550 topology and predates the 2026-09-16 EPYC move.** All seven
-> ROMED8-2T slots are CPU-direct Gen4 x16, so the old chipset decode tax no longer applies and
-> either card can host either workload. The model is only ~26.6 GB and
+> ("GPU 1") and `0000:83:00.0` ("GPU 2"). All seven ROMED8-2T slots are CPU-direct Gen4 x16,
+> so the B550-era chipset decode tax no longer applies and either card can host either
+> workload. The model is only ~26.6 GB and
 > fits a single 32 GB card, so **CT 120 is pinned to GPU 1 alone**: its container bind-mounts
 > only GPU 1's `/dev/dri` render node (via the udev-stable `by-path` symlink — the only
 > reboot-stable way to pin one of two *identical* cards; see `configure_gpu_passthrough` in the
@@ -43,10 +42,10 @@ the [`rx-6700-xt/`](../rx-6700-xt/) folder is kept as the prior-GPU reference.
 >
 > The [`gpu-thermal-watchdog/`](gpu-thermal-watchdog/) remains armed as the last-resort net, stopping
 > the LLM server at 102 °C and mapping a trip to that card's **owning workload** (GPU 1 → CT 120
-> `llamacpp`, GPU 2 → CT 123 **`llamacpp-qwen38fn`**). ⚠️ **That map must name the unit that
-> actually runs.** It said `123:llama-swap` until 2026-09-18, after that service was removed —
-> and a map naming a stopped unit makes a thermal trip a **silent no-op**, leaving the real load
-> on an overheating card with only the 105 °C hardware reset behind it. It has not tripped since the per-card blowers went in;
+> `llamacpp`, GPU 2 → CT 123 **`llamacpp-qwen38fn`**). 🔴 **That map must name the unit that
+> actually runs on each card** — a map naming a stopped or removed unit makes a thermal trip a
+> **silent no-op**, leaving the real load on an overheating card with only the 105 °C hardware
+> reset behind it. It has not tripped since the per-card blowers went in;
 > its three 2026-08-14/15 firings were all under the old shared-shroud cooling. ⚠️ It leaves the
 > stopped service **down** by design, so the symptom from outside is a plain connection-refused on
 > `:8080` with the container still running, and an in-flight request sees a **502** that looks exactly

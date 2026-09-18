@@ -72,17 +72,15 @@ for fn in s2c_context s3_mtp s2b_split; do
   fi
 done
 
-# Negative control for stagelib.sh's watchdog-based runner.
-# 🔴 THE FIRST VERSION OF THIS CONTROL PASSED WITHOUT RUNNING ITS BODY, three ways at once:
-#   1. `stage` takes <name> <timeout-seconds> <function>; `stage boom` left $2 unset, so it
-#      aborted on `local to="$2"` under `set -u` before reaching the body.
-#   2. The harness hid stderr, so that invocation error read as "the failure was caught".
-#   3. `stage()` returns 0 BY DESIGN after recording a failure, so its exit status can never
-#      be the assertion in the first place — the RECORD is what carries the result.
-#   4. The harness stubs `sleep() { :; }`, which makes the watchdog fire instantly.
-# So: call it with the real signature, restore `sleep` inside the control, assert on the
-# recorded note AND on a post-failure sentinel, and prove the control is not vacuous by
-# running a SUCCEEDING body through the same path and requiring the opposite result.
+# Negative control for stagelib.sh's watchdog-based runner. Four things it must get right,
+# each of which silently makes the control pass without running its body:
+#   1. the real signature — `stage <name> <timeout-seconds> <function>`; a missing $2 aborts
+#      on `local to="$2"` under `set -u` before the body is reached;
+#   2. do not hide stderr, or that invocation error reads as "the failure was caught";
+#   3. assert the RECORD, never stage()'s exit status — it returns 0 by design after
+#      recording a failure;
+#   4. restore the real `sleep`, which the harness stubs out, or the watchdog fires instantly.
+# A SUCCEEDING body is run through the same path and must produce the opposite result.
 if [ -f stagelib.sh ]; then
   # shellcheck source=/dev/null
   . ./stagelib.sh 2>/dev/null || true

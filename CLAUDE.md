@@ -460,13 +460,11 @@ Engine differences that matter when extending the llama.cpp script:
   - **CT 120 and CT 123 both run llama.cpp `b11018`**, and CT 123 got it 2026-09-18 by copying
     `/opt/llamacpp/b11018-baseline` from CT 120 (same Ubuntu 24.04 / glibc 2.39, so the binary
     moves); `qwen4exp` needs b11013+ and CT 123 was on b10678.
-    ⚠️ **A retraction of that sentence was itself wrong and is withdrawn.** It compared CT 123's
-    `b11018-baseline` against CT 120's `llama-b11018` and concluded "not a copy" from the
-    differing hashes — but **CT 120 holds BOTH trees**, and its baseline is byte-identical to
-    CT 123's (`32687325…`), while the release tree is `4ac7aa75…` (GNU 11.4.0 vs 13.3.0). ✅ So
-    the copy claim stands; the lesson is **name the tree, not the container** — "CT 120's build"
-    is ambiguous when a container has two. llama-swap was pinned at `v250`
-    before its removal. Prior
+    ⚠️ **Name the TREE, not the container** — CT 120 holds two: `b11018-baseline` (built here,
+    GNU 13.3.0, sha `32687325…`, byte-identical to CT 123's) and `llama-b11018` (the release
+    tarball, GNU 11.4.0, sha `4ac7aa75…`). Both report `build 11018, commit c9a5eeeb3`, so
+    "CT 120's build" is ambiguous and comparing the wrong pair reads as a mismatch.
+    llama-swap was pinned at `v250` before its removal. Prior
     llama.cpp builds are left in `/opt/llamacpp/` and the previous llama-swap binary kept as a
     `.bak`, so **rollback is a symlink flip / file copy**.
     ⚠️ **Bump the pins in the scripts, not just live** — they had drifted several builds behind

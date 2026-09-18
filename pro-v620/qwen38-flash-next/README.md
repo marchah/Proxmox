@@ -8,9 +8,8 @@ box that does **not** fit in VRAM; it is here because the EPYC platform has the 
 ## ✅ Where it actually runs, as of 2026-09-18
 
 🔴 **CT 123 `gpu2`, on ONE card (`0000:83:00.0`), at `-ncmoe 34`.** Not CT 120, and not across
-both cards. An earlier revision of this file described the two-card CT 120 shape as current and
-told you to keep CT 123 stopped — **following that today would stop the server that is actually
-serving this model.**
+both cards — **do not stop CT 123 to make room for a two-card CT 120 unless you mean to take
+this model down.**
 
 | | current deployment | the two-card alternative |
 | --- | --- | --- |
@@ -67,11 +66,10 @@ This is the single most dangerous fact in this folder. Read from `chat_template.
 directions. The serve script therefore sets `--reasoning off` **server-side**, so no
 caller can trip either trap, and `placement-probe.py --contract` asserts all of it
 (bare chat answers, and `"none"`/`"high"` are *harmless*) rather than assuming it.
-🔴 **An earlier revision of this line said the probe asserts those two values are REJECTED.
-It asserts the opposite, and the difference is the whole point of the server flag**: with
-`--reasoning off` set, llama.cpp never hands the effort through to the template, so all five
-levels return HTTP 200 with clean content. The probe fails if a level comes back non-200 or
-empty — i.e. if the shield has regressed — not if it is accepted.
+⚠️ **The probe asserts those two values are ACCEPTED, not rejected**, and that is the whole
+point of the server flag: with `--reasoning off` set, llama.cpp never hands the effort through
+to the template, so all five levels return HTTP 200 with clean content. It fails when a level
+comes back non-200 or empty — i.e. when the shield has regressed.
 
 ⚠️ `--reasoning-format auto` is separately load-bearing: with thinking off the template
 still emits an **empty** `<think>\n\n</think>` pair, and `none` leaves it in `content` —
@@ -149,22 +147,18 @@ within ~120 MiB of the measurement, across four different shapes. ⚠️ Read th
 one consistent moment — a reading taken mid-cell versus after it differs by ~2 GiB of
 transient compute buffer, which is enough to invent a non-uniformity that is not there.
 
-🔴 **`-ncmoe 16` is the floor in practice.** ⚠️ **This paragraph used to say 15 "cannot fit in
-any shape at any split", on a demand of "64.2 GiB against 64 GiB" — both wrong.** 64295 MiB is
-**62.79 GiB**, which does *not* exceed the 64 GiB of total capacity, and that figure is for the
-**f16 / projector-GPU** shape specifically. What is actually established:
+🔴 **`-ncmoe 16` is the floor in practice.** ⚠️ Not because 15 exceeds total capacity — 64295
+MiB is **62.79 GiB** against 64 GiB, and that figure is for the **f16 / projector-GPU** shape
+specifically. What is established:
 
 - `15` **f16 / projector GPU**: 64295 MiB, ~620 MiB/card balanced — spills at any split.
 - `15` **q8_0 / projector CPU**: 62394 MiB, ~1571 MiB/card balanced — *above* the ~1024 MiB RADV
   floor, so not excluded by capacity. Measured at split **`29,19`: SPILLED**, 3256 / **89 MiB**
   free — starved by maldistribution. **That split is excluded by measurement; other splits are
   unvalidated.**
-- ✅ **The operative rule is a headroom POLICY, not a capacity proof** — but stated carefully,
-  because the blunt version was wrong. 🔴 **An earlier revision of this bullet claimed a global
-  "≥2048 MiB free on every card", which rejects the configurations this very file ships**: the
-  two-card default's minimum is 1878 MiB, the one-card default's 1739, and the 131072-context
-  row 1255. A universal rule invented in the paragraph that needed it is not a policy.
-  The rule that actually applies:
+- ✅ **The operative rule is a headroom POLICY, not a capacity proof.** ⚠️ It is not a global
+  floor — several shipped configurations sit below 2048 MiB (two-card default 1878, one-card
+  1739, the 131072-context row 1255). The rule is:
   - **A NEW or UNVALIDATED placement needs ≥2048 MiB free on every card** to be adopted without
     an end-to-end load check. 15's best balanced *estimate* of 1571 MiB/card does not clear it.
   - **An existing placement below that is acceptable only with a measured minimum**, recorded
@@ -444,9 +438,9 @@ to GTT, which depresses its d0 and flatters the ratio.
 
 ### ✅ q8_0 KV + projector-on-CPU is FREE at a placement that fits
 
-⚠️ **This section previously claimed q8_0 cost ~14% at depth. That was wrong**, and the
-error is instructive: it generalised from a pair of cells that were both on the documented
-(spilling) `--tensor-split`. Re-measured as a clean pair at a placement that fits —
+⚠️ **A ~14% depth cost was once attributed to q8_0 here. It belonged to a GTT spill**, not to
+the cache type: both cells in that comparison sat on the documented (spilling)
+`--tensor-split`. Measured as a clean pair at a placement that fits —
 `-ncmoe 16`, split `30,18`, neither cell spilling, same thread count:
 
 | shape | decode d0 | decode d8k | VRAM free c1 / c2 |
@@ -488,10 +482,9 @@ measured *worse* at 74.8 — the CPU-side expert FFN is bandwidth-bound GEMV, so
 saturation extra threads only fight each other. Prefill is flat across all three, so this is
 free.
 
-🔴 **What survives here is only "32 is contention". The 8-vs-16 question cannot be settled
-single-stream, and this table is single-stream** — the two are within 0.5% at n=1, which an
-earlier revision of this section read as "an inverted U with the peak at 16". Measured across
-concurrency, **8 actually wins solo and loses 4.9% at four streams**; see
+🔴 **Only "32 is contention" survives from this table. The 8-vs-16 question cannot be settled
+single-stream, and this table is single-stream** — the two sit within 0.5% at n=1, which is not
+a result. Measured across concurrency, **8 wins solo and loses 4.9% at four streams**; see
 [`--threads` inverts with load](#---threads-inverts-with-load--do-not-tune-it-single-stream),
 which is the section to trust. 16 is the right default, for a reason this table cannot see.
 ### A spill costs DECODE, not prefill — and more at depth
@@ -692,21 +685,14 @@ it with f16 KV and the projector resident. The candidates, computed and then loa
 | **`16`, q8_0, projector CPU** | **60691** ✅measured | **2422** | ✅ **14.17 / 13.45 — the best cell** |
 | `16`, f16, projector GPU | 62794 computed / 62605 measured | 1371 | 14.16 / 13.07; vision stays resident |
 
-🔴 **This table's verdicts were written against the retracted "q8_0 costs ~14% at depth"
-figure and they came out backwards.** With the clean pair measured at one placement that
-fits (see [that retraction](#-q8_0-kv--projector-on-cpu-is-free-at-a-placement-that-fits)),
-`q8_0` + projector-on-CPU is **better on both axes at once**: +2.9% decode at depth
-(13.45 vs 13.07) *and* 1.6 GiB more headroom (59.3 vs 61.1 GiB of demand). It is what the
-deployed config runs. Take the f16 / projector-on-GPU row only if **image-encoding latency**
-matters, which is the one thing it actually buys.
+✅ **`q8_0` + projector-on-CPU wins on both axes at once**: +2.9% decode at depth (13.45 vs
+13.07) *and* 1.6 GiB more headroom (59.3 vs 61.1 GiB of demand). It is what the deployed config
+runs. Take the f16 / projector-on-GPU row only if **image-encoding latency** matters — that is
+the one thing it buys.
 
 ### 🔴 `-ncmoe 15` — closed by POLICY, not by physics
 
-⚠️ **Two wrong things were said about 15 in a row, in opposite directions.** First it was
-excluded as "cannot fit in any shape at any split" (a unit error: 62.79 GiB, not 64.2, and only
-the f16 shape was measured). Then the q8_0 retraction was used to call it an "untested candidate"
-that "nobody re-tested" — also wrong, because the saved results contain a load-check of it.
-What the record actually supports:
+What the record supports:
 
 - **Measured**: `15` + q8_0 + projector-CPU at split **`29,19` SPILLED**, 3256 / **89 MiB** free.
   Card 2 was starved by maldistribution. That split is dead.
@@ -726,10 +712,9 @@ folder's **≥2048 MiB/card rule for a new or unvalidated placement**, and large
 offer the more promising prefill improvement. **Not a supported production configuration** — and
 that is a headroom-policy decision, not a claim that the model cannot fit.
 
-⚠️ **The frugal shape still does not buy a whole placement step**, but the reason is the policy,
-not the arithmetic: `q8_0` + `--no-mmproj-offload` saves ~1900 MiB while one layer of experts
-costs ~1500, so trading the cache shape for a layer nets ~400 MiB — which does not lift 15's
-~1571 MiB/card to the ≥2048 MiB the policy requires.
+⚠️ **The frugal shape does not buy a whole placement step**: `q8_0` + `--no-mmproj-offload`
+saves ~1900 MiB while one layer of experts costs ~1500, so trading the cache shape for a layer
+nets ~400 MiB — not enough to lift 15's ~1571 MiB/card to 2048.
 
 ### ⛔ CPU-only is not worth it — and you do not need it to free a card
 
@@ -863,12 +848,10 @@ cold load implies. Still far too slow to do per-request; fine at a role handoff.
 ## ⚠️ End-to-end load check of the PREVIOUS two-card default — 2026-09-18
 
 Every throughput number above came from `placement-sweep.sh`, which pins **batch/ubatch
-1024/256**. The launcher defaults to **4096/1024**, and neither env file said so — so the shipped
-default ran at 4x the batch of the run that validated it. A code review flagged that as a
-verification gap. It was real, and the load check below settled it — but read what it covers
-carefully, because **it is not a verification of what ships today.** What loaded on CT 120
-(CT 123 stopped, thermal guard armed, reverted afterwards) was the *then*-default at 4096/1024;
-the replacement pinned afterwards is 1024/256, and that pair has never been run.
+1024/256**, while the launcher defaults to **4096/1024** — so read what this covers carefully:
+**it is not a verification of what ships today.** What loaded on CT 120 (CT 123 stopped, thermal
+guard armed, reverted afterwards) was the *then*-default at 4096/1024. The replacement pinned
+afterwards is 1024/256, and that pair has never been run.
 
 ```
 --threads 16 --batch-size 4096 --ubatch-size 1024 --n-cpu-moe 16 --tensor-split 30,18 --cache-type-k q8_0
@@ -913,7 +896,7 @@ layer moved off card 2, ~1.5 GiB — and that is **untested**.
 ⚠️ **And 4096/1024 is 2-3x faster at prefill** (173-236 vs 77.2 t/s), which is the binding
 constraint for this model. So the tempting configuration is `-ncmoe 16` + `31,17` + `4096/1024`.
 **Test it before shipping it** — verify both cards' free VRAM *and* GTT, not throughput. Shipping
-an unverified marginal config is the mistake this file already made once.
+an unverified marginal config is how the 877 MiB row above got shipped.
 
 ⚠️ Ignore the d0 prefill figures from that run (4.4-12.8 t/s): those prompts are ~30 tokens, so
 the number is fixed per-request overhead, not throughput. Only the d8k column means anything.
@@ -1039,11 +1022,10 @@ belongs in CognitiveStack `personal/hardware.md` / `large-moe-build-shapes.md`. 
   ~14.1% for the monolithic 16 Gb dies the advertised part would have used. The measured 78.4% of
   theoretical peak is ordinary DDR4 behaviour with nothing anomalous to explain.
 - ⚠️ **None of this changes the qwen4exp findings.** The sweep already showed bandwidth is not
-  the constraint, and one card beating two has no memory path in it. This sentence used to cite
-  "`-ncmoe 48` matches `-ncmoe 34`" as its evidence; it does not — the matched one-card rows are
-  **10.18 vs 13.01 t/s**, that apparent tie compared a one-card `48` against a *two-card* `34`
-  and was a downclocked-governor artifact. Withdrawn; the argument stands on the
-  alternating-device and flat-DIMM evidence instead.
+  the constraint, and one card beating two has no memory path in it — the evidence for that is
+  the alternating-device utilisation and the flat DIMM temperatures. ⚠️ Not `-ncmoe 48` matching
+  `34`: the matched one-card rows are **10.18 vs 13.01 t/s**, and the apparent tie was a one-card
+  `48` compared against a *two-card* `34` under a downclocked governor.
 
 ### ⛔ The 8-stick test could not run
 

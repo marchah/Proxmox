@@ -28,11 +28,10 @@ ARMS="${ARMS:-performance schedutil ondemand powersave}"
 SKIP_IDLE="${SKIP_IDLE:-}"
 
 ORIG=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)
-# 🔴 `local` on these loop variables is load-bearing. Without it they are GLOBAL and clobber
-# the caller's loop variable — the first version of this script used `g` in both the arm loop
-# and inside set_gov, so after the first call `$g` held a sysfs PATH instead of a governor
-# name. The result was a probe filename of ".../sys/devices/.../scaling_governor-r1.json" and
-# a crash, after the idle measurements had already been taken under the right governors.
+# 🔴 `local` on the loop variables below is load-bearing: without it they are GLOBAL and
+# clobber the caller's. Reusing `g` in both the arm loop and set_gov leaves `$g` holding a
+# sysfs PATH instead of a governor name, which surfaces as a probe filename like
+# ".../scaling_governor-r1.json" and a crash — after the measurements were already taken.
 cleanup() {
   local f
   for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo "$ORIG" >"$f" 2>/dev/null || true; done
