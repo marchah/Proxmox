@@ -143,8 +143,14 @@ other and splitting them across repos made one change a two-repo change. Portain
 a git stack from there.
 
 Live at **`http://192.168.1.250:4100`** — a Linear + GitHub board answering "what should I work
-on next?". Holds no state: the snapshot is in memory and rebuilt on the next tick, so there is
-no volume to back up.
+on next?". The board itself holds no state: the snapshot is in memory and rebuilt on the next
+tick, so a restart costs one collection cycle. Its **three-day plan is the exception** and lives
+in the `work-board-plan` volume — nothing can rebuild it, so see [Backups](#backups).
+
+⚠️ That volume must stay **named**, not a bind mount. The container runs as uid 10001, and
+Docker copies an empty named volume's ownership from the image's chowned `/data`; a bind mount
+keeps the host's ownership instead, and the first edit then fails with `cannot be written:
+Permission denied` on the page.
 
 ⚠️ Being a private repo, it needs Portainer credentials **twice** — git, to read the compose,
 and registry, to pull the image — where MealDeal needs neither. Details live in that repo's
@@ -157,12 +163,22 @@ The MealDeal healthcheck queries GraphQL `{__typename}`. An unhealthy deployment
 is visible in Docker and Portainer; rollback requires selecting a known-good
 image tag and redeploying.
 
+work-board's `/healthz` answers 200 once its **first collection has completed**, and
+deliberately not whether Linear or GitHub succeeded — a board correctly reporting that Linear
+is down is a working board, and failing the healthcheck on that would restart-loop the
+container through an outage it exists to display. So a healthy container with a red banner on
+the page is the intended combination, not a broken healthcheck.
+
 ## Backups
 
 Two things matter, and neither is the VM's OS disk (rebuildable by re-running the script):
 
 - **`portainer_data`** — stack definitions, users, settings.
-- **Each app's data volume** — e.g. `mealdeal_mealdeal-data` holds the deal database.
+- **Each app's data volume** — `mealdeal_mealdeal-data` holds the deal database, and
+  `work-board_work-board-plan` holds work-board's three-day plan. Compose prefixes the stack
+  name, so confirm both with the `docker volume ls` below. The plan is the only one of these
+  that no API can regenerate: MealDeal's deals re-scrape, work-board's board rebuilds from
+  Linear and GitHub, but nothing knows which tickets you picked for Wednesday.
 
 ```bash
 # List what exists
