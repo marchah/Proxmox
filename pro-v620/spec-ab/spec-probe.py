@@ -120,6 +120,8 @@ def main() -> int:
     ap.add_argument("--deep-file", required=True)
     ap.add_argument("--depths", default="16000,48000", help="approx tokens")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--mode", choices=["full", "prefill"], default="full",
+                    help="prefill: only cold prefill at --depths, 3 requests each, 16 output tokens")
     a = ap.parse_args()
 
     corpus = open(a.deep_file, encoding="utf-8").read()
@@ -134,6 +136,19 @@ def main() -> int:
 
     # Warm-up: first request after load pays shader/pipeline compilation.
     request("Say hello.", greedy=True)
+
+    if a.mode == "prefill":
+        global MAX_TOKENS
+        MAX_TOKENS = 16
+        for depth in (int(d) for d in a.depths.split(",")):
+            ctx = corpus[: int(depth * 3.3)]
+            for i in range(3):
+                # A distinct leading line per request, so no two share a cached prefix.
+                emit(f"prefill/{depth}/{i}", request(f"[run {a.rep}-{i}]\n" + ctx + "\n\n" + DEEP_Q, greedy=True))
+        with open(a.out, "a", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+        return 0
 
     for cls, p in SHORT.items():
         emit(f"short/{cls}/greedy", request(p, greedy=True))

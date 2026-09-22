@@ -45,6 +45,17 @@ ARMS=(
   "mtp-n4-q8|${MTP}|${Q8} --spec-type draft-mtp --spec-draft-n-max 4"
   "dflash-n6-q8|${BASE}|${Q8} -ctkd q8_0 -ctvd q8_0 --spec-type draft-dflash --model-draft ${DFLASH} --spec-draft-ngl 99 --spec-draft-n-max 6"
 )
+# Prefill isolation: is q8_0's deep-prefill gain the KV type, or relief from the near-full
+# card at 262k? The same KV types at half the context separate the two. An arm's `-c`
+# comes after the global one, and llama-server takes the last value.
+if [ "${ARM_SET:-spec}" = prefill ]; then
+  ARMS=(
+    "f16-262k|${BASE}|"
+    "q8-262k|${BASE}|${Q8}"
+    "f16-131k|${BASE}|-c 131072"
+    "q8-131k|${BASE}|${Q8} -c 131072"
+  )
+fi
 if [ -n "${ONLY:-}" ]; then
   mapfile -t ARMS < <(printf '%s\n' "${ARMS[@]}" | grep -E "^(${ONLY})\|")
 fi
@@ -126,9 +137,10 @@ main() {
         pct exec "$CT" -- journalctl -u llamacpp-ab --no-pager --since "$since" >"${RUN}/${name}-rep${rep}-fail.log" 2>&1 || true
         continue
       fi
-      say "    loaded: $(gpu_state)"
+      say "    loaded: $(gpu_state) n_ctx=$(pct exec "$CT" -- curl -s http://127.0.0.1:1234/props | python3 -c 'import json,sys; print(json.load(sys.stdin)["default_generation_settings"]["n_ctx"])' 2>/dev/null)"
+      # shellcheck disable=SC2086  # PROBE_ARGS is a deliberate word list of flags
       pct exec "$CT" -- python3 "${CTDIR}/spec-probe.py" --arm "$name" --rep "$rep" \
-        --deep-file "${CTDIR}/deep-context.txt" --out "$out" 2>&1 | tee -a "${RUN}/driver.log" \
+        --deep-file "${CTDIR}/deep-context.txt" --out "$out" ${PROBE_ARGS:-} 2>&1 | tee -a "${RUN}/driver.log" \
         || say "    🔴 probe failed"
       say "    after: $(gpu_state)"
       pct exec "$CT" -- journalctl -u llamacpp-ab --no-pager -o cat --since "$since" >"${RUN}/${name}-rep${rep}.log" 2>&1 || true

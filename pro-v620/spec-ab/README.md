@@ -8,7 +8,7 @@ is used with its MTP head kept.
 | File | Role |
 | --- | --- |
 | `run-ab.sh` | Host driver. Stops `llamacpp`, loads each arm as a transient `llamacpp-ab` unit with the production flags plus the arm's, runs the probe, rotates arm order every repetition and restores production on exit. |
-| `spec-probe.py` | One measurement pass inside CT 120; one JSONL row per request. |
+| `spec-probe.py` | One measurement pass inside CT 120; one JSONL row per request. `--mode prefill` measures cold prefill only. |
 | `summarize.py` | Markdown tables from the JSONL: decode, c2 total, deep prefill, acceptance and correctness. |
 
 Run it with `qwen38-flash-next/thermal-guard.sh` active as `spec-ab-guard`. The
@@ -69,10 +69,32 @@ Reading:
 - **Draft length 3 is the best overall.** Draft length 2 is marginally ahead on prose. Draft length 4, and DFlash more so, lose badly with two concurrent streams: at two slots the verify batches compete.
 - **DFlash is rejected.** Its drafter KV grows with `-c` because this build does not use the drafter's sliding window, so it still spills 2.8 GiB into GTT at 262k even with q8_0 drafter KV. It is fastest only on short single-stream JSON.
 - **f16 KV cannot host MTP at 262k.** A smoke load spilled 2.0 GiB into GTT and decoded at 59.9 t/s on the code prompt, against 78 without speculation. At 147k (2×73,728) f16 fits and decodes at 128–138 t/s. q8_0 KV is what makes MTP fit at full context.
-- **Plain q8_0 KV doubled 48k prefill** (527 → 1,085 t/s) and changed decode by about ±2%. The prefill gain was not isolated further. MTP gives back about 15% of that prefill, but still ends +32% at 16k and +74% at 48k over `base`.
+- **Plain q8_0 KV doubled 48k prefill** (527 → 1,085 t/s) and changed decode by about ±2%. MTP gives back about 15% of that prefill, but still ends +32% at 16k and +74% at 48k over `base`. The gain comes from the KV type, not the context size; see below.
 - **Acceptance** over all cells, sampled and deep ones included, was 79% (n2), 72% (n3), 64% (n4) and 46% (DFlash). For a greedy code prompt, n3 accepts 94%.
 
 Correctness:
 - Every arm returned a valid `get_weather` call on all 3 repetitions. No cell repeated itself (distinct 4-gram ratio ≥ 0.5), and no think tags appeared.
 - Each arm's greedy output was identical across its 3 repetitions. JSON output was identical across all arms.
 - Code and prose diverge at near-tie wording. Plain q8_0 differs from f16 from character 55 of the code answer ("TTL support" vs "TTL (Time-To-Live)"). MTP differs from plain q8_0 from character 430 of code and 626 of prose ("_CacheEntry" vs "CacheEntry", "Delivery Driver" vs "Driver"). The KV-type change moves output more than speculation does.
+
+## Prefill isolation — 2026-09-22
+
+Why does q8_0 KV speed up deep prefill? One possibility was relief from the near-full
+card: f16 at 262k leaves ~140 MiB of VRAM free. The test ran the same KV types at half
+the context: `ARM_SET=prefill PROBE_ARGS="--mode prefill --depths 4000,16000,48000"`.
+The model was the MTP-less base model with no speculation. Each depth had 3 cold
+requests per load (the first 4k request after warm-up dropped), across 3 interleaved
+repetitions.
+
+| Prefill t/s (median) | f16 @262k | q8_0 @262k | f16 @131k | q8_0 @131k |
+| --- | ---: | ---: | ---: | ---: |
+| 4k | 1,628 | 1,758 | 1,639 | 1,742 |
+| 16k | 1,029 | 1,531 | 1,029 | 1,531 |
+| 48k | 527 | 1,083 | 527 | 1,083 |
+
+Context allocation makes no difference, so this is not memory pressure. With f16 K/V,
+prefill falls off much faster with depth. The q8_0 gain grows from +7% at 4k to +49%
+at 16k and +106% at 48k. The spread across repetitions is under 2%. This
+applies to this build (b11018) and RDNA2's Vulkan flash-attention path; re-measure after
+a llama.cpp bump before dropping q8_0 for quality reasons.
+
