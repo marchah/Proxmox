@@ -27,19 +27,28 @@ with a pinned llama.cpp Vulkan release and a checksum-verified model.
 | Setting | Shipped value |
 | --- | --- |
 | Engine | llama.cpp `b11018`, prebuilt Vulkan x64 |
-| Model | `unsloth/Qwen3.6-35B-A3B-GGUF`, `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` |
+| Model | `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`, `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MTP head kept) |
 | Alias | `qwen3.6-35b-a3b` |
 | GPU | `0000:03:00.0`, all layers offloaded |
 | Context / parallel slots | `262144` / `2` (131072 tokens per slot) |
 | Attention / batch / ubatch | `on` / `4096` / `1024` |
+| KV cache | `q8_0` K and V |
+| Speculative decoding | `--spec-type draft-mtp --spec-draft-n-max 3` (the model's own MTP head) |
 | Reasoning / format | `off` / `auto` |
 | API | `0.0.0.0:1234` |
 | Container RAM / model storage | 16384 MB / `/models` mount, `backup=0` |
 
-This MoE has 35B total parameters and about 3B active per token. Its ~26.6 GB
-weights fit one card. At the 256k context ceiling, a recorded load used about
-29.8 GiB of 30704 MiB exposed VRAM, leaving little transient headroom. Check
-free VRAM and GTT after changing context, batches or the binary.
+This MoE has 35B total parameters and about 3B active per token. Its ~27.2 GB
+weights, including the MTP head, fit one card. At the 256k context ceiling, a
+recorded load used about 30.0 GiB of 30704 MiB exposed VRAM plus ~650 MiB GTT after
+a request, leaving little transient headroom. With f16 KV the same load spills
+~2 GiB to GTT and decodes slower than without speculation. Check free VRAM and GTT
+after changing context, KV type, batches or the binary.
+
+The MTP head and q8_0 KV measured +49–77% single-stream decode on code, JSON and
+tool calls, +17% on prose, +35–39% at 16k–48k depth, and +2–38% combined across
+two concurrent streams. The A/B, its controls and the rejected arms (draft length 4,
+DFlash) are in [spec-ab/](spec-ab/README.md).
 
 Run from this directory on the Proxmox host as root, using an unused VMID:
 

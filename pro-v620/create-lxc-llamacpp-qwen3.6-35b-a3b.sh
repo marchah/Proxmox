@@ -22,26 +22,31 @@ readonly LLAMACPP_RELEASE_TAG="b11018"
 readonly LLAMACPP_ASSET="llama-${LLAMACPP_RELEASE_TAG}-bin-ubuntu-vulkan-x64.tar.gz"
 readonly LLAMACPP_ASSET_URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMACPP_RELEASE_TAG}/${LLAMACPP_ASSET}"
 readonly LLAMACPP_SHA256="d5ae7502b5a312788df5a74bb47df00b97fdaa45c763f00c7f8909cd7cd6e105"
-# Single-file Q5 model, ~26.6 GB of weights.
-readonly MODEL_REPO="unsloth/Qwen3.6-35B-A3B-GGUF"
+# Single-file Q5 model with the MTP head kept (block 40, nextn_predict_layers 1),
+# ~27.2 GB of weights. The head drives speculative decoding (see llamacpp-serve).
+# The file name matches unsloth/Qwen3.6-35B-A3B-GGUF's MTP-less file, so it is stored
+# under a per-repo directory (MODEL_PATH below) to keep the two apart.
+readonly MODEL_REPO="unsloth/Qwen3.6-35B-A3B-MTP-GGUF"
 readonly MODEL_FILE="Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf"
-readonly MODEL_SHA256="25233af7642e3a91bd52cc4aeefdbd4a117479088e06cf1aea5b6bedb443c506"
+readonly MODEL_SHA256="9de9a9420f61a0bb59bb2ca1ea170a6a57f6821fa1deec915bcaef523730a919"
 # Pin the HF repo revision so a publisher update to `main` can't change the file
 # under us (the SHA-256 check would then fail and abort a fresh install). Bump
 # alongside MODEL_FILE/MODEL_SHA256, from
-# https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/commits/main
-readonly MODEL_REVISION="a483e9e6cbd595906af30beda3187c2663a1118c"
+# https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/commits/main
+readonly MODEL_REVISION="5bc3e238d916f48a861bac2f8a1990a0e9b7e98d"
 # Served via llama-server --alias, so /v1/models reports this stable id instead of
 # the model file path. The bench-runner auto-detects it from /v1/models; the
 # ansible/host benchmark tooling pins model_key to this. NOTE: this id is
 # client-facing — OpenAI requests must set "model" to it. See pro-v620/README.md.
 readonly MODEL_ALIAS="qwen3.6-35b-a3b"
-# 256k total context, 128k per slot at parallel=2. Recorded VRAM use is ~29.8 GiB
-# of 30704 MiB exposed; verify free VRAM and GTT when changing the workload/build.
+# 256k total context, 128k per slot at parallel=2. Recorded use with q8_0 KV and MTP
+# is ~30.0 GiB VRAM of 30704 MiB exposed plus ~650 MiB GTT after a request (f16 KV
+# spills ~2 GiB to GTT and loses to no speculation). Verify free VRAM and GTT
+# together when changing the workload, KV type or build.
 # Adjust with llamacpp-reload <context-length> <parallel>.
 readonly MODEL_CONTEXT_LENGTH="262144"
 # -ngl 99 offloads every layer (including all MoE experts) to the GPU; the whole
-# ~26.6 GB model fits in the V620's 32 GB (the llama.cpp equivalent of LM Studio's
+# ~27.2 GB model fits in the V620's 32 GB (the llama.cpp equivalent of LM Studio's
 # --gpu max).
 readonly MODEL_GPU_LAYERS="99"
 # Two slots is the verified production default with thinking disabled.
@@ -332,7 +337,8 @@ MODEL_REVISION="${13}"
 
 LLAMACPP_BASE=/opt/llamacpp
 LLAMACPP_DIR="${LLAMACPP_BASE}/llama-${LLAMACPP_RELEASE_TAG}"
-MODEL_PATH="/models/hf/${MODEL_FILE}"
+MODEL_DIR="/models/hf/${MODEL_REPO#*/}"
+MODEL_PATH="${MODEL_DIR}/${MODEL_FILE}"
 
 # 1. Download + verify + extract the pinned Vulkan llama.cpp release. The
 # tarball unpacks to a flat llama-<tag>/ dir (llama-server next to its .so
@@ -355,7 +361,7 @@ if [[ ! -x /home/llamacpp/.venv/bin/hf ]]; then
 fi
 if [[ ! -f "${MODEL_PATH}" ]]; then
   sudo -u llamacpp /home/llamacpp/.venv/bin/hf download "${MODEL_REPO}" "${MODEL_FILE}" \
-    --revision "${MODEL_REVISION}" --local-dir /models/hf
+    --revision "${MODEL_REVISION}" --local-dir "${MODEL_DIR}"
 fi
 printf '%s  %s\n' "${MODEL_SHA256}" "${MODEL_PATH}" | sha256sum --check -
 
@@ -382,6 +388,10 @@ EOF
 # --cache-ram 0 disables cross-slot prompt caching after corruption on b10152;
 # within-conversation slot KV reuse remains available. Revalidate before enabling.
 # --metrics feeds the persistent token collector in CT 121; counters reset on restart.
+# -ctk/-ctv q8_0 halves the full-attention KV so the MTP head fits at 262k without
+# spilling to GTT; it also doubled 48k-deep prefill here. --spec-type draft-mtp uses
+# the model's own MTP head, drafting 3 tokens (n-max 4 and a DFlash drafter lost at
+# two concurrent streams). Measurements: pro-v620/spec-ab/README.md.
 cat >/usr/local/bin/llamacpp-serve <<'EOS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -417,6 +427,10 @@ exec "${LLAMACPP_DIR}/llama-server" \
   --reasoning-format auto \
   --reasoning off \
   --cache-ram 0 \
+  --cache-type-k q8_0 \
+  --cache-type-v q8_0 \
+  --spec-type draft-mtp \
+  --spec-draft-n-max 3 \
   --metrics \
   --alias "${MODEL_ALIAS}"
 EOS
