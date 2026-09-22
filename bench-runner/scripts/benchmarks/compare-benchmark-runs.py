@@ -45,6 +45,10 @@ def get_metric(summary: dict[str, Any], metric: str) -> float | int | None:
         return summary.get("latency_total_seconds", {}).get("p95")
     if metric == "ttft_p95":
         return summary.get("ttft_seconds", {}).get("p95")
+    if metric == "prefill_median":
+        return summary.get("prefill_tokens_per_second", {}).get("median")
+    if metric == "decode_median":
+        return summary.get("decode_tokens_per_second", {}).get("median")
     return None
 
 
@@ -73,7 +77,10 @@ def main() -> int:
     candidate = Path(args.candidate)
     base = summaries(baseline)
     cand = summaries(candidate)
-    metrics = ["ok_count", "error_count", "wall_seconds", "throughput", "latency_p95", "ttft_p95"]
+    metrics = [
+        "ok_count", "error_count", "wall_seconds", "throughput",
+        "prefill_median", "decode_median", "latency_p95", "ttft_p95",
+    ]
     lines = [
         f"# Benchmark Comparison",
         "",

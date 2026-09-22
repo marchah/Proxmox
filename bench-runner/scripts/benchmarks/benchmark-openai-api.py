@@ -174,6 +174,68 @@ def parse_stream_line(line: bytes) -> dict[str, Any] | None:
         return {"parse_error": payload.decode("utf-8", errors="replace")}
 
 
+def token_rates(
+    *,
+    timings: dict[str, Any] | None,
+    prompt_tokens: int | None,
+    output_tokens: int,
+    started: float,
+    first_token_at: float | None,
+    finished: float,
+    stream: bool,
+) -> dict[str, Any]:
+    """Prefill (pp) and decode (tg) rates for one request, kept apart.
+
+    `output_tokens_per_second` divides by the whole request, so a long prompt reads
+    as slow decode. llama-server reports both phases in `timings`; prefer those.
+    Otherwise estimate from a stream: pp = prompt tokens / TTFT, tg = tokens after
+    the first / time after the first. The client estimate includes network and
+    queueing, so `rate_source` records which one a row holds.
+    """
+    if timings and timings.get("predicted_per_second") is not None:
+        return {
+            "rate_source": "server",
+            "prefill_tokens": timings.get("prompt_n"),
+            "prefill_cached_tokens": timings.get("cache_n"),
+            "prefill_tokens_per_second": timings.get("prompt_per_second"),
+            "decode_tokens_per_second": timings.get("predicted_per_second"),
+            "draft_tokens": timings.get("draft_n"),
+            "draft_accepted_tokens": timings.get("draft_n_accepted"),
+        }
+    rates: dict[str, Any] = {
+        "rate_source": None,
+        "prefill_tokens": prompt_tokens,
+        "prefill_cached_tokens": None,
+        "prefill_tokens_per_second": None,
+        "decode_tokens_per_second": None,
+        "draft_tokens": None,
+        "draft_accepted_tokens": None,
+    }
+    if stream and first_token_at is not None:
+        rates["rate_source"] = "client"
+        ttft = first_token_at - started
+        if prompt_tokens and ttft > 0:
+            rates["prefill_tokens_per_second"] = prompt_tokens / ttft
+        decode_seconds = finished - first_token_at
+        if output_tokens > 1 and decode_seconds > 0:
+            rates["decode_tokens_per_second"] = (output_tokens - 1) / decode_seconds
+    return rates
+
+
+def phase_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """pp / tg stats for a set of ok records. Only compare pp between scenarios
+    with the same prompt length: prefill rate rises with batch size."""
+    return {
+        "prefill_tokens_per_second": stats(
+            [r["prefill_tokens_per_second"] for r in records if r.get("prefill_tokens_per_second") is not None]
+        ),
+        "decode_tokens_per_second": stats(
+            [r["decode_tokens_per_second"] for r in records if r.get("decode_tokens_per_second") is not None]
+        ),
+        "rate_sources": sorted({r["rate_source"] for r in records if r.get("rate_source")}),
+    }
+
+
 def request_chat(
     *,
     endpoint: str,
@@ -212,6 +274,7 @@ def request_chat(
     first_token_at: float | None = None
     output_parts: list[str] = []
     usage: dict[str, Any] | None = None
+    timings: dict[str, Any] | None = None
     status = "ok"
     error: str | None = None
     http_status: int | None = None
@@ -228,6 +291,8 @@ def request_chat(
                         break
                     if "usage" in event and event["usage"]:
                         usage = event["usage"]
+                    if event.get("timings"):
+                        timings = event["timings"]
                     for choice in event.get("choices", []):
                         delta = choice.get("delta", {})
                         content = delta.get("content")
@@ -238,6 +303,7 @@ def request_chat(
             else:
                 payload = json.loads(response.read().decode("utf-8"))
                 usage = payload.get("usage")
+                timings = payload.get("timings")
                 for choice in payload.get("choices", []):
                     content = choice.get("message", {}).get("content", "")
                     if content:
@@ -261,6 +327,15 @@ def request_chat(
     estimated_output_tokens = max(1, round(len(output_text.split()) * 1.25)) if output_text else 0
     output_tokens = completion_tokens or estimated_output_tokens
     total_seconds = finished - started
+    rates = token_rates(
+        timings=timings,
+        prompt_tokens=prompt_tokens,
+        output_tokens=output_tokens,
+        started=started,
+        first_token_at=first_token_at,
+        finished=finished,
+        stream=stream,
+    )
 
     # A 200 with garbage (the cold-prefill cliff) or output missing required
     # content is not a successful request — demote it so it lands in error_count
@@ -299,7 +374,9 @@ def request_chat(
         "latency_total_seconds": total_seconds,
         "ttft_seconds": (first_token_at - started) if first_token_at is not None else None,
         "output_tokens_per_second": (output_tokens / total_seconds) if total_seconds > 0 else None,
+        **rates,
         "usage": usage,
+        "timings": timings,
         "output_preview": output_text[:500],
     }
 
@@ -320,6 +397,7 @@ def summarize(records: list[dict[str, Any]], started_at: float, finished_at: flo
         "per_request_output_tokens_per_second": stats(
             [r["output_tokens_per_second"] for r in ok if r["output_tokens_per_second"] is not None]
         ),
+        **phase_stats(ok),
         "by_scenario": {
             scenario: {
                 "count": len([r for r in ok if r["scenario"] == scenario]),
@@ -333,6 +411,7 @@ def summarize(records: list[dict[str, Any]], started_at: float, finished_at: flo
                         if r["scenario"] == scenario and r["ttft_seconds"] is not None
                     ]
                 ),
+                **phase_stats([r for r in ok if r["scenario"] == scenario]),
             }
             for scenario in sorted({r["scenario"] for r in records})
         },

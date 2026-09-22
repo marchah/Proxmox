@@ -27,6 +27,9 @@ def print_openai(run_dir: Path) -> None:
         print(f"  wall={data.get('wall_seconds'):.2f}s aggregate_out_tok_s={data.get('aggregate_output_tokens_per_second'):.2f}")
         print(f"  latency_mean={latency.get('mean')} p95={latency.get('p95')}")
         print(f"  ttft_mean={ttft.get('mean')} p95={ttft.get('p95')}")
+        pp = data.get("prefill_tokens_per_second", {})
+        tg = data.get("decode_tokens_per_second", {})
+        print(f"  pp_median_tok_s={pp.get('median')} tg_median_tok_s={tg.get('median')} source={data.get('rate_sources')}")
 
 
 def main() -> int:

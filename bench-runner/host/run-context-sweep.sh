@@ -22,7 +22,7 @@ MODEL_PARALLEL="${MODEL_PARALLEL:-1}"
 # CT 120 through small per-point contexts; an EXIT trap reloads it back to this so a
 # direct run (or an aborted/interrupted one) never leaves the model at a tiny context.
 RESTORE_CONTEXT="${RESTORE_CONTEXT:-262144}"
-RESTORE_PARALLEL="${RESTORE_PARALLEL:-4}"
+RESTORE_PARALLEL="${RESTORE_PARALLEL:-2}"
 CONTEXTS="${CONTEXTS:-4096 16384 32768 65536}"
 BENCHMARK_REQUESTS="${BENCHMARK_REQUESTS:-5}"
 RELOAD_SETTLE_SECONDS="${RELOAD_SETTLE_SECONDS:-8}"
@@ -41,7 +41,7 @@ Env overrides:
   MODEL_KEY=qwen3.6-35b-a3b     Model identifier (results label).
   MODEL_PARALLEL=1              Parallel slots used at each reload.
   RESTORE_CONTEXT=262144        Context to restore CT 120 to when the sweep ends.
-  RESTORE_PARALLEL=4            Parallel slots to restore CT 120 to when the sweep ends.
+  RESTORE_PARALLEL=2            Parallel slots to restore CT 120 to when the sweep ends.
   CONTEXTS="4096 16384 32768 65536"
   BENCHMARK_REQUESTS=5          Requests per context point.
   OUT_DIR=./context-sweep       Output directory.
@@ -112,7 +112,9 @@ gpu = host.get("gpu", {})
 print(
     f"| {context} | {fmt(gpu.get('max_vram_used_mib'))} | {fmt(gpu.get('max_vram_used_ratio'))} | "
     f"{fmt(gpu.get('max_busy_percent'))} | {fmt(ttft.get('p95'))} | {fmt(latency.get('p95'))} | "
-    f"{fmt(openai.get('aggregate_output_tokens_per_second'))} |"
+    f"{fmt(openai.get('aggregate_output_tokens_per_second'))} | "
+    f"{fmt(openai.get('prefill_tokens_per_second', {}).get('median'))} | "
+    f"{fmt(openai.get('decode_tokens_per_second', {}).get('median'))} |"
 )
 PY
 }
@@ -156,8 +158,8 @@ main() {
     # shellcheck disable=SC2016  # backticks are literal markdown; %s are printf args
     printf -- '- Model: `%s` on CT %s, benched from CT %s\n' "${MODEL_KEY}" "${GPU_VMID}" "${BENCH_VMID}"
     printf -- '- Requests per point: %s\n\n' "${BENCHMARK_REQUESTS}"
-    printf '| Context | VRAM used (MiB) | VRAM ratio | GPU util %% | TTFT p95 (s) | Latency p95 (s) | tok/s |\n'
-    printf '| ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n'
+    printf '| Context | VRAM used (MiB) | VRAM ratio | GPU util %% | TTFT p95 (s) | Latency p95 (s) | tok/s | pp p50 tok/s | tg p50 tok/s |\n'
+    printf '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n'
   } >"${report}"
 
   for context in ${CONTEXTS}; do

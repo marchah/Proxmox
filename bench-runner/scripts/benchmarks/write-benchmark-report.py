@@ -474,6 +474,10 @@ def benchmark_rows(run_dir: Path) -> list[dict[str, Any]]:
                     "latency_p95": latency.get("p95"),
                     "ttft_mean": ttft.get("mean"),
                     "ttft_p95": ttft.get("p95"),
+                    "prefill_median": data.get("prefill_tokens_per_second", {}).get("median"),
+                    "decode_median": data.get("decode_tokens_per_second", {}).get("median"),
+                    "rate_sources": data.get("rate_sources", []),
+                    "by_scenario": data.get("by_scenario", {}),
                     "status": status,
                     "telemetry": telemetry,
                 }
@@ -490,11 +494,41 @@ def benchmark_rows(run_dir: Path) -> list[dict[str, Any]]:
                     "latency_p95": None,
                     "ttft_mean": None,
                     "ttft_p95": None,
+                    "prefill_median": None,
+                    "decode_median": None,
+                    "rate_sources": [],
+                    "by_scenario": {},
                     "status": status,
                     "telemetry": telemetry,
                 }
             )
     return rows
+
+
+def render_phase_table(rows: list[dict[str, Any]]) -> list[str]:
+    scenario_rows = [
+        (row["name"], name, data, row["rate_sources"])
+        for row in rows
+        for name, data in sorted(row.get("by_scenario", {}).items())
+        if data.get("decode_tokens_per_second", {}).get("median") is not None
+    ]
+    if not scenario_rows:
+        return []
+    lines = [
+        "",
+        "### Prefill and decode by scenario",
+        "",
+        "| Benchmark | Scenario | OK | pp tok/s median | pp tok/s min | tg tok/s median | tg tok/s min | Source |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for benchmark, scenario, data, sources in scenario_rows:
+        pp = data.get("prefill_tokens_per_second", {})
+        tg = data.get("decode_tokens_per_second", {})
+        lines.append(
+            f"| {benchmark} | {scenario} | {data.get('count')} | {fmt(pp.get('median'))} | {fmt(pp.get('min'))} | "
+            f"{fmt(tg.get('median'))} | {fmt(tg.get('min'))} | {', '.join(data.get('rate_sources') or sources) or 'n/a'} |"
+        )
+    return lines
 
 
 def infer_limits(rows: list[dict[str, Any]]) -> list[str]:
@@ -625,8 +659,8 @@ def render_report(run_dir: Path, description: str) -> str:
     if rows:
         lines.extend(
             [
-                "| Benchmark | Type | OK | Wall seconds | Output tok/s | Mean latency | p95 latency | Mean TTFT | p95 TTFT |",
-                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+                "| Benchmark | Type | OK | Wall seconds | Output tok/s | Median pp tok/s | Median tg tok/s | Mean latency | p95 latency | Mean TTFT | p95 TTFT |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
         for row in rows:
@@ -639,6 +673,8 @@ def render_report(run_dir: Path, description: str) -> str:
                         row["ok"],
                         fmt(row["wall_seconds"]),
                         fmt(row["throughput"]),
+                        fmt(row["prefill_median"]),
+                        fmt(row["decode_median"]),
                         fmt(row["latency_mean"]),
                         fmt(row["latency_p95"]),
                         fmt(row["ttft_mean"]),
@@ -647,6 +683,15 @@ def render_report(run_dir: Path, description: str) -> str:
                 )
                 + " |"
             )
+        lines.extend(
+            [
+                "",
+                "Output tok/s is aggregate output over wall time, so it mixes prefill, decode and queueing.",
+                "pp (prefill) and tg (decode) are per-request medians, kept apart; pp is only comparable",
+                "between rows at the same prompt length.",
+            ]
+        )
+        lines.extend(render_phase_table(rows))
     else:
         lines.append("No benchmark summaries were found in this run directory.")
 
