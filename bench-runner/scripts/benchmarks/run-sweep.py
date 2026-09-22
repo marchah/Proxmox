@@ -80,6 +80,8 @@ def run_point(args: argparse.Namespace, point: int) -> dict[str, Any] | None:
         "latency_p95_s": latency.get("p95"),
         "ttft_p50_s": ttft.get("median"),
         "ttft_p95_s": ttft.get("p95"),
+        "prefill_p50_tok_s": summary.get("prefill_tokens_per_second", {}).get("median"),
+        "decode_p50_tok_s": summary.get("decode_tokens_per_second", {}).get("median"),
     }
 
 
@@ -131,13 +133,14 @@ def render_markdown(args: argparse.Namespace, rows: list[dict[str, Any]], notes:
         f"- Model: `{args.model}`",
         f"- {fixed}",
         "",
-        f"| {point_col} | OK | Aggregate tok/s | Latency p50 (s) | Latency p95 (s) | TTFT p50 (s) | TTFT p95 (s) |",
-        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        f"| {point_col} | OK | Aggregate tok/s | pp p50 tok/s | tg p50 tok/s | Latency p50 (s) | Latency p95 (s) | TTFT p50 (s) | TTFT p95 (s) |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
             f"| {row[point_key]} | {fmt(row.get('ok'))}/{fmt(row.get('total'))} | "
-            f"{fmt(row.get('throughput_tok_s'))} | {fmt(row.get('latency_p50_s'))} | "
+            f"{fmt(row.get('throughput_tok_s'))} | {fmt(row.get('prefill_p50_tok_s'))} | "
+            f"{fmt(row.get('decode_p50_tok_s'))} | {fmt(row.get('latency_p50_s'))} | "
             f"{fmt(row.get('latency_p95_s'))} | {fmt(row.get('ttft_p50_s'))} | {fmt(row.get('ttft_p95_s'))} |"
         )
     if notes:

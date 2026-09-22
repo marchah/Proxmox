@@ -127,7 +127,8 @@ See `BENCHMARKS.md` for details.
 
 ## Metrics Scope
 
-This runner records request latency, TTFT, and throughput (client side) **and**
+This runner records request latency, TTFT, throughput, and prefill (pp) and decode (tg)
+rates kept apart (from llama-server `timings`; see `BENCHMARKS.md`) **and**
 GPU telemetry — utilization, VRAM, core clocks, and temperatures — because
 `system-sampler.py` reads the Proxmox host's `/sys/class/drm` and hwmon even from
 this unprivileged LXC. A baseline run captured 99% GPU util, 7.24 GiB VRAM, and a

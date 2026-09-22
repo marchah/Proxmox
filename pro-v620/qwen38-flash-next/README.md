@@ -59,6 +59,12 @@ The cutover restarts CT 120, gives it both cards, stops CT 123 and clears CT 123
 The watchdog map changes with the owning service. **Never give both containers
 the same card**, including through automatic startup after a reboot.
 
+The cutover does not touch Hermes. CT 121's `/root/.hermes/config.yaml` names the
+served model in `model.default` and the five `auxiliary.*.model` pins. Set all six
+to the new alias in both directions, then restart `hermes`. llama-server ignores the
+request's `model` field, so a stale id still gets answers. It only shows up as the
+wrong model name in session and usage records.
+
 The model service and container keep swap disabled. The CPU expert weights and
 PLE table must stay resident. Recorded load times were 2m38s from cold SATA page
 cache and 40–46s warm; tensor placement changes require a full reload.

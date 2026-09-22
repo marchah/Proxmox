@@ -36,6 +36,28 @@ Each benchmark target gets its own directory with:
 - `status.json` - exit code and completion status.
 - Benchmark-specific request JSONL and summary JSON.
 
+### Prefill and decode rates
+
+`output_tokens_per_second` and `aggregate_output_tokens_per_second` divide output
+tokens by the whole request or run, so prefill, decode and queueing are mixed into
+one number. Each request row also records the two phases separately:
+
+| Field | Meaning |
+| --- | --- |
+| `prefill_tokens_per_second` | pp: prompt tokens processed per second |
+| `decode_tokens_per_second` | tg: generated tokens per second after the first |
+| `prefill_tokens`, `prefill_cached_tokens` | tokens prefilled, and prompt tokens served from the slot cache |
+| `draft_tokens`, `draft_accepted_tokens` | speculative drafts proposed and accepted (null without speculation) |
+| `rate_source` | `server` = llama-server `timings`; `client` = estimate from a stream |
+| `timings` | the raw llama-server `timings` object |
+
+The `client` estimate (pp = prompt tokens / TTFT, tg = tokens after the first / time
+after the first) includes network and queueing time. Don't compare it with `server` rows.
+Summaries carry `prefill_tokens_per_second` / `decode_tokens_per_second` stats
+overall and per scenario. Compare pp only between scenarios with the same prompt
+length: prefill speeds up with batch size. `REPORT.md`, the sweeps and
+`compare-benchmark-runs.py` show the medians.
+
 When a run is launched through the Ansible batch (or wrapped manually with
 `host/run-with-target-telemetry.sh`), the run folder also gets:
 

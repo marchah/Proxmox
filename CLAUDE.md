@@ -76,6 +76,10 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
 - Both servers use `--reasoning off --reasoning-format auto`. The first disables
   thinking; the second removes empty think tags from response content. Revalidate
   response content and tool calls when changing these flags or the KV cache type.
+- CT 120 runs its model's MTP head (`--spec-type draft-mtp --spec-draft-n-max 3`) with
+  q8_0 KV. Keep q8_0: at 262k, f16 KV spills ~2 GiB to GTT and decodes slower than no
+  speculation. Measure a spec change at two concurrent streams too, not just one; see
+  `pro-v620/spec-ab/`.
 - [gpu-blower-control/](pro-v620/gpu-blower-control/README.md) drives FAN4/FAN5 via
   IPMI; [undervolt/](pro-v620/undervolt/README.md) applies −100 mV to both cards.
   Confirm physical fan pairing after rewiring. The BMC manages CPU/DIMM cooling.
