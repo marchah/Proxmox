@@ -133,78 +133,30 @@ Run endpoint benchmarks from the repo root with `make bench`; see
 [Ansible](../ansible/README.md) for runtime/context defaults. Results land in
 `pro-v620/results/llamacpp/parallel-<n>/`.
 
-The measurements below use Qwen3.6-35B-A3B Q5, llama.cpp **b9835**, Vulkan,
-**64k total context and four slots**, on the prior B550 platform. They document
-the original tuning; remeasure capacity on the current host/build. The baseline
-single-stream run measured 83.1 tok/s and 0.27 s p95 TTFT; the soak at concurrency
-two sustained 106.7 tok/s with no errors.
+Current serving numbers are from the 2026-09-22 A/B in [spec-ab/](spec-ab/README.md):
+b11018, the shipped flags (MTP head, q8_0 KV, 262k context, two slots), −100 mV,
+`schedutil`, 512 output tokens, medians of 3 interleaved repetitions.
 
-**Concurrency** (cold ~512-in / 128-out, 32 req/point):
+| Workload | Without MTP (f16 KV) | Shipped |
+| --- | ---: | ---: |
+| One stream: code / JSON / tool call, t/s | 78 / 79 / 77 | 117 / 136 / 137 |
+| One stream: prose, t/s | 78 | 92 |
+| One stream at 16k / 48k depth, t/s | 71 / 64 | 99 / 87 |
+| Two streams, total t/s: code / JSON / prose | 115 / 115 / 115 | 140 / 159 / 117 |
+| Cold prefill at 16k / 48k, t/s | 1,020 / 527 | 1,346 / 917 |
 
-| Concurrency | OK | Aggregate tok/s | p95 latency | p95 TTFT |
-| ---: | ---: | ---: | ---: | ---: |
-| 1 | 32/32 | 64.6 | 2.2 s | 0.70 s |
-| 2 | 32/32 | 95.7 | 2.7 s | 0.88 s |
-| 4 | 32/32 | **127.9** | 4.1 s | 1.67 s |
-| 8 | 32/32 | 127.9 | 8.0 s | 5.67 s |
-| 16 | 32/32 | 126.8 | 16.3 s | 13.85 s |
+Gains are largest on predictable output (code, JSON, tool calls) and smallest on
+free prose. Four slots and concurrency above two have not been measured on this
+configuration.
 
-Saturation knee at concurrency 4 (~128 tok/s aggregate); past it throughput is
-flat while tail latency grows linearly.
+### Flash attention and batch size
 
-**Prefill / TTFT vs input length** (cold, concurrency 1, 32 output):
-
-| Input tokens | OK | Aggregate tok/s | p95 TTFT | Notes |
-| ---: | ---: | ---: | ---: | --- |
-| 128 | 8/8 | 50.0 | 0.30 s | |
-| 512 | 8/8 | 38.3 | 0.48 s | |
-| 2,048 | 8/8 | 19.5 | 1.35 s | |
-| 8,192 | 8/8 | 5.4 | 5.56 s | prefill-bound |
-| 32,768 | 0/8 | — | — | exceeds the 16k per-slot context (64k ÷ 4) |
-
-The 32,768 point is a hard rejection (input > per-slot context at `--parallel 4`),
-**not** corruption — drop to `--parallel 1` for single prompts beyond 16k.
-
-**Soak** (~6 min, concurrency 2): 106.7 tok/s sustained, 0 errors, coherent.
-
-(The tables above are the initial run; the tuned `--flash-attn on --batch-size 4096
---ubatch-size 1024` flags — now the serve default — add ~3% on top, see below.)
-
-### Tuning (flash attention + batch size)
-
-An `off` / `on` / `on+batch` sweep (baseline + concurrency + prefill, `--parallel 4`)
-selected the serve defaults. Aggregate tok/s:
-
-| Concurrency | `-fa off` | `-fa on` | `-fa on` + `-ub 1024 -b 4096` |
-| ---: | ---: | ---: | ---: |
-| 1 | 58.4 | 66.0 | 67.4 |
-| 2 | 80.2 | 96.0 | 97.2 |
-| 4 | 101.8 | 128.4 | **132.7** |
-| 8 | 99.5 | 126.6 | 130.9 |
-
-- **Flash attention** is the big lever: **+26% at c4** vs off, plus +4.5% single-stream,
-  ~−40% TTFT, and −0.5 GiB VRAM. (`-fa`'s default `auto` already enables it on this
-  model/backend; we pin `on` for determinism.)
-- **`-ub 1024 -b 4096`** adds the last ~3% at the knee (and +2–7% on 512–2048 prefills)
-  for negligible VRAM.
-- Trade-off: on a single >8k **cold** prefill, FA is marginally slower (8192-token TTFT
-  ~5.0 s → ~5.5 s) — irrelevant for the concurrent/agent serving this card does.
-
-
-
-### Multi-agent capacity (4 × 32k)
-
-Tested 4 concurrent requests, each ~30k **cold** input + 512 output, at `131072/4`:
-**8/8 succeeded, 0 errors, 23.2 GiB VRAM** — four 32k contexts coexist with ~9 GiB
-to spare. Two performance realities:
-
-- **Decode slows with context length.** At ~30k context, ~6 tok/s **per agent**
-  (~23 tok/s aggregate) vs ~33 tok/s/agent at 512 tokens — attention over a large
-  KV cache, ×4 slots. The aggregate is a shared ceiling; more agents ⇒ proportionally
-  slower each.
-- **Cold prefill is the pain point.** Four simultaneous *fresh* 30k prompts take
-  **70–150 s to first token**. **Prefix caching** (automatic per slot) is essential:
-  on follow-up turns it re-prefills only the new tokens, turning that into seconds.
+The `-fa on -b 4096 -ub 1024` defaults were chosen on the prior B550 platform
+(b9835, 64k context, four slots). Flash attention added 26% aggregate throughput at
+concurrency 4, 4.5% single-stream, cut TTFT by about 40% and saved 0.5 GiB of VRAM.
+`-ub 1024 -b 4096` added about 3% at the saturation knee and 2–7% on 512–2,048-token
+prefills. `llama-bench` cannot use `-b 4096` on this card (RADV out of memory); the
+server can.
 
 ## Backend and power
 
