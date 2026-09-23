@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Report accumulated token usage over a period.
 
-Reads the ledger written by token-usage-collect.py. This is what the weekly
-online-model-pricing job calls instead of scraping raw counters, and what a human
-runs to answer "what did we spend last month".
+Reads the ledger written by token-usage-collect.py. Run it instead of scraping
+raw counters to answer "what did we spend last month".
 
   token-usage-report                     # last 30 days
   token-usage-report --days 7

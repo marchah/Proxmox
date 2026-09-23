@@ -51,7 +51,7 @@ Under `TOKEN_USAGE_DIR`, default `/root/.hermes/token-usage/`:
 | `state.json` | **authoritative** — per-source cursor, running totals, reset count, daily buckets |
 | `daily.jsonl` | derived on every write — one line per `(date, source)`, for consumers that would rather grep |
 
-The ledger is readable by the Hermes pricing job. Day buckets use `TOKEN_USAGE_TZ`
+The ledger is readable from Hermes. Day buckets use `TOKEN_USAGE_TZ`
 (default `America/New_York`). It is excluded from the git config backup; the
 weekly CT 121 vzdump is its off-box copy. The accumulated history cannot be rebuilt.
 
