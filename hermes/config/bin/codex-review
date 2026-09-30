@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # codex-review <pr#|branch> — on-demand Codex (ChatGPT) FINAL review of a mealdeal PR.
-# Runs the review-pr skill through the codex_app_server runtime (ChatGPT sub, model pinned in ~/.codex/config.toml),
+# Runs the review-pr skill through the codex_app_server runtime (ChatGPT sub, model pinned in /etc/codex/config.toml),
 # then posts the verdict to Slack #coding AND as a PR comment. This is the review ENGINE — callable from
 # the host, the /codex-review Slack slash-command plugin, or a future button. On-demand only.
 set -euo pipefail
@@ -20,8 +20,8 @@ REPO="${2:-mealdeal}"                                          # loop clones eac
 REPO_DIR="${CODEX_REVIEW_REPOS_DIR:-/root/repos}/$REPO"
 CODING_CHANNEL="${CODEX_REVIEW_SLACK_CHANNEL:-${SLACK_CODING_CHANNEL:-}}"   # #coding (from .env, sourced above)
 # Ledger label only: Hermes never passes a model to codex, which runs the `model` pinned in
-# /root/.codex/config.toml. Keep this equal to that pin so the token ledger names the real model.
-CODEX_MODEL="${CODEX_REVIEW_MODEL:-gpt-6-sol}"
+# /etc/codex/config.toml. Keep this equal to that pin so the token ledger names the real model.
+CODEX_MODEL="${CODEX_REVIEW_MODEL:-gpt-6.1-sol}"
 
 # Single-flight per repo+target: a duplicate invocation (double-send / Slack 3s-ack retry) no-ops.
 LOCK="/tmp/codex-review-$(printf '%s-%s' "$REPO" "$ARG" | tr -c 'A-Za-z0-9._-' '_').lock"
