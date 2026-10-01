@@ -4,8 +4,7 @@ A small systemd service that applies a fixed **GFX voltage offset** (undervolt)
 to the Radeon Pro V620 on the Proxmox host, persisting it across reboots.
 
 **Both cards run at 0 mV (stock).** −100 mV silently corrupts compute (see below). −50 mV
-passed the determinism test but saves only ~16 W per card in decode. Stock also gives a
-clean test of whether CT 120's `////` runaways were undervolt-induced. The service stays
+passed the determinism test but saves only ~16 W per card in decode. The service stays
 installed, so a qualified offset is a one-line change.
 
 ## Why an undervolt and not a power cap
