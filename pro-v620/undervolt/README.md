@@ -3,6 +3,11 @@
 A small systemd service that applies a fixed **GFX voltage offset** (undervolt)
 to the Radeon Pro V620 on the Proxmox host, persisting it across reboots.
 
+**Both cards run at 0 mV (stock).** −100 mV silently corrupts compute (see below). −50 mV
+passed the determinism test but saves only ~16 W per card in decode. Stock also gives a
+clean test of whether CT 120's `////` runaways were undervolt-induced. The service stays
+installed, so a qualified offset is a one-line change.
+
 ## Why an undervolt and not a power cap
 
 The original goal was to power-limit the V620 from 250 W to 220 W. **It is not
@@ -129,13 +134,14 @@ The installer:
    service applies it automatically on the next boot.
 
 ```bash
-# Change the offset and re-apply (OverDrive already active):
-sed -i 's/^OFFSET_MV=.*/OFFSET_MV=-75/' /etc/gpu-undervolt.env
+# Change the offset and re-apply (OverDrive already active). Qualify it first with
+# ppl-determinism.sh: repeated perplexity runs must be bit-identical.
+sed -i 's/^OFFSET_MV=.*/OFFSET_MV=-50/' /etc/gpu-undervolt.env
 systemctl restart gpu-undervolt
 
 # Inspect:
 systemctl status gpu-undervolt
-cat /sys/class/drm/card*/device/pp_od_clk_voltage     # OD_VDDGFX_OFFSET: -100mV
+cat /sys/class/drm/card*/device/pp_od_clk_voltage     # OD_VDDGFX_OFFSET: 0mV
 
 # Return to stock voltage (also happens automatically on `systemctl stop`):
 systemctl stop gpu-undervolt
@@ -150,7 +156,7 @@ only, on top of amdgpu's vendor default `0xfff7bfff`).
 | File                   | Installed to                              | Purpose |
 | ---------------------- | ----------------------------------------- | ------- |
 | `gpu-undervolt.sh`     | `/usr/local/sbin/gpu-undervolt`           | Applies (`apply`) / resets (`--reset`) the offset; waits for the OverDrive node at boot |
-| `gpu-undervolt.env`    | `/etc/gpu-undervolt.env`                  | `OFFSET_MV` (default `-100`) and knobs |
+| `gpu-undervolt.env`    | `/etc/gpu-undervolt.env`                  | `OFFSET_MV` (default `0`) and knobs |
 | `gpu-undervolt.service`| `/etc/systemd/system/gpu-undervolt.service` | oneshot (`RemainAfterExit`): applies at boot, resets to 0 mV on stop **or a failed start** (`ExecStopPost`) |
 | `install.sh`           | —                                         | Idempotent installer (also writes the OverDrive modprobe.d option) |
 | `ppl-determinism.sh`   | —                                         | Tests an offset: repeated perplexity runs must be bit-identical to a 0 mV reference |

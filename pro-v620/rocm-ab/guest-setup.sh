@@ -6,7 +6,7 @@
 #   backend alone.
 # - Ubuntu's Mesa RADV, the same noble-updates build CT 120 and CT 123 run.
 # - qemu-guest-agent, which gpu-blower-control reads the card's temps through.
-# - OverDrive (ppfeaturemask) so the −100 mV offset can be applied as on the host.
+# - OverDrive (ppfeaturemask) so the test card's offset can be applied as on the host.
 set -Eeuo pipefail
 
 DRIVER=31.50

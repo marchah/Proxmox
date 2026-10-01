@@ -9,9 +9,9 @@ both on CPU-direct Gen4 x16 slots. Deployment recorded 2026-09-18:
 | `0000:83:00.0` | CT 123 `gpu2` | [Qwen3.8-Flash-Next](qwen38-flash-next/README.md), `llamacpp-qwen38fn.service`, API `:1234` |
 
 Each card has a 9733 blower controlled by [gpu-blower-control](gpu-blower-control/README.md)
-over IPMI: FAN5 cools `03:00.0`, FAN4 cools `83:00.0`. Both are configured for the
-[−100 mV undervolt](undervolt/README.md), which causes silent compute errors under
-prefill load ([rocm-ab](rocm-ab/README.md)). The
+over IPMI: FAN5 cools `03:00.0`, FAN4 cools `83:00.0`. Both run at stock voltage: the
+[−100 mV undervolt](undervolt/README.md) silently corrupted compute under prefill load.
+The
 [thermal watchdog](gpu-thermal-watchdog/README.md) stops the owning service at
 102 °C junction / 101 °C memory and leaves it stopped until the cooling fault is resolved.
 

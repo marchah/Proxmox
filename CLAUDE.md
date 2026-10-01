@@ -81,9 +81,9 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   speculation. Measure a spec change at two concurrent streams too, not just one; see
   `pro-v620/spec-ab/`.
 - [gpu-blower-control/](pro-v620/gpu-blower-control/README.md) drives FAN4/FAN5 via
-  IPMI; [undervolt/](pro-v620/undervolt/README.md) applies −100 mV to both cards. That
-  offset silently corrupts compute under prefill load; judge any offset by repeated
-  perplexity runs, which must be bit-identical.
+  IPMI; [undervolt/](pro-v620/undervolt/README.md) keeps both cards at stock 0 mV.
+  −100 mV silently corrupts compute under prefill load. Qualify any offset with
+  `ppl-determinism.sh`: repeated perplexity runs must be bit-identical.
   Confirm physical fan pairing after rewiring. The BMC manages CPU/DIMM cooling.
 - [gpu-thermal-watchdog/](pro-v620/gpu-thermal-watchdog/README.md) stops the mapped
   service at 102 °C junction / 101 °C memory and leaves it stopped. A trip warrants

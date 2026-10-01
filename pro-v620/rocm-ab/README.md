@@ -19,8 +19,8 @@ Held equal across setups: llama.cpp `b11018` release builds (Vulkan `d5ae7502…
 (`AB_OFFSET_MV`, default 0 = stock), the 250 W board cap, and the same blower curve (the
 guest's temps feed [gpu-blower-control](../gpu-blower-control/README.md)).
 
-**The test card runs at stock voltage.** At the production −100 mV it computes wrong results
-under prefill load. The first Phase 1 attempt's perplexity gate went NaN from chunk 27 on
+**The test card runs at stock voltage.** At −100 mV it computes wrong results under
+prefill load. The first Phase 1 attempt's perplexity gate went NaN from chunk 27 on
 setup A. Repeats of that same perplexity run (MoE, wikitext-2 40 × 2048, b11018 Vulkan, CT 123):
 
 | Offset | Runs | Final perplexity |
@@ -173,8 +173,8 @@ Per round and model: `llama-bench -p 512 -n 128 -d 0,8192,32768 -r 3` and
   CT 120's production server, whose processes the host can see.
 - `card.sh` refuses to unbind while host processes hold the card, waits for QEMU to release
   it before rebinding, and stops if the DRM node names CT 123 mounts have changed.
-- Moving the card clears its OverDrive state. Each move re-applies −100 mV on that side and
-  checks it.
+- Moving the card clears its OverDrive state. Each move re-applies `AB_OFFSET_MV` on that
+  side and checks it.
 
 ## Teardown after the last phase
 
