@@ -1,7 +1,8 @@
 # gpu-blower-control
 
 Drives each V620's 9733 blower from that card's **amdgpu** temperature, by writing BMC fan
-duty over **in-band IPMI**. Host-side service, not in an LXC.
+duty over **in-band IPMI**. Host-side service, not in an LXC. A card passed through to a VM
+is read inside the guest, so its blower keeps following the curve.
 
 ## Why this exists
 
@@ -57,7 +58,9 @@ other fan's mode, so the BMC keeps managing the CPU and case fans through its ow
 Deliberately the **opposite** of `gpu-thermal-watchdog`: stopping a model is disruptive, so that
 service skips a missing sensor. Here a missing sensor means a card is being cooled blind, so:
 
-- any unreadable temp, missing hwmon or failed IPMI write → **100%**
+- a card whose temps cannot be read → **its** blower to 100%; the other blower keeps
+  following its own card
+- a failed IPMI write → **both** blowers to 100%
 - `ExecStopPost` forces 100%, so a clean stop or reboot leaves the blowers at full
 - `Restart=always`; verified against `kill -9`
 
@@ -66,6 +69,34 @@ until the service starts — safe with cold cards, but worth knowing.
 
 ⚠️ **With the host powered off the BMC stops all fans**, including these. That is fine (the cards
 are cold) but means the blowers are not a standby-power safety net.
+
+## Cards passed through to a VM
+
+A card bound to `vfio-pci` has no host hwmon. The service then finds the **running** VM whose
+config passes that address through (`hostpciN: 0000:83:00.0,...`) and reads the card's temps
+inside the guest with `qm guest exec`. The log names the source each time it changes, e.g.
+`gpu1 0000:83:00.0 temps from: vm301`.
+
+The guest needs:
+
+- `qemu-guest-agent` running, and `agent: 1` on the VM
+- exactly **one** amdgpu card: guest PCI addresses differ from the host's, so two are ambiguous
+
+Anything else reads as blind and gets 100%: the window between unbinding the card and the
+guest driver loading, a stopped or hung agent (each read is capped at `GUEST_TIMEOUT`), and a
+`hostpci` entry that names a resource mapping instead of an address. The guest's readings are
+trusted, so a guest that misreports under-cools its card.
+
+Each read is one `qm guest exec`: about 1 s wall and 0.6 s CPU here, only while a card is
+passed through.
+
+Checked 2026-10-01 with `0000:83:00.0` passed to a VM: unbinding it sent FAN4 to 100% while
+FAN5 stayed at 20%; the guest took over 35 s later, once the VM booted, and FAN4 returned to
+20%. Stopping the guest agent sent FAN4 from 1300 to 5000 RPM within 10 s; restarting it
+returned FAN4 to 20% within one poll.
+
+⚠️ [gpu-thermal-watchdog](../gpu-thermal-watchdog/README.md) does not read guests. A
+passed-through card has no host-side over-temp stop; run a guard inside the guest.
 
 ## Measured
 

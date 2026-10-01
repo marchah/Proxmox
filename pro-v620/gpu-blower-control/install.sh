@@ -25,5 +25,7 @@ else
 fi
 install -m 0644 "$SRC/gpu-blower-control.service" "$UNIT"
 systemctl daemon-reload
-systemctl enable --now gpu-blower-control
+systemctl enable gpu-blower-control
+# restart, not `enable --now`: a running service keeps the old script until restarted
+systemctl restart gpu-blower-control
 systemctl --no-pager --lines=5 status gpu-blower-control || true
