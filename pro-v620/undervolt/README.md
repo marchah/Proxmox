@@ -60,6 +60,23 @@ which is harder than the batch above. **Test an offset by repeating a perplexity
 correct offset the result is bit-identical every time. Details are in
 [`../rocm-ab/README.md`](../rocm-ab/README.md).
 
+**−50 mV passed the same test on both cards** (2026-10-01, `ppl-determinism.sh`):
+
+- **Results:** 8/8 runs on `0000:83:00.0` and 5/5 on `0000:03:00.0` were bit-identical to
+  0 mV.
+- **Throughput and heat:** at the cap the lower voltage buys clock, not heat. Throughput
+  rose +0.7–0.8%. Peaks were 81–86 °C against 80–82 °C at 0 mV, rising as the card
+  heat-soaked across back-to-back runs.
+- **Power:** its saving in decode, which runs below the cap, is not measured.
+- **Limits:** a pass bounds the error rate; it does not prove it is zero. −100 mV failed 1
+  run in 2 on `0000:03:00.0`.
+
+```bash
+# Host, root. Stop the card's model service first; the card is left at 0 mV.
+./ppl-determinism.sh 123 0000:83:00.0 8 -50        # CT 123's paths: set BIN, MODEL, WIKI
+./ppl-determinism.sh 120 0000:03:00.0 5 -50        # defaults match CT 120
+```
+
 **Deeper-undervolt sweep (2026-07-09, on the second V620 — see the
 `second-v620-validated` note):** offsets below −100 mV were tested and **rejected**:
 
@@ -122,6 +139,7 @@ only, on top of amdgpu's vendor default `0xfff7bfff`).
 | `gpu-undervolt.env`    | `/etc/gpu-undervolt.env`                  | `OFFSET_MV` (default `-100`) and knobs |
 | `gpu-undervolt.service`| `/etc/systemd/system/gpu-undervolt.service` | oneshot (`RemainAfterExit`): applies at boot, resets to 0 mV on stop **or a failed start** (`ExecStopPost`) |
 | `install.sh`           | —                                         | Idempotent installer (also writes the OverDrive modprobe.d option) |
+| `ppl-determinism.sh`   | —                                         | Tests an offset: repeated perplexity runs must be bit-identical to a 0 mV reference |
 | (installer writes)     | `/etc/modprobe.d/amdgpu-overdrive.conf`   | Enables OverDrive at amdgpu load |
 
 ## Uninstall / revert to stock
