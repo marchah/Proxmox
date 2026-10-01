@@ -67,14 +67,25 @@ correct offset the result is bit-identical every time. Details are in
 - **Throughput and heat:** at the cap the lower voltage buys clock, not heat. Throughput
   rose +0.7–0.8%. Peaks were 81–86 °C against 80–82 °C at 0 mV, rising as the card
   heat-soaked across back-to-back runs.
-- **Power:** its saving in decode, which runs below the cap, is not measured.
+- **Power:** in decode, which runs below the cap, it saves two thirds of what −100 mV saves
+  (table below).
 - **Limits:** a pass bounds the error rate; it does not prove it is zero. −100 mV failed 1
   run in 2 on `0000:03:00.0`.
 
+Single-stream decode on `0000:83:00.0`, measured 2026-10-01 with `decode-power.sh`:
+Qwen3.6-35B-A3B, tg1024 at depth 8192, two interleaved rounds, medians.
+
+| Offset | Decode | Board power | Junction |
+| --- | ---: | ---: | ---: |
+| 0 mV | 76.5 tok/s | 162 W | 65 °C |
+| −50 mV | 76.3 tok/s | 146 W (−10%) | 62 °C |
+| −100 mV | 76.3 tok/s | 136 W (−16%) | 60 °C |
+
 ```bash
-# Host, root. Stop the card's model service first; the card is left at 0 mV.
+# Host, root. Stop the card's model service first; both leave the card at 0 mV.
 ./ppl-determinism.sh 123 0000:83:00.0 8 -50        # CT 123's paths: set BIN, MODEL, WIKI
 ./ppl-determinism.sh 120 0000:03:00.0 5 -50        # defaults match CT 120
+./decode-power.sh 123 0000:83:00.0 2 0 -50 -100    # power below the cap, offsets interleaved
 ```
 
 **Deeper-undervolt sweep (2026-07-09, on the second V620 — see the
@@ -140,6 +151,7 @@ only, on top of amdgpu's vendor default `0xfff7bfff`).
 | `gpu-undervolt.service`| `/etc/systemd/system/gpu-undervolt.service` | oneshot (`RemainAfterExit`): applies at boot, resets to 0 mV on stop **or a failed start** (`ExecStopPost`) |
 | `install.sh`           | —                                         | Idempotent installer (also writes the OverDrive modprobe.d option) |
 | `ppl-determinism.sh`   | —                                         | Tests an offset: repeated perplexity runs must be bit-identical to a 0 mV reference |
+| `decode-power.sh`      | —                                         | Measures an offset's board power, clock and junction in single-stream decode |
 | (installer writes)     | `/etc/modprobe.d/amdgpu-overdrive.conf`   | Enables OverDrive at amdgpu load |
 
 ## Uninstall / revert to stock
