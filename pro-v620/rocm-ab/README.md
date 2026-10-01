@@ -1,0 +1,185 @@
+# Vulkan vs ROCm on the V620
+
+Measures llama.cpp's Vulkan and ROCm backends on GPU 2 (`0000:83:00.0`), and what running in
+a VM costs. ROCm needs AMD's own `amdgpu-dkms` kernel driver for discrete Radeon cards, which
+an LXC cannot load beside the host kernel's in-tree `amdgpu`, so the ROCm setup runs in a
+passthrough VM.
+
+| Setup | Where | Kernel driver | Backend |
+| --- | --- | --- | --- |
+| A | CT 123 (LXC) | host in-tree `amdgpu` (`7.0.12-1-pve`) | Vulkan (RADV) — production |
+| B | VM 301 | `amdgpu-dkms` 7.1.3 (driver 31.50) | Vulkan (RADV) |
+| C | VM 301 | `amdgpu-dkms` 7.1.3 (driver 31.50) | ROCm 10.0 |
+
+A vs B isolates the VM and its driver; B vs C isolates the backend. Each comparison is its
+own phase, started only after the previous one has been reviewed.
+
+Held equal across setups: llama.cpp `b11018` release builds (Vulkan `d5ae7502…`, ROCm
+`6658e965…`), byte-identical models, Mesa `25.2.8-0ubuntu0.24.04.2`, the GFX offset
+(`AB_OFFSET_MV`, default 0 = stock), the 250 W board cap, and the same blower curve (the
+guest's temps feed [gpu-blower-control](../gpu-blower-control/README.md)).
+
+**The test card runs at stock voltage.** At the production −100 mV it computes wrong results
+under prefill load. The first Phase 1 attempt's perplexity gate went NaN from chunk 27 on
+setup A. Repeats of that same perplexity run (MoE, wikitext-2 40 × 2048, b11018 Vulkan, CT 123):
+
+| Offset | Runs | Final perplexity |
+| --- | --- | --- |
+| −100 mV | 3 | 5.5683, 5.6082, NaN: no two runs agree |
+| 0 mV | 3 | 5.5681 ± 0.06500 every time, bit-identical |
+
+No kernel fault and no thermal event; perplexity draws 214–244 W, close to the 250 W cap.
+
+Models, both Unsloth `UD-Q5_K_XL`: Qwen3.6-35B-A3B (MoE, sha256 `25233af7…`, without the
+MTP head) and Qwen3.8-27B (dense, sha256 `8601193d…`).
+
+## Phase 1 — A vs B: the VM costs nothing measurable (2026-10-01)
+
+Both setups ran llama.cpp `b11018` Vulkan with Mesa `25.2.8-0ubuntu0.24.04.2` on GPU 2 at
+0 mV, 250 W cap, under the blower curve:
+
+- **A:** host kernel `7.0.12-1-pve`, in-tree `amdgpu` 3.64.0.
+- **B:** guest kernel `6.8.0-146-generic`, `amdgpu-dkms` 7.1.3.
+
+Each figure is the median of three interleaved rounds, with the min–max in brackets. Each
+round is llama-bench's mean of three repetitions. Units are tok/s.
+
+| Model | Test | Depth | A | B | B vs A |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 35B-A3B MoE | pp512 | 0 | 1665.3 [1617.5–1676.1] | 1659.7 [1639.9–1665.9] | −0.3% |
+| | pp512 | 32768 | 779.4 [773.5–783.5] | 769.9 [768.4–777.7] | −1.2% |
+| | tg128 | 0 | 80.6 [80.5–80.7] | 80.6 [80.5–80.6] | −0.1% |
+| | tg128 | 32768 | 72.0 [72.0–72.1] | 71.9 [71.9–72.0] | −0.2% |
+| | tg, 4 parallel | 512 | 195.5 [194.9–196.0] | 193.0 [188.1–193.3] | −1.3% |
+| 27B dense | pp512 | 0 | 363.8 [362.4–364.0] | 367.8 [366.0–368.4] | +1.1% |
+| | pp512 | 32768 | 231.3 [230.8–231.4] | 231.4 [231.2–231.5] | +0.0% |
+| | tg128 | 0 | 18.4 [18.4–18.4] | 18.4 [18.4–18.4] | −0.3% |
+| | tg128 | 32768 | 17.3 [17.3–17.3] | 17.2 [17.2–17.2] | −0.1% |
+| | tg, 4 parallel | 512 | 57.5 [57.2–57.5] | 57.4 [55.5–57.4] | −0.2% |
+
+The other cells (pp512 and tg128 at depth 8192; batched-bench at 1 and 2 parallel
+sequences; batched prefill) fall within the same ±1.8%. Perplexity is bit-identical between
+the setups: MoE 5.5681 ± 0.0650, dense 5.8564 ± 0.0689. The card ran the same in both
+setups: 249 W median under load at the cap, sclk ~2155 MHz, peak junction 90–93 °C.
+
+The 7–14% deficit measured for ROCm in a VM in June therefore came from ROCm, not from the VM.
+
+At 0 mV a sustained prefill holds the card at its 250 W cap, and the blowers' 90 °C hotspot
+override holds the junction at 90 °C. Perplexity peaked at 93 °C, against 77 °C for the same
+run at −100 mV. The ~1 GiB GTT growth seen in round 1 comes from perplexity's full-vocabulary
+logits, not from a KV spill: the speed rounds stay at 140 MiB.
+
+## Phase 2 — A vs C: ROCm decodes slower, prefills faster deep in context (2026-10-01)
+
+Same conditions as Phase 1, with C running ROCm 10.0 (`amdrocm-runtime10.0` and
+`amdrocm-blas10.0-gfx1030` 10.0.0-4) in VM 301 on `amdgpu-dkms` 7.1.3. Each figure is the
+median of three interleaved rounds, with the min–max in brackets. Units are tok/s.
+
+| Model | Test | Depth | A (Vulkan) | C (ROCm) | C vs A |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 35B-A3B MoE | pp512 | 0 | 1646.8 [1646.7–1652.3] | 1530.7 [1523.7–1540.7] | −7.0% |
+| | pp512 | 8192 | 1291.8 [1286.6–1307.5] | 1331.3 [1322.2–1336.9] | +3.1% |
+| | pp512 | 32768 | 773.3 [771.8–777.0] | 953.4 [950.9–960.5] | +23.3% |
+| | tg128 | 0 | 80.7 [80.4–80.8] | 67.3 [67.2–67.6] | −16.6% |
+| | tg128 | 8192 | 76.8 [76.8–76.9] | 67.6 [67.5–67.6] | −12.0% |
+| | tg128 | 32768 | 72.1 [72.0–72.1] | 61.8 [61.8–61.9] | −14.2% |
+| | tg, 4 parallel | 512 | 195.7 [195.5–195.8] | 184.1 [184.0–184.2] | −6.0% |
+| 27B dense | pp512 | 0 | 365.1 [364.6–365.7] | 373.4 [370.3–375.4] | +2.3% |
+| | pp512 | 8192 | 319.0 [318.8–319.9] | 340.9 [340.5–341.0] | +6.9% |
+| | pp512 | 32768 | 232.2 [231.8–232.5] | 274.0 [273.7–274.1] | +18.0% |
+| | tg128 | 0 | 18.4 [18.4–18.4] | 17.0 [17.0–17.0] | −7.6% |
+| | tg128 | 8192 | 18.1 [18.1–18.1] | 16.9 [16.8–16.9] | −6.7% |
+| | tg128 | 32768 | 17.3 [17.3–17.3] | 15.9 [15.9–15.9] | −8.2% |
+| | tg, 4 parallel | 512 | 57.7 [57.7–57.7] | 52.1 [52.1–52.2] | −9.6% |
+
+- **Decode:** Vulkan is faster on both models. ROCm's deficit on the MoE (−12 to −17%) is
+  about twice its deficit on the dense model (−7 to −8%), and shrinks with parallel sequences
+  on the MoE (−17% at 1, −6% at 4).
+- **Prefill:** ROCm's prefill advantage grows with depth, reaching +23% (MoE) and +18%
+  (dense) at 32k.
+- **Correctness:** perplexity agrees within 0.04% (MoE 5.5668 vs 5.5681, dense 5.8587 vs
+  5.8564), inside the ±0.065 error.
+- **Card:** both ran at the 249 W cap; ROCm held a higher clock (2246 vs 2168 MHz median).
+
+Treating a request as new prefill P plus decode D at 32k depth, ROCm finishes sooner only
+when P/D exceeds about 9.5 (MoE) or 8 (dense). These measurements exclude speculative
+decoding, which CT 120 uses and which speeds Vulkan decode by +49–77%
+([`../spec-ab/`](../spec-ab/README.md)).
+
+## Phase 3 — B vs C: the same result with the VM held constant (2026-10-01)
+
+Vulkan and ROCm ran in the same VM on the same kernel and `amdgpu-dkms`. Every cell landed
+within about one point of Phase 2:
+
+| | MoE B (Vulkan) | MoE C (ROCm) | C vs B | Dense C vs B |
+| --- | ---: | ---: | ---: | ---: |
+| pp512 d0 | 1662.6 | 1529.2 | −8.0% | +1.3% |
+| pp512 d32768 | 772.9 | 951.4 | +23.1% | +18.1% |
+| tg128 d0 | 80.4 | 67.2 | −16.4% | −7.6% |
+| tg128 d32768 | 72.1 | 61.7 | −14.3% | −8.0% |
+| tg, 4 parallel | 193.5 | 183.8 | −5.0% | −9.4% |
+
+The Phase 2 differences are therefore the backend's, not the VM's or the driver's.
+Perplexity repeated exactly across phases, so both backends are deterministic at 0 mV:
+Vulkan 5.5681 and 5.8564, ROCm 5.5668 and 5.8587.
+
+## Conclusion
+
+- **Vulkan stays the backend.** ROCm 10.0 on RDNA 2 trades 7–17% decode for faster deep
+  prefill. CT 120's MTP speculative decoding is Vulkan-tuned and widens the decode lead.
+- **The passthrough VM costs no throughput.** Its costs are operational: the card is
+  exclusive to the VM, guest RAM is pinned, and the model reloads from the guest disk.
+- **The −100 mV undervolt corrupts compute on both cards** under prefill load. That is a
+  production finding independent of the backend question.
+
+## Files
+
+| File | Where | Role |
+| --- | --- | --- |
+| `stage-host.sh` | host | Copies both models to a temporary thin volume, fetches and checks the release tarballs, the cloud image and wikitext-2. |
+| `create-vm.sh` | host | Creates VM 301: q35, OVMF with Secure Boot off, 16 vCPU, 64 GiB, guest agent on. |
+| `guest-setup.sh` | VM | `amdgpu-dkms` for every installed kernel, Mesa pinned to the production build, OverDrive enabled. |
+| `guest-rocm.sh` | VM | ROCm 10.0 runtime and gfx1030 BLAS only; fails if the llama.cpp ROCm build has an unresolved library. |
+| `card.sh` | host | Moves the card between the host and the VM: `to-vm`, `to-host`, `restore`, `status`. |
+| `bench.sh` | CT 123 / VM | One round of one setup: llama-bench, llama-batched-bench, optional perplexity, 1 s GPU telemetry. |
+| `run-phase.sh` | host | One phase: three rounds `X Y \| Y X \| X Y`, then restores production. |
+| `summarize.py` | anywhere | Markdown tables from one phase's results. |
+
+## Running a phase
+
+```sh
+# host, from /root/rocm-ab/src (pro-v620 layout)
+systemd-run --unit=rocm-ab-p1 --collect bash rocm-ab/run-phase.sh p1 A B
+journalctl -fu rocm-ab-p1
+```
+
+`run-phase.sh` disables CT 123's model service for the phase, binds the model volume into
+CT 123 read-only, and on exit always runs `card.sh restore`: the card returns to `amdgpu`
+at `AB_OFFSET_MV` (default 0), and CT 123's service is re-enabled. CT 120's card is never
+touched. `SMOKE=1` runs one
+round with tiny shapes to check the pipeline.
+
+Per round and model: `llama-bench -p 512 -n 128 -d 0,8192,32768 -r 3` and
+`llama-batched-bench -npp 512 -ntg 128 -npl 1,2,4`, both with `-fa on -ctk q8_0 -ctv q8_0
+-b 2048 -ub 1024 -t 8` and no speculative decoding. Round 1 adds perplexity on wikitext-2
+(40 × 2048) as a correctness gate. Each run starts once the junction is at or below 50 °C.
+
+## Safety
+
+- The production thermal watchdog stops services, not hand-run benchmarks, and cannot read a
+  passed-through card. `run-phase.sh` runs
+  [`thermal-guard.sh`](../qwen38-flash-next/thermal-guard.sh) on whichever side holds the
+  card. On the host its patterns name only the bench tools: `llama-server` would also match
+  CT 120's production server, whose processes the host can see.
+- `card.sh` refuses to unbind while host processes hold the card, waits for QEMU to release
+  it before rebinding, and stops if the DRM node names CT 123 mounts have changed.
+- Moving the card clears its OverDrive state. Each move re-applies −100 mV on that side and
+  checks it.
+
+## Teardown after the last phase
+
+```sh
+qm destroy 301 --purge
+pct set 123 -delete mp1
+umount /mnt/rocm-ab-models && lvremove -y pve/rocm-ab-models
+```

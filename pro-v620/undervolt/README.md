@@ -44,18 +44,28 @@ only ~96–128 W — well below the 250 W cap — so that regime is *not* power-
 undervolting there cuts power directly. At high concurrency / large prefills the
 card hits the cap, so the lower voltage converts to a little more clock instead.
 
-**Stability:** −100 mV ran the full batch (single-user, concurrency 1→16,
-input-length 128→32768, soak) with **zero** GPU faults (no resets / ring
-timeouts). If you ever observe instability under load, move `OFFSET_MV` closer to
-0 (e.g. `-75`).
+**−100 mV is not error-free.** It ran the full batch (single-user, concurrency 1→16,
+input-length 128→32768, soak) with zero GPU faults. On 2026-10-01, however, repeated
+perplexity runs found silent compute errors on both cards under prefill load. The runs used
+llama.cpp `b11018` Vulkan, Qwen3.6-35B-A3B on wikitext-2 (40 × 2048), FA, q8_0 KV and
+ubatch 1024:
+
+| Card | 0 mV | −100 mV |
+| --- | --- | --- |
+| `0000:83:00.0` | 3 runs bit-identical (5.5681 ± 0.06500) | 5.5683, 5.6082, NaN from chunk 27 |
+| `0000:03:00.0` | 2 runs bit-identical (5.5681 ± 0.06500) | 5.5681, then 5.5677 |
+
+Neither the kernel nor the output gave any sign. Perplexity holds the card at the 250 W cap,
+which is harder than the batch above. **Test an offset by repeating a perplexity run:** at a
+correct offset the result is bit-identical every time. Details are in
+[`../rocm-ab/README.md`](../rocm-ab/README.md).
 
 **Deeper-undervolt sweep (2026-07-09, on the second V620 — see the
-`second-v620-validated` note):** −100 mV is this card's safe floor; going deeper
-was tested and **rejected**:
+`second-v620-validated` note):** offsets below −100 mV were tested and **rejected**:
 
 | Offset | Single-stream | Under concurrent load | Result |
 | --- | --- | --- | --- |
-| −100 mV | correct | correct (5/5 before **and** after a c1→8 stress) | **stable — keep** |
+| −100 mV | correct | correct (5/5 before **and** after a c1→8 stress) | passed this check; fails perplexity determinism (above) |
 | −125 mV | correct | **silent garbage output** (runs of one char), no crash, no dmesg fault | **unsafe** |
 | −150 mV | — | compute-ring timeout → **MODE1 GPU reset, VRAM lost** | hard crash |
 

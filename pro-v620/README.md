@@ -9,8 +9,9 @@ both on CPU-direct Gen4 x16 slots. Deployment recorded 2026-09-18:
 | `0000:83:00.0` | CT 123 `gpu2` | [Qwen3.8-Flash-Next](qwen38-flash-next/README.md), `llamacpp-qwen38fn.service`, API `:1234` |
 
 Each card has a 9733 blower controlled by [gpu-blower-control](gpu-blower-control/README.md)
-over IPMI: FAN5 cools `03:00.0`, FAN4 cools `83:00.0`. Both use the
-[−100 mV undervolt](undervolt/README.md). The
+over IPMI: FAN5 cools `03:00.0`, FAN4 cools `83:00.0`. Both are configured for the
+[−100 mV undervolt](undervolt/README.md), which causes silent compute errors under
+prefill load ([rocm-ab](rocm-ab/README.md)). The
 [thermal watchdog](gpu-thermal-watchdog/README.md) stops the owning service at
 102 °C junction / 101 °C memory and leaves it stopped until the cooling fault is resolved.
 
@@ -160,10 +161,20 @@ server can.
 
 ## Backend and power
 
-Vulkan/RADV is the supported backend. A 2026-06-29 comparison on b9835 found
-ROCm 7.2 in a passthrough VM decoded 7–14% slower than Vulkan at matched 64k
-context. The same ROCm userspace failed model loading in the tested LXC/host
-kernel combination. Those results are version-specific.
+Vulkan/RADV is the supported backend. ROCm needs AMD's `amdgpu-dkms` for discrete
+Radeon cards, which an LXC cannot load beside the host's in-tree `amdgpu`, so it runs
+only in a passthrough VM. Measured 2026-10-01 on `b11018` with ROCm 10.0
+([rocm-ab](rocm-ab/README.md)):
+
+- **The VM costs nothing measurable:** within ±1.8% of the LXC, with bit-identical
+  perplexity.
+- **ROCm decodes slower:** 12–17% slower on Qwen3.6-35B-A3B and 7–8% slower on
+  Qwen3.8-27B.
+- **ROCm prefills faster at depth:** the advantage grows with depth, reaching +23% and +18%
+  at 32k.
+
+Vulkan stays: decode dominates CT 120's interactive work, and its MTP speculative
+decoding widens Vulkan's decode lead.
 
 The V620 power cap is firmware-locked at 250 W and its OverDrive interface has
 no clock-ceiling control. The supported power adjustment is a GFX voltage offset;
