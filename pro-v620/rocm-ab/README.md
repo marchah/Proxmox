@@ -123,10 +123,57 @@ The Phase 2 differences are therefore the backend's, not the VM's or the driver'
 Perplexity repeated exactly across phases, so both backends are deterministic at 0 mV:
 Vulkan 5.5681 and 5.8564, ROCm 5.5668 and 5.8587.
 
+## Phase 4 — MTP serving: a tie on CT 120's traffic (2026-10-01)
+
+`run-spec.sh` ran CT 120's production server flags in VM 301 on both backends: 262k context,
+2 slots, q8_0 KV, FA, batch 4096 and `--reasoning off`. Each backend had a non-speculative
+control and MTP at draft lengths 2, 3 and 4. The prompts were `../spec-ab/spec-probe.py`'s:
+short code, prose and JSON (greedy and sampled), two concurrent streams, 16k/48k deep
+contexts and a tool call. Figures are medians over 3 rotated repetitions, in tok/s, with
+GPU 2 at 0 mV.
+
+**ROCm cannot run CT 120's exact configuration.** At ubatch 1024 it aborted with
+`ROCm error: out of memory` on the first 16k-token prompt; RADV fits by placing buffers in
+GTT, which ROCm does not do. ROCm fits at ubatch 512, ending at 30,437 of 30,704 MiB (267 MiB
+free). Vulkan keeps ubatch 1024 with ~680 MiB free plus GTT. Two deep prompts at once on
+ROCm were not tested.
+
+| MTP draft length 3 | Vulkan | ROCm | ROCm vs Vulkan |
+| --- | ---: | ---: | ---: |
+| code, greedy | 115.9 | 106.5 | −8% |
+| prose, greedy | 100.2 | 92.9 | −7% |
+| JSON, greedy | 132.5 | 121.4 | −8% |
+| tool call | 134.5 | 113.0 | −16% |
+| 16k depth decode / prefill | 98.7 / 1291 | 89.3 / 1308 | −10% / +1% |
+| 48k depth decode / prefill | 82.5 / 863 | 76.0 / 1058 | −8% / +23% |
+| 2 streams, code / prose / JSON | 140.9 / 105.0 / 152.5 | 131.5 / 112.6 / 142.3 | −7% / +7% / −7% |
+
+- **MTP speedup:** MTP narrows the decode gap from −14% (no MTP) to −7 to −10%; ROCm's larger
+  verify batches cost it less.
+- **Draft length:** n3 is best or near-best single-stream on both backends. ROCm's best for
+  two streams is n2 (137.7 / 122.1 / 149.7), within 5% of Vulkan n3. n4 collapses with two
+  streams on Vulkan (75 tok/s on code) far more than on ROCm (109).
+- **Correctness:** draft acceptance matches (71% at n3). Every arm returned valid tool
+  calls, showed no repetition collapse, and gave identical greedy output across repetitions.
+
+**Replaying CT 120's real traffic** (`replay-ct120.py`, 3,216 requests since MTP went live on
+2026-09-22):
+
+- **Traffic:** 7.0M prompt tokens against 1.2M generated, 61% of requests ending at 32–64k
+  context. Vulkan spent 6.7 h of GPU time on them.
+- **Method:** scaled by the measured ratios at each request's depth, ROCm comes to **6.7 h
+  (+0.2%)**: +8% under 8k context, −0.8% at 32–64k. The ratios come from cold-prefill
+  averages, which understate ROCm's edge deep in context, so this leans toward Vulkan.
+- **Result:** ROCm's deep prefill cancels its slower decode, so throughput is a tie.
+
 ## Conclusion
 
-- **Vulkan stays the backend.** ROCm 10.0 on RDNA 2 trades 7–17% decode for faster deep
-  prefill. CT 120's MTP speculative decoding is Vulkan-tuned and widens the decode lead.
+- **Vulkan stays the backend.** With MTP, ROCm 10.0 ties on CT 120's real traffic, so
+  throughput does not decide it. The rest does:
+  - ROCm cannot run the production ubatch, and has 267 MiB of VRAM left where RADV
+    overflows to GTT. A ROCm OOM aborts the server; a RADV spill only slows it.
+  - It needs the passthrough VM, which the host's thermal watchdog cannot see.
+  - It decodes 7–16% slower in single-stream chat and tool calls.
 - **The passthrough VM costs no throughput.** Its costs are operational: the card is
   exclusive to the VM, guest RAM is pinned, and the model reloads from the guest disk.
 - **The −100 mV undervolt corrupts compute on both cards** under prefill load. That is a
@@ -144,6 +191,8 @@ Vulkan 5.5681 and 5.8564, ROCm 5.5668 and 5.8587.
 | `bench.sh` | CT 123 / VM | One round of one setup: llama-bench, llama-batched-bench, optional perplexity, 1 s GPU telemetry. |
 | `run-phase.sh` | host | One phase: three rounds `X Y \| Y X \| X Y`, then restores production. |
 | `summarize.py` | anywhere | Markdown tables from one phase's results. |
+| `run-spec.sh` | host | Phase 4: CT 120's server flags in the VM, per backend, with and without MTP, measured by `../spec-ab/spec-probe.py`. |
+| `replay-ct120.py` | CT 120 | Replays CT 120's journaled requests under the measured ROCm/Vulkan ratios. |
 
 ## Running a phase
 

@@ -173,8 +173,9 @@ only in a passthrough VM. Measured 2026-10-01 on `b11018` with ROCm 10.0
 - **ROCm prefills faster at depth:** the advantage grows with depth, reaching +23% and +18%
   at 32k.
 
-Vulkan stays: decode dominates CT 120's interactive work, and its MTP speculative
-decoding widens Vulkan's decode lead.
+With CT 120's MTP speculative decoding, ROCm ties on its real traffic: deep-context
+prefill offsets slower decode. Vulkan stays because ROCm cannot fit the production ubatch
+in VRAM (no GTT overflow), needs the VM, and decodes 7–16% slower in chat and tool calls.
 
 The V620 power cap is firmware-locked at 250 W and its OverDrive interface has
 no clock-ceiling control. The supported power adjustment is a GFX voltage offset;
