@@ -50,10 +50,15 @@ perplexity runs found silent compute errors on both cards under prefill load. Th
 llama.cpp `b11018` Vulkan, Qwen3.6-35B-A3B on wikitext-2 (40 × 2048), FA, q8_0 KV and
 ubatch 1024:
 
-| Card | 0 mV | −100 mV |
-| --- | --- | --- |
-| `0000:83:00.0` | 3 runs bit-identical (5.5681 ± 0.06500) | 5.5683, 5.6082, NaN from chunk 27 |
-| `0000:03:00.0` | 2 runs bit-identical (5.5681 ± 0.06500) | 5.5681, then 5.5677 |
+| Card | 0 mV | −50 mV | −100 mV |
+| --- | --- | --- | --- |
+| `0000:83:00.0` | all bit-identical (5.5681 ± 0.06500), incl. 8 interleaved with −100 mV | 8/8 identical | **0/8 identical**: diverge from chunk 1, finals 5.5650–5.6221, one NaN |
+| `0000:03:00.0` | all bit-identical (5.5681 ± 0.06500) | 5/5 identical | **0/5 identical**: diverge from chunks 2–15, finals 5.5673–5.5691 |
+
+The cache is not the cause. Perplexity clears the KV cache before every chunk, and on
+`0000:83:00.0` the −100 mV runs alternated minute by minute with 0 mV runs using the same
+binary, model and q8_0 KV. Every 0 mV run was identical and no −100 mV run was. Several
+failing runs drew only 235–241 W, so the errors do not need the power cap.
 
 Neither the kernel nor the output gave any sign. Perplexity holds the card at the 250 W cap,
 which is harder than the batch above. **Test an offset by repeating a perplexity run:** at a
@@ -62,15 +67,13 @@ correct offset the result is bit-identical every time. Details are in
 
 **−50 mV passed the same test on both cards** (2026-10-01, `ppl-determinism.sh`):
 
-- **Results:** 8/8 runs on `0000:83:00.0` and 5/5 on `0000:03:00.0` were bit-identical to
-  0 mV.
+- **Results:** all 13 runs were bit-identical to 0 mV (table above).
 - **Throughput and heat:** at the cap the lower voltage buys clock, not heat. Throughput
   rose +0.7–0.8%. Peaks were 81–86 °C against 80–82 °C at 0 mV, rising as the card
   heat-soaked across back-to-back runs.
 - **Power:** in decode, which runs below the cap, it saves two thirds of what −100 mV saves
   (table below).
-- **Limits:** a pass bounds the error rate; it does not prove it is zero. −100 mV failed 1
-  run in 2 on `0000:03:00.0`.
+- **Limits:** a pass bounds the error rate; it does not prove it is zero.
 
 Single-stream decode on `0000:83:00.0`, measured 2026-10-01 with `decode-power.sh`:
 Qwen3.6-35B-A3B, tg1024 at depth 8192, two interleaved rounds, medians.

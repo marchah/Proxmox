@@ -3,6 +3,7 @@
 #
 #   ppl-determinism.sh <ct> <pci> <runs> <offset_mv>...
 #   e.g.  ppl-determinism.sh 123 0000:83:00.0 8 -50
+#         ppl-determinism.sh 123 0000:83:00.0 1 -100 0 -100 0     # interleaved, 0 mV controls
 #
 # At 0 mV a perplexity run is bit-reproducible, so it is the reference: one run at 0 mV,
 # then <runs> runs at each offset, each compared with the reference on every per-chunk value
@@ -72,17 +73,19 @@ read -r ref_chunks ref_final <<<"$(result "${OUT}/ref.log")"
 [ "$ref_final" != FAILED ] || { say "FATAL: the 0 mV reference run failed"; exit 1; }
 say "reference 0 mV: final ${ref_final} ($(thermals "${OUT}/ref.telemetry"))"
 
+n=0
 for mv in "${offsets[@]}"; do
   set_offset "$mv"; bad=0
   for i in $(seq 1 "$runs"); do
-    run "${mv}mV-${i}"
-    read -r chunks final <<<"$(result "${OUT}/${mv}mV-${i}.log")"
+    n=$((n + 1)); label="$(printf '%02d' "$n")-${mv}mV"
+    run "$label"
+    read -r chunks final <<<"$(result "${OUT}/${label}.log")"
     if [ "$chunks" = "$ref_chunks" ] && [ "$final" = "$ref_final" ]; then verdict=identical
     else
       bad=$((bad + 1))
       verdict="DIFFERS at chunk $(python3 -c 'import sys; a, b = sys.argv[1].split(","), sys.argv[2].split(","); print(next((i + 1 for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)) + 1))' "$ref_chunks" "$chunks")"
     fi
-    say "${mv} mV run ${i}/${runs}: final ${final} — ${verdict} ($(thermals "${OUT}/${mv}mV-${i}.telemetry"))"
+    say "#${n} ${mv} mV run ${i}/${runs}: final ${final} — ${verdict} ($(thermals "${OUT}/${label}.telemetry"))"
   done
   say "${mv} mV: ${bad}/${runs} runs differ from the 0 mV reference"
 done
