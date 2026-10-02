@@ -21,8 +21,9 @@ REPS="${REPS:-3}"
 RUN="${RUN:-/root/rocm-ab/results/spec-$(date -u +%Y%m%dT%H%M%SZ)}"
 CTX="${CTX:-262144}"; PARALLEL="${PARALLEL:-2}"
 # ubatch per backend. ROCm cannot place buffers in GTT the way RADV does, so at 262k with
-# MTP it runs out of VRAM at ubatch 1024 on the first deep prompt.
-UB_VK="${UB_VK:-1024}"; UB_ROCM="${UB_ROCM:-1024}"
+# MTP it runs out of VRAM at ubatch 1024 on the first deep prompt; 512 is the most that fits,
+# and is what the README's Phase 4 figures used. Vulkan keeps CT 120's production 1024.
+UB_VK="${UB_VK:-1024}"; UB_ROCM="${UB_ROCM:-512}"
 export AB_OFFSET_MV="${AB_OFFSET_MV:-0}"
 SPEC=/opt/rocm-ab/spec
 BASE=/models/Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf

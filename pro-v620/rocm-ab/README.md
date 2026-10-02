@@ -126,7 +126,8 @@ Vulkan 5.5681 and 5.8564, ROCm 5.5668 and 5.8587.
 ## Phase 4 — MTP serving: a tie on CT 120's traffic (2026-10-01)
 
 `run-spec.sh` ran CT 120's production server flags in VM 301 on both backends: 262k context,
-2 slots, q8_0 KV, FA, batch 4096 and `--reasoning off`. Each backend had a non-speculative
+2 slots, q8_0 KV, FA, batch 4096 and `--reasoning off`. Vulkan used CT 120's ubatch 1024;
+ROCm used 512, the most it fits (the script's defaults). Each backend had a non-speculative
 control and MTP at draft lengths 2, 3 and 4. The prompts were `../spec-ab/spec-probe.py`'s:
 short code, prose and JSON (greedy and sampled), two concurrent streams, 16k/48k deep
 contexts and a tool call. Figures are medians over 3 rotated repetitions, in tok/s, with
