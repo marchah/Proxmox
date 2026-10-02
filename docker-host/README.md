@@ -172,6 +172,12 @@ it as `http://docker-host:4200`.
 | Stack env var | Value | Why |
 | --- | --- | --- |
 | `PUBLIC_URL` | `http://192.168.1.250:4200` | Base of the links the REST API returns (the one Hermes posts to Slack). Without it they use the caller's `Host`, i.e. `docker-host`, which browsers on the LAN do not all resolve |
+| `TITLE_MODEL_BASE_URL` | `http://llamacpp.lan:1234/v1` | CT 120's llama.cpp, which writes each new idea's title. Read from [project-planner#1](https://github.com/marchah/project-planner/pull/1) on: set it before merging that PR (the version deployed before it ignores the variable). Unset, ideas are saved untitled |
+
+The app repo holds no environment-specific values, so these live only here and on the stack. Use
+full hostnames (`<host>.lan`) or IPs: from project-planner#1 on, the stack has no `dns:` override,
+and Docker's resolver on this VM returns `ENOTFOUND` for single-label names such as `llamacpp` on
+a compose network, while `llamacpp.lan` resolves.
 
 Auto-update polls the app repo every 5 minutes. A push also starts the image publish, which takes
 about 2 minutes, so a poll can land in between: Portainer then redeploys the previous `main` image
