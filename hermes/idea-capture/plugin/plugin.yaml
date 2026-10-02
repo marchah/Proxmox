@@ -1,0 +1,6 @@
+name: idea-capture
+version: 1.0.0
+description: "Saves every top-level message in the Project Planner Slack channel to the board's REST API and replies in its thread with the idea's title and link, without running the agent."
+author: "homelab"
+provides_hooks:
+  - pre_gateway_dispatch

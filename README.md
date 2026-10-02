@@ -50,6 +50,8 @@ bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/be
   `make context-sweep` from the repo root.
 - [Token accounting](hermes/token-usage-collector/README.md): durable CT 120 and
   Hermes provider usage, collected inside CT 121.
+- [Idea capture](hermes/idea-capture/README.md): Slack `#ideas` messages saved to the
+  Project Planner board by a Hermes plugin on CT 121.
 - [Host notifications](host-notifications/README.md): Proxmox events to Slack.
 - [Docker stacks](docker-host/stacks/): Compose definitions; secrets are Portainer
   stack environment variables.
