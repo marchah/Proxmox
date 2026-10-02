@@ -179,10 +179,13 @@ full hostnames (`<host>.lan`) or IPs: from project-planner#1 on, the stack has n
 and Docker's resolver on this VM returns `ENOTFOUND` for single-label names such as `llamacpp` on
 a compose network, while `llamacpp.lan` resolves.
 
-Auto-update polls the app repo every 5 minutes. A push also starts the image publish, which takes
-about 2 minutes, so a poll can land in between: Portainer then redeploys the previous `main` image
-and does not retry, because the commit already counts as deployed. If a pushed change does not
-show up, use **Stacks → project-planner → Pull and redeploy**.
+The stack tracks the app repo's **`deploy` branch**, not `main`, and polls it every 5 minutes. The
+app's `Publish image` workflow moves `deploy` to a commit only after that commit's image is pushed,
+so a redeploy always pulls the new image, and a commit whose image fails to build is never
+deployed. Tracking `main` directly raced the ~2-minute publish: a poll in between redeployed the
+previous image and never retried, because the commit already counted as deployed. It happened on
+the switch-over itself, 2026-10-02. **Stacks → project-planner → Pull and redeploy** is still the
+manual override.
 
 ## Health and rollback
 
