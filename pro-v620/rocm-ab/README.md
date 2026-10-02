@@ -166,6 +166,45 @@ ROCm were not tested.
   averages, which understate ROCm's edge deep in context, so this leans toward Vulkan.
 - **Result:** ROCm's deep prefill cancels its slower decode, so throughput is a tie.
 
+## Phase 5 — a dense coder on GPU 2: ROCm wins (2026-10-02)
+
+The question was whether GPU 2 should serve a dense coding model on ROCm while CT 120
+stays on Vulkan. Setup:
+
+- **Model:** Qwen3.8-27B UD-Q4_K_XL (sha256 `3f227079…`), with q8_0 KV, reasoning off and
+  one 128k slot.
+- **Drafter:** its DFlash2 head (`c18e800d…`) at draft length 8, the former on-box coder's
+  setting, against a no-speculation control.
+- **Backends:** both at ubatch 1024; ROCm fits with ~4.8 GiB of VRAM free.
+- **Session:** `agent-sim.py` grows one coding-agent conversation to ~126k tokens. It
+  alternates ~4k-token file reads with a code-writing turn every third turn, keeps the
+  prompt cache on and decodes greedily.
+- **Figures:** medians over 3 rotated repetitions, in tok/s, with GPU 2 at 0 mV.
+
+| Depth | Prefill of a file read: Vulkan / ROCm | Code writing, best arm: Vulkan / ROCm |
+| --- | ---: | ---: |
+| 0–32k | 261.3 / 344.9 (+32%) | 22.3 / 33.6 (+51%) |
+| 32–64k | 181.8 / 257.4 (+42%) | 18.5 / 25.2 (+36%) |
+| 64–96k | 137.8 / 207.0 (+50%) | 17.4 / 17.8 (+2%) |
+| 96–128k | 110.5 / 174.6 (+58%) | 16.5 / 16.6 (+1%) |
+
+| Whole session | Vulkan | ROCm |
+| --- | ---: | ---: |
+| no speculation | 17.7 min | 14.3 min |
+| DFlash2 n8 | 19.3 min | **13.3 min** |
+
+- **Prefill:** ROCm's advantage grows with depth, to +58% at 96–128k. A coding agent
+  re-reads its context every turn, so this is most of the session.
+- **DFlash2 on Vulkan:** it is a net loss at depth. It writes code faster under 32k (22.3
+  vs 19.6) but slower beyond (11.4 vs 16.5 at 96–128k), and the whole session takes longer
+  than without it. The +89% measured for the old coder came from short prompts.
+- **DFlash2 on ROCm:** it helps at every depth (+82% on code writing under 32k), because
+  verifying 9 drafted tokens at once is the batched work ROCm does better.
+- **Correctness:** every arm repeated its greedy text exactly on 40/40 turns, and the
+  backends wrote identical text on 31–33 of 40. Draft acceptance matched (37.6% vs 38.5%).
+- **Scope:** two concurrent sessions on ROCm were not tested; a second 128k slot adds
+  ~4 GiB of KV against ~4.8 GiB free.
+
 ## Conclusion
 
 - **Vulkan stays the backend.** With MTP, ROCm 10.0 ties on CT 120's real traffic, so
@@ -174,6 +213,9 @@ ROCm were not tested.
     overflows to GTT. A ROCm OOM aborts the server; a RADV spill only slows it.
   - It needs the passthrough VM, which the host's thermal watchdog cannot see.
   - It decodes 7–16% slower in single-stream chat and tool calls.
+- **A dense coder on GPU 2 should run ROCm.** With Qwen3.8-27B Q4 and DFlash2, a 126k
+  coding-agent session finishes 25% faster than on Vulkan's best setting, because deep
+  prefill and batched draft verification both favour ROCm. This needs the passthrough VM.
 - **The passthrough VM costs no throughput.** Its costs are operational: the card is
   exclusive to the VM, guest RAM is pinned, and the model reloads from the guest disk.
 - **The −100 mV undervolt corrupts compute on both cards** under prefill load. That is a
@@ -193,6 +235,9 @@ ROCm were not tested.
 | `summarize.py` | anywhere | Markdown tables from one phase's results. |
 | `run-spec.sh` | host | Phase 4: CT 120's server flags in the VM, per backend, with and without MTP, measured by `../spec-ab/spec-probe.py`. |
 | `replay-ct120.py` | CT 120 | Replays CT 120's journaled requests under the measured ROCm/Vulkan ratios. |
+| `run-coder.sh` | host | Phase 5: the dense coder per backend, with and without DFlash2, one `agent-sim.py` session per arm. |
+| `agent-sim.py` | VM | A scripted coding-agent session growing to ~126k tokens; one JSONL row per turn. |
+| `summarize-coder.py` | anywhere | Phase 5 tables by depth band, session time and correctness. |
 
 ## Running a phase
 

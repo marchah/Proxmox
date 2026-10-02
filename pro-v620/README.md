@@ -177,6 +177,11 @@ With CT 120's MTP speculative decoding, ROCm ties on its real traffic: deep-cont
 prefill offsets slower decode. Vulkan stays because ROCm cannot fit the production ubatch
 in VRAM (no GTT overflow), needs the VM, and decodes 7–16% slower in chat and tool calls.
 
+A dense coder is the opposite case. Qwen3.8-27B Q4 with its DFlash2 drafter, in one 128k
+slot, finishes a 126k-token coding-agent session 25% faster on ROCm than on Vulkan's best
+setting (13.3 vs 17.7 min). ROCm prefills up to 58% faster deep in context and verifies
+drafts faster. On Vulkan, DFlash2 slows down past 32k and loses overall.
+
 The V620 power cap is firmware-locked at 250 W and its OverDrive interface has
 no clock-ceiling control. The supported power adjustment is a GFX voltage offset;
 see [undervolt/README.md](undervolt/README.md) for installation and measured power
