@@ -272,6 +272,7 @@ repetitions:
 | --- | --- | --- |
 | `stage-host.sh` | host | Copies both models to a temporary thin volume, fetches and checks the release tarballs, the cloud image and wikitext-2. |
 | `create-vm.sh` | host | Creates VM 301: q35, OVMF with Secure Boot off, 16 vCPU, 64 GiB, guest agent on. |
+| `stage-guest.sh` | host | Copies the harness, the release builds and the models into the guest, sha256-checked and idempotent. |
 | `guest-setup.sh` | VM | `amdgpu-dkms` for every installed kernel, Mesa pinned to the production build, OverDrive enabled. |
 | `guest-rocm.sh` | VM | ROCm 10.0 runtime and gfx1030 BLAS only; fails if the llama.cpp ROCm build has an unresolved library. |
 | `card.sh` | host | Moves the card between the host and the VM: `to-vm`, `to-host`, `restore`, `status`. |
@@ -284,6 +285,26 @@ repetitions:
 | `agent-sim.py` | VM | A scripted coding-agent session growing to ~126k tokens; one JSONL row per turn. |
 | `summarize-coder.py` | anywhere | Phase 5 tables by depth band, session time and correctness. |
 | `fit-probe.sh` | host | Loads two-slot coder configurations in the VM and reports which fit, with VRAM and GTT. |
+
+## Preparing the VM
+
+Once, from a pro-v620 checkout on the host at `/root/rocm-ab/src`. Build
+`spec-ab/deep-context.txt` first, as `../spec-ab/run-ab.sh`'s header shows; it is not committed.
+
+```sh
+bash rocm-ab/stage-host.sh                        # models to a thin volume, release builds, image
+bash rocm-ab/create-vm.sh                         # VM 301, no GPU yet
+qm start 301                                      # booting without the card leaves production alone
+bash rocm-ab/stage-guest.sh                       # harness, builds and models into the guest
+ssh ubuntu@<vm> sudo bash /opt/rocm-ab/guest-setup.sh   # amdgpu-dkms, pinned Mesa
+ssh ubuntu@<vm> sudo bash /opt/rocm-ab/guest-rocm.sh    # ROCm 10.0 (phases with setup C)
+qm shutdown 301
+```
+
+`stage-guest.sh` checks every file by sha256 and copies only what is missing or different,
+so rerun it after editing a harness script. `ONLY` limits which models it stages; the header
+lists the regex for each phase. To restage with the card already assigned to the VM, run
+`qm set 301 --delete hostpci0` first: `card.sh to-vm` adds it back.
 
 ## Running a phase
 
