@@ -36,7 +36,8 @@ runner, separate from the agent container holding credentials.
   superseded instructions and duplicate explanations. Git history holds the change
   narrative. Label measurements with the build, hardware and settings used.
 - Host services use an idempotent `install.sh`, systemd unit and `.env` file.
-  `hermes/config/` and `hermes/token-usage-collector/` installers run inside CT 121.
+  `hermes/config/`, `hermes/token-usage-collector/` and `hermes/idea-capture/` installers run
+  inside CT 121.
 - Put comments on their own lines in systemd `EnvironmentFile` files; inline
   comments become part of the value.
 
