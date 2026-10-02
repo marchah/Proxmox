@@ -211,10 +211,37 @@ MTP n2 is each backend's best. Each backend's best, in tok/s:
   from short prompts.
 - **Correctness:** every arm repeated its greedy text exactly on 40/40 turns, and Vulkan and
   ROCm with MTP wrote identical text on 34/40.
-- **Fit:** one 128k slot leaves ROCm ~3.8 GiB free with MTP. ROCm with DFlash2 does not fit
-  two 128k slots (it fits 2×96k). A two-slot run with MTP remains to be done; partial
-  2×96k data (Vulkan no-spec 21.2 min, Vulkan DFlash2 23.4 min for both sessions, rep 1)
-  was stopped in favour of the MTP run.
+- **Fit:** one 128k slot leaves ROCm ~3.8 GiB free with MTP.
+
+**Two agents at once** (`SESSIONS=2`): two concurrent sessions, one per slot, each reading
+a different part of the corpus. `fit-probe.sh` loaded each two-slot configuration with MTP:
+
+| Two slots, MTP n2 | Vulkan | ROCm |
+| --- | --- | --- |
+| 2×128k, Q8_0 head | loads: 30,139 MiB + 615 GTT | out of memory |
+| 2×128k, Q6_K head (2.6 GiB) | loads: 28,773 MiB + 615 GTT | out of memory |
+| 2×112k, Q8_0 head | — | out of memory |
+| 2×96k, Q8_0 head | — | loads: 29,415 MiB |
+
+**ROCm can serve two agents only at ~96k context each; Vulkan can give both the full 128k.**
+At 2×96k (Q8_0 head, both backends), two sessions growing to ~92k each, 3 rotated
+repetitions:
+
+| Two agents | Vulkan + MTP | ROCm + MTP |
+| --- | ---: | ---: |
+| Wall time until both finish | 21.2 min [21.2–21.3] | **16.3 min [16.3–16.3]** |
+| Prefill of a file read, 0–32k / 64–96k | 228.9 / 131.5 | 294.2 / 190.7 |
+| Code writing while the other agent works, 64–96k | 5.2 | 10.8 |
+
+- **Result:** ROCm keeps its lead with two agents, 23% faster.
+- **Contention:** code writing slows sharply on both whenever the other agent is
+  prefilling, but less on ROCm, which finishes that prefill sooner.
+- **MTP and two agents:** it does not help Vulkan here; Vulkan took 21.2 min in an earlier
+  partial no-speculation run too.
+- **Memory:** ROCm ended at 30,081 of 30,704 MiB.
+- **Determinism:** greedy text repeated on 44–47 of 58 turns rather than all. With two
+  slots, each run batches the sessions' requests together differently, which flips
+  near-ties on both backends alike.
 
 ## Conclusion
 
@@ -225,9 +252,11 @@ MTP n2 is each backend's best. Each backend's best, in tok/s:
   - It needs the passthrough VM, which the host's thermal watchdog cannot see.
   - It decodes 7–16% slower in single-stream chat and tool calls.
 - **A dense coder on GPU 2 should run ROCm.** With Qwen3.8-27B Q4 and MTP on both
-  backends, a 126k coding-agent session finishes 24% sooner on ROCm. Vulkan decodes faster
-  but prefills far slower, and coding agents prefill far more than they generate. This
-  needs the passthrough VM.
+  backends, ROCm finishes a 126k coding-agent session 24% sooner, and two concurrent
+  agents 23% sooner. Vulkan decodes faster but prefills far slower, and coding agents
+  prefill far more than they generate. The costs:
+  - ROCm needs the passthrough VM.
+  - Two agents get ~96k context each, against 128k on Vulkan.
 - **The passthrough VM costs no throughput.** Its costs are operational: the card is
   exclusive to the VM, guest RAM is pinned, and the model reloads from the guest disk.
 - **The −100 mV undervolt corrupts compute on both cards** under prefill load. That is a
@@ -250,6 +279,7 @@ MTP n2 is each backend's best. Each backend's best, in tok/s:
 | `run-coder.sh` | host | Phase 5: the dense coder per backend, with and without DFlash2, one `agent-sim.py` session per arm. |
 | `agent-sim.py` | VM | A scripted coding-agent session growing to ~126k tokens; one JSONL row per turn. |
 | `summarize-coder.py` | anywhere | Phase 5 tables by depth band, session time and correctness. |
+| `fit-probe.sh` | host | Loads two-slot coder configurations in the VM and reports which fit, with VRAM and GTT. |
 
 ## Running a phase
 

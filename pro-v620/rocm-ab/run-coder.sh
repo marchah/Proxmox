@@ -31,7 +31,8 @@ export AB_OFFSET_MV="${AB_OFFSET_MV:-0}"
 SPEC=/opt/rocm-ab/spec
 MODEL=/models/Qwen3.8-27B-UD-Q4_K_XL.gguf
 DRAFT=/models/Qwen3.8-27B-DFlash2-Q8_0.gguf
-MTP_HEAD=/models/Qwen3.8-27B-MTP-ONLY-Q8_0.gguf
+# The Q8_0 head the old coder ran; Q6_K (2.6 GiB vs 4.2) is the fallback for a tight fit.
+MTP_HEAD="${MTP_HEAD:-/models/Qwen3.8-27B-MTP-ONLY-Q8_0.gguf}"
 VK=/opt/rocm-ab/llama-b11018-vulkan
 ROCM=/opt/rocm-ab/llama-b11018-rocm
 ROCM_LIB=/opt/rocm/core-10.0/lib

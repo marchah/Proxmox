@@ -180,7 +180,9 @@ in VRAM (no GTT overflow), needs the VM, and decodes 7–16% slower in chat and 
 A dense coder is the opposite case. Qwen3.8-27B Q4 with its MTP head, in one 128k slot,
 finishes a 126k-token coding-agent session 24% sooner on ROCm (12.8 vs 16.9 min).
 Vulkan decodes 10–19% faster, but ROCm prefills 33–59% faster, and a coding agent
-prefills far more than it generates. DFlash2 loses to MTP on both backends.
+prefills far more than it generates. DFlash2 loses to MTP on both backends. Two
+concurrent agents keep the gap (16.3 vs 21.2 min), but ROCm fits two slots only at ~96k
+context each, where Vulkan fits 2×128k.
 
 The V620 power cap is firmware-locked at 250 W and its OverDrive interface has
 no clock-ceiling control. The supported power adjustment is a GFX voltage offset;
