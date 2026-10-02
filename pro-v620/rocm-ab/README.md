@@ -302,7 +302,9 @@ qm shutdown 301
 ```
 
 `stage-guest.sh` checks every file by sha256 and copies only what is missing or different,
-so rerun it after editing a harness script. `ONLY` limits which models it stages; the header
+so rerun it after editing a harness script. The fresh cloud image has no QEMU guest agent, so
+on first use it reaches the VM by its DHCP name (`rocm-ab.lan`) and installs the agent, which
+`card.sh` and the runners need. `ONLY` limits which models it stages; the header
 lists the regex for each phase. To restage with the card already assigned to the VM, run
 `qm set 301 --delete hostpci0` first: `card.sh to-vm` adds it back.
 
