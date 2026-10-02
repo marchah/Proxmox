@@ -166,10 +166,10 @@ ROCm were not tested.
   averages, which understate ROCm's edge deep in context, so this leans toward Vulkan.
 - **Result:** ROCm's deep prefill cancels its slower decode, so throughput is a tie.
 
-## Phase 5 — a dense coder on GPU 2: ROCm wins (2026-10-02)
+## Phase 5 — a dense coder: ROCm wins (2026-10-02)
 
-The question was whether GPU 2 should serve a dense coding model on ROCm while CT 120
-stays on Vulkan. Setup:
+This measures ROCm against Vulkan on a dense model under a coding-agent workload. It is a
+backend measurement, not a deployment plan: GPU 2 is slated for a large MoE. Setup:
 
 - **Model:** Qwen3.8-27B UD-Q4_K_XL (sha256 `3f227079…`), with q8_0 KV, reasoning off and
   one 128k slot.
@@ -251,12 +251,15 @@ repetitions:
     overflows to GTT. A ROCm OOM aborts the server; a RADV spill only slows it.
   - It needs the passthrough VM, which the host's thermal watchdog cannot see.
   - It decodes 7–16% slower in single-stream chat and tool calls.
-- **A dense coder on GPU 2 should run ROCm.** With Qwen3.8-27B Q4 and MTP on both
-  backends, ROCm finishes a 126k coding-agent session 24% sooner, and two concurrent
-  agents 23% sooner. Vulkan decodes faster but prefills far slower, and coding agents
-  prefill far more than they generate. The costs:
-  - ROCm needs the passthrough VM.
-  - Two agents get ~96k context each, against 128k on Vulkan.
+- **For a dense coder, ROCm is faster.** With Qwen3.8-27B Q4 and MTP on both backends,
+  ROCm finishes a 126k coding-agent session 24% sooner, and two concurrent agents 23%
+  sooner. Vulkan decodes faster but prefills far slower, and coding agents prefill far more
+  than they generate. ROCm needs the passthrough VM, and gives two agents ~96k context each
+  where Vulkan fits 128k.
+- **Not yet measured:** ROCm on a large MoE with experts offloaded to the CPU
+  (`--n-cpu-moe`), GPU 2's intended workload. That workload is prefill-bound
+  ([qwen38-flash-next](../qwen38-flash-next/README.md)), which is where ROCm is strongest,
+  but ROCm decoded the MoE slower here, and CPU offload was not part of any phase.
 - **The passthrough VM costs no throughput.** Its costs are operational: the card is
   exclusive to the VM, guest RAM is pinned, and the model reloads from the guest disk.
 - **The −100 mV undervolt corrupts compute on both cards** under prefill load. That is a
