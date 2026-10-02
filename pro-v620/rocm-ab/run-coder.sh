@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # A dense coder on GPU 2 (0000:83:00.0), Vulkan vs ROCm, in VM 301. Proxmox HOST, root.
 #
-# Qwen3.8-27B UD-Q4_K_XL with q8_0 KV, reasoning off, and its own DFlash2 drafter at draft
-# length 8 (the former on-box coder's setting), against a no-speculation control per
-# backend. Each arm serves one session of agent-sim.py: a coding-agent conversation that
+# Qwen3.8-27B UD-Q4_K_XL with q8_0 KV and reasoning off, per backend: no speculation, its own
+# DFlash2 drafter at draft length 8 (the former on-box coder's setting), and its own MTP head
+# at draft length 2 (the coder before that; longer MTP drafts measured worse). ONLY picks arms. Each arm serves one session of agent-sim.py: a coding-agent conversation that
 # grows to ~126k tokens through 4k-token file reads and periodic code-writing turns, with
 # the prompt cache on, so prefill and decode are measured at every depth an agent passes.
 # Arms rotate every repetition so drift spreads evenly.
@@ -12,6 +12,7 @@
 #
 #   systemd-run --unit=rocm-ab-coder --collect bash rocm-ab/run-coder.sh
 #   ONLY='vk/dflash2-n8|rocm/dflash2-n8' REPS=1 TARGET=24000 ...      # a smoke subset
+#   ONLY='vk/nospec|vk/mtp-n2|rocm/dflash2-n8|rocm/mtp-n2' ...        # MTP against each backend's best
 set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -21,6 +22,8 @@ REPS="${REPS:-3}"
 RUN="${RUN:-/root/rocm-ab/results/coder-$(date -u +%Y%m%dT%H%M%SZ)}"
 CTX="${CTX:-131072}"; PARALLEL="${PARALLEL:-1}"
 TARGET="${TARGET:-126000}"
+# Concurrent agent sessions, one per slot; set PARALLEL to match.
+SESSIONS="${SESSIONS:-1}"
 # ubatch per backend: ROCm cannot place buffers in GTT the way RADV does, so a tight fit
 # may need a smaller one there.
 UB_VK="${UB_VK:-1024}"; UB_ROCM="${UB_ROCM:-1024}"
@@ -28,6 +31,7 @@ export AB_OFFSET_MV="${AB_OFFSET_MV:-0}"
 SPEC=/opt/rocm-ab/spec
 MODEL=/models/Qwen3.8-27B-UD-Q4_K_XL.gguf
 DRAFT=/models/Qwen3.8-27B-DFlash2-Q8_0.gguf
+MTP_HEAD=/models/Qwen3.8-27B-MTP-ONLY-Q8_0.gguf
 VK=/opt/rocm-ab/llama-b11018-vulkan
 ROCM=/opt/rocm-ab/llama-b11018-rocm
 ROCM_LIB=/opt/rocm/core-10.0/lib
@@ -35,9 +39,11 @@ ROCM_LIB=/opt/rocm/core-10.0/lib
 # name|backend|model|extra llama-server args
 Q8="-ctk q8_0 -ctv q8_0"
 DFL2="--spec-type draft-dflash --model-draft ${DRAFT} --spec-draft-n-max 8 --spec-draft-ngl 99 -ctkd q8_0 -ctvd q8_0"
+MTP2="--spec-type draft-mtp --model-draft ${MTP_HEAD} --spec-draft-n-max 2 --spec-draft-ngl 99 -ctkd q8_0 -ctvd q8_0"
 ARMS=()
 for b in vk rocm; do
-  ARMS+=("${b}/nospec|${b}|${MODEL}|${Q8}" "${b}/dflash2-n8|${b}|${MODEL}|${Q8} ${DFL2}")
+  ARMS+=("${b}/nospec|${b}|${MODEL}|${Q8}" "${b}/dflash2-n8|${b}|${MODEL}|${Q8} ${DFL2}"
+         "${b}/mtp-n2|${b}|${MODEL}|${Q8} ${MTP2}")
 done
 if [ -n "${ONLY:-}" ]; then
   mapfile -t ARMS < <(printf '%s\n' "${ARMS[@]}" | grep -E "^(${ONLY})\|")
@@ -101,12 +107,20 @@ main(){
   local gov out rep i n name backend model extra since safe
   gov="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
   [ "$gov" = schedutil ] || die "CPU governor is ${gov}, expected schedutil"
-  say "run=${RUN} reps=${REPS} ctx=${CTX} parallel=${PARALLEL} target=${TARGET} ubatch vk=${UB_VK} rocm=${UB_ROCM} arms=${#ARMS[@]} offset=${AB_OFFSET_MV}mV"
+  [ "$SESSIONS" -le "$PARALLEL" ] || die "SESSIONS=${SESSIONS} exceeds PARALLEL=${PARALLEL}"
+  say "run=${RUN} reps=${REPS} ctx=${CTX} parallel=${PARALLEL} sessions=${SESSIONS} target=${TARGET} ubatch vk=${UB_VK} rocm=${UB_ROCM} arms=${#ARMS[@]} offset=${AB_OFFSET_MV}mV"
   trap restore EXIT
   if grep -q running <<<"$(pct status "$CT")"; then pct exec "$CT" -- systemctl disable --now "$CT_SERVICE"; fi
   grep -q running <<<"$(qm status "$VMID")" || "${HERE}/card.sh" to-vm
   vm tee "${SPEC}/agent-sim.py" >/dev/null <"${HERE}/agent-sim.py"
-  for f in "$MODEL" "$DRAFT" "${SPEC}/agent-sim.py" "${SPEC}/deep-context.txt" "${VK}/llama-server" "${ROCM}/llama-server"; do
+  # Every model and draft file the selected arms load, plus the harness itself.
+  local files=("${SPEC}/agent-sim.py" "${SPEC}/deep-context.txt" "${VK}/llama-server" "${ROCM}/llama-server") arm
+  for arm in "${ARMS[@]}"; do
+    IFS='|' read -r _ _ model extra <<<"$arm"
+    files+=("$model")
+    [[ $extra =~ --model-draft\ ([^ ]+) ]] && files+=("${BASH_REMATCH[1]}")
+  done
+  for f in $(printf '%s\n' "${files[@]}" | sort -u); do
     vm test -r "$f" || die "missing in the guest: ${f}"
   done
   guard
@@ -126,8 +140,14 @@ main(){
         continue
       fi
       say "    loaded: $(gpu_state)"
-      vm python3 "${SPEC}/agent-sim.py" --arm "$name" --rep "$rep" --corpus "${SPEC}/deep-context.txt" \
-        --target "$TARGET" --out "$out" || say "    🔴 session failed"
+      # Session s starts reading at a different eighth of the ~935 KB corpus.
+      pids=(); labels=(a b c d)
+      for s in $(seq 1 "$SESSIONS"); do
+        vm python3 "${SPEC}/agent-sim.py" --arm "$name" --rep "$rep" --corpus "${SPEC}/deep-context.txt" \
+          --target "$TARGET" --out "$out" --session "${labels[s - 1]}" --offset $(( (s - 1) * 116000 )) &
+        pids+=("$!")
+      done
+      for p in "${pids[@]}"; do wait "$p" || say "    🔴 a session failed"; done
       say "    after: $(gpu_state)"
       vm journalctl -u llamacpp-ab --no-pager -o cat --since "$since" >"${RUN}/${safe}-rep${rep}.log" 2>&1 || true
     done

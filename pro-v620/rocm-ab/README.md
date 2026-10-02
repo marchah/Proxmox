@@ -173,37 +173,48 @@ stays on Vulkan. Setup:
 
 - **Model:** Qwen3.8-27B UD-Q4_K_XL (sha256 `3f227079…`), with q8_0 KV, reasoning off and
   one 128k slot.
-- **Drafter:** its DFlash2 head (`c18e800d…`) at draft length 8, the former on-box coder's
-  setting, against a no-speculation control.
-- **Backends:** both at ubatch 1024; ROCm fits with ~4.8 GiB of VRAM free.
+- **Speculation:** the model's two own drafters, plus a no-speculation control.
+  - DFlash2 (`c18e800d…`) at draft length 8.
+  - The MTP head `a4lg/Qwen3.8-27B-MTP-ONLY-GGUF` Q8_0 (`674d0fc3…`) at draft length 2.
+    Longer MTP drafts measured worse when the old coder was tuned.
 - **Session:** `agent-sim.py` grows one coding-agent conversation to ~126k tokens. It
   alternates ~4k-token file reads with a code-writing turn every third turn, keeps the
   prompt cache on and decodes greedily.
-- **Figures:** medians over 3 rotated repetitions, in tok/s, with GPU 2 at 0 mV.
-
-| Depth | Prefill of a file read: Vulkan / ROCm | Code writing, best arm: Vulkan / ROCm |
-| --- | ---: | ---: |
-| 0–32k | 261.3 / 344.9 (+32%) | 22.3 / 33.6 (+51%) |
-| 32–64k | 181.8 / 257.4 (+42%) | 18.5 / 25.2 (+36%) |
-| 64–96k | 137.8 / 207.0 (+50%) | 17.4 / 17.8 (+2%) |
-| 96–128k | 110.5 / 174.6 (+58%) | 16.5 / 16.6 (+1%) |
+- **Runs:** two, each with 3 rotated repetitions. The second added the MTP arms against
+  both backends' earlier best arms, which repeated within 0.1 min.
+- **Settings:** GPU 2 at 0 mV, ubatch 1024 on both backends.
 
 | Whole session | Vulkan | ROCm |
 | --- | ---: | ---: |
 | no speculation | 17.7 min | 14.3 min |
-| DFlash2 n8 | 19.3 min | **13.3 min** |
+| DFlash2 n8 | 19.3 min | 13.2 min |
+| MTP n2 | **16.9 min** | **12.8 min** |
 
-- **Prefill:** ROCm's advantage grows with depth, to +58% at 96–128k. A coding agent
-  re-reads its context every turn, so this is most of the session.
-- **DFlash2 on Vulkan:** it is a net loss at depth. It writes code faster under 32k (22.3
-  vs 19.6) but slower beyond (11.4 vs 16.5 at 96–128k), and the whole session takes longer
-  than without it. The +89% measured for the old coder came from short prompts.
-- **DFlash2 on ROCm:** it helps at every depth (+82% on code writing under 32k), because
-  verifying 9 drafted tokens at once is the batched work ROCm does better.
-- **Correctness:** every arm repeated its greedy text exactly on 40/40 turns, and the
-  backends wrote identical text on 31–33 of 40. Draft acceptance matched (37.6% vs 38.5%).
-- **Scope:** two concurrent sessions on ROCm were not tested; a second 128k slot adds
-  ~4 GiB of KV against ~4.8 GiB free.
+MTP n2 is each backend's best. Each backend's best, in tok/s:
+
+| Depth | Prefill of a file read: Vulkan / ROCm | Code writing: Vulkan / ROCm |
+| --- | ---: | ---: |
+| 0–32k | 249.5 / 332.7 (+33%) | 34.7 / 31.4 (−10%) |
+| 32–64k | 172.3 / 246.6 (+43%) | 31.4 / 27.5 (−12%) |
+| 64–96k | 129.6 / 196.7 (+52%) | 29.2 / 24.7 (−15%) |
+| 96–128k | 104.0 / 165.4 (+59%) | 26.7 / 21.5 (−19%) |
+
+- **Session:** ROCm finishes it 24% sooner (12.8 vs 16.9 min). Its prefill lead grows with
+  depth, and a coding session prefills ~25 tokens for every one it generates.
+- **Decode with MTP:** Vulkan decodes 10–19% faster, and MTP holds up with depth on both
+  backends at 94% acceptance.
+- **Break-even:** from these rates, ROCm finishes a turn sooner once it prefills more than
+  2.4–3 tokens per generated token. Agentic coding with tool output is well above that;
+  long-form generation with little input would favour Vulkan.
+- **DFlash2 is not worth keeping:** on Vulkan it slows down past 32k (11.4 vs 16.5 tok/s at
+  96–128k) and loses to no speculation overall. The +89% measured for the old coder came
+  from short prompts.
+- **Correctness:** every arm repeated its greedy text exactly on 40/40 turns, and Vulkan and
+  ROCm with MTP wrote identical text on 34/40.
+- **Fit:** one 128k slot leaves ROCm ~3.8 GiB free with MTP. ROCm with DFlash2 does not fit
+  two 128k slots (it fits 2×96k). A two-slot run with MTP remains to be done; partial
+  2×96k data (Vulkan no-spec 21.2 min, Vulkan DFlash2 23.4 min for both sessions, rep 1)
+  was stopped in favour of the MTP run.
 
 ## Conclusion
 
@@ -213,9 +224,10 @@ stays on Vulkan. Setup:
     overflows to GTT. A ROCm OOM aborts the server; a RADV spill only slows it.
   - It needs the passthrough VM, which the host's thermal watchdog cannot see.
   - It decodes 7–16% slower in single-stream chat and tool calls.
-- **A dense coder on GPU 2 should run ROCm.** With Qwen3.8-27B Q4 and DFlash2, a 126k
-  coding-agent session finishes 25% faster than on Vulkan's best setting, because deep
-  prefill and batched draft verification both favour ROCm. This needs the passthrough VM.
+- **A dense coder on GPU 2 should run ROCm.** With Qwen3.8-27B Q4 and MTP on both
+  backends, a 126k coding-agent session finishes 24% sooner on ROCm. Vulkan decodes faster
+  but prefills far slower, and coding agents prefill far more than they generate. This
+  needs the passthrough VM.
 - **The passthrough VM costs no throughput.** Its costs are operational: the card is
   exclusive to the VM, guest RAM is pinned, and the model reloads from the guest disk.
 - **The −100 mV undervolt corrupts compute on both cards** under prefill load. That is a

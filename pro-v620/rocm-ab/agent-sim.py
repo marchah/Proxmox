@@ -15,6 +15,9 @@ the canned reply plus the next user message, at the session's current depth.
 
 Greedy decoding (temperature 0). One JSONL row per turn: depth before and after, new prompt
 tokens and their rate, generated tokens and their rate, draft statistics, a hash of the text.
+
+Concurrent sessions (one per server slot) each get a --session label and a different
+--offset into the corpus, so their contexts diverge after the system prompt.
 """
 from __future__ import annotations
 
@@ -63,13 +66,15 @@ def main() -> int:
     ap.add_argument("--write-every", type=int, default=3)
     ap.add_argument("--read-tokens", type=int, default=160)
     ap.add_argument("--write-tokens", type=int, default=512)
+    ap.add_argument("--session", default="a")
+    ap.add_argument("--offset", type=int, default=0, help="corpus character to start reading at")
     a = ap.parse_args()
 
     corpus = open(a.corpus, encoding="utf-8").read()
     # Each write's canned reply is a fixed slice of real repository code, the same length every time.
     write_reply = "```bash\n" + corpus[:1600] + "\n```"
     msgs = [{"role": "system", "content": SYSTEM}]
-    pos, turn, writes, prompt_tokens = 0, 0, 0, 0
+    pos, turn, writes, prompt_tokens = a.offset, 0, 0, 0
     out = open(a.out, "a", encoding="utf-8")
 
     # Warm-up: first request after load pays shader/pipeline compilation. Not recorded.
@@ -97,7 +102,8 @@ def main() -> int:
         prompt_tokens = usage.get("prompt_tokens") or prompt_tokens
         new = t.get("prompt_n") or 0
         row = {
-            "arm": a.arm, "rep": a.rep, "turn": turn, "kind": kind, "ts": time.time(),
+            "arm": a.arm, "rep": a.rep, "session": a.session, "turn": turn, "kind": kind,
+            "ts": time.time(), "t_start": round(time.time() - wall, 3),
             "depth_before": prompt_tokens - new, "depth_after": prompt_tokens,
             "prompt_n": new, "prompt_ms": t.get("prompt_ms"), "prompt_tps": t.get("prompt_per_second"),
             "predicted_n": t.get("predicted_n"), "predicted_ms": t.get("predicted_ms"),
@@ -107,7 +113,7 @@ def main() -> int:
             "content_sha": hashlib.sha256(content.encode()).hexdigest()[:16],
         }
         out.write(json.dumps(row) + "\n"); out.flush()
-        print(f"  t{turn:02d} {kind:5s} depth {row['depth_before']:6d}->{row['depth_after']:6d} "
+        print(f"  {a.session}{turn:02d} {kind:5s} depth {row['depth_before']:6d}->{row['depth_after']:6d} "
               f"prefill {new:5d} @ {row['prompt_tps'] or 0:7.1f} t/s  decode {row['predicted_n']} @ "
               f"{row['decode_tps'] or 0:6.1f} t/s  draft {row['draft_accepted']}/{row['draft_n']}", flush=True)
         msgs.append({"role": "assistant", "content": READ_REPLY if kind == "read" else write_reply})
