@@ -30,7 +30,9 @@ TAG=b11018
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 SRC="$(dirname "$HERE")"
 HF=https://huggingface.co
-VM_HOST="${VM_HOST:-$(qm config "$VMID" 2>/dev/null | sed -n 's/^name: //p').lan}"
+# Tolerate a missing VM here (pipefail + set -e would exit silently): the running check below
+# then says what is wrong.
+VM_HOST="${VM_HOST:-$({ qm config "$VMID" 2>/dev/null || true; } | sed -n 's/^name: //p').lan}"
 
 # guest file|sha256|source: host:<path> | ct:<id>:<path> | hf:<repo>@<revision>/<file>
 MODELS=(
