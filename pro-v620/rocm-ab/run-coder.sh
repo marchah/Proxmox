@@ -8,7 +8,8 @@
 # the prompt cache on, so prefill and decode are measured at every depth an agent passes.
 # Arms rotate every repetition so drift spreads evenly.
 #
-# On exit the card returns to the host and CT 123's model service is re-enabled.
+# When it finishes or fails, the card returns to the host and CT 123's model service is
+# re-enabled. `systemctl stop` on the unit kills that restore along with the run; follow it with card.sh restore.
 #
 #   systemd-run --unit=rocm-ab-coder --collect bash rocm-ab/run-coder.sh
 #   ONLY='vk/dflash2-n8|rocm/dflash2-n8' REPS=1 TARGET=24000 ...      # a smoke subset

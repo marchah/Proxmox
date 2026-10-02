@@ -315,9 +315,13 @@ journalctl -fu rocm-ab-p1
 ```
 
 `run-phase.sh` disables CT 123's model service for the phase, binds the model volume into
-CT 123 read-only, and on exit always runs `card.sh restore`: the card returns to `amdgpu`
-at `AB_OFFSET_MV` (default 0), and CT 123's service is re-enabled. CT 120's card is never
-touched. `SMOKE=1` runs one
+CT 123 read-only, and when the phase finishes or fails it runs `card.sh restore`: the card
+returns to `amdgpu` at `AB_OFFSET_MV` (default 0), and CT 123's service is re-enabled. CT
+120's card is never touched.
+
+⚠️ **Cancelling with `systemctl stop` skips the restore.** Stopping the unit kills the whole
+process group, so the restore started by the exit trap dies too, leaving the card on `vfio-pci`
+and CT 123 stopped. Run `bash rocm-ab/card.sh restore` after stopping any run. `SMOKE=1` runs one
 round with tiny shapes to check the pipeline.
 
 Per round and model: `llama-bench -p 512 -n 128 -d 0,8192,32768 -r 3` and

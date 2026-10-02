@@ -8,7 +8,8 @@
 # non-speculative control and MTP at draft lengths 2, 3 and 4, since the best length can
 # differ by backend. Arms rotate every repetition so drift spreads evenly.
 #
-# On exit the card returns to the host and CT 123's model service is re-enabled.
+# When it finishes or fails, the card returns to the host and CT 123's model service is
+# re-enabled. `systemctl stop` on the unit kills that restore along with the run; follow it with card.sh restore.
 #
 #   systemd-run --unit=rocm-ab-spec --collect bash rocm-ab/run-spec.sh
 #   ONLY='vk/mtp-n3-q8|rocm/mtp-n3-q8' REPS=1 ...      # a smoke subset

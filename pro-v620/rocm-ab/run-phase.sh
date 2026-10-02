@@ -9,8 +9,9 @@
 #
 # Three rounds, X Y | Y X | X Y: a linear drift cancels, and the card changes sides only
 # three times. Round 1 also runs the perplexity gate. Results land in
-# ${RESULTS_ROOT}/<phase>/r<round>-<setup>/. On exit, whatever happened, production is
+# ${RESULTS_ROOT}/<phase>/r<round>-<setup>/. When the phase finishes or fails, production is
 # restored: the card returns to the host and CT 123's model service is re-enabled.
+# `systemctl stop` on the unit kills that restore along with the run; follow it with card.sh restore.
 #
 # Run it as a unit so it survives the SSH session:
 #   systemd-run --unit=rocm-ab-p1 --collect bash /root/rocm-ab/src/rocm-ab/run-phase.sh p1 A B
