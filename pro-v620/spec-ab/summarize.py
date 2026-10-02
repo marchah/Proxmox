@@ -22,9 +22,13 @@ from collections import defaultdict
 
 
 def reference_for(arm: str, arms: set[str]) -> str | None:
-    if arm.startswith("base"):
-        return "base" if arm != "base" and "base" in arms else None
-    ref = "base-q8" if arm.endswith("-q8") else "base"
+    # An optional "<backend>/" prefix (rocm-ab/run-spec.sh) keeps each backend's arms
+    # compared against that backend's own non-spec arm.
+    prefix, _, name = arm.rpartition("/")
+    p = f"{prefix}/" if prefix else ""
+    if name.startswith("base"):
+        return f"{p}base" if name != "base" and f"{p}base" in arms else None
+    ref = f"{p}base-q8" if name.endswith("-q8") else f"{p}base"
     return ref if ref in arms else None
 
 

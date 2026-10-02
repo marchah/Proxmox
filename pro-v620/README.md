@@ -9,8 +9,9 @@ both on CPU-direct Gen4 x16 slots. Deployment recorded 2026-09-18:
 | `0000:83:00.0` | CT 123 `gpu2` | [Qwen3.8-Flash-Next](qwen38-flash-next/README.md), `llamacpp-qwen38fn.service`, API `:1234` |
 
 Each card has a 9733 blower controlled by [gpu-blower-control](gpu-blower-control/README.md)
-over IPMI: FAN5 cools `03:00.0`, FAN4 cools `83:00.0`. Both use the
-[−100 mV undervolt](undervolt/README.md). The
+over IPMI: FAN5 cools `03:00.0`, FAN4 cools `83:00.0`. Both run at stock voltage: the
+[−100 mV undervolt](undervolt/README.md) silently corrupted compute under prefill load.
+The
 [thermal watchdog](gpu-thermal-watchdog/README.md) stops the owning service at
 102 °C junction / 101 °C memory and leaves it stopped until the cooling fault is resolved.
 
@@ -160,10 +161,28 @@ server can.
 
 ## Backend and power
 
-Vulkan/RADV is the supported backend. A 2026-06-29 comparison on b9835 found
-ROCm 7.2 in a passthrough VM decoded 7–14% slower than Vulkan at matched 64k
-context. The same ROCm userspace failed model loading in the tested LXC/host
-kernel combination. Those results are version-specific.
+Vulkan/RADV is the supported backend. ROCm needs AMD's `amdgpu-dkms` for discrete
+Radeon cards, which an LXC cannot load beside the host's in-tree `amdgpu`, so it runs
+only in a passthrough VM. Measured 2026-10-01 on `b11018` with ROCm 10.0
+([rocm-ab](rocm-ab/README.md)):
+
+- **The VM costs nothing measurable:** within ±1.8% of the LXC, with bit-identical
+  perplexity.
+- **ROCm decodes slower:** 12–17% slower on Qwen3.6-35B-A3B and 7–8% slower on
+  Qwen3.8-27B.
+- **ROCm prefills faster at depth:** the advantage grows with depth, reaching +23% and +18%
+  at 32k.
+
+With CT 120's MTP speculative decoding, ROCm ties on its real traffic: deep-context
+prefill offsets slower decode. Vulkan stays because ROCm cannot fit the production ubatch
+in VRAM (no GTT overflow), needs the VM, and decodes 7–16% slower in chat and tool calls.
+
+A dense coder is the opposite case. Qwen3.8-27B Q4 with its MTP head, in one 128k slot,
+finishes a 126k-token coding-agent session 24% sooner on ROCm (12.8 vs 16.9 min).
+Vulkan decodes 10–19% faster, but ROCm prefills 33–59% faster, and a coding agent
+prefills far more than it generates. DFlash2 loses to MTP on both backends. Two
+concurrent agents keep the gap (16.3 vs 21.2 min), but ROCm fits two slots only at ~96k
+context each, where Vulkan fits 2×128k.
 
 The V620 power cap is firmware-locked at 250 W and its OverDrive interface has
 no clock-ceiling control. The supported power adjustment is a GFX voltage offset;

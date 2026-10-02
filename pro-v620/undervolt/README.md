@@ -3,6 +3,10 @@
 A small systemd service that applies a fixed **GFX voltage offset** (undervolt)
 to the Radeon Pro V620 on the Proxmox host, persisting it across reboots.
 
+**Both cards run at 0 mV (stock).** −100 mV silently corrupts compute (see below). −50 mV
+passed the determinism test but saves only ~16 W per card in decode. The service stays
+installed, so a qualified offset is a one-line change.
+
 ## Why an undervolt and not a power cap
 
 The original goal was to power-limit the V620 from 250 W to 220 W. **It is not
@@ -44,18 +48,59 @@ only ~96–128 W — well below the 250 W cap — so that regime is *not* power-
 undervolting there cuts power directly. At high concurrency / large prefills the
 card hits the cap, so the lower voltage converts to a little more clock instead.
 
-**Stability:** −100 mV ran the full batch (single-user, concurrency 1→16,
-input-length 128→32768, soak) with **zero** GPU faults (no resets / ring
-timeouts). If you ever observe instability under load, move `OFFSET_MV` closer to
-0 (e.g. `-75`).
+**−100 mV is not error-free.** It ran the full batch (single-user, concurrency 1→16,
+input-length 128→32768, soak) with zero GPU faults. On 2026-10-01, however, repeated
+perplexity runs found silent compute errors on both cards under prefill load. The runs used
+llama.cpp `b11018` Vulkan, Qwen3.6-35B-A3B on wikitext-2 (40 × 2048), FA, q8_0 KV and
+ubatch 1024:
+
+| Card | 0 mV | −50 mV | −100 mV |
+| --- | --- | --- | --- |
+| `0000:83:00.0` | all bit-identical (5.5681 ± 0.06500), incl. 8 interleaved with −100 mV | 8/8 identical | **0/8 identical**: diverge from chunk 1, finals 5.5650–5.6221, one NaN |
+| `0000:03:00.0` | all bit-identical (5.5681 ± 0.06500) | 5/5 identical | **0/5 identical**: diverge from chunks 2–15, finals 5.5673–5.5691 |
+
+The cache is not the cause. Perplexity clears the KV cache before every chunk, and on
+`0000:83:00.0` the −100 mV runs alternated minute by minute with 0 mV runs using the same
+binary, model and q8_0 KV. Every 0 mV run was identical and no −100 mV run was. Several
+failing runs drew only 235–241 W, so the errors do not need the power cap.
+
+Neither the kernel nor the output gave any sign. Perplexity holds the card at the 250 W cap,
+which is harder than the batch above. **Test an offset by repeating a perplexity run:** at a
+correct offset the result is bit-identical every time. Details are in
+[`../rocm-ab/README.md`](../rocm-ab/README.md).
+
+**−50 mV passed the same test on both cards** (2026-10-01, `ppl-determinism.sh`):
+
+- **Results:** all 13 runs were bit-identical to 0 mV (table above).
+- **Throughput and heat:** at the cap the lower voltage buys clock, not heat. Throughput
+  rose +0.7–0.8%. Peaks were 81–86 °C against 80–82 °C at 0 mV, rising as the card
+  heat-soaked across back-to-back runs.
+- **Power:** in decode, which runs below the cap, it saves two thirds of what −100 mV saves
+  (table below).
+- **Limits:** a pass bounds the error rate; it does not prove it is zero.
+
+Single-stream decode on `0000:83:00.0`, measured 2026-10-01 with `decode-power.sh`:
+Qwen3.6-35B-A3B, tg1024 at depth 8192, two interleaved rounds, medians.
+
+| Offset | Decode | Board power | Junction |
+| --- | ---: | ---: | ---: |
+| 0 mV | 76.5 tok/s | 162 W | 65 °C |
+| −50 mV | 76.3 tok/s | 146 W (−10%) | 62 °C |
+| −100 mV | 76.3 tok/s | 136 W (−16%) | 60 °C |
+
+```bash
+# Host, root. Stop the card's model service first; both leave the card at 0 mV.
+./ppl-determinism.sh 123 0000:83:00.0 8 -50        # CT 123's paths: set BIN, MODEL, WIKI
+./ppl-determinism.sh 120 0000:03:00.0 5 -50        # defaults match CT 120
+./decode-power.sh 123 0000:83:00.0 2 0 -50 -100    # power below the cap, offsets interleaved
+```
 
 **Deeper-undervolt sweep (2026-07-09, on the second V620 — see the
-`second-v620-validated` note):** −100 mV is this card's safe floor; going deeper
-was tested and **rejected**:
+`second-v620-validated` note):** offsets below −100 mV were tested and **rejected**:
 
 | Offset | Single-stream | Under concurrent load | Result |
 | --- | --- | --- | --- |
-| −100 mV | correct | correct (5/5 before **and** after a c1→8 stress) | **stable — keep** |
+| −100 mV | correct | correct (5/5 before **and** after a c1→8 stress) | passed this check; fails perplexity determinism (above) |
 | −125 mV | correct | **silent garbage output** (runs of one char), no crash, no dmesg fault | **unsafe** |
 | −150 mV | — | compute-ring timeout → **MODE1 GPU reset, VRAM lost** | hard crash |
 
@@ -88,13 +133,14 @@ The installer:
    service applies it automatically on the next boot.
 
 ```bash
-# Change the offset and re-apply (OverDrive already active):
-sed -i 's/^OFFSET_MV=.*/OFFSET_MV=-75/' /etc/gpu-undervolt.env
+# Change the offset and re-apply (OverDrive already active). Qualify it first with
+# ppl-determinism.sh: repeated perplexity runs must be bit-identical.
+sed -i 's/^OFFSET_MV=.*/OFFSET_MV=-50/' /etc/gpu-undervolt.env
 systemctl restart gpu-undervolt
 
 # Inspect:
 systemctl status gpu-undervolt
-cat /sys/class/drm/card*/device/pp_od_clk_voltage     # OD_VDDGFX_OFFSET: -100mV
+cat /sys/class/drm/card*/device/pp_od_clk_voltage     # OD_VDDGFX_OFFSET: 0mV
 
 # Return to stock voltage (also happens automatically on `systemctl stop`):
 systemctl stop gpu-undervolt
@@ -109,9 +155,11 @@ only, on top of amdgpu's vendor default `0xfff7bfff`).
 | File                   | Installed to                              | Purpose |
 | ---------------------- | ----------------------------------------- | ------- |
 | `gpu-undervolt.sh`     | `/usr/local/sbin/gpu-undervolt`           | Applies (`apply`) / resets (`--reset`) the offset; waits for the OverDrive node at boot |
-| `gpu-undervolt.env`    | `/etc/gpu-undervolt.env`                  | `OFFSET_MV` (default `-100`) and knobs |
+| `gpu-undervolt.env`    | `/etc/gpu-undervolt.env`                  | `OFFSET_MV` (default `0`) and knobs |
 | `gpu-undervolt.service`| `/etc/systemd/system/gpu-undervolt.service` | oneshot (`RemainAfterExit`): applies at boot, resets to 0 mV on stop **or a failed start** (`ExecStopPost`) |
 | `install.sh`           | —                                         | Idempotent installer (also writes the OverDrive modprobe.d option) |
+| `ppl-determinism.sh`   | —                                         | Tests an offset: repeated perplexity runs must be bit-identical to a 0 mV reference |
+| `decode-power.sh`      | —                                         | Measures an offset's board power, clock and junction in single-stream decode |
 | (installer writes)     | `/etc/modprobe.d/amdgpu-overdrive.conf`   | Enables OverDrive at amdgpu load |
 
 ## Uninstall / revert to stock
