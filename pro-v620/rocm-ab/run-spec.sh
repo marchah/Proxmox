@@ -2,7 +2,8 @@
 # MTP speculative decoding, Vulkan vs ROCm, in VM 301 on GPU 2 (0000:83:00.0). Proxmox HOST, root.
 #
 # Each arm is a llama-server with CT 120's production flags (262k context, 2 slots, q8_0 KV,
-# FA, batch 4096, ubatch 1024, reasoning off, no prompt cache), started in the guest as a
+# FA, batch 4096, reasoning off, no prompt cache; ubatch 1024 on Vulkan and 512 on ROCm, see
+# UB_* below), started in the guest as a
 # transient unit and measured by ../spec-ab/spec-probe.py: short prompts greedy and sampled,
 # two concurrent streams, 16k/48k deep contexts and a tool call. Each backend has a
 # non-speculative control and MTP at draft lengths 2, 3 and 4, since the best length can
