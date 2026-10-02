@@ -58,6 +58,30 @@ pct exec 121 -- systemctl restart hermes
 The Slack bot must be a member of the channel; with `require_mention: false` and an empty
 `allowed_channels`, the gateway already receives its messages.
 
+## Discussing an idea in its thread
+
+Thread replies reach the Hermes agent like in any channel. Two pieces of live CT 121 config, not in
+this repo, make that useful:
+
+- **The board's MCP server**, registered next to kb-rag in `/root/.hermes/config.yaml`:
+  ```yaml
+  mcp_servers:
+    project-planner:
+      url: http://docker-host.lan:4200/mcp/
+      timeout: 60
+      connect_timeout: 15
+  ```
+  No auth header: the board is LAN-only by design. It serves read-only `list_ideas` and `get_idea`
+  (the idea, its plan, questions and research state). Check it with
+  `pct exec 121 -- bash -lc 'hermes mcp test project-planner'` (two tools discovered).
+- **The `#ideas` channel prompt** (`slack.channel_prompts.<channel id>`) tells the agent that a
+  thread discusses the idea in its first message, to read it with `get_idea` using the id in the
+  plugin's `?idea=<id>` link, and that nothing said in the thread is saved to the board.
+
+⚠️ `hermes config set` writes the right YAML but drops `config.yaml`'s comment blocks. Back the file
+up outside `/root/.hermes/`, let it produce the new lines, restore the backup, and splice those
+lines in; `diff` against the backup should show only them. Both pieces need a gateway restart.
+
 ## Verify and operate
 
 - Post an idea in `#ideas`: the thread reply arrives within a second or two.

@@ -165,19 +165,27 @@ Stack: **not in this repo.** It lives with the app at
 in the public `marchah/project-planner` repo. Both the repo and its GHCR package are public, so
 Portainer needs no git or registry credentials (MealDeal's case, not work-board's).
 
-Live at **`http://192.168.1.250:4200`** — a sticky-note board for project ideas. The board uses
-GraphQL at `/graphql`; machine callers such as Hermes on CT 121 use REST at `/api/ideas` and reach
-it as `http://docker-host:4200`.
+Live at **`http://192.168.1.250:4200`** — a sticky-note board for project ideas, which Hermes
+researches into plans with clarifying questions. The board uses GraphQL at `/graphql`; Hermes on
+CT 121 captures ideas over REST at `/api/ideas` and reads them over MCP at `/mcp/`, reaching the
+board as `http://docker-host.lan:4200`. The board in turn starts research runs on Hermes' API.
 
 | Stack env var | Value | Why |
 | --- | --- | --- |
 | `PUBLIC_URL` | `http://192.168.1.250:4200` | Base of the links the REST API returns (the one Hermes posts to Slack). Without it they use the caller's `Host`, i.e. `docker-host`, which browsers on the LAN do not all resolve |
-| `TITLE_MODEL_BASE_URL` | `http://llamacpp.lan:1234/v1` | CT 120's llama.cpp, which writes each new idea's title. Read from [project-planner#1](https://github.com/marchah/project-planner/pull/1) on: set it before merging that PR (the version deployed before it ignores the variable). Unset, ideas are saved untitled |
+| `TITLE_MODEL_BASE_URL` | `http://llamacpp.lan:1234/v1` | CT 120's llama.cpp, which writes each new idea's title. Unset, ideas are saved untitled |
+| `HERMES_API_URL` | `http://hermes.lan:8642` | CT 121's Hermes API, which runs research. Unset, research is off and the note's button is hidden |
+| `HERMES_API_KEY` | *(secret, on the stack only)* | CT 121's `API_SERVER_KEY` from `/root/.hermes/.env`. Rotating it there means updating it here |
+| `HERMES_PROVIDER` | `openai-codex` | Research runs on Codex through the ChatGPT subscription (billed `included`). Empty: Hermes' default, CT 120's Qwen |
+| `RESEARCH_ON_CAPTURE` | `false` | Research starts from each note's button. `true` researches every new idea on its own |
 
 The app repo holds no environment-specific values, so these live only here and on the stack. Use
-full hostnames (`<host>.lan`) or IPs: from project-planner#1 on, the stack has no `dns:` override,
-and Docker's resolver on this VM returns `ENOTFOUND` for single-label names such as `llamacpp` on
-a compose network, while `llamacpp.lan` resolves.
+full hostnames (`<host>.lan`) or IPs: the stack has no `dns:` override, and Docker's resolver on
+this VM returns `ENOTFOUND` for single-label names such as `llamacpp` on a compose network, while
+`llamacpp.lan` and `hermes.lan` resolve.
+
+A settings change takes effect on the next redeploy, not when it is saved: use **Pull and
+redeploy** after editing them.
 
 The stack tracks the app repo's **`deploy` branch**, not `main`, and polls it every 5 minutes. The
 app's `Publish image` workflow moves `deploy` to a commit only after that commit's image is pushed,
@@ -209,8 +217,9 @@ Two things matter, and neither is the VM's OS disk (rebuildable by re-running th
 - **`portainer_data`** — stack definitions, users, settings.
 - **Each app's data volume** — `mealdeal_mealdeal-data` holds the deal database,
   `work-board_work-board-plan` holds work-board's three-day plan, and
-  `project-planner_project-planner-data` holds every captured idea (and, later, the plans and
-  your answers to their questions). Compose prefixes the stack name, so confirm them with the
+  `project-planner_project-planner-data` holds every captured idea with its plans, questions and
+  research history. Tarballs taken before each schema migration so far are in
+  `/var/backups/project-planner/` on this VM. Compose prefixes the stack name, so confirm them with the
   `docker volume ls` below. The plan and the ideas are the ones no API can regenerate: MealDeal's
   deals re-scrape, work-board's board rebuilds from Linear and GitHub, but nothing knows which
   tickets you picked for Wednesday or what you wrote down as an idea.
