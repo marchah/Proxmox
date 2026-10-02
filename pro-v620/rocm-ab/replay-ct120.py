@@ -24,15 +24,20 @@ PP = [(0, 1529.2 / 1662.6), (16000, 1308.1 / 1291.1), (48000, 1058.2 / 863.4)]
 TG = [(0, 102.6 / 110.3), (16000, 89.3 / 98.7), (48000, 76.0 / 82.5)]
 
 since = sys.argv[2]
+# Task ids restart at 0 with every server process, so key each request by the process id the
+# journal prints ("llamacpp-serve[PID]:") as well; a window spanning restarts would otherwise
+# let a later request overwrite an earlier one with the same id.
 tasks = collections.defaultdict(dict)
 for line in open(sys.argv[1], errors="replace"):
     if line[:19] < since: continue
+    pid = re.search(r"\[(\d+)\]: ", line)
+    pid = pid.group(1) if pid else "?"
     m = re.search(r"task (\d+) \| prompt eval time =\s+([\d.]+) ms /\s+(\d+) tokens", line)
-    if m: tasks[m.group(1)].update(pp_ms=float(m.group(2)), pp_n=int(m.group(3)), day=line[:10]); continue
+    if m: tasks[pid, m.group(1)].update(pp_ms=float(m.group(2)), pp_n=int(m.group(3)), day=line[:10]); continue
     m = re.search(r"task (\d+) \|\s+eval time =\s+([\d.]+) ms /\s+(\d+) tokens", line)
-    if m: tasks[m.group(1)].update(tg_ms=float(m.group(2)), tg_n=int(m.group(3))); continue
+    if m: tasks[pid, m.group(1)].update(tg_ms=float(m.group(2)), tg_n=int(m.group(3))); continue
     m = re.search(r"task (\d+) \| stop processing: n_tokens = (\d+)", line)
-    if m: tasks[m.group(1)].update(ctx=int(m.group(2)))
+    if m: tasks[pid, m.group(1)].update(ctx=int(m.group(2)))
 
 vk = rc = pp_ms = tg_ms = pp_n = tg_n = 0.0; n = 0; buckets = collections.defaultdict(lambda: [0, 0.0, 0.0])
 for t in tasks.values():

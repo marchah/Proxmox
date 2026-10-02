@@ -157,10 +157,10 @@ ROCm were not tested.
 - **Correctness:** draft acceptance matches (71% at n3). Every arm returned valid tool
   calls, showed no repetition collapse, and gave identical greedy output across repetitions.
 
-**Replaying CT 120's real traffic** (`replay-ct120.py`, 3,216 requests since MTP went live on
-2026-09-22):
+**Replaying CT 120's real traffic** (`replay-ct120.py`, 3,234 requests from MTP going live on
+2026-09-22 to 2026-10-01):
 
-- **Traffic:** 7.0M prompt tokens against 1.2M generated, 61% of requests ending at 32–64k
+- **Traffic:** 7.1M prompt tokens against 1.2M generated, 61% of requests ending at 32–64k
   context. Vulkan spent 6.7 h of GPU time on them.
 - **Method:** scaled by the measured ratios at each request's depth, ROCm comes to **6.7 h
   (+0.2%)**: +8% under 8k context, −0.8% at 32–64k. The ratios come from cold-prefill
