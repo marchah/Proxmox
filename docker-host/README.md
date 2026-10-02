@@ -1,10 +1,11 @@
 # docker-host — the app-stack host (VM 300)
 
 A Debian VM running **Docker + Compose + Portainer CE**. It hosts the homelab's small,
-self-contained web apps as Compose stacks — currently MealDeal and work-board — so a
-new project costs a compose file instead of a bespoke provisioning script. A stack's
-compose file usually lives in `stacks/` here; work-board's lives in its own repo, and
-[work-board specifics](#work-board-specifics) covers its setup.
+self-contained web apps as Compose stacks — currently MealDeal, work-board and Project
+Planner — so a new project costs a compose file instead of a bespoke provisioning script. A
+stack's compose file usually lives in `stacks/` here; work-board's and Project Planner's live
+in their own repos ([work-board specifics](#work-board-specifics),
+[Project Planner specifics](#project-planner-specifics)).
 
 Apps share this VM and do not consume individual VMIDs.
 
@@ -157,6 +158,26 @@ and registry, to pull the image — where MealDeal needs neither. Details live i
 README; the general lesson for this one is to **check a stack's repo and package visibility
 before assuming anonymous access**, rather than generalising from MealDeal.
 
+## Project Planner specifics
+
+Stack: **not in this repo.** It lives with the app at
+[`deploy/compose.yaml`](https://github.com/marchah/project-planner/blob/main/deploy/compose.yaml)
+in the public `marchah/project-planner` repo. Both the repo and its GHCR package are public, so
+Portainer needs no git or registry credentials (MealDeal's case, not work-board's).
+
+Live at **`http://192.168.1.250:4200`** — a sticky-note board for project ideas. The board uses
+GraphQL at `/graphql`; machine callers such as Hermes on CT 121 use REST at `/api/ideas` and reach
+it as `http://docker-host:4200`.
+
+| Stack env var | Value | Why |
+| --- | --- | --- |
+| `PUBLIC_URL` | `http://192.168.1.250:4200` | Base of the links the REST API returns (the one Hermes posts to Slack). Without it they use the caller's `Host`, i.e. `docker-host`, which browsers on the LAN do not all resolve |
+
+Auto-update polls the app repo every 5 minutes. A push also starts the image publish, which takes
+about 2 minutes, so a poll can land in between: Portainer then redeploys the previous `main` image
+and does not retry, because the commit already counts as deployed. If a pushed change does not
+show up, use **Stacks → project-planner → Pull and redeploy**.
+
 ## Health and rollback
 
 The MealDeal healthcheck queries GraphQL `{__typename}`. An unhealthy deployment
@@ -169,16 +190,21 @@ is down is a working board, and failing the healthcheck on that would restart-lo
 container through an outage it exists to display. So a healthy container with a red banner on
 the page is the intended combination, not a broken healthcheck.
 
+Project Planner's `/healthz` answers 200 once database migrations have run. Roll back by pinning
+`ghcr.io/marchah/project-planner:sha-<short>` in its compose file.
+
 ## Backups
 
 Two things matter, and neither is the VM's OS disk (rebuildable by re-running the script):
 
 - **`portainer_data`** — stack definitions, users, settings.
-- **Each app's data volume** — `mealdeal_mealdeal-data` holds the deal database, and
-  `work-board_work-board-plan` holds work-board's three-day plan. Compose prefixes the stack
-  name, so confirm both with the `docker volume ls` below. The plan is the only one of these
-  that no API can regenerate: MealDeal's deals re-scrape, work-board's board rebuilds from
-  Linear and GitHub, but nothing knows which tickets you picked for Wednesday.
+- **Each app's data volume** — `mealdeal_mealdeal-data` holds the deal database,
+  `work-board_work-board-plan` holds work-board's three-day plan, and
+  `project-planner_project-planner-data` holds every captured idea (and, later, the plans and
+  your answers to their questions). Compose prefixes the stack name, so confirm them with the
+  `docker volume ls` below. The plan and the ideas are the ones no API can regenerate: MealDeal's
+  deals re-scrape, work-board's board rebuilds from Linear and GitHub, but nothing knows which
+  tickets you picked for Wednesday or what you wrote down as an idea.
 
 ```bash
 # List what exists

@@ -14,7 +14,7 @@ Deployment recorded 2026-09-18:
 | CT 123 | `gpu2` | Qwen3.8-Flash-Next on V620 `0000:83:00.0`, API `:1234` | [Flash-Next](pro-v620/qwen38-flash-next/README.md) |
 | CT 140 | `kb-rag` | Markdown KB hybrid search, REST + MCP `:8770` | [Retrieval service](kb-rag/README.md) |
 | CT 200 | `bench-runner` | Disposable OpenAI-compatible endpoint benchmarks | [Benchmark runner](bench-runner/README.md) |
-| VM 300 | `docker-host` | Docker + Compose; MealDeal `:4000`, work-board `:4100`, Portainer `:9443` | [Docker host](docker-host/README.md) |
+| VM 300 | `docker-host` | Docker + Compose; MealDeal `:4000`, work-board `:4100`, Project Planner `:4200`, Portainer `:9443` | [Docker host](docker-host/README.md) |
 
 Both V620s have 32 GB VRAM and CPU-direct Gen4 x16 slots on the ROMED8-2T.
 Each has a blower driven by [IPMI fan control](pro-v620/gpu-blower-control/README.md),
