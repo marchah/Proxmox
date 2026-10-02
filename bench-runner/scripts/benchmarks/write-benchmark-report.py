@@ -54,6 +54,18 @@ def first_present(*values: Any) -> Any:
     return None
 
 
+def fmt_pct(value: Any) -> str:
+    return "n/a" if value is None else f"{value * 100:.0f}%"
+
+
+def fmt_spread(values: dict[str, Any] | None, digits: int = 1) -> str:
+    """median (min-max) of a spread() dict from bench_common."""
+    values = values or {}
+    if values.get("median") is None:
+        return "n/a"
+    return f"{fmt(values['median'], digits)} ({fmt(values.get('min'), digits)}-{fmt(values.get('max'), digits)})"
+
+
 def md_escape(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ").strip()
 
@@ -450,6 +462,21 @@ def telemetry_summary(target_dir: Path, filename: str = "telemetry.jsonl") -> di
     }
 
 
+# Summary files the benchmarks write, and the type the report gives each.
+SUMMARY_TYPES = (
+    ("openai-*-summary.json", "OpenAI-compatible API"),
+    ("agent-summary.json", "Agent sessions"),
+    ("ingest-summary.json", "Document ingestion"),
+)
+
+
+def find_summary(target_dir: Path) -> tuple[Path, str] | None:
+    for pattern, kind in SUMMARY_TYPES:
+        for candidate in target_dir.glob(pattern):
+            return candidate, kind
+    return None
+
+
 def benchmark_rows(run_dir: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for target_dir in sorted(path for path in run_dir.iterdir() if path.is_dir()):
@@ -458,15 +485,15 @@ def benchmark_rows(run_dir: Path) -> list[dict[str, Any]]:
         status = load_json(target_dir / "status.json") or {}
         telemetry = telemetry_summary(target_dir)
 
-        openai_summary = next(target_dir.glob("openai-*-summary.json"), None)
+        found = find_summary(target_dir)
 
-        if openai_summary and (data := load_json(openai_summary)):
+        if found and (data := load_json(found[0])):
             latency = data.get("latency_total_seconds", {})
             ttft = data.get("ttft_seconds", {})
             rows.append(
                 {
                     "name": target_dir.name,
-                    "type": "OpenAI-compatible API",
+                    "type": found[1],
                     "ok": f"{data.get('ok_count')}/{data.get('record_count')}",
                     "wall_seconds": data.get("wall_seconds"),
                     "throughput": data.get("aggregate_output_tokens_per_second"),
@@ -478,6 +505,7 @@ def benchmark_rows(run_dir: Path) -> list[dict[str, Any]]:
                     "decode_median": data.get("decode_tokens_per_second", {}).get("median"),
                     "rate_sources": data.get("rate_sources", []),
                     "by_scenario": data.get("by_scenario", {}),
+                    "summary": data,
                     "status": status,
                     "telemetry": telemetry,
                 }
@@ -528,6 +556,88 @@ def render_phase_table(rows: list[dict[str, Any]]) -> list[str]:
             f"| {benchmark} | {scenario} | {data.get('count')} | {fmt(pp.get('median'))} | {fmt(pp.get('min'))} | "
             f"{fmt(tg.get('median'))} | {fmt(tg.get('min'))} | {', '.join(data.get('rate_sources') or sources) or 'n/a'} |"
         )
+    return lines
+
+
+def render_agent_sessions(rows: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for row in rows:
+        data = row.get("summary") or {}
+        if data.get("workload") != "agent-sessions":
+            continue
+        server = data.get("server") or {}
+        runs = data.get("runs") or []
+        lines.extend(
+            [
+                "",
+                f"### Agent sessions ({row['name']})",
+                "",
+                f"Server: {fmt(server.get('total_slots'))} slots of {fmt(server.get('n_ctx_per_slot'))} tokens. "
+                f"{fmt(data.get('reps'))} reps per preset; corpus commit `{str((data.get('corpus') or {}).get('commit', 'n/a'))[:12]}`.",
+                "",
+                "| Preset | Session wall s | Final depth | Prefill tok/rep | Decode tok/rep | Cold start pp tok/s | Draft acceptance | Cut at cap | Cache misses | Errors |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for run in runs:
+            first = run.get("first_turn") or {}
+            lines.append(
+                f"| {run.get('spec')} | {fmt_spread(run.get('session_wall_seconds'), 0)} | {fmt((run.get('final_depth') or {}).get('median'), 0)} | "
+                f"{fmt((run.get('prefill_tokens_per_rep') or {}).get('median'), 0)} | {fmt((run.get('decode_tokens_per_rep') or {}).get('median'), 0)} | "
+                f"{fmt_spread(first.get('prefill_tokens_per_second'))} | {fmt_pct(run.get('draft_acceptance'))} | "
+                f"{fmt(run.get('finish_length'))}/{fmt(run.get('ok_turns'))} | {fmt(run.get('cache_misses'))} | {fmt(run.get('errors'))} |"
+            )
+        lines.extend(
+            [
+                "",
+                "| Preset | Depth band | Turns | Prefill tokens | pp tok/s | Decode tokens | tg tok/s | Draft acceptance |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for run in runs:
+            for band in run.get("bands") or []:
+                lines.append(
+                    f"| {run.get('spec')} | {band['band']} | {band['turns']} | {band['prefill_tokens']} | {fmt(band.get('prefill_tokens_per_second'), 1)} | "
+                    f"{band['decode_tokens']} | {fmt(band.get('decode_tokens_per_second'), 1)} | {fmt_pct(band.get('draft_acceptance'))} |"
+                )
+        lines.extend(
+            [
+                "",
+                "Session wall time is median (min-max) over reps. Band rates are token-weighted (all tokens",
+                "over all time in the band, all reps) and leave out each session's cold first turn and any",
+                "turn that lost its cache. Cut at cap counts replies that hit their max_tokens.",
+            ]
+        )
+    return lines
+
+
+def render_doc_ingest(rows: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for row in rows:
+        data = row.get("summary") or {}
+        if data.get("workload") != "doc-ingest":
+            continue
+        lines.extend(
+            [
+                "",
+                f"### Document ingestion ({row['name']})",
+                "",
+                f"Cold prompts, {fmt(data.get('reps'))} reps per depth, answers capped at {fmt(data.get('max_tokens'))} tokens.",
+                "",
+                "| Depth | Prompt tokens | pp tok/s | Prefill s | tg tok/s | Output tokens | Draft acceptance | Sections ok | Repeatable | Finish |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+            ]
+        )
+        for depth in data.get("by_depth") or []:
+            label = depth.get("label")
+            finish = ", ".join(f"{key} {value}" for key, value in (depth.get("finish_reasons") or {}).items()) or "n/a"
+            lines.append(
+                f"| {label} | {fmt((depth.get('prompt_tokens') or {}).get('median'), 0)} | {fmt_spread(depth.get('prefill_tokens_per_second'))} | "
+                f"{fmt_spread(depth.get('prefill_seconds'))} | {fmt_spread(depth.get('decode_tokens_per_second'))} | "
+                f"{fmt((depth.get('output_tokens') or {}).get('median'), 0)} | {fmt_pct(depth.get('draft_acceptance'))} | "
+                f"{depth.get('sections_ok')}/{depth.get('count')} | {'yes' if depth.get('repeatable') else 'no'} | {finish} |"
+            )
+        lines.extend(["", "Each cell is median (min-max) over reps."])
     return lines
 
 
@@ -692,6 +802,8 @@ def render_report(run_dir: Path, description: str) -> str:
             ]
         )
         lines.extend(render_phase_table(rows))
+        lines.extend(render_agent_sessions(rows))
+        lines.extend(render_doc_ingest(rows))
     else:
         lines.append("No benchmark summaries were found in this run directory.")
 
@@ -787,7 +899,8 @@ def render_report(run_dir: Path, description: str) -> str:
     lines.append("- `manifest.json` - run metadata.")
     lines.append("- `<benchmark>/telemetry.jsonl` - system telemetry samples.")
     lines.append("- `<benchmark>/stdout.log` and `<benchmark>/stderr.log` - command output.")
-    lines.append("- `<benchmark>/*summary.json` and `<benchmark>/*requests.jsonl` - benchmark-specific results.")
+    lines.append("- `<benchmark>/*summary.json` and `<benchmark>/*requests.jsonl` - benchmark-specific results")
+    lines.append("  (`agent-sessions/` and `doc-ingest/` hold one request row per turn or document).")
     lines.append("- `versions.json` - software, hardware, Git, and model hash metadata.")
     lines.append("- `system-logs/before/` and `system-logs/after/` - system log snapshots.")
     lines.append("- `slo-report.json` and `SLO.md` - pass/warn/fail checks.")

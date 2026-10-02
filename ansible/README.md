@@ -8,7 +8,9 @@ results label, and telemetry patterns for it. It:
 2. provisions CT 200 if it is missing (idempotent),
 3. injects `HF_TOKEN` into the container's `/etc/bench-runner.env`,
 4. (re)loads the model at the chosen `--parallel`,
-5. runs the batch (baseline, concurrency sweep, input-length sweep, soak),
+5. runs the batch: the regression items (baseline, concurrency sweep, input-length
+   sweep, soak), then the agent-session and document-ingestion workloads at CT 120's
+   operational two slots (`bench-runner/BENCHMARKS.md`),
 6. fetches the new result folders into `pro-v620/results/llamacpp/parallel-<n>/`.
 
 The containers have no SSH of their own, so the playbook connects to the Proxmox
@@ -38,8 +40,10 @@ make ping            # test SSH connectivity to the Proxmox host
 make check           # syntax-check the playbook
 make smoke           # plumbing test (push + reload, no benchmarks)
 make bench           # full batch, --parallel 4 (benchmark default; CT 120 ships --parallel 2)
+make bench SUITE=short  # regression items only: no agent sessions or document ingestion
+make bench INGEST=false # skip document ingestion (AGENT=false skips the agent sessions)
 make bench PARALLEL=1 # single-slot run
-make context-sweep   # context-length sweep on top of the batch
+make context-sweep   # context-length sweep on top of the batch (takes the same flags)
 ```
 
 The raw equivalents (the repo-root `ansible.cfg` sets the default inventory, so `-i` is
@@ -54,9 +58,13 @@ ansible-playbook ansible/benchmark.yml -e @ansible/secrets.yml -e parallel=1
 
 Useful extra vars: `parallel` (benchmark concurrency, default 4), `restore_parallel`
 (what CT 120 is reloaded to when the run finishes, default 2 = the operational
-`--parallel`; decoupled from `parallel` so a benchmark never leaves prod downgraded),
-`reload_model=false` (skip the model reload), `runtime_label=<name>` (force a separate
-results folder), or override the `benchmarks` list.
+`--parallel`; decoupled from `parallel` so a benchmark never leaves prod downgraded; the
+workloads item also runs at it), `suite` (`full` or `short`), `run_agent_sessions` and
+`run_doc_ingest` (drop one workload), `reload_model=false` (skip the model reload),
+`runtime_label=<name>` (force a separate results folder), or override the `benchmarks`
+list. An item is a command string, or `{cmd, parallel}` to reload CT 120 at its own slot
+count first. The workloads' results land in the same `parallel-<n>/` folder as the rest
+of the batch; their summaries record the slot layout they ran on.
 
 ### Optional: context-length sweep
 

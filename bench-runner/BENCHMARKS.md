@@ -167,6 +167,112 @@ python3 scripts/benchmarks/benchmark-openai-api.py \
   --concurrency 4
 ```
 
+## Prompt Text
+
+The `medium` and `long` scenarios, the sweeps and both workloads below send real text:
+this repository's Markdown, then its code, at commit `f7e762c` (`bench_common.py`). The
+first run downloads that commit's archive from GitHub, checks the text against pinned
+checksums and caches it under `cache/`. Without network access, build it from a checkout:
+
+```bash
+git archive --format=tar.gz f7e762c53388be0ba06751dd210aacef3e30b7c5 \
+  | python3 scripts/benchmarks/bench_common.py --source -
+```
+
+Sweep and ingestion prompts are cut with the server's tokenizer (`/tokenize`), so a given
+size is the same token count on any model. Each `medium`, `long` and sweep request starts
+with its own id, so the prompt cache cannot serve it. Before 2026-10-02 these prompts were
+a repeated sentence or the word "token"; their prefill, decode and draft figures do not
+compare with later runs.
+
+## Agent Sessions And Document Ingestion
+
+The regression items send prompts of a few hundred tokens. CT 120's real work is long: of
+its 3,642 requests from MTP going live on 2026-09-22 to 2026-10-02, 83% reused a cached
+prefix (median 32k tokens), and requests that prefilled 8k+ new tokens were 5% of requests
+but 43% of all prefill. Two workloads measure that work. The `workloads` profile runs them, and
+`make bench` runs that profile after the regression items.
+
+### Agent sessions
+
+`benchmark-agent-session.py` (target `agent-sessions/`) sends scripted sessions. A session
+is one conversation that grows turn by turn: each turn adds a tool result and a request,
+the model's reply stays in the history, and the prompt cache stays on, so a turn prefills
+only the new message. A session ends once its prompt reaches the preset's depth.
+
+| Preset | Shape | Depth |
+| --- | --- | ---: |
+| `hermes` | A ~9k-token cold start (system prompt and notes), then tool results of ~100 to ~4,000 tokens with replies capped at 20 to 750 tokens, sized to CT 120's Hermes requests (median 564 new prompt tokens and 184 generated; 90th percentile 4,326 new) | 64k |
+| `coding` | ~4.7k-token file reads with replies capped at 160 tokens, and a code-writing request capped at 512 every third turn | 124k |
+
+`PRESET:2` runs two sessions at once, each reading a different part of the text. Every
+session opens with its own id, so no session or repetition reuses another's cache, in a
+slot or in llama-server's host-memory prompt cache. Decoding is greedy. Before sending
+anything, the script reads `/props` and refuses (exit 2) a slot layout that cannot hold its
+sessions: `coding` needs 128k slots, which CT 120 has at 262144 with `--parallel 2`.
+`--depth N` stops every session at N tokens for a quick check; such a run does not compare
+with full ones.
+
+`agent-summary.json` has one entry per preset in `runs`:
+
+| Field | Meaning |
+| --- | --- |
+| `session_wall_seconds` | First request to last reply of a rep (all its sessions), median/min/max over reps |
+| `final_depth`, `prefill_tokens_per_rep`, `decode_tokens_per_rep` | How deep the sessions went and the tokens each rep prefilled and generated |
+| `first_turn` | The cold first turn's size and rates |
+| `bands` | Per depth band (the depth a turn prefills at): turns, tokens, token-weighted prefill and decode rates, draft acceptance |
+| `cache_misses` | Warm turns that re-prefilled the history because another client took the slot; left out of `bands` |
+| `finish_length` | Replies cut at their cap |
+
+Band rates are all tokens over all time in the band, so a few large prefills are not
+outvoted by many small ones. `agent-requests.jsonl` has one row per turn: depth before and
+after, `prompt_n`/`cache_n`, rates, draft counts, finish reason and the first 200
+characters of the reply.
+
+### Document ingestion
+
+`benchmark-doc-ingest.py` (target `doc-ingest/`) fills the prompt with documents to 8k,
+16k, 32k and 48k tokens, with the prompt cache off, and asks for a ~500-token note with
+three sections. Depths run interleaved and each rep starts at the next depth. A depth sends
+the same text every time, so greedy output should repeat. `ingest-summary.json` has one
+entry per depth in `by_depth`: prompt tokens, prefill rate and time (the time to first
+token), decode rate, output tokens, draft acceptance, finish reasons, notes with all three
+sections (`sections_ok`) and whether every rep returned the same text (`repeatable`). A
+request the cache served in part counts as an error (`warm_cache`).
+
+### Running them
+
+```bash
+pct exec 200 -- bash -lc 'llm-bench-workloads'
+pct exec 200 -- bash -lc 'RUN_DOC_INGEST=false BENCHMARK_AGENT_PRESETS="coding:2" llm-bench-workloads'
+```
+
+A CT 200 provisioned before `llm-bench-workloads` existed runs the same with
+`RUN_LLAMA_BENCHY=false llm-bench-profile workloads`.
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `RUN_AGENT_SESSIONS` | `true` in `workloads`, else `false` | Run the agent sessions |
+| `RUN_DOC_INGEST` | `true` in `workloads`, else `false` | Run the document ingestion |
+| `BENCHMARK_AGENT_PRESETS` | `hermes coding` | `PRESET[:SESSIONS]` list |
+| `BENCHMARK_INGEST_DEPTHS` | `8192 16384 32768 49152` | Prompt sizes in tokens |
+| `BENCHMARK_RUNS` | `3` | Repetitions of each preset and depth |
+
+From the Mac, `make bench` runs the regression items (baseline, both sweeps, soak) at
+`PARALLEL` slots, then reloads CT 120 at its operational two slots for the workloads:
+
+| Command | Runs |
+| --- | --- |
+| `make bench` | Regression items, agent sessions, document ingestion |
+| `make bench SUITE=short` | Regression items only |
+| `make bench INGEST=false` | Regression items and agent sessions |
+| `make bench AGENT=false` | Regression items and document ingestion |
+
+Hermes keeps using CT 120 during a run. Its requests slow the workloads and can take a
+session's slot (counted in `cache_misses`). Keep long runs clear of CT 121's 04:00 ET KB
+freshness cron: an entry whose refresh times out while CT 120 is saturated or restarting
+is quarantined for 14 days.
+
 ## Optional llama-benchy Benchmark
 
 `llama-benchy` benchmarks OpenAI-compatible `/v1/chat/completions` endpoints in
@@ -289,6 +395,8 @@ Useful environment variables:
 ```bash
 BENCHMARK_SCENARIOS=smoke,short,medium,long
 BENCHMARK_RUNS=3
+RUN_AGENT_SESSIONS=true
+RUN_DOC_INGEST=true
 BENCHMARK_REQUESTS=3
 BENCHMARK_CONCURRENCY=1
 TELEMETRY_INTERVAL=1

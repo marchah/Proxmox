@@ -21,6 +21,8 @@ It includes:
 
 - `scripts/benchmarks/run-ai-benchmark-suite.sh`
 - `scripts/benchmarks/benchmark-openai-api.py`
+- `scripts/benchmarks/benchmark-agent-session.py` and `benchmark-doc-ingest.py`
+- `scripts/benchmarks/bench_common.py`: the real-text corpus and llama-server helpers
 - `scripts/benchmarks/system-sampler.py`
 - `scripts/benchmarks/evaluate-slos.py`
 - `scripts/benchmarks/write-benchmark-report.py`
@@ -75,6 +77,7 @@ pct exec 200 -- bash -lc 'llm-bench-baseline'
 pct exec 200 -- bash -lc 'llm-bench-concurrency'
 pct exec 200 -- bash -lc 'llm-bench-soak'
 pct exec 200 -- bash -lc 'llm-bench-quality'
+pct exec 200 -- bash -lc 'llm-bench-workloads'
 ```
 
 The wrappers call the benchmark suite with these profiles:
@@ -83,10 +86,13 @@ The wrappers call the benchmark suite with these profiles:
 - `concurrency`
 - `soak`
 - `quality`
+- `workloads`
 
 The runner only targets the LLM runtime's OpenAI-compatible endpoint (LM Studio
 or llama.cpp). Each profile runs `openai-direct` and `llama-benchy` by default;
-the `quality` profile also runs `lm-eval`.
+the `quality` profile also runs `lm-eval`. The `workloads` profile runs only the
+agent sessions and document ingestion, long-context workloads shaped like CT 120's
+traffic (see `BENCHMARKS.md`); its `coding` preset needs 128k slots.
 
 For advanced overrides:
 
@@ -157,6 +163,8 @@ Each run writes a benchmark run folder under `/results`:
   versions.json
   openai-direct/
   llama-benchy/
+  agent-sessions/      (workloads profile)
+  doc-ingest/          (workloads profile)
   slo-report.json
 ```
 

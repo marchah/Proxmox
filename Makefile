@@ -6,6 +6,12 @@ PLAYBOOK := ansible/benchmark.yml
 SECRETS  := ansible/secrets.yml
 PARALLEL ?= 4
 RUNTIME  ?= llamacpp
+# SUITE=full adds the agent-session and document-ingestion workloads to the batch;
+# SUITE=short is the regression items only. AGENT=false or INGEST=false drops one.
+SUITE    ?= full
+AGENT    ?= true
+INGEST   ?= true
+SELECT   := -e suite=$(SUITE) -e run_agent_sessions=$(AGENT) -e run_doc_ingest=$(INGEST)
 
 .DEFAULT_GOAL := help
 .PHONY: help ping check smoke bench context-sweep
@@ -23,8 +29,8 @@ check: ## Syntax-check the playbook
 smoke: ## Plumbing test: push suite + reload model, run NO benchmarks (PARALLEL overridable)
 	ansible-playbook $(PLAYBOOK) -e parallel=$(PARALLEL) -e runtime=$(RUNTIME) -e '{"benchmarks": []}'
 
-bench: ## Run the full batch (PARALLEL=4 default; llama.cpp engine on CT 120)
-	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) -e parallel=$(PARALLEL) -e runtime=$(RUNTIME)
+bench: ## Run the batch (SUITE=full|short, AGENT/INGEST=false, PARALLEL=4 default)
+	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) -e parallel=$(PARALLEL) -e runtime=$(RUNTIME) $(SELECT)
 
-context-sweep: ## Run the context-length sweep on top of the batch (PARALLEL overridable)
-	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) -e parallel=$(PARALLEL) -e runtime=$(RUNTIME) -e context_sweep=true
+context-sweep: ## Run the context-length sweep on top of the batch (same flags as bench)
+	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) -e parallel=$(PARALLEL) -e runtime=$(RUNTIME) $(SELECT) -e context_sweep=true

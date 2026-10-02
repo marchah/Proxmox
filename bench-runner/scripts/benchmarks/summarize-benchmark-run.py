@@ -32,6 +32,24 @@ def print_openai(run_dir: Path) -> None:
         print(f"  pp_median_tok_s={pp.get('median')} tg_median_tok_s={tg.get('median')} source={data.get('rate_sources')}")
 
 
+def print_workloads(run_dir: Path) -> None:
+    for summary_path in sorted(run_dir.glob("*/agent-summary.json")):
+        data = load_json(summary_path) or {}
+        print(f"{summary_path.parent.name}: ok={data.get('ok_count')}/{data.get('record_count')} turns")
+        for run in data.get("runs") or []:
+            wall = run.get("session_wall_seconds") or {}
+            print(f"  {run.get('spec')}: session wall median={wall.get('median')} s, cache misses={run.get('cache_misses')}")
+            for band in run.get("bands") or []:
+                print(f"    {band['band']}: pp={band.get('prefill_tokens_per_second')} tg={band.get('decode_tokens_per_second')} tok/s")
+    for summary_path in sorted(run_dir.glob("*/ingest-summary.json")):
+        data = load_json(summary_path) or {}
+        print(f"{summary_path.parent.name}: ok={data.get('ok_count')}/{data.get('record_count')} requests")
+        for depth in data.get("by_depth") or []:
+            pp = depth.get("prefill_tokens_per_second") or {}
+            tg = depth.get("decode_tokens_per_second") or {}
+            print(f"  {depth.get('label')}: pp_median={pp.get('median')} tg_median={tg.get('median')} tok/s")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_dir")
@@ -43,6 +61,7 @@ def main() -> int:
 
     print(f"Run: {run_dir}")
     print_openai(run_dir)
+    print_workloads(run_dir)
     return 0
 
 

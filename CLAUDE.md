@@ -105,6 +105,9 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
 - The in-container suite layers local model config, profile defaults and process
   env overrides, checks `/v1/models`, runs enabled targets, then writes JSON/JSONL
   results and `REPORT.md`/`SLO.md`. See `bench-runner/BENCHMARKS.md` for schemas.
+- `make bench` ends with the agent-session and document-ingestion workloads, run at CT 120's
+  two operational slots on real repository text; `SUITE=short` runs only the regression
+  items. See `bench-runner/BENCHMARKS.md`.
 - Wrappers in `/usr/local/bin` need a login shell through `pct exec`:
   `pct exec 200 -- bash -lc 'llm-bench-baseline'`.
 

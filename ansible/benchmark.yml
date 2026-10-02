@@ -52,7 +52,8 @@
         # llama-server sets context/parallel at start, so "reload" = restart via
         # the helper the llama.cpp container ships (blocks until healthy).
         # Absolute path: the Ubuntu container's PATH omits /usr/local/bin.
-        reload_cmd: "/usr/local/bin/llamacpp-reload {{ model_context }} {{ parallel }}"
+        # slot_parallel is a benchmark item's own slot count (benchmark_item.yml).
+        reload_cmd: "/usr/local/bin/llamacpp-reload {{ model_context }} {{ slot_parallel | default(parallel) }}"
         # Post-run restore returns CT 120 to the operational default (restore_parallel), not the
         # benchmark concurrency, so a run leaves prod as it found it.
         restore_cmd: "/usr/local/bin/llamacpp-reload {{ model_context }} {{ restore_parallel }}"
@@ -68,13 +69,38 @@
     repo_root: "{{ playbook_dir }}/.."
     host_suite_dir: /tmp/proxmox-bench
     results_dest: "{{ playbook_dir }}/../pro-v620/results/{{ runtime_label }}/parallel-{{ parallel }}"
-    benchmarks:
+    # suite=full (the default) runs the regression items, then the agent-session and
+    # document-ingestion workloads; suite=short runs the regression items only.
+    # run_agent_sessions=false or run_doc_ingest=false drops one workload from a full run.
+    suite: full
+    run_agent_sessions: true
+    run_doc_ingest: true
+    regression_benchmarks:
       - "llm-bench-baseline"
       - "llm-bench-sweep concurrency --points 1 2 4 8 16 --requests 32"
       - "llm-bench-sweep input-length --points 128 512 2048 8192 32768 --output-tokens 32"
       - "llm-bench-soak"
+    # The workloads run at the operational slot layout (restore_parallel): the coding
+    # preset needs 128k slots, which --parallel 4 halves. Called through llm-bench-profile
+    # so a CT 200 provisioned before the llm-bench-workloads wrapper existed runs it too.
+    workload_benchmark:
+      cmd: >-
+        RUN_LLAMA_BENCHY=false
+        RUN_AGENT_SESSIONS={{ run_agent_sessions | bool | lower }}
+        RUN_DOC_INGEST={{ run_doc_ingest | bool | lower }}
+        llm-bench-profile workloads
+      parallel: "{{ restore_parallel }}"
+    run_workloads: "{{ suite == 'full' and (run_agent_sessions | bool or run_doc_ingest | bool) }}"
+    # A list item is a command string, or {cmd, parallel} to reload CT 120 with its own
+    # slot count first.
+    benchmarks: "{{ regression_benchmarks + ([workload_benchmark] if run_workloads | bool else []) }}"
 
   tasks:
+    - name: Check the suite selection
+      ansible.builtin.assert:
+        that: suite in ['short', 'full']
+        fail_msg: "suite must be 'short' or 'full', not '{{ suite }}'"
+
     - name: Wipe any previous suite copy on the host
       ansible.builtin.file:
         path: "{{ host_suite_dir }}"
@@ -237,6 +263,11 @@
         - name: Run each benchmark item
           ansible.builtin.include_tasks: benchmark_item.yml
           loop: "{{ benchmarks }}"
+          loop_control:
+            label: "{{ item.cmd if item is mapping else item }}"
+          vars:
+            item_cmd: "{{ item.cmd if item is mapping else item }}"
+            slot_parallel: "{{ item.parallel if (item is mapping and item.parallel is defined) else parallel }}"
       always:
         # Don't let a restore failure abort the play before results are fetched;
         # it's reported at the end alongside any benchmark failures.
