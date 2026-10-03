@@ -71,12 +71,16 @@ this repo, make that useful:
       timeout: 60
       connect_timeout: 15
   ```
-  No auth header: the board is LAN-only by design. It serves read-only `list_ideas` and `get_idea`
-  (the idea, its plan, questions and research state). Check it with
-  `pct exec 121 -- bash -lc 'hermes mcp test project-planner'` (two tools discovered).
+  No auth header: the board is LAN-only by design. It serves `list_ideas` and `get_idea` (the idea,
+  its plan, questions with answers, decisions and research state), and `answer_question` and
+  `record_decision`, which save to the board and schedule a plan refresh. Check it with
+  `pct exec 121 -- bash -lc 'hermes mcp test project-planner'` (four tools discovered).
 - **The `#ideas` channel prompt** (`slack.channel_prompts.<channel id>`) tells the agent that a
   thread discusses the idea in its first message, to read it with `get_idea` using the id in the
-  plugin's `?idea=<id>` link, and that nothing said in the thread is saved to the board.
+  plugin's `?idea=<id>` link, and to save the author's answers with `answer_question` and what they
+  settle with `record_decision`: only what the author said in so many words, asking first when it
+  is unclear, then saying what was saved and when the plan refreshes. Nothing else said in the
+  thread is saved to the board.
 
 ⚠️ `hermes config set` writes the right YAML but drops `config.yaml`'s comment blocks. Back the file
 up outside `/root/.hermes/`, let it produce the new lines, restore the backup, and splice those
