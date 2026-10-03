@@ -124,6 +124,8 @@ waits for `/health`).
 ```bash
 # Sweep context length and correlate VRAM with TTFT/latency/throughput
 CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh                 # on CT 120 (llama.cpp)
+# CT 123 (GPU 2): set GPU_VMID=123, MODEL_KEY, RELOAD_HELPER and the RESTORE_* values
+# (BENCHMARKS.md), or run `make context-sweep GPU=2` from the Mac
 # Optional (redundant with the suite's own telemetry): sample a container's GPU
 # around any command — handy for non-benchmark commands
 ./host/run-with-host-telemetry.sh pct exec 200 -- bash -lc 'llm-bench-baseline'

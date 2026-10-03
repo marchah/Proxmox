@@ -284,11 +284,13 @@ def check_fit(args: argparse.Namespace, specs: list[tuple[str, int]], props: dic
         # more message and its reply.
         largest_reply = max(cap for _, cap in config["turn_sizes"])
         largest_turn = max(math.ceil(chars / chars_per_token) + cap for chars, cap in config["turn_sizes"])
-        need = (args.depth or config["target"]) + largest_reply + largest_turn + 64
+        headroom = largest_reply + largest_turn + 64
+        need = (args.depth or config["target"]) + headroom
         if n_ctx and need > n_ctx:
             problems.append(
                 f"{spec_label(preset, sessions)} needs ~{need} tokens per slot; the server has {n_ctx}. "
-                "Reload with fewer slots (CT 120: --parallel 2 at 262144)."
+                f"Reload with fewer slots, or stop sessions at --depth {(n_ctx - headroom) // 1000 * 1000} "
+                "(BENCHMARK_AGENT_DEPTH) or less."
             )
         if slots and sessions > slots:
             problems.append(f"{spec_label(preset, sessions)} runs {sessions} sessions at once; the server has {slots} slots.")
@@ -357,8 +359,8 @@ def main() -> int:
     parser.add_argument("--presets", nargs="+", type=parse_spec, default=[("hermes", 1), ("coding", 1)],
                         metavar="PRESET[:SESSIONS]", help="default: hermes coding")
     parser.add_argument("--reps", type=int, default=3)
-    parser.add_argument("--depth", type=int, help="stop every session at this many tokens instead of its "
-                        "preset's target, for a quick check; not comparable with full runs")
+    parser.add_argument("--depth", type=int, default=0, help="stop every session at this many tokens instead "
+                        "of its preset's depth (0, the default, keeps the preset's)")
     parser.add_argument("--timeout", type=float, default=3600.0)
     args = parser.parse_args()
     if not args.base_url:

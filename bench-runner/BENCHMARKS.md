@@ -210,8 +210,9 @@ session opens with its own id, so no session or repetition reuses another's cach
 slot or in llama-server's host-memory prompt cache. Decoding is greedy. Before sending
 anything, the script reads `/props` and refuses (exit 2) a slot layout that cannot hold its
 sessions: `coding` needs 128k slots, which CT 120 has at 262144 with `--parallel 2`.
-`--depth N` stops every session at N tokens for a quick check; such a run does not compare
-with full ones.
+`--depth N` (`BENCHMARK_AGENT_DEPTH`) stops every session at N tokens, for servers with
+smaller slots; when a preset does not fit, the refusal names the largest depth that does.
+Band rates still compare where depths overlap; session times do not.
 
 `agent-summary.json` has one entry per preset in `runs`:
 
@@ -255,21 +256,39 @@ A CT 200 provisioned before `llm-bench-workloads` existed runs the same with
 | `RUN_AGENT_SESSIONS` | `true` in `workloads`, else `false` | Run the agent sessions |
 | `RUN_DOC_INGEST` | `true` in `workloads`, else `false` | Run the document ingestion |
 | `BENCHMARK_AGENT_PRESETS` | `hermes coding` | `PRESET[:SESSIONS]` list |
+| `BENCHMARK_AGENT_DEPTH` | `0` | Stop every session at this many tokens; `0` keeps each preset's depth |
 | `BENCHMARK_INGEST_DEPTHS` | `8192 16384 32768 49152` | Prompt sizes in tokens |
 | `BENCHMARK_RUNS` | `3` | Repetitions of each preset and depth |
 
-From the Mac, `make bench` runs the regression items (baseline, both sweeps, soak) at
-`PARALLEL` slots, then reloads CT 120 at its operational two slots for the workloads:
+From the Mac, `make bench` runs the regression items (baseline, both sweeps, soak), then
+reloads the server at its operational slot layout for the workloads. `GPU` picks the card,
+through the container that serves it:
+
+| `GPU` | Container | Model | Regression slots | Workload slots | Agent depth | Results |
+| --- | --- | --- | --- | --- | --- | --- |
+| `1` (default) | CT 120 | Qwen3.6-35B-A3B | 4 × 64k | 2 × 128k | Each preset's | `pro-v620/results/llamacpp/` |
+| `2` | CT 123 | Qwen3.8-Flash-Next | 1 × 64k | 1 × 64k | 56k | `pro-v620/results/llamacpp-gpu2/` |
+
+One 64k slot holds neither agent preset's full depth, so GPU 2's sessions stop at 56k.
+Before changing anything, the batch checks that the container is serving its model and
+has its reload helper. It stops if the two-card cutover is active, or if CT 123 lacks
+`llamacpp-qwen38fn-reload`; install that from `pro-v620/qwen38-flash-next/` with
+`VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh`.
 
 | Command | Runs |
 | --- | --- |
-| `make bench` | Regression items, agent sessions, document ingestion |
+| `make bench` | GPU 1: regression items, agent sessions, document ingestion |
+| `make bench GPU=2` | The same on GPU 2 |
 | `make bench SUITE=short` | Regression items only |
 | `make bench INGEST=false` | Regression items and agent sessions |
 | `make bench AGENT=false` | Regression items and document ingestion |
 
-Hermes keeps using CT 120 during a run. Its requests slow the workloads and can take a
-session's slot (counted in `cache_misses`). Keep long runs clear of CT 121's 04:00 ET KB
+GPU 2 is slow. On 2026-10-02 its model (b11018 baseline build, `-ncmoe 34`, q8_0 KV, one
+64k slot) prefilled an 8k cold prompt at 61 tok/s and decoded at 10 tok/s, so a full
+batch there runs for hours.
+
+On GPU 1, Hermes keeps using CT 120 during a run. Its requests slow the workloads and can
+take a session's slot (counted in `cache_misses`). Keep long runs clear of CT 121's 04:00 ET KB
 freshness cron: an entry whose refresh times out while CT 120 is saturated or restarting
 is quarantined for 14 days.
 
@@ -378,6 +397,12 @@ CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh
 
 It writes `context-sweep.md` correlating context length with peak VRAM and GPU
 utilization (from host telemetry) and TTFT/latency/throughput (from the client).
+For CT 123, pass its container, model and helper, or use `make context-sweep GPU=2`:
+
+```bash
+GPU_VMID=123 MODEL_KEY=qwen3.8-flash-next RESTORE_CONTEXT=65536 RESTORE_PARALLEL=1 \
+  RELOAD_HELPER=/usr/local/bin/llamacpp-qwen38fn-reload ./host/run-context-sweep.sh
+```
 
 ## Suggested Experiment Matrix
 
