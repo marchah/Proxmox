@@ -27,7 +27,7 @@ log() { printf '==> %s\n' "$*"; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"
 [ "$(pct status "$VMID" | awk '{print $2}')" = "running" ] || die "CT ${VMID} is not running"
-for f in "$ENV_FILE" llamacpp-serve-qwen38fn qwen38fn-download.sh; do
+for f in "$ENV_FILE" llamacpp-serve-qwen38fn llamacpp-qwen38fn-reload qwen38fn-download.sh; do
   [ -f "$f" ] || die "missing ${f} — run from this directory"
 done
 
@@ -36,6 +36,9 @@ pct push "$VMID" "$ENV_FILE" /etc/llamacpp-qwen38fn.env --perms 0644
 
 log "pushing /usr/local/bin/llamacpp-serve-qwen38fn"
 pct push "$VMID" llamacpp-serve-qwen38fn /usr/local/bin/llamacpp-serve-qwen38fn --perms 0755
+
+log "pushing /usr/local/bin/llamacpp-qwen38fn-reload"
+pct push "$VMID" llamacpp-qwen38fn-reload /usr/local/bin/llamacpp-qwen38fn-reload --perms 0755
 
 log "pushing /usr/local/bin/qwen38fn-download.sh"
 pct push "$VMID" qwen38fn-download.sh /usr/local/bin/qwen38fn-download.sh --perms 0755
@@ -93,6 +96,7 @@ log "state"
 pct exec "$VMID" -- bash -lc '
   echo "  env:    $(test -f /etc/llamacpp-qwen38fn.env && echo ok || echo MISSING)"
   echo "  serve:  $(test -x /usr/local/bin/llamacpp-serve-qwen38fn && echo ok || echo MISSING)"
+  echo "  reload: $(test -x /usr/local/bin/llamacpp-qwen38fn-reload && echo ok || echo MISSING)"
   echo "  unit:   $(systemctl is-enabled llamacpp-qwen38fn 2>&1 | head -1)"
   echo "  shards: $(ls /models/hf/qwen3.8-flash-next/*.verified 2>/dev/null | wc -l)/5 verified"
   echo "  dl:     $(systemctl is-active qwen38fn-dl 2>&1 | head -1)"'

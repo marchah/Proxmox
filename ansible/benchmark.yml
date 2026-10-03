@@ -1,14 +1,13 @@
 ---
 # One-command LLM runtime benchmark batch, driven from this machine.
-# Engine: llamacpp (see the `runtimes` map below; the prior lmstudio path was removed with the RX 6700 XT).
 #
-#   ansible-playbook -i ansible/inventory.ini ansible/benchmark.yml \
-#     -e @ansible/secrets.yml -e parallel=4
+#   ansible-playbook ansible/benchmark.yml -e @ansible/secrets.yml -e gpu=1
 #
 # It pushes the LOCAL bench-runner suite to the Proxmox host (so runs use your
 # latest, even uncommitted code), provisions CT 200 if it is missing, injects
-# HF_TOKEN, (re)loads the model at the requested --parallel, runs the batch, and
-# fetches the result folders back into pro-v620/results/<runtime>/parallel-<n>/.
+# HF_TOKEN, (re)loads the selected GPU's model at the requested --parallel, runs the
+# batch, and fetches the result folders back into
+# pro-v620/results/<results label>/parallel-<n>/.
 #
 # The containers have no SSH of their own, so tasks act on them via `pct` on the
 # Proxmox host (this is the "light" orchestrator around the existing bash scripts).
@@ -18,63 +17,152 @@
 
   vars:
     bench_vmid: 200
-    gpu_vmid: 120
-    # Which inference engine CT 120 is running. Selects the reload command, results
-    # label, and target telemetry process patterns from `runtimes` below. The V620
-    # runs llamacpp — the only supported engine here; the prior RX 6700 XT's lmstudio
+    # Which V620 to benchmark, through the container that serves it (CLAUDE.md, "GPU
+    # operating constraints"). The vars below default from its entry and stay
+    # overridable with -e. Both servers run llama.cpp and restart through a helper
+    # (<helper> <context> <parallel>) that blocks until the model serves again.
+    gpu: 1
+    gpus:
+      "1":
+        # 0000:03:00.0, Qwen3.6-35B-A3B.
+        vmid: 120
+        service: llamacpp
+        model_key: qwen3.6-35b-a3b
+        # 256k total — MUST match the CT 120 default. Reloads and the post-batch
+        # restore use it, so a smaller number silently downgrades production context.
+        context: 262144
+        # Benchmark slots: 4 (64k each) keeps runs comparable with the existing
+        # parallel-4 result sets. CT 120 operates at 2, which the restore returns to.
+        parallel: 4
+        restore_parallel: 2
+        reload_helper: /usr/local/bin/llamacpp-reload
+        version_cmd: "/opt/llamacpp/current/llama-server --version 2>&1"
+        results_label: llamacpp
+        # Agent sessions run to each preset's own depth.
+        agent_depth: 0
+      "2":
+        # 0000:83:00.0, Qwen3.8-Flash-Next with experts in RAM
+        # (pro-v620/qwen38-flash-next/qwen38fn-gpu2.env). Its helper comes from that
+        # directory's install.sh.
+        vmid: 123
+        service: llamacpp-qwen38fn
+        model_key: qwen3.8-flash-next
+        # The validated one-card fit; a larger context can spill KV to GTT.
+        context: 65536
+        parallel: 1
+        restore_parallel: 1
+        reload_helper: /usr/local/bin/llamacpp-qwen38fn-reload
+        # A local build: its libraries sit next to the binary, as the launcher sets.
+        version_cmd: '. /etc/llamacpp-qwen38fn.env && LD_LIBRARY_PATH="${LLAMACPP_DIR}" "${LLAMACPP_DIR}/llama-server" --version 2>&1'
+        results_label: llamacpp-gpu2
+        # One 64k slot holds neither agent preset's full depth (hermes 64k and coding
+        # 124k, plus a turn and its reply), so sessions stop at 56k.
+        agent_depth: 56000
+    gpu_config: "{{ gpus[gpu | string] }}"
+    gpu_vmid: "{{ gpu_config.vmid }}"
+    # Served model id (== llama-server --alias). The bench-runner also auto-detects it
+    # from /v1/models, but the reload/label/telemetry paths use it.
+    model_key: "{{ gpu_config.model_key }}"
+    model_context: "{{ gpu_config.context }}"
+    # Benchmark concurrency for the per-item reloads. The post-run restore uses
+    # restore_parallel instead, so a run leaves the server as it found it.
+    parallel: "{{ gpu_config.parallel }}"
+    restore_parallel: "{{ gpu_config.restore_parallel }}"
+    agent_depth: "{{ gpu_config.agent_depth }}"
+    reload_model: true
+    # The inference engine. llamacpp is the only one; the prior RX 6700 XT's lmstudio
     # path was removed when that card was decommissioned.
     runtime: llamacpp
-    # Benchmark concurrency — kept at 4 for run-to-run comparability with the existing
-    # result sets (pro-v620/results/.../parallel-4). This is the BENCHMARK default, NOT the
-    # operational one (CT 120 ships --parallel 2). The pre-batch/per-item reload uses this
-    # value; the post-run restore uses `restore_parallel` below, so benching at 4 leaves the
-    # operational default untouched. Override per-run with -e parallel=1 (single 256k slot).
-    parallel: 4
-    # Where the post-batch/post-sweep restore leaves CT 120 — the operational default, decoupled
-    # from `parallel` so a benchmark never clobbers prod. Tracks the CT 120 script default
-    # (--parallel 2). Override with -e restore_parallel=N.
-    restore_parallel: 2
-    # Served model id (== llama-server --alias on CT 120). The bench-runner also
-    # auto-detects it from /v1/models, but the reload/label/telemetry paths use it.
-    model_key: qwen3.6-35b-a3b
-    # 256k total — MUST match the CT 120 default. Reloads and the post-batch restore
-    # use this value, so a smaller number here silently downgrades production context
-    # on every `make bench`. At parallel 4 that is 64k per slot.
-    model_context: 262144
-    reload_model: true
-    # Per-engine reload command + labels. The reload command is re-templated by
-    # Ansible, so its inner {{ model_key }}/{{ model_context }}/{{ parallel }}
-    # resolve at run time.
     runtimes:
       llamacpp:
-        label: llamacpp
+        label: "{{ gpu_config.results_label }}"
         target_process_patterns: "llama-server,python"
-        # llama-server sets context/parallel at start, so "reload" = restart via
-        # the helper the llama.cpp container ships (blocks until healthy).
-        # Absolute path: the Ubuntu container's PATH omits /usr/local/bin.
-        reload_cmd: "/usr/local/bin/llamacpp-reload {{ model_context }} {{ parallel }}"
-        # Post-run restore returns CT 120 to the operational default (restore_parallel), not the
-        # benchmark concurrency, so a run leaves prod as it found it.
-        restore_cmd: "/usr/local/bin/llamacpp-reload {{ model_context }} {{ restore_parallel }}"
-        version_cmd: "/opt/llamacpp/current/llama-server --version 2>&1"
+        # Absolute paths: the Ubuntu containers' PATH omits /usr/local/bin.
+        # slot_parallel is a benchmark item's own slot count (benchmark_item.yml).
+        reload_cmd: "{{ gpu_config.reload_helper }} {{ model_context }} {{ slot_parallel | default(parallel) }}"
+        restore_cmd: "{{ gpu_config.reload_helper }} {{ model_context }} {{ restore_parallel }}"
+        version_cmd: "{{ gpu_config.version_cmd }}"
     runtime_label: "{{ runtimes[runtime].label }}"
     model_reload_cmd: "{{ runtimes[runtime].reload_cmd }}"
     model_restore_cmd: "{{ runtimes[runtime].restore_cmd }}"
-    # Optional host-orchestrated context-length sweep (reloads CT 120 per context,
-    # benches it via the host-telemetry sidecar). Off by default; enable with
+    # Optional host-orchestrated context-length sweep (reloads the GPU container per
+    # context, benches it via the host-telemetry sidecar). Off by default; enable with
     # -e context_sweep=true. Set benchmarks=[] to run only the context sweep.
     context_sweep: false
     context_sweep_contexts: "4096 16384 32768 65536"
     repo_root: "{{ playbook_dir }}/.."
     host_suite_dir: /tmp/proxmox-bench
     results_dest: "{{ playbook_dir }}/../pro-v620/results/{{ runtime_label }}/parallel-{{ parallel }}"
-    benchmarks:
+    # suite=full (the default) runs the regression items, then the agent-session and
+    # document-ingestion workloads; suite=short runs the regression items only.
+    # run_agent_sessions=false or run_doc_ingest=false drops one workload from a full run.
+    suite: full
+    run_agent_sessions: true
+    run_doc_ingest: true
+    regression_benchmarks:
       - "llm-bench-baseline"
       - "llm-bench-sweep concurrency --points 1 2 4 8 16 --requests 32"
       - "llm-bench-sweep input-length --points 128 512 2048 8192 32768 --output-tokens 32"
       - "llm-bench-soak"
+    # The workloads run at the operational slot layout (restore_parallel): CT 120's
+    # coding preset needs 128k slots, which --parallel 4 halves. Called through
+    # llm-bench-profile so a CT 200 provisioned before the llm-bench-workloads wrapper
+    # existed runs it too.
+    workload_benchmark:
+      cmd: >-
+        RUN_LLAMA_BENCHY=false
+        RUN_AGENT_SESSIONS={{ run_agent_sessions | bool | lower }}
+        RUN_DOC_INGEST={{ run_doc_ingest | bool | lower }}
+        BENCHMARK_AGENT_DEPTH={{ agent_depth }}
+        llm-bench-profile workloads
+      parallel: "{{ restore_parallel }}"
+    run_workloads: "{{ suite == 'full' and (run_agent_sessions | bool or run_doc_ingest | bool) }}"
+    # A list item is a command string, or {cmd, parallel} to reload the model with its
+    # own slot count first.
+    benchmarks: "{{ regression_benchmarks + ([workload_benchmark] if run_workloads | bool else []) }}"
 
   tasks:
+    - name: Check the GPU and suite selection
+      ansible.builtin.assert:
+        that:
+          - (gpu | string) in gpus
+          - suite in ['short', 'full']
+        fail_msg: "gpu must be one of {{ gpus | list | join(', ') }} and suite 'short' or 'full' (got gpu={{ gpu }}, suite={{ suite }})"
+
+    # Nothing is changed before these pass. With the two-card cutover active, CT 120
+    # serves llamacpp-qwen38fn and CT 123 is stopped: reloading CT 120's llamacpp unit
+    # would undo the cutover, so either selection stops here instead.
+    - name: Check the GPU container serves its model
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ gpu_vmid }}", "--", systemctl, is-active, "{{ gpu_config.service }}"]
+      register: gpu_service
+      changed_when: false
+      failed_when: false
+
+    - name: Stop when the GPU container is not serving its model
+      ansible.builtin.fail:
+        msg: >-
+          GPU {{ gpu }}: CT {{ gpu_vmid }} is not serving {{ gpu_config.service }}
+          ({{ (gpu_service.stdout ~ ' ' ~ gpu_service.stderr) | trim }}). If the two-card cutover
+          is active, check it with pro-v620/qwen38-flash-next/ct120-cutover.sh status.
+      when: gpu_service.rc != 0
+
+    - name: Check the GPU container has its reload helper
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ gpu_vmid }}", "--", test, -x, "{{ gpu_config.reload_helper }}"]
+      register: gpu_helper
+      changed_when: false
+      failed_when: false
+      when: reload_model | bool or context_sweep | bool
+
+    - name: Stop when the reload helper is missing
+      ansible.builtin.fail:
+        msg: >-
+          CT {{ gpu_vmid }} has no {{ gpu_config.reload_helper }}.
+          {{ 'Install it from pro-v620/qwen38-flash-next/ on the host: VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh'
+             if (gpu | string) == '2' else 'Reprovision the container or install the helper.' }}
+      when: gpu_helper.rc is defined and gpu_helper.rc != 0
+
     - name: Wipe any previous suite copy on the host
       ansible.builtin.file:
         path: "{{ host_suite_dir }}"
@@ -109,13 +197,13 @@
       changed_when: false
       failed_when: false
 
-    # Capture the engine build from the model container itself (CT 120), where the
+    # Capture the engine build from the model container itself, where the
     # binary actually lives — the bench-runner can't see it. The version_cmd merges
     # stderr (llama-server prints to it) but does NOT pipe to head, so its real exit
     # code survives; build-info only records the first output line when rc == 0, so
     # a loader/missing-file error never masquerades as an engine version. Best
-    # effort: empty if CT 120 is down or the command fails.
-    - name: Capture the model engine version from CT 120 (best effort)
+    # effort: empty if the container is down or the command fails.
+    - name: Capture the model engine version from the GPU container (best effort)
       ansible.builtin.command:
         argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ runtimes[runtime].version_cmd }}"]
       register: engine_version_raw
@@ -132,6 +220,9 @@
             "git_dirty": {{ ((local_git_status.stdout | default('')) | trim | length > 0) | to_json }},
             "source": "ansible/benchmark.yml",
             "parallel": {{ parallel | int }},
+            "gpu": {{ gpu | string | to_json }},
+            "gpu_vmid": {{ gpu_vmid | int }},
+            "model_key": {{ model_key | to_json }},
             "runtime": {{ runtime | to_json }},
             "engine_version": {{ ( ((engine_version_raw.stdout | default('')).splitlines() | first | default('') | trim) if (engine_version_raw.rc | default(1)) == 0 else '' ) | to_json }}
           }
@@ -184,10 +275,11 @@
       no_log: true
       when: hf_token | default('') | length > 0
 
-    # CT 200 reaches CT 120 via the MODEL_API_URL + MODEL_IDENTIFIER baked into its
+    # CT 200 reaches the model via the MODEL_API_URL + MODEL_IDENTIFIER baked into its
     # env at provisioning (the overlay preserves them). Both are auto-detected ONLY
-    # at provision time, so they go stale later: DHCP can hand CT 120 a new IP, and a
-    # model swap changes the served id. Re-point BOTH every run — URL -> current
+    # at provision time, so they go stale later: DHCP can hand a container a new IP, a
+    # model swap changes the served id, and the GPU selection changes both. Re-point BOTH
+    # every run — URL -> current
     # IP:1234, MODEL_IDENTIFIER -> model_key — so the batch targets the live endpoint
     # and preflight matches the served model (else an existing CT 200 fails preflight).
     - name: Discover the model container's current IP
@@ -197,7 +289,7 @@
       changed_when: false
       failed_when: false
 
-    - name: Point the bench-runner at CT 120's current endpoint
+    - name: Point the bench-runner at the GPU container's current endpoint
       ansible.builtin.command:
         argv:
           - pct
@@ -237,10 +329,15 @@
         - name: Run each benchmark item
           ansible.builtin.include_tasks: benchmark_item.yml
           loop: "{{ benchmarks }}"
+          loop_control:
+            label: "{{ item.cmd if item is mapping else item }}"
+          vars:
+            item_cmd: "{{ item.cmd if item is mapping else item }}"
+            slot_parallel: "{{ item.parallel if (item is mapping and item.parallel is defined) else parallel }}"
       always:
         # Don't let a restore failure abort the play before results are fetched;
         # it's reported at the end alongside any benchmark failures.
-        - name: Restore CT 120 to the operational default after the batch (cliff safety)
+        - name: Restore the GPU container to the operational default after the batch
           ansible.builtin.command:
             argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_restore_cmd }}"]
           changed_when: true
@@ -293,7 +390,7 @@
     # --- Optional: host-orchestrated context-length sweep -------------------
     # failed_when:false so a nonzero sweep does not abort the play — the archive /
     # fetch / extract tasks below still run, and the sweep's own EXIT trap has
-    # already restored CT 120 to RESTORE_CONTEXT/RESTORE_PARALLEL. The failure is
+    # already restored the GPU container to RESTORE_CONTEXT/RESTORE_PARALLEL. The failure is
     # surfaced loudly at the end via context_sweep_run.rc.
     - name: Run the context-length sweep (optional)
       ansible.builtin.command: "bash {{ host_suite_dir }}/host/run-context-sweep.sh"
@@ -306,6 +403,7 @@
         MODEL_PARALLEL: "{{ parallel }}"
         RESTORE_CONTEXT: "{{ model_context }}"
         RESTORE_PARALLEL: "{{ restore_parallel }}"
+        RELOAD_HELPER: "{{ gpu_config.reload_helper }}"
         CONTEXTS: "{{ context_sweep_contexts }}"
         OUT_DIR: "{{ host_suite_dir }}/context-sweep"
       register: context_sweep_run
@@ -337,7 +435,7 @@
       changed_when: true
       when: context_sweep | bool
 
-    # No explicit post-sweep restore task: run-context-sweep.sh restores CT 120 via
+    # No explicit post-sweep restore task: run-context-sweep.sh restores the model via
     # an EXIT trap (RESTORE_CONTEXT/RESTORE_PARALLEL above), so it is put back even
     # if the sweep errors or is interrupted — the single source of truth for restore.
 

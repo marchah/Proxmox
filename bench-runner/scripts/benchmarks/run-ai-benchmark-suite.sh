@@ -47,15 +47,30 @@ MODEL_API_URL="${MODEL_API_URL:-http://127.0.0.1:1234/v1}"
 MODEL_IDENTIFIER="${MODEL_IDENTIFIER:-local-model}"
 BENCHMARK_PROCESS_PATTERNS="${BENCHMARK_PROCESS_PATTERNS:-lms,LM Studio,llama-server,python,llama-benchy,lm_eval}"
 BENCHMARK_RUNS="${BENCHMARK_RUNS:-3}"
+# The agent-session and document-ingestion workloads are off unless a profile or the
+# caller turns them on (the `workloads` profile does); see BENCHMARKS.md.
+RUN_AGENT_SESSIONS="${RUN_AGENT_SESSIONS:-false}"
+RUN_DOC_INGEST="${RUN_DOC_INGEST:-false}"
+BENCHMARK_AGENT_PRESETS="${BENCHMARK_AGENT_PRESETS:-hermes coding}"
+# 0 runs each preset to its own depth; a token count stops every session there.
+BENCHMARK_AGENT_DEPTH="${BENCHMARK_AGENT_DEPTH:-0}"
+BENCHMARK_INGEST_DEPTHS="${BENCHMARK_INGEST_DEPTHS:-8192 16384 32768 49152}"
 export MODEL_API_URL MODEL_IDENTIFIER
 export BENCHMARK_PROFILE BENCHMARK_PROMPTSET BENCHMARK_SCENARIOS
 export BENCHMARK_RUNS BENCHMARK_REQUESTS BENCHMARK_CONCURRENCY BENCHMARK_SLO_FILE
 export BENCHMARK_PROCESS_PATTERNS RUN_OPENAI_DIRECT RUN_LLAMA_BENCHY RUN_LM_EVAL
-export BENCHMARK_DESCRIPTION
+export BENCHMARK_DESCRIPTION RUN_AGENT_SESSIONS RUN_DOC_INGEST
+export BENCHMARK_AGENT_PRESETS BENCHMARK_AGENT_DEPTH BENCHMARK_INGEST_DEPTHS
 
 # Fail loudly before doing any work if the model endpoint is unreachable or the
 # configured model id is not actually served. Set BENCHMARK_PREFLIGHT=false to skip.
-if [[ "${RUN_OPENAI_DIRECT:-true}" == "true" && "${BENCHMARK_PREFLIGHT:-true}" == "true" ]]; then
+uses_model_api=false
+for flag in "${RUN_OPENAI_DIRECT:-true}" "${RUN_AGENT_SESSIONS}" "${RUN_DOC_INGEST}"; do
+  if [[ "${flag}" == "true" ]]; then
+    uses_model_api=true
+  fi
+done
+if [[ "${uses_model_api}" == "true" && "${BENCHMARK_PREFLIGHT:-true}" == "true" ]]; then
   preflight_status=0
   "${PYTHON_BIN}" - "${MODEL_API_URL}" "${MODEL_IDENTIFIER}" <<'PY' || preflight_status=$?
 import json
@@ -165,6 +180,11 @@ manifest = {
             "RUN_OPENAI_DIRECT",
             "RUN_LLAMA_BENCHY",
             "RUN_LM_EVAL",
+            "RUN_AGENT_SESSIONS",
+            "RUN_DOC_INGEST",
+            "BENCHMARK_AGENT_PRESETS",
+            "BENCHMARK_AGENT_DEPTH",
+            "BENCHMARK_INGEST_DEPTHS",
             "BENCHMARK_DESCRIPTION",
         ]
     },
@@ -256,6 +276,29 @@ if [[ "${RUN_OPENAI_DIRECT:-true}" == "true" ]]; then
     --requests "${BENCHMARK_REQUESTS:-3}" \
     --concurrency "${BENCHMARK_CONCURRENCY:-1}" \
     "${scenario_args[@]}"
+fi
+
+if [[ "${RUN_AGENT_SESSIONS}" == "true" ]]; then
+  read -r -a agent_presets <<<"${BENCHMARK_AGENT_PRESETS}"
+  run_with_telemetry "agent-sessions" \
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/benchmark-agent-session.py" \
+    --base-url "${MODEL_API_URL}" \
+    --model "${MODEL_IDENTIFIER}" \
+    --output-dir "${RUN_DIR}/agent-sessions" \
+    --reps "${BENCHMARK_RUNS}" \
+    --depth "${BENCHMARK_AGENT_DEPTH}" \
+    --presets "${agent_presets[@]}"
+fi
+
+if [[ "${RUN_DOC_INGEST}" == "true" ]]; then
+  read -r -a ingest_depths <<<"${BENCHMARK_INGEST_DEPTHS}"
+  run_with_telemetry "doc-ingest" \
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/benchmark-doc-ingest.py" \
+    --base-url "${MODEL_API_URL}" \
+    --model "${MODEL_IDENTIFIER}" \
+    --output-dir "${RUN_DIR}/doc-ingest" \
+    --reps "${BENCHMARK_RUNS}" \
+    --depths "${ingest_depths[@]}"
 fi
 
 if [[ "${RUN_LLAMA_BENCHY:-false}" == "true" ]]; then

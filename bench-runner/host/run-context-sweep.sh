@@ -8,8 +8,9 @@ set -Eeuo pipefail
 # utilization, TTFT, latency, and throughput per context. Context length (KV
 # cache) is usually the dominant VRAM/serving bottleneck, so this maps it.
 #
-# CT 120 runs llama.cpp; each context reload uses the container's `llamacpp-reload`
-# helper (rewrite env + restart, blocks until the server is healthy again).
+# Each context reload runs the GPU container's reload helper (rewrite env + restart,
+# blocks until the server is healthy again): CT 120's `llamacpp-reload` by default,
+# CT 123's `llamacpp-qwen38fn-reload` with RELOAD_HELPER.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
@@ -18,8 +19,9 @@ GPU_VMID="${GPU_VMID:-120}"
 BENCH_VMID="${BENCH_VMID:-200}"
 MODEL_KEY="${MODEL_KEY:-qwen3.6-35b-a3b}"
 MODEL_PARALLEL="${MODEL_PARALLEL:-1}"
-# Operational default to restore CT 120 to when the sweep is done. The sweep walks
-# CT 120 through small per-point contexts; an EXIT trap reloads it back to this so a
+RELOAD_HELPER="${RELOAD_HELPER:-/usr/local/bin/llamacpp-reload}"
+# Operational default to restore the GPU container to when the sweep is done. The sweep
+# walks it through small per-point contexts; an EXIT trap reloads it back to this so a
 # direct run (or an aborted/interrupted one) never leaves the model at a tiny context.
 RESTORE_CONTEXT="${RESTORE_CONTEXT:-262144}"
 RESTORE_PARALLEL="${RESTORE_PARALLEL:-2}"
@@ -31,7 +33,7 @@ OUT_DIR="${OUT_DIR:-./context-sweep}"
 usage() {
   cat <<'USAGE'
 Sweep the model's context length and record VRAM / TTFT / throughput per step.
-CT 120 runs llama.cpp; reloads use the container's `llamacpp-reload` helper.
+Reloads use the GPU container's helper: <helper> <context> <parallel>.
 
 Run on the Proxmox host as root:
   ./run-context-sweep.sh
@@ -40,8 +42,11 @@ Env overrides:
   GPU_VMID=120 BENCH_VMID=200   Container ids.
   MODEL_KEY=qwen3.6-35b-a3b     Model identifier (results label).
   MODEL_PARALLEL=1              Parallel slots used at each reload.
-  RESTORE_CONTEXT=262144        Context to restore CT 120 to when the sweep ends.
-  RESTORE_PARALLEL=2            Parallel slots to restore CT 120 to when the sweep ends.
+  RELOAD_HELPER=/usr/local/bin/llamacpp-reload
+                                Reload helper in the GPU container (CT 123:
+                                /usr/local/bin/llamacpp-qwen38fn-reload).
+  RESTORE_CONTEXT=262144        Context to restore the GPU container to when the sweep ends.
+  RESTORE_PARALLEL=2            Parallel slots to restore it to when the sweep ends.
   CONTEXTS="4096 16384 32768 65536"
   BENCHMARK_REQUESTS=5          Requests per context point.
   OUT_DIR=./context-sweep       Output directory.
@@ -55,26 +60,26 @@ require_root() { [[ ${EUID} -eq 0 ]] || die "run on the Proxmox host as root"; }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"; }
 
 # Reload the model at a given context length. llama.cpp sets context/parallel at
-# start, so its container ships `llamacpp-reload` (rewrite env + restart, blocks
+# start, so the GPU container ships a reload helper (rewrite env + restart, blocks
 # until the server is healthy again); it returns only once the model is serving.
 # Absolute path: the Ubuntu container's PATH omits /usr/local/bin even for a login
 # shell, so neither bare `pct exec` nor `bash -lc` would find it.
 reload_model() {
   local context="$1"
-  pct exec "${GPU_VMID}" -- /usr/local/bin/llamacpp-reload "${context}" "${MODEL_PARALLEL}"
+  pct exec "${GPU_VMID}" -- "${RELOAD_HELPER}" "${context}" "${MODEL_PARALLEL}"
 }
 
-# Restore CT 120 to the operational default context/parallel. Registered as an EXIT
-# trap so the sweep never leaves the model at its last (small) sweep context — on
-# success, error, or interrupt. Re-raises the original exit code so a failed sweep
-# stays failed; and if the restore itself fails, forces a nonzero exit (CT 120 is
+# Restore the GPU container to the operational default context/parallel. Registered as
+# an EXIT trap so the sweep never leaves the model at its last (small) sweep context —
+# on success, error, or interrupt. Re-raises the original exit code so a failed sweep
+# stays failed; and if the restore itself fails, forces a nonzero exit (the model is
 # left at the wrong context) so a passing sweep can't mask a botched restore.
-restore_ct120() {
+restore_model() {
   local rc=$?
   trap - EXIT INT TERM
   log "Restoring CT ${GPU_VMID} to context ${RESTORE_CONTEXT} / ${RESTORE_PARALLEL} slots"
-  if ! pct exec "${GPU_VMID}" -- /usr/local/bin/llamacpp-reload "${RESTORE_CONTEXT}" "${RESTORE_PARALLEL}"; then
-    log "WARNING: failed to restore CT ${GPU_VMID}; reload it manually (llamacpp-reload ${RESTORE_CONTEXT} ${RESTORE_PARALLEL})"
+  if ! pct exec "${GPU_VMID}" -- "${RELOAD_HELPER}" "${RESTORE_CONTEXT}" "${RESTORE_PARALLEL}"; then
+    log "WARNING: failed to restore CT ${GPU_VMID}; reload it manually (${RELOAD_HELPER} ${RESTORE_CONTEXT} ${RESTORE_PARALLEL})"
     [[ ${rc} -eq 0 ]] && rc=1
   fi
   exit "${rc}"
@@ -130,20 +135,21 @@ main() {
   require_command python3
   pct status "${GPU_VMID}" >/dev/null 2>&1 || die "GPU container ${GPU_VMID} not found"
   pct status "${BENCH_VMID}" >/dev/null 2>&1 || die "bench container ${BENCH_VMID} not found"
+  pct exec "${GPU_VMID}" -- test -x "${RELOAD_HELPER}" || die "CT ${GPU_VMID} has no ${RELOAD_HELPER}"
 
-  # CT 120's current IP, so each bench points CT 200 at the live endpoint per-run.
+  # The GPU container's current IP, so each bench points CT 200 at the live endpoint.
   # This overrides any stale MODEL_API_URL/MODEL_IDENTIFIER baked into CT 200 (e.g.
   # left over from an earlier model), so preflight matches what's actually served.
   local gpu_ip
   gpu_ip="$(pct exec "${GPU_VMID}" -- hostname -I | awk '{print $1}')"
   [[ -n ${gpu_ip} ]] || die "could not determine CT ${GPU_VMID} IP address"
 
-  # Always restore CT 120 to the operational default on exit (success, error, or
-  # interrupt); the sweep otherwise leaves it at the last small context. The EXIT
-  # trap is the single restore path; INT/TERM just translate to the conventional
-  # nonzero code and fall through to it — registering restore_ct120 on the signals
+  # Always restore the GPU container to the operational default on exit (success,
+  # error, or interrupt); the sweep otherwise leaves it at the last small context. The
+  # EXIT trap is the single restore path; INT/TERM just translate to the conventional
+  # nonzero code and fall through to it — registering restore_model on the signals
   # directly would run it with $?==0 and exit 0, masking an interrupt as success.
-  trap restore_ct120 EXIT
+  trap restore_model EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
@@ -177,7 +183,7 @@ main() {
 
     log "Benchmarking context ${context} with GPU host telemetry"
     # Override MODEL_API_URL/MODEL_IDENTIFIER per-run so a standalone sweep targets
-    # CT 120's live endpoint even if CT 200's baked-in config is stale (process env
+    # the GPU container's live endpoint even if CT 200's baked-in config is stale (process env
     # wins over the suite's `: "${VAR:=...}"` defaults). No BENCHMARK_RUN_ID: the
     # llm-bench-* wrappers force their own timestamped id, so we detect the folder
     # they actually create (below) instead of passing a name they would ignore.

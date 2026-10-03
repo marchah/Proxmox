@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Restart Qwen3.8-Flash-Next at a context length and slot count, then wait until it
+# serves. CT 120's qwen3.6 server has the same interface as `llamacpp-reload`.
+# Installed as /usr/local/bin/llamacpp-qwen38fn-reload in CT 120 or CT 123 by install.sh.
+#
+#   llamacpp-qwen38fn-reload <context-length> <parallel>
+#
+# The context is the total, split across the slots. A larger context can put the KV cache
+# in GTT on RADV: read free VRAM and GTT together after a real request.
+set -Eeuo pipefail
+
+usage='usage: llamacpp-qwen38fn-reload <context-length> <parallel>'
+ctx="${1:?${usage}}"
+parallel="${2:?${usage}}"
+[[ ${ctx} =~ ^[0-9]+$ && ${parallel} =~ ^[0-9]+$ ]] || { echo "${usage}" >&2; exit 2; }
+
+env_file=/etc/llamacpp-qwen38fn.env
+sed -i \
+  -e "s/^MODEL_CONTEXT_LENGTH=.*/MODEL_CONTEXT_LENGTH=\"${ctx}\"/" \
+  -e "s/^MODEL_PARALLEL=.*/MODEL_PARALLEL=\"${parallel}\"/" \
+  "${env_file}"
+systemctl restart llamacpp-qwen38fn.service
+
+# shellcheck disable=SC1090  # runtime-only env file
+port="$(. "${env_file}"; printf '%s' "${MODEL_SERVER_PORT:-1234}")"
+# The unit allows 30 min for a load (TimeoutStartSec=1800); stop early if it fails.
+for _ in $(seq 1 360); do
+  if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+    exit 0
+  fi
+  if systemctl is-failed --quiet llamacpp-qwen38fn.service; then
+    echo "llamacpp-qwen38fn-reload: the server failed to start; see journalctl -u llamacpp-qwen38fn" >&2
+    exit 1
+  fi
+  sleep 5
+done
+echo "llamacpp-qwen38fn-reload: the server was not healthy after 30 min" >&2
+exit 1

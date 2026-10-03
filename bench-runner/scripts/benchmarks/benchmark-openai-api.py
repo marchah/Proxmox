@@ -16,7 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from bench_common import corpus_info, file_text, is_garbage_output, long_text, take_tokens
 
+# A scenario with "context" gets real text appended to its prompt: (corpus, first file,
+# characters) from the pinned corpus in bench_common.py, about 4 characters per token.
 SCENARIOS = {
     "smoke": {
         "max_tokens": 32,
@@ -34,24 +37,22 @@ SCENARIOS = {
         "prompt": (
             "You are evaluating a local AI homelab. Summarize the tradeoffs "
             "between CPU inference, GPU inference, quantization, context "
-            "length, and concurrency. Keep the answer practical.\n\n"
-            + ("The benchmark must be repeatable, measurable, and useful. " * 80)
+            "length, and concurrency, using the notes below. Keep the answer practical.\n\n"
         ),
+        "context": ("docs", "README.md", 3600),
     },
     "long": {
         "max_tokens": 512,
         "prompt": (
-            "Analyze the following synthetic operations notes and produce a "
-            "short bottleneck report with upgrade recommendations.\n\n"
-            + (
-                "Request latency rose during high concurrency. GPU VRAM stayed "
-                "near capacity. CPU iowait increased during model load. "
-                "Temperatures climbed slowly during the soak test. "
-            )
-            * 300
+            "Analyze the following operations notes from a homelab repository and "
+            "produce a short bottleneck report with upgrade recommendations.\n\n"
         ),
+        "context": ("docs", "pro-v620/README.md", 36000),
     },
 }
+SYNTHETIC_HEADER = "Read the following text, then continue writing about it.\n\n"
+# The leading "[<salt>-<index>] " nonce and the header, in tokens.
+SYNTHETIC_OVERHEAD_TOKENS = 24
 
 
 def load_promptset(path: Path) -> dict[str, dict[str, Any]]:
@@ -77,29 +78,23 @@ def load_promptset(path: Path) -> dict[str, dict[str, Any]]:
     return scenarios
 
 
-def synthetic_prompt(approx_input_tokens: int, nonce: str = "") -> str:
-    """Build a prompt of roughly N input tokens for controlled sweeps.
+def synthetic_prompt(base_url: str, approx_input_tokens: int) -> str:
+    """A prompt of about N input tokens of real text, for controlled sweeps.
 
-    The exact token count is tokenizer-dependent; one filler word is a rough
-    stand-in for one token, which is good enough for relative sweep curves.
-
-    A non-empty ``nonce`` is placed at the very start so each request diverges
-    within the first token or two. Without it every synthetic request is the
-    identical repeated word, so the server's prefix cache serves later requests
-    (and shorter sweep points are prefixes of longer ones), turning a cold-
-    prefill measurement into a warm-cache one.
+    The text is cut by the server's tokenizer when it has one (see take_tokens), so a
+    sweep point means the same token count on any model.
     """
-    prefix = f"[{nonce}] " if nonce else ""
-    nonce_tokens = len(nonce.split()) + 2 if nonce else 0
-    filler = " ".join(["token"] * max(1, approx_input_tokens - nonce_tokens))
-    return f"{prefix}Read the following text, then continue writing about it.\n\n{filler}"
+    body = take_tokens(base_url, long_text(), max(1, approx_input_tokens - SYNTHETIC_OVERHEAD_TOKENS))
+    return SYNTHETIC_HEADER + body
 
 
 def prompt_for(scenario: dict[str, Any], run_salt: str, index: int) -> str:
-    """Per-request prompt. Synthetic scenarios get a unique leading nonce so
-    prefix caching can't contaminate the sweep; everything else is verbatim."""
-    if scenario.get("synthetic"):
-        return synthetic_prompt(int(scenario["synthetic_input_tokens"]), nonce=f"{run_salt}-{index}")
+    """Per-request prompt. Synthetic and real-text scenarios get a unique leading nonce,
+    so each request diverges within the first tokens and the server's prefix cache cannot
+    turn a cold prefill into a warm one (shorter sweep points are prefixes of longer
+    ones). Short prompts are sent verbatim."""
+    if scenario.get("cold"):
+        return f"[{run_salt}-{index}] {scenario['prompt']}"
     return scenario["prompt"]
 
 
@@ -126,21 +121,6 @@ def stats(values: list[float]) -> dict[str, float | None]:
         "p99": percentile(values, 0.99),
         "max": max(values),
     }
-
-
-def is_garbage_output(text: str) -> bool:
-    """Heuristic: a non-trivial response that is mostly '?' / replacement chars.
-
-    The Vulkan cold-prefill cliff returns HTTP 200 with all-'?' output, which
-    would otherwise count as a successful request and publish throughput for
-    invalid output. Conservative — needs >50% bad chars on an 8+ char response —
-    so normal text (including a trailing '?') is never flagged.
-    """
-    stripped = text.strip()
-    if len(stripped) < 8:
-        return False
-    bad = sum(1 for ch in stripped if ch in "?�")
-    return bad / len(stripped) > 0.5
 
 
 def expected_substrings(expected: Any) -> list[str]:
@@ -449,11 +429,9 @@ def main() -> int:
     if args.synthetic_input_tokens is not None:
         scenarios = {
             "synthetic": {
-                # Representative prompt for the manifest; the actual per-request
-                # prompts get a unique nonce via prompt_for() to defeat caching.
-                "prompt": synthetic_prompt(args.synthetic_input_tokens),
-                "synthetic": True,
-                "synthetic_input_tokens": args.synthetic_input_tokens,
+                # Each request gets a unique nonce in front via prompt_for().
+                "prompt": synthetic_prompt(args.base_url, args.synthetic_input_tokens),
+                "cold": True,
                 "max_tokens": args.synthetic_output_tokens,
                 "group": "synthetic",
                 "tags": ["synthetic"],
@@ -466,7 +444,14 @@ def main() -> int:
         scenarios = {"custom": {"prompt": prompt, "max_tokens": 256}}
     else:
         names = args.scenario or ["smoke", "short", "medium"]
-        scenarios = {name: SCENARIOS[name] for name in names}
+        scenarios = {
+            name: (
+                {**SCENARIOS[name], "prompt": SCENARIOS[name]["prompt"] + file_text(*SCENARIOS[name]["context"]), "cold": True}
+                if "context" in SCENARIOS[name]
+                else SCENARIOS[name]
+            )
+            for name in names
+        }
 
     records_path = output_dir / f"openai-{args.label}-requests.jsonl"
     summary_path = output_dir / f"openai-{args.label}-summary.json"
@@ -481,6 +466,7 @@ def main() -> int:
         "scenarios": list(scenarios),
         "promptset": args.promptset,
         "synthetic_input_tokens_approx": args.synthetic_input_tokens,
+        "corpus": corpus_info("docs", "code") if any(s.get("cold") for s in scenarios.values()) else None,
         "synthetic_output_tokens": args.synthetic_output_tokens if args.synthetic_input_tokens is not None else None,
         "requests_per_scenario": args.requests,
         "concurrency": args.concurrency,
