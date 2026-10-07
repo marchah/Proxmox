@@ -16,7 +16,7 @@ set -Eeuo pipefail
 
 ct=$1 pci=$2 rounds=$3; shift 3
 offsets=("$@")
-BIN="${BIN:-/opt/llamacpp/llama-b11018}"
+BIN="${BIN:-/opt/llamacpp/llama-b11475}"
 MODEL="${MODEL:-/models/hf/Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf}"
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 OUT="${OUT:-/root/decode-power/$(date -u +%Y%m%dT%H%M%SZ)-${pci}}"
