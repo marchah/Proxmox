@@ -14,7 +14,7 @@
 # A thermal guard for the card runs for the duration. The card is left at 0 mV.
 #
 # Env (paths inside the container):
-#   BIN    llama.cpp release dir        (default /opt/llamacpp/llama-b11018)
+#   BIN    llama.cpp release dir        (default /opt/llamacpp/llama-b11475)
 #   MODEL  GGUF                         (default /models/hf/Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf)
 #   WIKI   wikitext-2 wiki.test.raw     (default /tmp/wiki.test.raw)
 #   ARGS   llama-perplexity flags       (default: production KV/FA/ubatch)
@@ -22,7 +22,7 @@ set -Eeuo pipefail
 
 ct=$1 pci=$2 runs=$3; shift 3
 offsets=("$@")
-BIN="${BIN:-/opt/llamacpp/llama-b11018}"
+BIN="${BIN:-/opt/llamacpp/llama-b11475}"
 MODEL="${MODEL:-/models/hf/Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf}"
 WIKI="${WIKI:-/tmp/wiki.test.raw}"
 ARGS="${ARGS:--fa on -ctk q8_0 -ctv q8_0 -b 2048 -ub 1024}"

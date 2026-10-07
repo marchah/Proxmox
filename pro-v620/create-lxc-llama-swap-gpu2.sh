@@ -228,6 +228,8 @@ install_swap_stack() {
 
   log "Installing Vulkan deps + llama.cpp ${LLAMACPP_RELEASE_TAG} + llama-swap ${LLAMASWAP_VERSION}"
   run_in_container bash -lc "apt-get update"
+  # Mesa from the kisak-mesa PPA: noble ships 25.2, the PPA tracks upstream (26.x).
+  run_in_container bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common && add-apt-repository -y ppa:kisak/kisak-mesa"
   run_in_container bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git jq tar libatomic1 libgomp1 mesa-vulkan-drivers libvulkan1 vulkan-tools libglvnd0 libgl1 libglx0 libegl1 python3 python3-venv sudo"
   run_in_container bash -lc "useradd --create-home --shell /bin/bash llamacpp || true"
   run_in_container bash -lc "usermod -aG video,render llamacpp 2>/dev/null || usermod -aG video llamacpp || true"

@@ -10,7 +10,7 @@ at `0000:83:00.0`**, leaving CT 120's Qwen3.6 service on the other card.
 | Setting | CT 123: deployed | CT 120: two-card alternative |
 | --- | --- | --- |
 | Env file | `qwen38fn-gpu2.env` | `qwen38fn.env` |
-| Binary tree | `b11018-baseline` (local build) | `llama-b11018` (release tarball) |
+| Binary tree | `llama-b11475` (release tarball) | `llama-b11475` (release tarball) |
 | GPUs | one, `0000:83:00.0` | both V620s |
 | CPU expert layers | 34 | 16 |
 | Tensor split | none | `30,18` |
@@ -22,8 +22,8 @@ at `0000:83:00.0`**, leaving CT 120's Qwen3.6 service on the other card.
 
 Vulkan requires **b11013 or later** for the hyper-connection operations. A
 registered `qwen4exp` architecture alone does not establish backend support.
-The two b11018 trees report the same commit but have different binaries; use the
-same tree on both sides of an A/B comparison.
+The measurements below were taken on b11018 (`b11018-baseline`, a local build of the
+same commit as the release tarball). Re-measure on the deployed build before comparing.
 
 ## Deployment
 
@@ -240,15 +240,19 @@ this directory's guard targets the ROMED8-2T.
 
 ## MTP experiment
 
-The [MTP patches](mtp-patches/README.md) are experimental and are not deployed.
-Rebased onto b11018, the target-only server works, but both draft-head GGUFs
-abort in `graph_mtp` → `build_hc_mix` with `GGML_ASSERT(ggml_can_repeat(b, a))`.
-The MTP graph needs porting to b11018's `{n_embd, hc}` gamma layout. A successful
-build or model load is insufficient validation.
+Upstream merged a qwen4exp MTP graph in llama.cpp #29761, included in b11475. Whether
+b11475 loads unsloth's separate qwen4exp heads is untested. Unsloth's `MTP/README.md`
+predates #29761 and says stock builds cannot use them, but on 2026-10-06 unsloth copied
+the self-contained `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` to the repo root for `llama.cpp -hf`.
+The `shared-` heads borrow the main model's embedding and output tensors.
 
-`mtp-standalone.sh` provides the retry harness. Rebuild/revalidate the patched
-binary before retrying; `MTP_SKIP_BUILD=true` is only for a compatible existing
-build.
+`qwen38fn-download.sh` fetches the self-contained Q8_0 and Q4_K_M heads, re-exported
+upstream on 2026-10-05, and the 2026-09-01 `shared-Q4_K_M` head. That re-export changed
+only the self-contained heads; the UD-Q4_K_XL shards are unchanged. MTP is not deployed.
+
+The [MTP patches](mtp-patches/README.md) and `mtp-standalone.sh` are the earlier
+b11018 attempt, which aborted in `graph_mtp` → `build_hc_mix` with
+`GGML_ASSERT(ggml_can_repeat(b, a))`.
 
 ## Host memory baseline — 2026-09-17
 

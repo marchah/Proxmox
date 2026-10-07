@@ -134,10 +134,9 @@ contexts and a tool call. Figures are medians over 3 rotated repetitions, in tok
 GPU 2 at 0 mV.
 
 **ROCm cannot run CT 120's exact configuration.** At ubatch 1024 it aborted with
-`ROCm error: out of memory` on the first 16k-token prompt; RADV fits by placing buffers in
-GTT, which ROCm does not do. ROCm fits at ubatch 512, ending at 30,437 of 30,704 MiB (267 MiB
-free). Vulkan keeps ubatch 1024 with ~680 MiB free plus GTT. Two deep prompts at once on
-ROCm were not tested.
+`ROCm error: out of memory` on the first 16k-token prompt. ROCm fits at ubatch 512, ending
+at 30,437 of 30,704 MiB (267 MiB free). Vulkan keeps ubatch 1024 with ~680 MiB free plus
+GTT. Two deep prompts at once on ROCm were not tested.
 
 | MTP draft length 3 | Vulkan | ROCm | ROCm vs Vulkan |
 | --- | ---: | ---: | ---: |

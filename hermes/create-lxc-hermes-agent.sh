@@ -431,7 +431,7 @@ if [[ "${INSTALL_BROWSER}" == "1" ]]; then
   /opt/readability/bin/pip install --upgrade pip >/dev/null
   # lxml_html_clean is REQUIRED on lxml 6.x: both trafilatura (via justext) and
   # readability-lxml import lxml.html.clean, which moved to this separate package.
-  /opt/readability/bin/pip install trafilatura==2.1.0 readability-lxml==0.8.4.1 lxml_html_clean==0.4.5
+  /opt/readability/bin/pip install trafilatura==2.3.1 readability-lxml==0.8.4.1 lxml_html_clean==0.4.5
   ln -sf /opt/readability/bin/trafilatura /usr/local/bin/trafilatura
   # Fail provisioning if either package can't actually run (not just "pip said OK"). Full
   # paths: /usr/local/bin is not on this non-login pct-exec PATH.
