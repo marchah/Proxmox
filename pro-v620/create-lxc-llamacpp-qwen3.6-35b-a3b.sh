@@ -296,6 +296,8 @@ install_llamacpp_stack() {
   log "Installing llama.cpp (${LLAMACPP_RELEASE_TAG}) and configuring ${MODEL_FILE}"
 
   run_in_container bash -lc "apt-get update"
+  # Mesa from the kisak-mesa PPA: noble ships 25.2, the PPA tracks upstream (26.x).
+  run_in_container bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common && add-apt-repository -y ppa:kisak/kisak-mesa"
   # Vulkan userspace (mesa RADV) + the libglvnd/EGL stack — without the latter
   # the Mesa ICD loader can silently report zero Vulkan devices inside the
   # container even when the host sees the GPU (llama.cpp #16138).

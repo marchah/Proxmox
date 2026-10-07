@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Download + verify unsloth/Qwen3.8-Flash-Next-GGUF UD-Q4_K_XL (4 shards) + the F16
-# vision projector into /models/hf/qwen3.8-flash-next/.
+# Download + verify unsloth/Qwen3.8-Flash-Next-GGUF UD-Q4_K_XL (4 shards), the F16
+# vision projector and three MTP heads into /models/hf/qwen3.8-flash-next/.
+# Checksums match repo revision 766911a6. The self-contained heads were re-exported
+# upstream on 2026-10-05; a head with an older stamp must be deleted with its
+# .verified file, or this script skips it.
 #
 # Resumable and idempotent: re-run to continue. A file with a matching .verified stamp
 # is skipped.
@@ -26,6 +29,9 @@ MANIFEST=$(cat <<'EOF'
 56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3 UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf 49376141504
 753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf 12087983520
 1f7b7f0b984cf065c604360c29c8098362ed61b290db0ff12c6f360bb1a8a980 mmproj-F16.gguf 904004000
+58a47d6a216307e9b97172d5bfdc3436a8994b632f5e436b9bb6edf8951da8d1 MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf 4137429120
+8087dbb39fc73f79ac069b1debe4069a44b73ada900c8bd761569d43a5a90231 MTP/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf 2786204800
+f521868a9e143718bef513772f6e04d9642551e362cf2439636d2abdbd149dfc MTP/mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf 1907151936
 EOF
 )
 

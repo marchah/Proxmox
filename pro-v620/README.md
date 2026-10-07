@@ -41,10 +41,13 @@ with a pinned llama.cpp Vulkan release and a checksum-verified model.
 
 This MoE has 35B total parameters and about 3B active per token. Its ~27.2 GB
 weights, including the MTP head, fit one card. At the 256k context ceiling, a
-recorded load used about 30.0 GiB of 30704 MiB exposed VRAM plus ~650 MiB GTT after
-a request, leaving little transient headroom. With f16 KV the same load spills
-~2 GiB to GTT and decodes slower than without speculation. Check free VRAM and GTT
-after changing context, KV type, batches or the binary.
+recorded load used about 30.0 GiB of 30704 MiB exposed VRAM after a request, leaving
+little transient headroom. Its ~610 MiB of GTT is not spill: llama.cpp keeps each
+context's graph inputs in pinned host memory, mostly an F16 attention mask of
+`n_ctx_slot × n_ubatch` (256 MiB here), once for the model and once for the MTP head.
+That baseline held while free VRAM varied by 2.3 GiB; spill is GTT above it. With f16
+KV the same load spills ~2 GiB to GTT and decodes slower than without speculation.
+Check free VRAM and GTT after changing context, KV type, batches or the binary.
 
 The MTP head and q8_0 KV measured +49–77% single-stream decode on code, JSON and
 tool calls, +17% on prose, +35–39% at 16k–48k depth, and +2–38% combined across

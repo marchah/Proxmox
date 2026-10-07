@@ -242,14 +242,13 @@ this directory's guard targets the ROMED8-2T.
 
 Upstream merged a qwen4exp MTP graph in llama.cpp #29761, included in b11475. Whether
 b11475 loads unsloth's separate qwen4exp heads is untested. Unsloth's `MTP/README.md`
-predates #29761 and says stock builds cannot use them, but on 2026-10-06 unsloth added a
-self-contained `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` at the repo root for `llama.cpp -hf`.
+predates #29761 and says stock builds cannot use them, but on 2026-10-06 unsloth copied
+the self-contained `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` to the repo root for `llama.cpp -hf`.
 The `shared-` heads borrow the main model's embedding and output tensors.
 
-`/models` holds a self-contained `mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf` and a
-`mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf`, both from 2026-09-17. Unsloth re-uploaded the
-UD-Q4_K_XL shards on 2026-10-05 for upstream changes; the deployed shards are the
-2026-09-02 revision. MTP is not deployed.
+`qwen38fn-download.sh` fetches the self-contained Q8_0 and Q4_K_M heads, re-exported
+upstream on 2026-10-05, and the 2026-09-01 `shared-Q4_K_M` head. That re-export changed
+only the self-contained heads; the UD-Q4_K_XL shards are unchanged. MTP is not deployed.
 
 The [MTP patches](mtp-patches/README.md) and `mtp-standalone.sh` are the earlier
 b11018 attempt, which aborted in `graph_mtp` → `build_hc_mix` with
