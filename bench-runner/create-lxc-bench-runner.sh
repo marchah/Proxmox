@@ -28,8 +28,8 @@ INSTALL_LM_EVAL="${INSTALL_LM_EVAL:-1}"
 # Pin benchmark tools for reproducibility. Override to a different version, or
 # set to "latest" to track the newest release (not recommended for repeatable
 # runs). Defaults track the versions validated against this suite.
-LLAMA_BENCHY_VERSION="${LLAMA_BENCHY_VERSION:-0.3.8}"
-LM_EVAL_VERSION="${LM_EVAL_VERSION:-0.4.12}"
+LLAMA_BENCHY_VERSION="${LLAMA_BENCHY_VERSION:-0.4.0}"
+LM_EVAL_VERSION="${LM_EVAL_VERSION:-0.4.13}"
 BENCH_RAW_BASE="${BENCH_RAW_BASE:-https://raw.githubusercontent.com/marchah/Proxmox/main/bench-runner}"
 
 usage() {
