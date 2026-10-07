@@ -27,6 +27,10 @@ setting.
 
 Only forward the noisy stuff? `MIN_SEVERITY=warning ./setup-slack-notifications.sh <url>`.
 
+Several hosts posting to one channel? `LABEL=pve2 ./setup-slack-notifications.sh <url>` prefixes
+every title with `[pve2]`. Proxmox titles carry the node name, so two standalone nodes that share a
+hostname are otherwise indistinguishable.
+
 ## The URL is stored as a secret
 
 It goes in as a Proxmox notification **secret**, referenced from the URL template as

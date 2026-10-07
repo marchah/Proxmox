@@ -26,6 +26,10 @@ MATCHER_NAME="${MATCHER_NAME:-slack-all}"
 # Default `null` = forward everything (this host generates few notifications, and the failure
 # mode being fixed here is precisely a message that got ignored).
 MIN_SEVERITY="${MIN_SEVERITY:-}"
+# Optional tag shown before each title, e.g. LABEL=pve2 -> "*[pve2] vzdump backup status ...*".
+# Use it when several hosts post to one channel: Proxmox titles carry the node name, and two
+# standalone nodes can share one.
+LABEL="${LABEL:-}"
 
 usage() {
   sed -n '3,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -65,13 +69,18 @@ main() {
     || die "expected a URL like https://hooks.slack.com/services/T.../B.../... (got: ${url%%/services/*}...)"
   token="${url#https://hooks.slack.com/services/}"
   [[ -n ${token} && ${token} != */ ]] || die "the webhook URL looks truncated after /services/"
+  # The label goes into the JSON body verbatim, so keep it to characters that need no escaping.
+  [[ ${LABEL} =~ ^[A-Za-z0-9._-]*$ ]] || die "LABEL may only contain letters, digits, '.', '_' and '-'"
+
+  local prefix=''
+  [[ -n ${LABEL} ]] && prefix="[${LABEL}] "
 
   # Slack renders `text` as mrkdwn. `escape` JSON-escapes the value, so a message containing
   # quotes or newlines cannot produce a malformed body (which would fail silently — the exact
   # class of bug this script exists to prevent).
   # shellcheck disable=SC2016  # the {{ }} are Proxmox templates and the ``` are literal Slack
   # code fences — both must reach the API unexpanded, so single quotes are deliberate.
-  body='{"text":"*{{ title }}*\n```{{ escape message }}```"}'
+  body='{"text":"*'"${prefix}"'{{ title }}*\n```{{ escape message }}```"}'
 
   log "Creating notification endpoint '${ENDPOINT_NAME}'"
   # Replace rather than update, so re-running is a clean rotation.
@@ -114,8 +123,8 @@ main() {
   fi
 
   log "Done"
-  printf 'Endpoint: %s   Matcher: %s   Severity filter: %s\n' \
-    "${ENDPOINT_NAME}" "${MATCHER_NAME}" "${MIN_SEVERITY:-<all>}"
+  printf 'Endpoint: %s   Matcher: %s   Severity filter: %s   Label: %s\n' \
+    "${ENDPOINT_NAME}" "${MATCHER_NAME}" "${MIN_SEVERITY:-<all>}" "${LABEL:-<none>}"
   printf 'Notifications now go to BOTH Slack and mail-to-root.\n'
   printf '\nVerify the weekly backup job reports in:\n'
   printf '  pvesh get /cluster/notifications/matchers\n'
