@@ -4,14 +4,15 @@
 # model on this GPU (see rx-6700-xt/README.md "Correctness cliff"), and the
 # corruption is sticky until reload. Without a per-item reload, the long
 # input-length sweep poisons every later benchmark (e.g. the soak) with garbage.
-# `item` is the benchmark command string from the loop in benchmark.yml.
-- name: "Reload model before: {{ item }}"
+# `item_cmd` is the benchmark command and `slot_parallel` the slot count to reload
+# with, both resolved from the loop item in benchmark.yml.
+- name: "Reload model ({{ slot_parallel }} slots) before: {{ item_cmd }}"
   ansible.builtin.command:
     argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_reload_cmd }}"]
   changed_when: true
   when: reload_model | bool
 
-- name: "Benchmark: {{ item }}"
+- name: "Benchmark: {{ item_cmd }}"
   ansible.builtin.command:
     argv:
       - bash
@@ -23,7 +24,7 @@
       - "--"
       - bash
       - "-lc"
-      - "{{ item }}"
+      - "{{ item_cmd }}"
   environment:
     GPU_VMID: "{{ gpu_vmid }}"
     BENCH_VMID: "{{ bench_vmid }}"
@@ -37,4 +38,4 @@
 # if any item exited non-zero, rather than aborting the batch mid-way.
 - name: Record benchmark result
   ansible.builtin.set_fact:
-    batch_item_results: "{{ (batch_item_results | default([])) + [{'item': item, 'rc': bench_item.rc}] }}"
+    batch_item_results: "{{ (batch_item_results | default([])) + [{'item': item_cmd, 'rc': bench_item.rc}] }}"

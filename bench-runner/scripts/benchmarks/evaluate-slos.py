@@ -208,9 +208,13 @@ def evaluate_target_telemetry(run_dir: Path, telemetry_rules: dict[str, Any]) ->
     return {"name": "model-server-target", "status": status, "checks": checks, "telemetry": telemetry}
 
 
+# Summary files the benchmarks write into their target directories.
+SUMMARY_PATTERNS = ("openai-*-summary.json", "agent-summary.json", "ingest-summary.json")
+
+
 def find_summary(target_dir: Path) -> dict[str, Any] | None:
-    for candidate in target_dir.glob("openai-*-summary.json"):
-        if candidate.exists():
+    for pattern in SUMMARY_PATTERNS:
+        for candidate in target_dir.glob(pattern):
             return load_json(candidate)
     return None
 

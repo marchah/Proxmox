@@ -29,9 +29,10 @@ same commit as the release tarball). Re-measure on the deployed build before com
 
 Run from this directory on the Proxmox host as root. `install.sh` needs an
 existing, running container with the `llamacpp` user, the selected binary and
-sufficient RAM/disk. It installs the env, launcher and unit; it does not allocate
-GPUs, resize the container or start serving. Add `--download` to start/resume the
-model and projector download.
+sufficient RAM/disk. It installs the env, launcher, reload helper and unit; it does
+not allocate GPUs, resize the container or start serving. Add `--download` to
+start/resume the model and projector download. Re-running it rewrites those files
+from this directory; the running server picks them up at its next restart.
 
 For the existing CT 123 deployment:
 
@@ -42,6 +43,9 @@ pct exec 123 -- journalctl -u qwen38fn-dl --no-pager -n 30
 pct exec 123 -- systemctl restart llamacpp-qwen38fn
 pct exec 123 -- systemctl status llamacpp-qwen38fn
 curl http://gpu2:1234/v1/models
+# Restart at another context/slot layout and wait until it serves; the benchmark
+# batch uses this (`make bench GPU=2`):
+pct exec 123 -- /usr/local/bin/llamacpp-qwen38fn-reload 65536 1
 ```
 
 For the two-card CT 120 alternative:
@@ -278,6 +282,6 @@ packaging effects.
 ## Local validation
 
 ```bash
-shellcheck -S warning ./*.sh ./llamacpp-serve-qwen38fn
+shellcheck -S warning ./*.sh ./llamacpp-serve-qwen38fn ./llamacpp-qwen38fn-reload
 python3 -m py_compile ./*.py
 ```

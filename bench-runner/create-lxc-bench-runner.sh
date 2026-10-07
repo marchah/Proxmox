@@ -51,6 +51,7 @@ The script creates an unprivileged Debian LXC and installs wrapper commands:
   llm-bench-concurrency
   llm-bench-soak
   llm-bench-quality
+  llm-bench-workloads
   llm-bench-compare
   llm-bench-env
   llm-bench-sweep
@@ -251,8 +252,12 @@ files=(
   "config/benchmark-profiles/concurrency.env"
   "config/benchmark-profiles/quality.env"
   "config/benchmark-profiles/soak.env"
+  "config/benchmark-profiles/workloads.env"
   "config/benchmark-promptsets/homelab-core.jsonl"
   "config/benchmark-slos/default.json"
+  "scripts/benchmarks/bench_common.py"
+  "scripts/benchmarks/benchmark-agent-session.py"
+  "scripts/benchmarks/benchmark-doc-ingest.py"
   "scripts/benchmarks/benchmark-openai-api.py"
   "scripts/benchmarks/capture-system-logs.sh"
   "scripts/benchmarks/collect-version-info.py"
@@ -475,6 +480,14 @@ set -Eeuo pipefail
 RUN_LM_EVAL=true exec llm-bench-profile quality "$@"
 SH
 
+# Agent sessions and document ingestion only. local-model.env turns llama-benchy on, so
+# turn it off here; RUN_AGENT_SESSIONS=false or RUN_DOC_INGEST=false skips one workload.
+cat >/usr/local/bin/llm-bench-workloads <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+RUN_LLAMA_BENCHY="${RUN_LLAMA_BENCHY:-false}" exec llm-bench-profile workloads "$@"
+SH
+
 cat >/usr/local/bin/llm-bench-compare <<'SH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -520,6 +533,7 @@ chmod 755 \
   /usr/local/bin/llm-bench-concurrency \
   /usr/local/bin/llm-bench-soak \
   /usr/local/bin/llm-bench-quality \
+  /usr/local/bin/llm-bench-workloads \
   /usr/local/bin/llm-bench-compare \
   /usr/local/bin/llm-bench-env \
   /usr/local/bin/llm-bench-sweep
@@ -548,6 +562,7 @@ print_summary() {
   printf "  pct exec %s -- bash -lc 'llm-bench-concurrency'\n" "${VMID}"
   printf "  pct exec %s -- bash -lc 'llm-bench-soak'\n" "${VMID}"
   printf "  pct exec %s -- bash -lc 'llm-bench-quality'\n" "${VMID}"
+  printf "  pct exec %s -- bash -lc 'llm-bench-workloads'\n" "${VMID}"
 }
 
 main() {

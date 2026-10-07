@@ -18,6 +18,10 @@ def load_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+# Summary files the benchmarks write into their target directories.
+SUMMARY_PATTERNS = ("openai-*-summary.json", "agent-summary.json", "ingest-summary.json")
+
+
 def summaries(run_dir: Path) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for target in run_dir.iterdir():
@@ -25,7 +29,7 @@ def summaries(run_dir: Path) -> dict[str, dict[str, Any]]:
             continue
         if target.name in {"system-logs"}:
             continue
-        summary = next(target.glob("openai-*-summary.json"), None)
+        summary = next((path for pattern in SUMMARY_PATTERNS for path in target.glob(pattern)), None)
         data = load_json(summary) if summary else None
         if data:
             result[target.name] = data
@@ -50,6 +54,23 @@ def get_metric(summary: dict[str, Any], metric: str) -> float | int | None:
     if metric == "decode_median":
         return summary.get("decode_tokens_per_second", {}).get("median")
     return None
+
+
+def workload_metrics(summary: dict[str, Any]) -> dict[str, float | int | None]:
+    """Per-preset and per-band (agent sessions) or per-depth (ingestion) figures."""
+    metrics: dict[str, float | int | None] = {}
+    for run in summary.get("runs") or []:
+        label = run.get("spec")
+        metrics[f"{label} session_wall_median"] = (run.get("session_wall_seconds") or {}).get("median")
+        for band in run.get("bands") or []:
+            metrics[f"{label} {band['band']} pp"] = band.get("prefill_tokens_per_second")
+            metrics[f"{label} {band['band']} tg"] = band.get("decode_tokens_per_second")
+    for depth in summary.get("by_depth") or []:
+        label = depth.get("label")
+        metrics[f"{label} pp_median"] = (depth.get("prefill_tokens_per_second") or {}).get("median")
+        metrics[f"{label} prefill_s_median"] = (depth.get("prefill_seconds") or {}).get("median")
+        metrics[f"{label} tg_median"] = (depth.get("decode_tokens_per_second") or {}).get("median")
+    return metrics
 
 
 def pct_delta(old: float | int | None, new: float | int | None) -> float | None:
@@ -94,6 +115,11 @@ def main() -> int:
         for metric in metrics:
             old = get_metric(base.get(name, {}), metric)
             new = get_metric(cand.get(name, {}), metric)
+            lines.append(f"| {name} | {metric} | {fmt(old)} | {fmt(new)} | {fmt(pct_delta(old, new))} |")
+        old_detail = workload_metrics(base.get(name, {}))
+        new_detail = workload_metrics(cand.get(name, {}))
+        for metric in list(old_detail) + [key for key in new_detail if key not in old_detail]:
+            old, new = old_detail.get(metric), new_detail.get(metric)
             lines.append(f"| {name} | {metric} | {fmt(old)} | {fmt(new)} | {fmt(pct_delta(old, new))} |")
     report = "\n".join(lines) + "\n"
     if args.output:

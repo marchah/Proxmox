@@ -179,7 +179,10 @@ backend measurement, not a deployment plan: GPU 2 is slated for a large MoE. Set
     Longer MTP drafts measured worse when the old coder was tuned.
 - **Session:** `agent-sim.py` grows one coding-agent conversation to ~126k tokens. It
   alternates ~4k-token file reads with a code-writing turn every third turn, keeps the
-  prompt cache on and decodes greedily.
+  prompt cache on and decodes greedily. The model answered most reads by copying the fixed
+  reply its history held (18 tokens), so read turns measure prefill; the decode figures
+  come from the code-writing turns. `bench-runner`'s agent sessions keep the model's own
+  replies instead.
 - **Runs:** two, each with 3 rotated repetitions. The second added the MTP arms against
   both backends' earlier best arms, which repeated within 0.1 min.
 - **Settings:** GPU 2 at 0 mV, ubatch 1024 on both backends.
