@@ -83,9 +83,12 @@ this repo, make that useful:
 - **The `#ideas` channel prompt** (`slack.channel_prompts.<channel id>`) tells the agent that a
   thread discusses the idea in its first message, to read it with `get_idea` using the id in the
   plugin's `?idea=<id>` link, and to save the author's answers with `answer_question` and what they
-  settle with `record_decision`: only what the author said in so many words, asking first when it
-  is unclear, then saying what was saved and when the plan refreshes. Nothing else said in the
-  thread is saved to the board.
+  settle with `record_decision`: only what the author said in so many words and in their own words,
+  never a summary, asking first when it is unclear, then saying what was saved and when the plan
+  refreshes. "No idea yet" saves nothing: the question stays open with its default (the first real
+  thread, 2026-10-07, saved it as an answer, which took the question off the open list). It also
+  says to call the board's tools one at a time, since Hermes' tool runner rejects a batch of them,
+  and not to narrate tool errors. Nothing else said in the thread is saved to the board.
 
 ⚠️ `hermes config set` writes the right YAML but drops `config.yaml`'s comment blocks. Back the file
 up outside `/root/.hermes/`, let it produce the new lines, restore the backup, and splice those
