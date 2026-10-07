@@ -177,7 +177,10 @@ board as `http://docker-host.lan:4200`. The board in turn starts research runs o
 | `HERMES_API_URL` | `http://hermes.lan:8642` | CT 121's Hermes API, which runs research. Unset, research is off and the note's button is hidden |
 | `HERMES_API_KEY` | *(secret, on the stack only)* | CT 121's `API_SERVER_KEY` from `/root/.hermes/.env`. Rotating it there means updating it here |
 | `HERMES_PROVIDER` | `openai-codex` | Research runs on Codex through the ChatGPT subscription (billed `included`). Empty: Hermes' default, CT 120's Qwen |
-| `RESEARCH_ON_CAPTURE` | `false` | Research starts from each note's button. `true` researches every new idea on its own |
+| `RESEARCH_ON_CAPTURE` | `true` | Every new idea is researched on its own, without pressing the note's button (since 2026-10-07, once the first runs were judged good) |
+| `REFRESH_SCHEDULE` | `0 10 * * 0` | Every planned idea not shelved, done or muted is re-checked Sundays 10:00; a slot missed while the board was down is caught up when it starts. Empty: never on a schedule |
+| `REFRESH_TIMEZONE` | `America/New_York` | The zone `REFRESH_SCHEDULE` is read in. Empty: UTC |
+| `SLACK_BOT_TOKEN` | *(secret, on the stack only)* | CT 121's `SLACK_BOT_TOKEN` from `/root/.hermes/.env`: the board posts each Slack-captured idea's first plan, plan changes and failures in its thread, as the same bot. Rotating it there means updating it here |
 
 The app repo holds no environment-specific values, so these live only here and on the stack. Use
 full hostnames (`<host>.lan`) or IPs: the stack has no `dns:` override, and Docker's resolver on
