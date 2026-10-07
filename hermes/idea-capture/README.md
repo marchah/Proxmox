@@ -60,6 +60,11 @@ The Slack bot must be a member of the channel; with `require_mention: false` and
 
 ## Discussing an idea in its thread
 
+The board answers in the thread too: with `SLACK_BOT_TOKEN` on its stack (this bot's token, see
+[`docker-host/README.md`](../../docker-host/README.md#project-planner-specifics)), it posts the first
+plan with its questions, any plan change, and a research failure, as the same bot that confirmed
+the capture.
+
 Thread replies reach the Hermes agent like in any channel. Two pieces of live CT 121 config, not in
 this repo, make that useful:
 
