@@ -38,8 +38,12 @@ ARC would cache the mmapped GGUFs a second time next to the page cache.
 - A bind mount blocks `pct snapshot` for both containers. vzdump skips it.
 - `llamacpp` is UID 1000 in both containers, so either one can write the store. Don't
   download the same file from both at once.
-- The fstab entry uses `nofail`. If the volume is missing, `store/` is absent and both
-  containers refuse to start instead of serving an empty `/models`.
+- The fstab entry uses `nofail`, so a missing NVMe does not stop the host booting:
+  `store/` is then absent and both containers refuse to start instead of serving an
+  empty `/models`. `nofail` also drops the mount's boot ordering, so the entry adds
+  `x-systemd.before=pve-guests.service` to make guest autostart wait for it.
+- Proxmox offers `models` as a target for guest disks. Keep them off it: the store
+  volume takes nearly the whole pool, so another volume would overcommit it.
 
 `df -h /mnt/models` shows current use.
 

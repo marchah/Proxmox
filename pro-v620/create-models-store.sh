@@ -60,13 +60,24 @@ ensure_filesystem() {
 }
 
 ensure_mount() {
+  # nofail: a missing disk must not stop the host booting; the containers then fail
+  # to start on the absent STORE_DIR instead. nofail also drops the mount's ordering
+  # before local-fs.target, so x-systemd.before makes guest autostart wait for it.
+  local entry="/dev/${POOL}/${LV} ${MOUNT_DIR} ext4 defaults,noatime,nofail,x-systemd.before=pve-guests.service 0 2"
+  local tmp
   if ! grep -q "^/dev/${POOL}/${LV} " /etc/fstab; then
     log "Adding ${MOUNT_DIR} to /etc/fstab"
-    # nofail: a missing disk must not stop the host booting; the containers then
-    # fail to start on the absent STORE_DIR instead.
     printf '%s\n' \
       "# Shared GGUF store bound into CT 120 and CT 123 at /models (pro-v620/README.md)" \
-      "/dev/${POOL}/${LV} ${MOUNT_DIR} ext4 defaults,noatime,nofail 0 2" >>/etc/fstab
+      "${entry}" >>/etc/fstab
+    systemctl daemon-reload
+  elif ! grep -qxF "${entry}" /etc/fstab; then
+    log "Updating the ${MOUNT_DIR} entry in /etc/fstab"
+    tmp="$(mktemp)"
+    awk -v dev="/dev/${POOL}/${LV}" -v entry="${entry}" \
+      '$1 == dev { print entry; next } { print }' /etc/fstab >"${tmp}"
+    cat "${tmp}" >/etc/fstab
+    rm -f "${tmp}"
     systemctl daemon-reload
   fi
   install -d "${MOUNT_DIR}"

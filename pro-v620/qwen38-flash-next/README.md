@@ -48,11 +48,12 @@ curl http://gpu2:1234/v1/models
 pct exec 123 -- /usr/local/bin/llamacpp-qwen38fn-reload 65536 1
 ```
 
-For the two-card CT 120 alternative:
+For the two-card CT 120 alternative, CT 120 serves the GGUFs CT 123 already verified,
+since both containers bind the same [model store](../../README.md#host-storage). Add
+`--download` only if the store lacks them, and never while CT 123's download runs:
 
 ```bash
-VMID=120 ./install.sh --download
-# After download verification:
+VMID=120 ./install.sh
 ./ct120-cutover.sh to-qwen38fn
 ./ct120-cutover.sh status
 ./ct120-cutover.sh to-qwen36
