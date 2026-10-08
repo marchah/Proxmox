@@ -334,13 +334,17 @@ measure_free() {
   local ncmoe="$1"
   log "=== sizing the cache for n_cpu_moe ${ncmoe} ==="
   start_server "$ncmoe" ""
-  # One code prompt at the deepest probed depth, through the probe itself, so the compute
-  # buffer settles where the cells will run it. A single synthetic request read 2,229 MiB
-  # free at -ncmoe 34 against ~1,700 under probes, and sized the cache past the margin.
+  # The lower of free VRAM right after load and after one code prompt at the deepest probed
+  # depth. At -ncmoe 34 those read 2,076 and 2,154 MiB; sizing from the second alone loaded
+  # the cache cell under the margin. A synthetic 3k request read 2,229.
+  local at_load after
+  at_load=$(( $(vram_total_mib "${CARDS[0]}") - $(vram_mib "${CARDS[0]}") ))
   ./placement-probe.py "$BASE" --reps 1 --n-predict 64 --classes code \
     --depths "$(tr ',' '\n' <<<"$DEPTHS" | sort -n | tail -1)" >/dev/null 2>&1 \
     || log "sizing probe failed for n_cpu_moe ${ncmoe}"
-  AUTO_FREE[$ncmoe]=$(( $(vram_total_mib "${CARDS[0]}") - $(vram_mib "${CARDS[0]}") ))
+  after=$(( $(vram_total_mib "${CARDS[0]}") - $(vram_mib "${CARDS[0]}") ))
+  AUTO_FREE[$ncmoe]=$(( at_load < after ? at_load : after ))
+  log "n_cpu_moe ${ncmoe}: ${at_load} MiB free after load, ${after} after the sizing probe" >&2
 }
 
 # The hottest DIMM every ~10 s (ipmitool takes ~3 s), as "epoch<TAB>max °C".

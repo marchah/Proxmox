@@ -275,12 +275,12 @@ and an 18.6 GB cache. It has not run on these cards. The serve script passes
 entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the planned run.
 
 - `auto` starts the placement without a cache, runs one code prompt at the deepest
-  probed depth through the probe, and sizes the cache to the free VRAM minus
-  `CACHE_MARGIN_MIB` (default 1024). A single synthetic request is not enough: it
-  read 2,229 MiB free at `-ncmoe 34`, against ~1,700 under probes, because the compute
-  buffer grows past its load-time size (1,356 to 1,709 MiB) under the probe's
-  requests. Each cell also reads VRAM and GTT after its probe and is flagged as a
-  possible spill if GTT grew by more than 256 MiB.
+  probed depth through the probe, and sizes the cache to the lower of the free VRAM
+  right after load and after that prompt, minus `CACHE_MARGIN_MIB` (default 1024). At
+  `-ncmoe 34` those read 2,076 and 2,154 MiB, and the probe's other prompts change
+  neither; a synthetic 3k request read 2,229 and oversized the cache. Each cell also
+  reads VRAM and GTT after its probe and is flagged as a possible spill if GTT grew by
+  more than 256 MiB.
 - `leaveM` uses the same measurement and leaves M MiB free instead, e.g. room for a
   second model: `48:leave12288`.
 - Each extra CPU layer frees ~1.56 GB for the cache, so `34`, `40` and `48`
