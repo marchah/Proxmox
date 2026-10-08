@@ -55,7 +55,8 @@ def main():
             g["cache_mib"].append(pl.get("moe_cache_mib") or 0)
             if (mc.get("small") or {}).get("hit_rate_pct") is not None:
                 g["hit"].append(mc["small"]["hit_rate_pct"])
-            if (pl.get("moe_cache_mib") or 0) > 0 and (mc.get("disabled") or "size_mib" not in mc):
+            # The size line is printed only when the cache is allocated.
+            if (pl.get("moe_cache_mib") or 0) > 0 and "size_mib" not in mc:
                 g["cache_inactive"] += 1
         if pl.get("dimm_max_c"):
             g["dimm"].append(pl["dimm_max_c"])

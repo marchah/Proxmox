@@ -227,7 +227,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 
 | Date | Build | Backend | Record | Status |
 | --- | --- | --- | --- | --- |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [`--moe-cache-mib` on one V620](runs/2026-10-08-moe-cache.md) | planned |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [`--moe-cache-mib` on one V620](runs/2026-10-08-moe-cache.md) | done |
 
 ## Benchmark tools
 
@@ -268,7 +268,9 @@ experts `--n-cpu-moe` leaves in RAM on the GPU, uploads only misses, and runs
 those layers' expert matmuls on the GPU. It serves batches of up to 32 tokens,
 so decode; prefill keeps the CPU path. Upstream measured 1.57–2.20× decode on
 Qwen3.8-Flash-Next Q4_0 with CUDA, the largest gain with every expert on the CPU
-and an 18.6 GB cache. It has not run on these cards. The serve script passes
+and an 18.6 GB cache. On one V620 it runs, but every cache configuration measured
+decoded slower than `-ncmoe 34` without one, at 4.3–7.3 against 13.6 t/s
+([2026-10-08 record](runs/2026-10-08-moe-cache.md)). The serve script passes
 `MODEL_MOE_CACHE_MIB`; the shipped configs leave it empty.
 
 `placement-sweep.sh` measures it through `CONFIGS`, a list of `NCMOE[:CACHE]`

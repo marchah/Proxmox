@@ -478,7 +478,9 @@ mc = {"lines": len(text.splitlines())}
 m = re.search(r"MoE cache size =\s*([\d.]+) MiB for ([\d.]+) MiB of host experts", text)
 if m:
     mc["size_mib"], mc["host_experts_mib"] = float(m.group(1)), float(m.group(2))
-mc["disabled"] = bool(re.search(r"MoE cache is disabled|budget is too small", text))
+mc["disabled"] = "MoE cache is disabled" in text
+# A budget too small for a layer group leaves those layers uncached; the rest still are.
+mc["uncached_layers"] = sum(int(n) for n in re.findall(r"budget is too small for (\d+) layers", text))
 for m in re.finditer(r"llama_moe_cache: (ubatch\s*[<>]=?\s*8): hits = (\d+), misses = (\d+), "
                      r"hit rate = ([\d.]+)%, uploaded = ([\d.]+) MiB", text):
     key = "small" if "<" in m.group(1) else "large"
