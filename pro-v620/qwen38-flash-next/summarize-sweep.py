@@ -40,7 +40,8 @@ def main():
         g = by.setdefault(key, {"decode": {}, "prefill": {}, "vram": [], "free": [],
                                 "gtt": [], "spill": False, "degen": False,
                                 "disagree": False, "errors": 0, "cache_mib": [],
-                                "hit": [], "dimm": [], "capped": 0, "cache_inactive": 0})
+                                "hit": [], "dimm": [], "capped": 0, "cache_inactive": 0,
+                                "shas": {}})
         if j.get("error"):
             g["errors"] += 1
         g["vram"].append(pl.get("vram_total_mib") or 0)
@@ -60,6 +61,9 @@ def main():
             g["dimm"].append(pl["dimm_max_c"])
         g["capped"] += pl.get("dimm_samples_at_cap") or 0
         for k, v in (j.get("summary") or {}).items():
+            # Each pass is one rep; the reps of a cell are its passes.
+            if v.get("sha"):
+                g["shas"].setdefault(k, set()).add(v["sha"])
             if v.get("decode_tps_median"):
                 g["decode"].setdefault(k, []).append(v["decode_tps_median"])
             if v.get("prefill_tps_median"):
@@ -112,8 +116,9 @@ def main():
             flags.append("⚠️ GTT spill")
         if g["degen"]:
             flags.append("🔴 degenerate output")
-        if g["disagree"]:
-            flags.append("⚠️ reps disagree")
+        split = sorted(k for k, s in g["shas"].items() if len(s) > 1)
+        if g["disagree"] or split:
+            flags.append("⚠️ reps disagree" + (" (%s)" % ", ".join(split) if split else ""))
         if g["errors"]:
             flags.append("🔴 %d probe error(s)" % g["errors"])
         if g["cache_inactive"]:

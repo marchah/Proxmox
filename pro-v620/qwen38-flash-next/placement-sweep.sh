@@ -106,10 +106,18 @@ if [ "${#CARDS[@]}" -eq 1 ] && [ "${CPU_ONLY:-false}" != "true" ]; then
   ONE_GPU=true
 fi
 
+# Every entry is checked before the first model load, so a typo fails at once rather
+# than after the configs ahead of it have run.
 has_cache=false
 for cfg in $CONFIGS; do
-  case "$cfg" in
-    *:*) has_cache=true ;;
+  ncmoe="${cfg%%:*}"
+  spec="${cfg#"$ncmoe"}"
+  case "$ncmoe" in ""|*[!0-9]*) die "bad CONFIGS entry '${cfg}': NCMOE[:CACHE], CACHE in MiB or auto" ;; esac
+  case "$spec" in
+    "") ;;
+    :auto) has_cache=true ;;
+    :|:*[!0-9]*) die "bad CONFIGS entry '${cfg}': NCMOE[:CACHE], CACHE in MiB or auto" ;;
+    *) has_cache=true ;;
   esac
 done
 if [ "$has_cache" = "true" ]; then
@@ -378,7 +386,6 @@ for round in $(seq 1 "$REPS"); do
       "")     cache=""; label="ncmoe${ncmoe}" ;;
       auto)   [ -n "${AUTO_CACHE[$ncmoe]:-}" ] || size_auto_cache "$ncmoe"
               cache="${AUTO_CACHE[$ncmoe]}"; label="ncmoe${ncmoe}-cacheauto" ;;
-      *[!0-9]*) die "bad cache size '${spec}' in CONFIGS entry '${cfg}' (MiB or auto)" ;;
       *)      cache="$spec"; label="ncmoe${ncmoe}-cache${spec}" ;;
     esac
     tag="${label}-r${round}"
