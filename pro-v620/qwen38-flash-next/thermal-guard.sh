@@ -22,7 +22,7 @@ PATTERNS="${PATTERNS:-llama-bench llama-server}"
 # acts in whichever running container owns the hot card.
 VMID="${VMID:-}"
 if [ -n "$VMID" ]; then
-  CARDS="$(pct config "$VMID" | grep -oE 'pci-0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | sed 's/^pci-//' | sort -u | paste -sd' ' -)"
+  CARDS="$(pct config "$VMID" | { grep -oE 'pci-0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' || true; } | sed 's/^pci-//' | sort -u | paste -sd' ' -)"
   [ -n "$CARDS" ] || { echo "FATAL: CT ${VMID} has no passed-through card" >&2; exit 1; }
 fi
 CARDS="${CARDS:-0000:03:00.0 0000:83:00.0}"

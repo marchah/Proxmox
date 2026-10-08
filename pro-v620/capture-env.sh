@@ -45,8 +45,9 @@ case "$UNIT" in
 esac
 
 # Cards: LXC passthrough binds /dev/dri/by-path/pci-<address>-render; a VM lists hostpci.
-CARDS="$(printf '%s\n' "$CONFIG" | grep -oE 'pci-0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | sed 's/^pci-//')"
-if [ "$KIND" = vm ]; then
+if [ "$KIND" = lxc ]; then
+  CARDS="$(printf '%s\n' "$CONFIG" | { grep -oE 'pci-0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' || true; } | sed 's/^pci-//')"
+else
   CARDS="$(printf '%s\n' "$CONFIG" | sed -nE 's/^hostpci[0-9]+: (0000:)?([0-9a-f]{2}:[0-9a-f]{2})(\.[0-9])?.*/0000:\2.0/p')"
 fi
 CARDS="$(printf '%s\n' "$CARDS" | sed '/^$/d' | sort -u | paste -sd' ' -)"
