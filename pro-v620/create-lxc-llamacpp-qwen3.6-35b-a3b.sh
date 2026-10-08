@@ -61,8 +61,9 @@ TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
 TEMPLATE="${TEMPLATE:-ubuntu-24.04-standard_24.04-2_amd64.tar.zst}"
 ROOT_STORAGE="${ROOT_STORAGE:-local-lvm}"
 ROOT_SIZE_GB="${ROOT_SIZE_GB:-32}"
-MODELS_STORAGE="${MODELS_STORAGE:-models}"
-MODELS_SIZE_GB="${MODELS_SIZE_GB:-120}"
+# Shared GGUF store from create-models-store.sh, bind-mounted at /models. CT 123
+# binds the same directory, so a model downloaded by either container serves both.
+MODELS_DIR="${MODELS_DIR:-/mnt/models/store}"
 # The model lives in VRAM (all layers offloaded), so the container needs host RAM
 # only for the llama-server process and the GGUF's (reclaimable) mmap page cache
 # during load — 16 GB is ample and stays well under a typical 31 GiB host. Raise
@@ -94,7 +95,7 @@ CT 120 first (pct stop 120 && pct destroy 120), or set VMID= to a free id.
 
 Useful overrides:
   VMID=120 LXC_HOSTNAME=llamacpp ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
-  MODELS_SIZE_GB=200 MEMORY_MB=24576 CORES=8 ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
+  MEMORY_MB=24576 CORES=8 ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
   PASSWORD='temporary-root-password' ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
 
 After it is up, change context length / parallel slots without re-provisioning:
@@ -155,6 +156,10 @@ assert_gpu_devices_exist() {
   [[ -d /dev/dri/by-path ]] || die "/dev/dri/by-path not found; DRM by-path symlinks missing (udev not populating them?)"
   [[ -e "/dev/dri/by-path/pci-${GPU_PCI_ADDRESS}-render" ]] || \
     die "GPU 1 render node (${GPU_PCI_ADDRESS}) not found at /dev/dri/by-path/pci-${GPU_PCI_ADDRESS}-render; is the card present and amdgpu-bound?"
+}
+
+assert_models_dir_exists() {
+  [[ -d ${MODELS_DIR} ]] || die "model store ${MODELS_DIR} not found; run ./create-models-store.sh first"
 }
 
 create_container() {
@@ -265,10 +270,9 @@ configure_gpu_passthrough() {
 }
 
 add_models_mount() {
-  log "Adding local /models mount point (${MODELS_SIZE_GB}G)"
+  log "Binding the shared model store ${MODELS_DIR} at /models"
 
-  pct set "${VMID}" \
-    -mp0 "${MODELS_STORAGE}:${MODELS_SIZE_GB},mp=/models,backup=0"
+  pct set "${VMID}" -mp0 "${MODELS_DIR},mp=/models"
 }
 
 start_container() {
@@ -302,7 +306,9 @@ install_llamacpp_stack() {
   # the Mesa ICD loader can silently report zero Vulkan devices inside the
   # container even when the host sees the GPU (llama.cpp #16138).
   run_in_container bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git jq tar libatomic1 libgomp1 mesa-vulkan-drivers libvulkan1 vulkan-tools libglvnd0 libgl1 libglx0 libegl1 python3 python3-venv sudo"
-  run_in_container bash -lc "useradd --create-home --shell /bin/bash llamacpp || true"
+  # UID 1000 in every GPU container: they share /models, and a privileged container
+  # writes host UIDs.
+  run_in_container bash -lc "useradd --uid 1000 --create-home --shell /bin/bash llamacpp || true"
   run_in_container bash -lc "usermod -aG video,render llamacpp 2>/dev/null || usermod -aG video llamacpp || true"
   run_in_container bash -lc "install -d -o llamacpp -g llamacpp /models /models/hf"
   run_in_container bash -lc "install -d /opt/llamacpp"
@@ -520,7 +526,7 @@ print_summary() {
   printf 'GPU target: %s\n' "${GPU_NAME}"
   printf 'GPU pin: %s (GPU 1) in use; %s not passed through\n' "${GPU_PCI_ADDRESS}" "${GPU2_PCI_ADDRESS:-the other V620}"
   printf 'Engine: llama.cpp llama-server %s (Vulkan)\n' "${LLAMACPP_RELEASE_TAG}"
-  printf 'Models mount: /models (%sG on %s, backup disabled)\n' "${MODELS_SIZE_GB}" "${MODELS_STORAGE}"
+  printf 'Models mount: /models (shared store %s)\n' "${MODELS_DIR}"
   if [[ -n ${ip} ]]; then
     printf 'llama-server endpoint: http://%s:%s/v1\n' "${ip}" "${MODEL_SERVER_PORT}"
   else
@@ -541,6 +547,7 @@ main() {
   require_command pveam
   assert_vmid_available
   assert_gpu_devices_exist
+  assert_models_dir_exists
   resolve_idle_gpu
   download_template_if_missing
   create_container
