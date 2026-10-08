@@ -44,10 +44,8 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-1800}"
 LOAD_MODE="${LOAD_MODE:-}"
 # Override the derived layer split (see start_server). Empty = derive from n_cpu_moe.
 TENSOR_SPLIT="${TENSOR_SPLIT:-}"
-# llama-server --threads. Empty leaves whatever the env file already has.
-# ⚠️ Worth sweeping: STREAM measured 8 threads saturating four channels (80.3 GB/s) and 32
-# being WORSE (74.8), and the CPU-side expert FFN is memory-bound GEMV — so the inherited
-# --threads 32 may be contention rather than throughput.
+# llama-server --threads. Empty leaves whatever the env file already has. The CPU-side
+# expert FFN is memory-bound, and STREAM on eight channels peaks at 16 threads.
 THREADS="${THREADS:-}"
 # 48 MoE layers, ~1.56 GB of Q4 expert weight each, so each +1 hands ~1.56 GB back:
 #   15 = minimum that fits two cards · 20 = ~8 GB spare · 28 = ~20 GB spare
@@ -240,7 +238,7 @@ start_server() {
   # ⚠️ The `- 2` is load-bearing. Card 1 also carries the output head and a larger KV share,
   # which a layer count cannot see, so "light layers + half the heavy ones" overcommits it by
   # ~2 layers and spills anyway — silently, at ncmoe 15/16/20. Validated where the spilling
-  # was: 16 -> "30,18" (the deployed config, 14.46 t/s), 20 -> "32,16", 28 -> "36,12". Above
+  # was: 16 -> "30,18" (the shipped two-card config), 20 -> "32,16", 28 -> "36,12". Above
   # that range card 1 has room either way. Override with TENSOR_SPLIT= to sweep the split.
   if [ "${CPU_ONLY:-false}" = "true" ]; then
     set_env_var MODEL_TENSOR_SPLIT ""
