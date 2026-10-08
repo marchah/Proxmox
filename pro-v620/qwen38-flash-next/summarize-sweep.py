@@ -16,13 +16,13 @@ def med(xs):
 
 def main():
     d = pathlib.Path(sys.argv[1])
-    manifest = {}
+    manifest, manifest_error = {}, None
     mp = d / "manifest.json"
     if mp.exists():
         try:
             manifest = json.loads(mp.read_text())
-        except Exception:
-            pass
+        except Exception as e:
+            manifest_error = e
 
     # group the per-round files by config: placement, plus cache spec when set
     by = {}
@@ -76,6 +76,8 @@ def main():
                     key=lambda s: int(s.lstrip("d")))
 
     print("# Qwen3.8-Flash-Next placement sweep\n")
+    if manifest_error:
+        print("⚠️ `manifest.json` is unreadable (%s), so the run header is missing.\n" % manifest_error)
     if manifest:
         print("`ctx %s` · `parallel %s` · `%s reps` · `n_predict %s` · depths `%s` · "
               "%s · %s GiB host RAM · llama.cpp `%s`\n" % (

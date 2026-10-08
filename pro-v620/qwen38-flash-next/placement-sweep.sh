@@ -360,7 +360,7 @@ cat >"${OUT_DIR}/manifest.json" <<JSON
  "ple_resident": "${PLE_RESIDENT:-}",
  "server_extra": "${SERVER_EXTRA}", "configs": "${CONFIGS}",
  "cache_margin_mib": ${CACHE_MARGIN_MIB},
- "llamacpp_dir": "$(pct exec "$VMID" -- bash -lc "grep -m1 '^LLAMACPP_DIR=' ${ENVFILE} | cut -d= -f2")",
+ "llamacpp_dir": $(python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))["guest"]["llamacpp"]["dir"]))' "${OUT_DIR}/environment.json"),
  "host_ram_gib": $(free -g | awk '/^Mem:/{print $2}'),
  "dimms_64gb": $(dmidecode -t memory 2>/dev/null | grep -c 'Size: 64 GB' || true)
 }
