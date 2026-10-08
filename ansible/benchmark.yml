@@ -232,6 +232,8 @@
         dest: "{{ host_suite_dir }}/host/capture-env.sh"
         mode: "0755"
 
+    # Captured once, before the per-item reloads: its env file and command line are the
+    # server as the batch found it. Each run's slot layout is in that run's own records.
     - name: Capture the GPU container's environment (build, backend, host, cards, models)
       ansible.builtin.command:
         argv: ["{{ host_suite_dir }}/host/capture-env.sh", "{{ gpu_vmid }}", "{{ gpu_config.service }}"]

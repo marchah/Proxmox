@@ -21,7 +21,11 @@ current configuration; a record never changes what is deployed by itself.
   build and binary checksum, the backend (Mesa or ROCm), kernel and firmware, each
   card's VBIOS, voltage offset, power cap and PCIe link, DIMMs, governor, the guest's
   env file, the server's command line and the model files. `placement-sweep.sh` saves
-  it as `environment.json`; `make bench` puts it in every run's `versions.json`. For a
+  it as `environment.json` and records each cell's command line beside it. `make bench`
+  puts it in every run's `versions.json`, captured once before the batch reloads the
+  model per item, so its env file and command line show the server as the batch found
+  it; the slot layout a run used is in that run's own records (`/props` for the agent
+  and ingestion workloads, `build_info.parallel` for the regression items). For a
   hand-run test, run `./capture-env.sh <vmid>` on the host first.
 - **A record is frozen once its results are in.** A later run that changes the
   conclusion updates the README and gets its own record. A record whose data turns out
