@@ -20,6 +20,7 @@ from bench_common import corpus_info, file_text, is_garbage_output, long_text, t
 
 # A scenario with "context" gets real text appended to its prompt: (corpus, first file,
 # characters) from the pinned corpus in bench_common.py, about 4 characters per token.
+# Every request is sent with a unique leading id (prompt_for).
 SCENARIOS = {
     "smoke": {
         "max_tokens": 32,
@@ -51,7 +52,7 @@ SCENARIOS = {
     },
 }
 SYNTHETIC_HEADER = "Read the following text, then continue writing about it.\n\n"
-# The leading "[<salt>-<index>] " nonce and the header, in tokens.
+# The leading "[<salt>-<index>] " id and the header, in tokens.
 SYNTHETIC_OVERHEAD_TOKENS = 24
 
 
@@ -89,13 +90,14 @@ def synthetic_prompt(base_url: str, approx_input_tokens: int) -> str:
 
 
 def prompt_for(scenario: dict[str, Any], run_salt: str, index: int) -> str:
-    """Per-request prompt. Synthetic and real-text scenarios get a unique leading nonce,
-    so each request diverges within the first tokens and the server's prefix cache cannot
-    turn a cold prefill into a warm one (shorter sweep points are prefixes of longer
-    ones). Short prompts are sent verbatim."""
-    if scenario.get("cold"):
-        return f"[{run_salt}-{index}] {scenario['prompt']}"
-    return scenario["prompt"]
+    """Per-request prompt, led by a unique id so every request is a cold prefill.
+
+    A repeated prompt is otherwise served from the server's prompt cache: on CT 120
+    (b11475) the second of three identical 32-token requests prefilled 4 tokens, and
+    its prefill rate and TTFT measured the cache. The id also keeps shorter sweep points
+    from being prefixes of longer ones. It adds ~11 tokens.
+    """
+    return f"[{run_salt}-{index}] {scenario['prompt']}"
 
 
 def now_iso() -> str:
@@ -429,9 +431,8 @@ def main() -> int:
     if args.synthetic_input_tokens is not None:
         scenarios = {
             "synthetic": {
-                # Each request gets a unique nonce in front via prompt_for().
                 "prompt": synthetic_prompt(args.base_url, args.synthetic_input_tokens),
-                "cold": True,
+                "corpus_text": True,
                 "max_tokens": args.synthetic_output_tokens,
                 "group": "synthetic",
                 "tags": ["synthetic"],
@@ -446,7 +447,7 @@ def main() -> int:
         names = args.scenario or ["smoke", "short", "medium"]
         scenarios = {
             name: (
-                {**SCENARIOS[name], "prompt": SCENARIOS[name]["prompt"] + file_text(*SCENARIOS[name]["context"]), "cold": True}
+                {**SCENARIOS[name], "prompt": SCENARIOS[name]["prompt"] + file_text(*SCENARIOS[name]["context"]), "corpus_text": True}
                 if "context" in SCENARIOS[name]
                 else SCENARIOS[name]
             )
@@ -466,18 +467,19 @@ def main() -> int:
         "scenarios": list(scenarios),
         "promptset": args.promptset,
         "synthetic_input_tokens_approx": args.synthetic_input_tokens,
-        "corpus": corpus_info("docs", "code") if any(s.get("cold") for s in scenarios.values()) else None,
+        "corpus": corpus_info("docs", "code") if any(s.get("corpus_text") for s in scenarios.values()) else None,
         "synthetic_output_tokens": args.synthetic_output_tokens if args.synthetic_input_tokens is not None else None,
         "requests_per_scenario": args.requests,
         "concurrency": args.concurrency,
         "stream": not args.no_stream,
         "temperature": args.temperature,
+        # Each prompt led by a unique id (prompt_for); earlier runs repeated prompts verbatim.
+        "cold_requests": True,
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    # One salt per process so synthetic prompts are unique across requests and
-    # across sweep points (each point is a separate invocation), and differ on
-    # reruns too.
+    # One salt per process, so every request id is unique across requests and sweep
+    # points (each point is a separate invocation), and differs on reruns too.
     run_salt = uuid.uuid4().hex[:8]
 
     jobs = []

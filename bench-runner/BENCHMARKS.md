@@ -180,10 +180,19 @@ git archive --format=tar.gz f7e762c53388be0ba06751dd210aacef3e30b7c5 \
 ```
 
 Sweep and ingestion prompts are cut with the server's tokenizer (`/tokenize`), so a given
-size is the same token count on any model. Each `medium`, `long` and sweep request starts
-with its own id, so the prompt cache cannot serve it. Before 2026-10-02 these prompts were
-a repeated sentence or the word "token"; their prefill, decode and draft figures do not
-compare with later runs.
+size is the same token count on any model.
+
+Every `openai-direct` and sweep request starts with its own id (`[<salt>-<n>] `, ~11
+tokens), so the prompt cache cannot serve a repeated prompt. Without it, on CT 120
+(b11475), the second and third of three identical 32-token requests prefilled 4 tokens
+and took 28 from the cache, reading 32–38 tok/s against 125 tok/s cold. The openai
+manifest records `cold_requests: true`.
+
+Older runs do not compare with later ones. Until 2026-10-07 the `medium` and `long`
+scenarios and the sweeps sent a repeated sentence or the word "token". Runs without
+`cold_requests` in their manifest sent each promptset prompt verbatim, so the
+baseline, concurrency, soak and context-sweep requests after the first were mostly
+served from cache, which skewed their prefill rates and TTFT.
 
 ## Agent Sessions And Document Ingestion
 
