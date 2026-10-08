@@ -37,7 +37,7 @@ with a pinned llama.cpp Vulkan release and a checksum-verified model.
 | Speculative decoding | `--spec-type draft-mtp --spec-draft-n-max 3` (the model's own MTP head) |
 | Reasoning / format | `off` / `auto` |
 | API | `0.0.0.0:1234` |
-| Container RAM / model storage | 16384 MB / `/models` mount, `backup=0` |
+| Container RAM / model storage | 16384 MB / `/models` volume on the `models` NVMe pool, `backup=0` |
 
 This MoE has 35B total parameters and about 3B active per token. Its ~27.2 GB
 weights, including the MTP head, fit one card. At the 256k context ceiling, a

@@ -61,7 +61,7 @@ TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
 TEMPLATE="${TEMPLATE:-ubuntu-24.04-standard_24.04-2_amd64.tar.zst}"
 ROOT_STORAGE="${ROOT_STORAGE:-local-lvm}"
 ROOT_SIZE_GB="${ROOT_SIZE_GB:-32}"
-MODELS_STORAGE="${MODELS_STORAGE:-local-lvm}"
+MODELS_STORAGE="${MODELS_STORAGE:-models}"
 MODELS_SIZE_GB="${MODELS_SIZE_GB:-120}"
 # The model lives in VRAM (all layers offloaded), so the container needs host RAM
 # only for the llama-server process and the GGUF's (reclaimable) mmap page cache

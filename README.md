@@ -21,6 +21,20 @@ Each has a blower driven by [IPMI fan control](pro-v620/gpu-blower-control/READM
 with [undervolting](pro-v620/undervolt/README.md) and a
 [thermal watchdog](pro-v620/gpu-thermal-watchdog/README.md).
 
+## Host storage
+
+| Proxmox storage | Device | Holds |
+| --- | --- | --- |
+| `local`, `local-lvm` (thin) | Samsung 860 EVO 1 TB, SATA | Host root, templates, guest root disks |
+| `models` (thin) | BIWIN NV7400 2 TB, NVMe Gen4 x4 | GPU containers' `/models` volumes (`MODELS_STORAGE`) |
+| `Synology-Backup` (NFS) | Synology NAS | Weekly vzdump archives |
+
+`models` is an LVM-thin pool on the whole NVMe, created with
+`pvesh create /nodes/proxmox/disks/lvmthin --device /dev/nvme0n1 --name models --add_storage 1`.
+It is not ZFS: the ARC would cache the mmapped GGUFs a second time next to the page
+cache. Move an existing volume with the container stopped:
+`pct move-volume <vmid> mp0 models --delete 1`. `pvesm status` shows current use.
+
 ## Provisioning
 
 From a checkout on the Proxmox host:
