@@ -6,13 +6,14 @@
 #   ./placement-sweep.sh                            # the default matrix, CT 120
 #   NCMOE_LIST="20 28 34" CTX=65536 ./placement-sweep.sh
 #   ONE_GPU=true NCMOE_LIST="34 40 48" ./placement-sweep.sh
-#   VMID=123 CONFIGS="34 34:auto 40:auto 48:auto" DEPTHS=0,8000 ./placement-sweep.sh
+#   VMID=123 CONFIGS="34 34:auto 40:auto 48:leave12288" DEPTHS=0,8000 ./placement-sweep.sh
 #
 # What it answers: how much VRAM can be handed back to a second model before decode
 # degrades unacceptably — i.e. which placement is the most VERSATILE, not just fastest.
 # With CONFIGS it also measures --moe-cache-mib, a GPU cache for the experts --n-cpu-moe
-# keeps in RAM. `N:auto` sizes the cache to the VRAM placement N leaves free after a
-# full-ubatch request, minus CACHE_MARGIN_MIB, so every cache cell keeps the same headroom.
+# keeps in RAM. `N:auto` sizes the cache to the VRAM placement N leaves free under a probe,
+# minus CACHE_MARGIN_MIB, so every cache cell keeps the same headroom. `N:leaveM` leaves M MiB
+# free instead, e.g. room for a second model.
 #
 # ⚠️ Method rules this encodes, each learned the hard way on this box:
 #   * INTERLEAVE and take >=3 reps. One rep per cell understated a cost by half here
@@ -52,8 +53,9 @@ THREADS="${THREADS:-}"
 #   15 = minimum that fits two cards · 20 = ~8 GB spare · 28 = ~20 GB spare
 #   34 = fits one card · 48 = all experts in RAM (the no-GPU-experts control)
 NCMOE_LIST="${NCMOE_LIST:-15 20 28 34 48}"
-# Space-separated NCMOE[:CACHE] entries; CACHE is MiB or `auto`. Defaults to NCMOE_LIST
-# with no cache. A cache needs a one-card container: the sizing reads that card.
+# Space-separated NCMOE[:CACHE] entries; CACHE is MiB, `auto` or `leaveM` (M MiB left free).
+# Defaults to NCMOE_LIST with no cache. A cache needs a one-card container: the sizing reads
+# that card.
 CONFIGS="${CONFIGS:-$NCMOE_LIST}"
 # VRAM an `auto` cache leaves free after a full-ubatch request.
 CACHE_MARGIN_MIB="${CACHE_MARGIN_MIB:-1024}"
@@ -116,7 +118,10 @@ for cfg in $CONFIGS; do
   case "$spec" in
     "") ;;
     :auto) has_cache=true ;;
-    :|:*[!0-9]*) die "bad CONFIGS entry '${cfg}': NCMOE[:CACHE], CACHE in MiB or auto" ;;
+    :leave*)
+      [[ "${spec#:leave}" =~ ^[0-9]+$ ]] || die "bad CONFIGS entry '${cfg}': NCMOE[:CACHE], CACHE in MiB, auto or leaveM"
+      has_cache=true ;;
+    :|:*[!0-9]*) die "bad CONFIGS entry '${cfg}': NCMOE[:CACHE], CACHE in MiB, auto or leaveM" ;;
     *) has_cache=true ;;
   esac
 done
@@ -310,38 +315,36 @@ start_server() {
   log "healthy after ${t}s"
 }
 
-# One ~3k-token prompt fills whole 1024-token ubatches. The compute buffer grows past its
-# load-time reservation on the first such batch (1,356 -> 1,709 MiB on CT 123 at -ncmoe 34),
-# so free VRAM read before it overstates what a cache can take.
-warm_request() {
-  python3 - "$BASE" <<'PY'
-import json, sys, urllib.request
-words = ("The council reviewed the harbour budget, the rail timetable and the library plan, "
-         "then asked each department for revised figures before the spring session.").split()
-prompt = " ".join(words[i % len(words)] for i in range(2400))
-body = json.dumps({"messages": [{"role": "user", "content": prompt + "\n\nSummarise in one sentence."}],
-                   "max_tokens": 16, "temperature": 0, "cache_prompt": False}).encode()
-urllib.request.urlopen(urllib.request.Request(sys.argv[1] + "/v1/chat/completions", body,
-                       {"content-type": "application/json"}), timeout=1800).read()
-PY
-}
-
-# `auto` cache per n_cpu_moe, sized once and reused by every round.
-declare -A AUTO_CACHE=()
-size_auto_cache() {
-  local ncmoe="$1" free cache
-  log "=== sizing the auto cache for n_cpu_moe ${ncmoe} ==="
-  start_server "$ncmoe" ""
-  warm_request
-  free=$(( $(vram_total_mib "${CARDS[0]}") - $(vram_mib "${CARDS[0]}") ))
-  cache=$(( free - CACHE_MARGIN_MIB ))
+# Free VRAM per n_cpu_moe under a sizing probe, measured once and reused by every round and
+# by both `auto` and `leaveM` at that placement.
+declare -A AUTO_FREE=()
+size_auto_cache() {  # <ncmoe> <MiB to leave free>; prints the cache size. measure_free first.
+  local ncmoe="$1" margin="$2" free cache
+  free="${AUTO_FREE[$ncmoe]}"
+  cache=$(( free - margin ))
   if [ "$cache" -lt 256 ]; then
-    log "⚠️  n_cpu_moe ${ncmoe} leaves ${free} MiB free; no room for a cache above the ${CACHE_MARGIN_MIB} MiB margin"
+    log "⚠️  n_cpu_moe ${ncmoe} leaves ${free} MiB free; no room for a cache that leaves ${margin} MiB" >&2
     cache=0
   fi
-  AUTO_CACHE[$ncmoe]="$cache"
-  log "n_cpu_moe ${ncmoe}: ${free} MiB free after a full ubatch -> cache ${cache} MiB"
-  printf '%s %s %s\n' "$ncmoe" "$free" "$cache" >>"${OUT_DIR}/auto-cache.txt"
+  log "n_cpu_moe ${ncmoe}: ${free} MiB free under a sizing probe, leave ${margin} -> cache ${cache} MiB" >&2
+  printf '%s %s %s %s\n' "$ncmoe" "$free" "$margin" "$cache" >>"${OUT_DIR}/auto-cache.txt"
+  echo "$cache"
+}
+measure_free() {
+  local ncmoe="$1"
+  log "=== sizing the cache for n_cpu_moe ${ncmoe} ==="
+  start_server "$ncmoe" ""
+  # The lower of free VRAM right after load and after one code prompt at the deepest probed
+  # depth. At -ncmoe 34 those read 2,076 and 2,154 MiB; sizing from the second alone loaded
+  # the cache cell under the margin. A synthetic 3k request read 2,229.
+  local at_load after
+  at_load=$(( $(vram_total_mib "${CARDS[0]}") - $(vram_mib "${CARDS[0]}") ))
+  ./placement-probe.py "$BASE" --reps 1 --n-predict 64 --classes code \
+    --depths "$(tr ',' '\n' <<<"$DEPTHS" | sort -n | tail -1)" >/dev/null 2>&1 \
+    || log "sizing probe failed for n_cpu_moe ${ncmoe}"
+  after=$(( $(vram_total_mib "${CARDS[0]}") - $(vram_mib "${CARDS[0]}") ))
+  AUTO_FREE[$ncmoe]=$(( at_load < after ? at_load : after ))
+  log "n_cpu_moe ${ncmoe}: ${at_load} MiB free after load, ${after} after the sizing probe" >&2
 }
 
 # The hottest DIMM every ~10 s (ipmitool takes ~3 s), as "epoch<TAB>max °C".
@@ -384,8 +387,12 @@ for round in $(seq 1 "$REPS"); do
     [ "$cfg" != "$ncmoe" ] && spec="${cfg#*:}"
     case "$spec" in
       "")     cache=""; label="ncmoe${ncmoe}" ;;
-      auto)   [ -n "${AUTO_CACHE[$ncmoe]:-}" ] || size_auto_cache "$ncmoe"
-              cache="${AUTO_CACHE[$ncmoe]}"; label="ncmoe${ncmoe}-cacheauto" ;;
+      auto|leave*)
+              # measure_free starts and probes a server, so it runs here, in this shell,
+              # where AUTO_FREE persists; size_auto_cache then only does arithmetic.
+              [ -n "${AUTO_FREE[$ncmoe]:-}" ] || measure_free "$ncmoe"
+              if [ "$spec" = auto ]; then margin="$CACHE_MARGIN_MIB"; else margin="${spec#leave}"; fi
+              cache="$(size_auto_cache "$ncmoe" "$margin")"; label="ncmoe${ncmoe}-cache${spec}" ;;
       *)      cache="$spec"; label="ncmoe${ncmoe}-cache${spec}" ;;
     esac
     tag="${label}-r${round}"
@@ -424,6 +431,14 @@ for round in $(seq 1 "$REPS"); do
     wait "$DIMM_PID" 2>/dev/null || true
     DIMM_PID=""
 
+    # Read again under the probe's own buffers: a spill shows as GTT that grew while it ran.
+    p_used=(); p_gtt=()
+    for card in "${CARDS[@]}"; do p_used+=("$(vram_mib "$card")"); p_gtt+=("$(gtt_mib "$card")"); done
+    log "after the probe: VRAM ${p_used[*]} MiB | GTT ${p_gtt[*]} MiB"
+    for i in "${!c_id[@]}"; do
+      if [ $(( p_gtt[i] - c_gtt[i] )) -gt 256 ]; then spill=true; log "⚠️  GTT grew during the probe — possible spill"; fi
+    done
+
     # The cache logs its hit rate when the context is destroyed, so stop the server now
     # and collect this cell's lines.
     pct exec "$VMID" -- systemctl stop llamacpp-qwen38fn 2>/dev/null || true
@@ -433,11 +448,11 @@ for round in $(seq 1 "$REPS"); do
     cards_csv="$(printf '%s\n' "${c_id[@]}" | paste -sd, -)"
     python3 - "${OUT_DIR}/${tag}.json" "$ncmoe" "$spec" "${cache:-0}" "$spill" \
       "$cards_csv" "${c_used[*]}" "${c_gtt[*]}" "${c_total[*]}" \
-      "${OUT_DIR}/${tag}.moecache.log" "${OUT_DIR}/${tag}.dimm.tsv" "$cmdline" <<'PYADD'
+      "${OUT_DIR}/${tag}.moecache.log" "${OUT_DIR}/${tag}.dimm.tsv" "$cmdline" "${p_used[*]}" "${p_gtt[*]}" <<'PYADD'
 import json, pathlib, re, sys
-(path, ncmoe, spec, cache, spill, cards, vs, gs, ts, cache_log, dimm_log, cmdline) = sys.argv[1:13]
+(path, ncmoe, spec, cache, spill, cards, vs, gs, ts, cache_log, dimm_log, cmdline, pvs, pgs) = sys.argv[1:15]
 cards = cards.split(",")
-vs, gs, ts = ([int(x) for x in s.split()] for s in (vs, gs, ts))
+vs, gs, ts, pvs, pgs = ([int(x) for x in s.split()] for s in (vs, gs, ts, pvs, pgs))
 p = pathlib.Path(path)
 try:
     d = json.loads(p.read_text())
@@ -452,16 +467,20 @@ pl = {
     "vram_free_for_a_guest_mib": sum(t - v for t, v in zip(ts, vs)),
     "possible_gtt_spill": spill == "true",
     "server_cmdline": cmdline.strip() or None,
+    "vram_free_after_probe_mib": sum(t - v for t, v in zip(ts, pvs)),
 }
 for i, name in enumerate(("gpu1", "gpu2")):
     if i < len(cards):
         pl[name + "_vram_mib"], pl[name + "_gtt_mib"], pl[name + "_card_mib"] = vs[i], gs[i], ts[i]
+        pl[name + "_vram_after_probe_mib"], pl[name + "_gtt_after_probe_mib"] = pvs[i], pgs[i]
 text = pathlib.Path(cache_log).read_text() if pathlib.Path(cache_log).exists() else ""
 mc = {"lines": len(text.splitlines())}
 m = re.search(r"MoE cache size =\s*([\d.]+) MiB for ([\d.]+) MiB of host experts", text)
 if m:
     mc["size_mib"], mc["host_experts_mib"] = float(m.group(1)), float(m.group(2))
-mc["disabled"] = bool(re.search(r"MoE cache is disabled|budget is too small", text))
+mc["disabled"] = "MoE cache is disabled" in text
+# A budget too small for a layer group leaves those layers uncached; the rest still are.
+mc["uncached_layers"] = sum(int(n) for n in re.findall(r"budget is too small for (\d+) layers", text))
 for m in re.finditer(r"llama_moe_cache: (ubatch\s*[<>]=?\s*8): hits = (\d+), misses = (\d+), "
                      r"hit rate = ([\d.]+)%, uploaded = ([\d.]+) MiB", text):
     key = "small" if "<" in m.group(1) else "large"

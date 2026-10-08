@@ -227,7 +227,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 
 | Date | Build | Backend | Record | Status |
 | --- | --- | --- | --- | --- |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [`--moe-cache-mib` on one V620](runs/2026-10-08-moe-cache.md) | planned |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [`--moe-cache-mib` on one V620](runs/2026-10-08-moe-cache.md) | done |
 
 ## Benchmark tools
 
@@ -268,16 +268,28 @@ experts `--n-cpu-moe` leaves in RAM on the GPU, uploads only misses, and runs
 those layers' expert matmuls on the GPU. It serves batches of up to 32 tokens,
 so decode; prefill keeps the CPU path. Upstream measured 1.57–2.20× decode on
 Qwen3.8-Flash-Next Q4_0 with CUDA, the largest gain with every expert on the CPU
-and an 18.6 GB cache. It has not run on these cards. The serve script passes
+and an 18.6 GB cache. On one V620 it runs, but every cache configuration measured
+decoded slower than `-ncmoe 34` without one, at 4.3–7.3 against 13.6 t/s
+([2026-10-08 record](runs/2026-10-08-moe-cache.md)). The serve script passes
 `MODEL_MOE_CACHE_MIB`; the shipped configs leave it empty.
 
 `placement-sweep.sh` measures it through `CONFIGS`, a list of `NCMOE[:CACHE]`
 entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the planned run.
 
-- `auto` starts the placement without a cache, sends one ~3k-token request, and
-  sizes the cache to the free VRAM minus `CACHE_MARGIN_MIB` (default 1024). The
-  request matters: the compute buffer grows past its load-time size on the first
-  full ubatch (1,356 to 1,709 MiB at `-ncmoe 34`).
+- `auto` starts the placement without a cache, runs one code prompt at the deepest
+  probed depth through the probe, and sizes the cache to the lower of the free VRAM
+  right after load and after that prompt, minus `CACHE_MARGIN_MIB` (default 1024). At
+  `-ncmoe 34` those read 2,076 and 2,154 MiB, and the probe's other prompts change
+  neither; a synthetic 3k request read 2,229 and oversized the cache. Each cell also
+  reads VRAM and GTT after its probe and is flagged as a possible spill if GTT grew by
+  more than 256 MiB.
+- `leaveM` uses the same measurement and leaves M MiB free instead, e.g. room for a
+  second model: `48:leave12288`.
+- RADV limits one allocation to 4 GiB, and the cache keeps each expert tensor type
+  in one buffer, so the cache is capped well below free VRAM: at `-ncmoe 48` about
+  11.3 GB loads and 13 GB does not. An unallocatable cache aborts at load on a
+  scheduler assertion under llama-server's default fit check, and with `--fit off`
+  fails with `failed to allocate the MoE cache buffers`.
 - Each extra CPU layer frees ~1.56 GB for the cache, so `34`, `40` and `48`
   compare the same VRAM spent on whole layers or on cached experts.
 - The cache's size and hit-rate lines are library INFO, which this build logs only

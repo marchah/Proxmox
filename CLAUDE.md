@@ -101,7 +101,9 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   the run and the results are appended after it; see
   [pro-v620/TEST-RECORDS.md](pro-v620/TEST-RECORDS.md). Run code staged by commit
   (`pro-v620/push-harness.sh`; `make bench` refuses uncommitted benchmark code) and
-  paste the environment from `pro-v620/capture-env.sh` rather than typing it.
+  paste the environment from `pro-v620/capture-env.sh` rather than typing it. Shut down
+  every guest a test does not use before it runs, and ask the owner before starting them
+  again afterwards.
 - Interleave configurations with at least three repetitions. Match model hashes,
   binary, prompt set, context depth and power settings. Check output correctness as
   well as speed; include a non-speculative control when testing a drafter.

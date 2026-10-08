@@ -27,6 +27,14 @@ current configuration; a record never changes what is deployed by itself.
   it; the slot layout a run used is in that run's own records (`/props` for the agent
   and ingestion workloads, `build_info.parallel` for the regression items). For a
   hand-run test, run `./capture-env.sh <vmid>` on the host first.
+- **Start from the standard configurations**: two GPUs, one GPU, CPU only (the whole
+  model in system RAM, no GPU), and an optimized configuration that leaves resources free,
+  such as VRAM for a second model. Include each one that makes sense for the question,
+  adapt it where the test needs to, and say in the plan why any is left out.
+- **Run with every other guest shut down.** Before the run, shut down every guest the
+  test does not use (`make bench` uses the GPU container and CT 200; a sweep uses only
+  the GPU container) and list them in the record's Safety section. When the run ends,
+  ask the owner before starting them again; never restart them automatically.
 - **A record is frozen once its results are in.** A later run that changes the
   conclusion updates the README and gets its own record. A record whose data turns out
   invalid, for example a spill found afterwards, is deleted and the README stops
@@ -48,6 +56,12 @@ Plan committed YYYY-MM-DD · Run YYYY-MM-DD · Status: planned | running | done
 
 ## What answers it
 
+## Configurations
+
+<two GPUs · one GPU · CPU only · optimized (leaves resources free, e.g. VRAM for a second
+model). Keep the ones that make sense for the question, adapt them as needed, and give
+the reason for each one left out.>
+
 ## Controls
 
 ## Method
@@ -56,6 +70,8 @@ Plan committed YYYY-MM-DD · Run YYYY-MM-DD · Status: planned | running | done
 reps, depths, prompt classes; expected duration; where the raw data lands>
 
 ## Safety
+
+<guests shut down for the run, and that they wait for the owner to restart them>
 
 ## Environment
 

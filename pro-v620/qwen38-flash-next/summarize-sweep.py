@@ -55,7 +55,8 @@ def main():
             g["cache_mib"].append(pl.get("moe_cache_mib") or 0)
             if (mc.get("small") or {}).get("hit_rate_pct") is not None:
                 g["hit"].append(mc["small"]["hit_rate_pct"])
-            if (pl.get("moe_cache_mib") or 0) > 0 and (mc.get("disabled") or "size_mib" not in mc):
+            # The size line is printed only when the cache is allocated.
+            if (pl.get("moe_cache_mib") or 0) > 0 and "size_mib" not in mc:
                 g["cache_inactive"] += 1
         if pl.get("dimm_max_c"):
             g["dimm"].append(pl["dimm_max_c"])
@@ -96,8 +97,8 @@ def main():
         if not spec:
             return "%d" % n
         mib = med(by[key]["cache_mib"])
-        return "%d + cache %s MiB%s" % (n, "%d" % mib if mib is not None else "?",
-                                       " (auto)" if spec == "auto" else "")
+        how = {"auto": " (auto)"}.get(spec, " (leaves %s MiB free)" % spec[5:] if spec.startswith("leave") else "")
+        return "%d + cache %s MiB%s" % (n, "%d" % mib if mib is not None else "?", how)
 
     # --- the decision table -------------------------------------------------------
     hdr = (["config", "VRAM used", "free for a guest", "max GTT", "decode hit rate",
