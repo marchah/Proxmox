@@ -2,7 +2,8 @@
 
 Each test campaign gets one record: a plan committed before the run, with the results
 appended after it. Records live with the model they test, in
-`<model dir>/runs/YYYY-MM-DD-<topic>.md`. The model's README lists them and keeps the
+`<model dir>/runs/YYYY-MM-DD-<topic>.md`; records about the cards themselves are in
+`pro-v620/runs/`. The model's README lists them and keeps the
 current configuration; a record never changes what is deployed by itself.
 
 ## Rules

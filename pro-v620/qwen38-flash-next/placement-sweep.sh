@@ -22,6 +22,8 @@
 #   STREAMS     also run concurrency-probe.py with this many concurrent streams; set
 #               PARALLEL to at least as many slots
 #   DEPTHS      this cell's probe depths, replacing the global DEPTHS
+#   DEVICE      the Vulkan device a 1gpu cell runs on (default Vulkan0), to compare cards
+#               in one container; the cell's JSON records the card it loaded onto
 # CONFIGS (NCMOE[:CACHE] entries) is the short form for cells that vary only those two.
 #
 # ⚠️ Method rules this encodes, each learned the hard way on this box:
@@ -150,7 +152,8 @@ if [ -n "$CELLS" ]; then
   parsed="$(python3 - "$CELLS" <<'PY'
 import re, shlex, sys
 KEYS = {"MODE", "NCMOE", "CACHE", "SPLIT_MODE", "TENSOR_SPLIT", "BATCH", "UBATCH", "THREADS",
-        "KV", "CTX", "PARALLEL", "LOAD_MODE", "MMPROJ_CPU", "EXTRA", "STREAMS", "DEPTHS"}
+        "KV", "CTX", "PARALLEL", "LOAD_MODE", "MMPROJ_CPU", "EXTRA", "STREAMS", "DEPTHS",
+        "DEVICE"}
 seen = set()
 for n, line in enumerate(open(sys.argv[1]), 1):
     words = shlex.split(line, comments=True)
@@ -225,6 +228,12 @@ for label in "${CELL_ORDER[@]}"; do
   done
   v="${CELL[$label|DEPTHS]:-}"
   [ -z "$v" ] || [[ "$v" =~ ^[0-9]+(,[0-9]+)*$ ]] || bad "DEPTHS must be comma-separated numbers"
+  v="${CELL[$label|DEVICE]:-}"
+  if [ -n "$v" ]; then
+    [ "$mode" = 1gpu ] || bad "DEVICE needs MODE=1gpu"
+    [[ "$v" =~ ^Vulkan([0-9]+)$ ]] || bad "DEVICE must be VulkanN"
+    [ "${BASH_REMATCH[1]}" -lt "${#CARDS[@]}" ] || bad "DEVICE ${v}: CT ${VMID} has ${#CARDS[@]} card(s)"
+  fi
   streams="${CELL[$label|STREAMS]:-}"
   if [ -n "$streams" ]; then
     [ "$streams" -le "${CELL[$label|PARALLEL]:-$PARALLEL}" ] || bad "STREAMS ${streams} needs PARALLEL of at least ${streams}"
@@ -256,7 +265,7 @@ ct_mem() {
   awk -v cur="$(cat "${cg}/memory.current")" '$1 == "anon" { a = $2 } $1 == "file" { f = $2 }
     END { printf "%d %d %d\n", cur / 1048576, a / 1048576, f / 1048576 }' "${cg}/memory.stat"
 }
-# The card holding the most VRAM: the one a one-GPU cell loaded onto, whichever Vulkan0 is.
+# The card holding the most VRAM: the one a one-GPU cell loaded onto, whichever VulkanN it is.
 active_card() {
   local card best="" most=-1 used
   for card in "${CARDS[@]}"; do
@@ -339,7 +348,7 @@ start_server() {
   mode="${CELL[$label|MODE]:-}"; gpus="$(cell_gpus "$label")"; ncmoe="${CELL[$label|NCMOE]:-}"
   case "$mode" in
     cpu)  dev="--device none";    def_b=4096; def_ub=1024 ;;
-    1gpu) dev="--device Vulkan0"; def_b=4096; def_ub=1024 ;;
+    1gpu) dev="--device ${CELL[$label|DEVICE]:-Vulkan0}"; def_b=4096; def_ub=1024 ;;
     2gpu) dev="";                 def_b=1024; def_ub=256 ;;
     *)    dev="$GLOBAL_DEVICE_ARG"; def_b="${BATCH:-}"; def_ub="${UBATCH:-}" ;;
   esac
@@ -444,7 +453,7 @@ start_server() {
 # one sizing measurement.
 cell_sig() {
   local key out=""
-  for key in MODE NCMOE SPLIT_MODE TENSOR_SPLIT BATCH UBATCH KV CTX PARALLEL MMPROJ_CPU LOAD_MODE EXTRA; do
+  for key in MODE NCMOE SPLIT_MODE TENSOR_SPLIT BATCH UBATCH KV CTX PARALLEL MMPROJ_CPU LOAD_MODE EXTRA DEVICE; do
     out+="${key}=${CELL[$1|$key]:-}|"
   done
   echo "$out"
@@ -506,7 +515,7 @@ dimm_cooldown() {
 # A cell's settings as a JSON object, for the manifest and its per-cell JSON.
 cell_json() {
   local label="$1" key args=()
-  for key in MODE NCMOE CACHE SPLIT_MODE TENSOR_SPLIT BATCH UBATCH THREADS KV CTX PARALLEL LOAD_MODE MMPROJ_CPU EXTRA STREAMS DEPTHS; do
+  for key in MODE NCMOE CACHE SPLIT_MODE TENSOR_SPLIT BATCH UBATCH THREADS KV CTX PARALLEL LOAD_MODE MMPROJ_CPU EXTRA STREAMS DEPTHS DEVICE; do
     [ -n "${CELL[$label|$key]+x}" ] && args+=("$key" "${CELL[$label|$key]}")
   done
   python3 -c 'import json, sys; a = sys.argv[1:]; print(json.dumps(dict(zip(a[::2], a[1::2]))))' "${args[@]}"
@@ -663,6 +672,9 @@ pl = {
     "vram_free_after_probe_mib": sum(t - v for t, v in zip(ts, pvs)),
 }
 pl["ct_mem_mib"], pl["ct_anon_mib"], pl["ct_file_mib"] = (int(x) for x in mem.split())
+# The card a one-GPU cell loaded onto: the two V620s are not interchangeable for measurements.
+if int(gpus) == 1:
+    pl["active_card"] = cards[vs.index(max(vs))]
 for i, name in enumerate(("gpu1", "gpu2")):
     if i < len(cards):
         pl[name + "_vram_mib"], pl[name + "_gtt_mib"], pl[name + "_card_mib"] = vs[i], gs[i], ts[i]

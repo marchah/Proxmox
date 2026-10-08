@@ -54,6 +54,8 @@ def main():
         if pl.get("load_s") is not None:
             g["load_s"].append(pl["load_s"])
         g["gpus"] = pl.get("gpus", g["gpus"])
+        if pl.get("active_card"):
+            g.setdefault("cards", set()).add(pl["active_card"])
         if pl.get("ct_mem_mib"):
             g["mem"].append((pl["ct_mem_mib"], pl["ct_anon_mib"], pl["ct_file_mib"]))
         if pl.get("concurrency"):
@@ -149,7 +151,10 @@ def main():
             if g["mem"]:
                 cur, anon, fil = (med([m[i] / 1024 for m in g["mem"]]) for i in range(3))
                 mem = "%.1f (%.1f / %.1f)" % (cur, anon, fil)
-            print("| %s | `%s` | %s | %s | %s |" % (key, settings or "-", g["gpus"] if g["gpus"] is not None else "—",
+            gpus = "%s" % g["gpus"] if g["gpus"] is not None else "—"
+            if g.get("cards"):
+                gpus += " (%s)" % ", ".join("`%s`" % c[5:] for c in sorted(g["cards"]))
+            print("| %s | `%s` | %s | %s | %s |" % (key, settings or "-", gpus,
                                                   "%.0f" % med(g["load_s"]) if g["load_s"] else "—", mem))
         print()
 

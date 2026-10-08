@@ -123,6 +123,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Context depth and KV type on one card](runs/2026-10-08-kv-context.md) | running |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Threads and concurrent streams on one card](runs/2026-10-08-threads-concurrency.md) | planned |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on one card](runs/2026-10-08-load-modes.md) | planned |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared, with `-ncmoe 34` on each](../runs/2026-10-08-card-ab.md) | planned |
 
 ## Benchmark tools
 
@@ -148,8 +149,8 @@ In the sweep shell, after preparing the intended container/GPU configuration, pa
 cells file: one cell per line, a label then `KEY=value` settings. The script's header
 lists the keys: device mode (`2gpu`, `1gpu`, `cpu`), CPU expert layers, cache, split
 mode, batch, threads, KV type, context, slots, load mode and extra arguments, plus a
-cell's own `DEPTHS` and `STREAMS`, which adds a `concurrency-probe.py` run with that many
-streams. `CONFIGS`, a list of `NCMOE[:CACHE]` entries, is the short form.
+cell's own `DEPTHS`, `STREAMS`, which adds a `concurrency-probe.py` run with that many
+streams, and `DEVICE`, the card a one-GPU cell runs on. `CONFIGS`, a list of `NCMOE[:CACHE]` entries, is the short form.
 
 ```bash
 VMID=123 CELLS=runs/2026-10-08-threads-concurrency.cells DEPTHS="0,8000" ./placement-sweep.sh

@@ -15,15 +15,6 @@ The
 [thermal watchdog](gpu-thermal-watchdog/README.md) stops the owning service at
 102 °C junction / 101 °C memory and leaves it stopped until the cooling fault is resolved.
 
-The two cards are not identical. `83:00.0` is the V620 bought 2026-07-09 (`unique_id`
-`99b104541144b36c`), `03:00.0` the first one (`150e6a6800f84ebe`); `unique_id` is in
-`/sys/bus/pci/devices/<address>/`. On the B550 board (2026-08-22, b10361, both cards at
-−100 mV and 250 W), the card now at `83:00.0` sustained ~130 MHz higher clocks (2462
-against 2333 MHz) and prefilled 0.8–4.0% faster on Qwen3.6-35B-A3B and Qwen3.8-27B. Its
-decode there was lower only because its Gen3 x4 chipset slot added ~3.45 ms per token, a
-cost no slot on this board has. The cards have not been compared on this board, so
-compare a measurement only with others taken on the same card.
-
 `create-lxc-llama-swap-gpu2.sh` is a reference recipe for the retired CT 123
 runtime. Its model config needs explicit device selection before reuse alongside
 another GPU container. The [B550 fan controller](fan-control/README.md) targets
@@ -171,6 +162,16 @@ concurrency 4, 4.5% single-stream, cut TTFT by about 40% and saved 0.5 GiB of VR
 `-ub 1024 -b 4096` added about 3% at the saturation knee and 2–7% on 512–2,048-token
 prefills. `llama-bench` cannot use `-b 4096` on this card (RADV out of memory); the
 server can.
+
+### Test records
+
+Records about the cards themselves, per [TEST-RECORDS.md](TEST-RECORDS.md).
+[`card-ab.sh`](card-ab.sh) runs `llama-bench` on each card from one container that holds
+both, in alternating order, and samples each card's clocks, power and temperature.
+
+| Date | Build | Backend | Record | Status |
+| --- | --- | --- | --- | --- |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared on the ROMED8-2T](runs/2026-10-08-card-ab.md) | planned |
 
 ## Backend and power
 
