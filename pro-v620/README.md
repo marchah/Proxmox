@@ -37,7 +37,7 @@ with a pinned llama.cpp Vulkan release and a checksum-verified model.
 | Speculative decoding | `--spec-type draft-mtp --spec-draft-n-max 3` (the model's own MTP head) |
 | Reasoning / format | `off` / `auto` |
 | API | `0.0.0.0:1234` |
-| Container RAM / model storage | 16384 MB / `/models` mount, `backup=0` |
+| Container RAM / model storage | 16384 MB / `/models` bound from the shared store `/mnt/models/store` |
 
 This MoE has 35B total parameters and about 3B active per token. Its ~27.2 GB
 weights, including the MTP head, fit one card. At the 256k context ceiling, a
@@ -57,9 +57,10 @@ DFlash) are in [spec-ab/](spec-ab/README.md).
 Run from this directory on the Proxmox host as root, using an unused VMID:
 
 ```bash
+./create-models-store.sh   # once per host; idempotent
 ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
 # Example resource overrides:
-VMID=124 MODELS_SIZE_GB=200 MEMORY_MB=24576 CORES=8 ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
+VMID=124 MEMORY_MB=24576 CORES=8 ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
 ```
 
 A VMID override does not allocate a free GPU; set `GPU_PCI_ADDRESS` to a card

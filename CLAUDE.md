@@ -119,9 +119,9 @@ the router; prefer hostnames to copied IP addresses. The host address is
 `192.168.1.93`.
 
 The weekly backup job runs Sundays at 01:00 to `Synology-Backup` NFS, keeps three
-copies and covers all guests. `/models` mount points use `backup=0`; root disks
-remain included. To omit rebuildable bulk on a root disk, use the backup job's
-`--exclude-path` setting, e.g. `/opt/kb-rag` for CT 140.
+copies and covers all guests. `/models` is a bind mount of the shared model store,
+which vzdump skips; root disks remain included. To omit rebuildable bulk on a root
+disk, use the backup job's `--exclude-path` setting, e.g. `/opt/kb-rag` for CT 140.
 
 - `/etc/vzdump.conf` needs `tmpdir: /var/tmp`: the NAS rejects the mapped UID used
   for unprivileged LXC temporary files. Archives still stream to NFS.

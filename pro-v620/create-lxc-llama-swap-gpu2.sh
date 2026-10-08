@@ -72,8 +72,8 @@ TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
 TEMPLATE="${TEMPLATE:-ubuntu-24.04-standard_24.04-2_amd64.tar.zst}"
 ROOT_STORAGE="${ROOT_STORAGE:-local-lvm}"
 ROOT_SIZE_GB="${ROOT_SIZE_GB:-32}"
-MODELS_STORAGE="${MODELS_STORAGE:-local-lvm}"
-MODELS_SIZE_GB="${MODELS_SIZE_GB:-150}"   # room for both GGUFs (~44 GB) + a swap-pool add later
+# Shared GGUF store from create-models-store.sh, bind-mounted at /models (CT 120 binds it too).
+MODELS_DIR="${MODELS_DIR:-/mnt/models/store}"
 MEMORY_MB="${MEMORY_MB:-16384}"
 SWAP_MB="${SWAP_MB:-4096}"
 CORES="${CORES:-8}"
@@ -138,6 +138,10 @@ assert_gpu_devices_exist() {
     die "GPU 2 render node (${GPU_PCI_ADDRESS}) not found at /dev/dri/by-path/pci-${GPU_PCI_ADDRESS}-render; is the card present and amdgpu-bound?"
 }
 
+assert_models_dir_exists() {
+  [[ -d ${MODELS_DIR} ]] || die "model store ${MODELS_DIR} not found; run ./create-models-store.sh first"
+}
+
 create_container() {
   local ostemplate rootfs net0
   local -a create_args
@@ -189,8 +193,8 @@ configure_gpu_passthrough() {
 }
 
 add_models_mount() {
-  log "Adding local /models mount point (${MODELS_SIZE_GB}G)"
-  pct set "${VMID}" -mp0 "${MODELS_STORAGE}:${MODELS_SIZE_GB},mp=/models,backup=0"
+  log "Binding the shared model store ${MODELS_DIR} at /models"
+  pct set "${VMID}" -mp0 "${MODELS_DIR},mp=/models"
 }
 
 start_container() { log "Starting LXC ${VMID}"; pct start "${VMID}"; }
@@ -231,7 +235,9 @@ install_swap_stack() {
   # Mesa from the kisak-mesa PPA: noble ships 25.2, the PPA tracks upstream (26.x).
   run_in_container bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common && add-apt-repository -y ppa:kisak/kisak-mesa"
   run_in_container bash -lc "DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git jq tar libatomic1 libgomp1 mesa-vulkan-drivers libvulkan1 vulkan-tools libglvnd0 libgl1 libglx0 libegl1 python3 python3-venv sudo"
-  run_in_container bash -lc "useradd --create-home --shell /bin/bash llamacpp || true"
+  # UID 1000 in every GPU container: they share /models, and a privileged container
+  # writes host UIDs.
+  run_in_container bash -lc "useradd --uid 1000 --create-home --shell /bin/bash llamacpp || true"
   run_in_container bash -lc "usermod -aG video,render llamacpp 2>/dev/null || usermod -aG video llamacpp || true"
   run_in_container bash -lc "install -d -o llamacpp -g llamacpp /models /models/hf"
   run_in_container bash -lc "install -d /opt/llamacpp /opt/llama-swap /etc/llama-swap"
@@ -460,6 +466,7 @@ main() {
   require_command pveam
   assert_vmid_available
   assert_gpu_devices_exist
+  assert_models_dir_exists
   download_template_if_missing
   create_container
   configure_gpu_passthrough
