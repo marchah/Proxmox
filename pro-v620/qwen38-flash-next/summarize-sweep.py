@@ -96,8 +96,8 @@ def main():
         if not spec:
             return "%d" % n
         mib = med(by[key]["cache_mib"])
-        return "%d + cache %s MiB%s" % (n, "%d" % mib if mib is not None else "?",
-                                       " (auto)" if spec == "auto" else "")
+        how = {"auto": " (auto)"}.get(spec, " (leaves %s MiB free)" % spec[5:] if spec.startswith("leave") else "")
+        return "%d + cache %s MiB%s" % (n, "%d" % mib if mib is not None else "?", how)
 
     # --- the decision table -------------------------------------------------------
     hdr = (["config", "VRAM used", "free for a guest", "max GTT", "decode hit rate",

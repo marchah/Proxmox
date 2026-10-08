@@ -6,13 +6,14 @@
 #   ./placement-sweep.sh                            # the default matrix, CT 120
 #   NCMOE_LIST="20 28 34" CTX=65536 ./placement-sweep.sh
 #   ONE_GPU=true NCMOE_LIST="34 40 48" ./placement-sweep.sh
-#   VMID=123 CONFIGS="34 34:auto 40:auto 48:auto" DEPTHS=0,8000 ./placement-sweep.sh
+#   VMID=123 CONFIGS="34 34:auto 40:auto 48:auto 48:leave12288" DEPTHS=0,8000 ./placement-sweep.sh
 #
 # What it answers: how much VRAM can be handed back to a second model before decode
 # degrades unacceptably — i.e. which placement is the most VERSATILE, not just fastest.
 # With CONFIGS it also measures --moe-cache-mib, a GPU cache for the experts --n-cpu-moe
-# keeps in RAM. `N:auto` sizes the cache to the VRAM placement N leaves free after a
-# full-ubatch request, minus CACHE_MARGIN_MIB, so every cache cell keeps the same headroom.
+# keeps in RAM. `N:auto` sizes the cache to the VRAM placement N leaves free under a probe,
+# minus CACHE_MARGIN_MIB, so every cache cell keeps the same headroom. `N:leaveM` leaves M MiB
+# free instead, e.g. room for a second model.
 #
 # ⚠️ Method rules this encodes, each learned the hard way on this box:
 #   * INTERLEAVE and take >=3 reps. One rep per cell understated a cost by half here
@@ -52,8 +53,9 @@ THREADS="${THREADS:-}"
 #   15 = minimum that fits two cards · 20 = ~8 GB spare · 28 = ~20 GB spare
 #   34 = fits one card · 48 = all experts in RAM (the no-GPU-experts control)
 NCMOE_LIST="${NCMOE_LIST:-15 20 28 34 48}"
-# Space-separated NCMOE[:CACHE] entries; CACHE is MiB or `auto`. Defaults to NCMOE_LIST
-# with no cache. A cache needs a one-card container: the sizing reads that card.
+# Space-separated NCMOE[:CACHE] entries; CACHE is MiB, `auto` or `leaveM` (M MiB left free).
+# Defaults to NCMOE_LIST with no cache. A cache needs a one-card container: the sizing reads
+# that card.
 CONFIGS="${CONFIGS:-$NCMOE_LIST}"
 # VRAM an `auto` cache leaves free after a full-ubatch request.
 CACHE_MARGIN_MIB="${CACHE_MARGIN_MIB:-1024}"
@@ -116,7 +118,10 @@ for cfg in $CONFIGS; do
   case "$spec" in
     "") ;;
     :auto) has_cache=true ;;
-    :|:*[!0-9]*) die "bad CONFIGS entry '${cfg}': NCMOE[:CACHE], CACHE in MiB or auto" ;;
+    :leave*)
+      [[ "${spec#:leave}" =~ ^[0-9]+$ ]] || die "bad CONFIGS entry '${cfg}': NCMOE[:CACHE], CACHE in MiB, auto or leaveM"
+      has_cache=true ;;
+    :|:*[!0-9]*) die "bad CONFIGS entry '${cfg}': NCMOE[:CACHE], CACHE in MiB, auto or leaveM" ;;
     *) has_cache=true ;;
   esac
 done
@@ -310,11 +315,24 @@ start_server() {
   log "healthy after ${t}s"
 }
 
-# `auto` cache per n_cpu_moe, sized once and reused by every round.
-declare -A AUTO_CACHE=()
-size_auto_cache() {
-  local ncmoe="$1" free cache
-  log "=== sizing the auto cache for n_cpu_moe ${ncmoe} ==="
+# Free VRAM per n_cpu_moe under a sizing probe, measured once and reused by every round and
+# by both `auto` and `leaveM` at that placement.
+declare -A AUTO_FREE=()
+size_auto_cache() {  # <ncmoe> <MiB to leave free>; prints the cache size. measure_free first.
+  local ncmoe="$1" margin="$2" free cache
+  free="${AUTO_FREE[$ncmoe]}"
+  cache=$(( free - margin ))
+  if [ "$cache" -lt 256 ]; then
+    log "⚠️  n_cpu_moe ${ncmoe} leaves ${free} MiB free; no room for a cache that leaves ${margin} MiB" >&2
+    cache=0
+  fi
+  log "n_cpu_moe ${ncmoe}: ${free} MiB free under a sizing probe, leave ${margin} -> cache ${cache} MiB" >&2
+  printf '%s %s %s %s\n' "$ncmoe" "$free" "$margin" "$cache" >>"${OUT_DIR}/auto-cache.txt"
+  echo "$cache"
+}
+measure_free() {
+  local ncmoe="$1"
+  log "=== sizing the cache for n_cpu_moe ${ncmoe} ==="
   start_server "$ncmoe" ""
   # One code prompt at the deepest probed depth, through the probe itself, so the compute
   # buffer settles where the cells will run it. A single synthetic request read 2,229 MiB
@@ -322,15 +340,7 @@ size_auto_cache() {
   ./placement-probe.py "$BASE" --reps 1 --n-predict 64 --classes code \
     --depths "$(tr ',' '\n' <<<"$DEPTHS" | sort -n | tail -1)" >/dev/null 2>&1 \
     || log "sizing probe failed for n_cpu_moe ${ncmoe}"
-  free=$(( $(vram_total_mib "${CARDS[0]}") - $(vram_mib "${CARDS[0]}") ))
-  cache=$(( free - CACHE_MARGIN_MIB ))
-  if [ "$cache" -lt 256 ]; then
-    log "⚠️  n_cpu_moe ${ncmoe} leaves ${free} MiB free; no room for a cache above the ${CACHE_MARGIN_MIB} MiB margin"
-    cache=0
-  fi
-  AUTO_CACHE[$ncmoe]="$cache"
-  log "n_cpu_moe ${ncmoe}: ${free} MiB free after a sizing probe -> cache ${cache} MiB"
-  printf '%s %s %s\n' "$ncmoe" "$free" "$cache" >>"${OUT_DIR}/auto-cache.txt"
+  AUTO_FREE[$ncmoe]=$(( $(vram_total_mib "${CARDS[0]}") - $(vram_mib "${CARDS[0]}") ))
 }
 
 # The hottest DIMM every ~10 s (ipmitool takes ~3 s), as "epoch<TAB>max °C".
@@ -373,8 +383,12 @@ for round in $(seq 1 "$REPS"); do
     [ "$cfg" != "$ncmoe" ] && spec="${cfg#*:}"
     case "$spec" in
       "")     cache=""; label="ncmoe${ncmoe}" ;;
-      auto)   [ -n "${AUTO_CACHE[$ncmoe]:-}" ] || size_auto_cache "$ncmoe"
-              cache="${AUTO_CACHE[$ncmoe]}"; label="ncmoe${ncmoe}-cacheauto" ;;
+      auto|leave*)
+              # measure_free starts and probes a server, so it runs here, in this shell,
+              # where AUTO_FREE persists; size_auto_cache then only does arithmetic.
+              [ -n "${AUTO_FREE[$ncmoe]:-}" ] || measure_free "$ncmoe"
+              if [ "$spec" = auto ]; then margin="$CACHE_MARGIN_MIB"; else margin="${spec#leave}"; fi
+              cache="$(size_auto_cache "$ncmoe" "$margin")"; label="ncmoe${ncmoe}-cache${spec}" ;;
       *)      cache="$spec"; label="ncmoe${ncmoe}-cache${spec}" ;;
     esac
     tag="${label}-r${round}"

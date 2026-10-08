@@ -281,6 +281,8 @@ entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the planned
   buffer grows past its load-time size (1,356 to 1,709 MiB) under the probe's
   requests. Each cell also reads VRAM and GTT after its probe and is flagged as a
   possible spill if GTT grew by more than 256 MiB.
+- `leaveM` uses the same measurement and leaves M MiB free instead, e.g. room for a
+  second model: `48:leave12288`.
 - Each extra CPU layer frees ~1.56 GB for the cache, so `34`, `40` and `48`
   compare the same VRAM spent on whole layers or on cached experts.
 - The cache's size and hit-rate lines are library INFO, which this build logs only
