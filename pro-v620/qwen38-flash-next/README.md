@@ -259,26 +259,62 @@ The [MTP patches](mtp-patches/README.md) and `mtp-standalone.sh` are the earlier
 b11018 attempt, which aborted in `graph_mtp` → `build_hc_mix` with
 `GGML_ASSERT(ggml_can_repeat(b, a))`.
 
-## Host memory baseline — 2026-09-17
+## Host memory bandwidth — 2026-10-08
 
-`membench.sh` measured four populated DDR4-3200 channels (C/D/G/H). Keep that
-placement; it was selected and validated for this board. Rerun the same harness,
-including its thread sweep, when adding DIMMs.
+`membench.sh` on all eight DDR4-3200 channels: 8 × 64 GB `M393A8K40B22-CAE` 3DS
+RDIMMs, kernel `7.0.14-22-pve`, `schedutil` governor, guests running but idle. BIOS:
+NPS1, memory interleaving Auto, APBDIS Auto, DF C-states enabled. STREAM 5.10, built
+with `gcc -O3 -march=native -fopenmp` and three 8 GB arrays, reports the best of 20
+passes. The four-channel columns are the same harness on 2026-09-17 with
+C1/D1/G1/H1 populated.
 
-| Threads | STREAM Copy | Scale | Add | Triad |
-| ---: | ---: | ---: | ---: | ---: |
-| 8 | 80.3 GB/s | 51.2 | 56.2 | 56.3 |
-| 16 | 77.8 | 50.1 | 54.9 | 55.0 |
-| 32 | 74.8 | 49.0 | 54.0 | 54.1 |
+| Threads | Copy | Scale | Add | Triad | Copy, 4 ch | Triad, 4 ch |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 151.0 GB/s | 96.3 | 107.5 | 107.5 | 80.3 | 56.3 |
+| 16 | 152.7 | 97.3 | 106.4 | 106.6 | 77.8 | 55.0 |
+| 32 | 148.6 | 95.4 | 104.3 | 104.4 | 74.8 | 54.1 |
+| 64 | 141.9 | 94.1 | 103.6 | 103.6 | — | — |
 
-STREAM reports application bytes. Accounting for read-for-ownership gives
-75.1 GB/s for Triad, close to the 76.4 GB/s `stressapptest` result. Copy peaked
-at 80.3 GB/s, about 78% of four-channel theoretical bandwidth.
+Eight channels deliver 1.90× four. Copy peaks at 75% of the 204.8 GB/s
+theoretical bandwidth. STREAM reports application bytes; counting
+read-for-ownership, Triad moves about 143 GB/s. Untested settings that can add
+bandwidth: NPS4, APBDIS 1 with SOC P-state P0, DF C-states disabled, and a STREAM
+build with non-temporal stores, which removes the read-for-ownership traffic.
 
-A random pointer chase over 4 GiB measured 141.36 ns/load with huge pages and
-226.95 ns with 4 KiB pages. Report page configuration with latency: the latter
-includes additional page-table work. These measurements do not isolate DIMM
-packaging effects.
+A random pointer chase with huge pages measured 116.45 ns/load over 256 MiB and
+123.86 ns over 4 GiB, against 141.36 ns over 4 GiB on four channels; the kernel
+also changed between those runs. With 4 KiB pages the four-channel run measured
+226.95 ns, which includes page-table walks. Report page configuration with latency.
+
+### DIMM thermal throttle
+
+When the hottest DIMM reads 66 °C on the BMC (`TEMP_CPU1_DDR4A`–`H`), memory
+bandwidth drops to about a third: STREAM Copy 52.7 GB/s, Triad 38 GB/s. It stays
+there until the hottest DIMM cools to about 62–63 °C, and idle latency rises from
+116 to 128 ns meanwhile. The BMC firmware names this event "DIMM throttling
+(bandwidth capping)", asserted on the DIMMs' `EVENT_L` line. BIOS setup exposes no
+trip point, and the OS cannot read or change it: after boot no device answers at
+the DIMM sensor or SPD addresses on any host SMBus port, because the BMC owns that
+bus. Nothing is logged: the SEL, EDAC and the kernel log stay silent.
+
+[`membench-sustained.sh`](membench-sustained.sh) reruns the 16-thread STREAM
+back to back and logs every pass beside the DIMM temperatures and each guest's
+CPU time. Under the BMC's previous fan curve, 70% duty at 65 °C, it throttled
+after three minutes. FAN1–FAN3 at full speed hold the DIMMs at 64–65 °C under the
+same load, so the BMC curve (open-loop table 1, driven by the CPU and all eight
+DIMM sensors) now reaches 100% at 58 °C:
+
+| °C | 30 | 40 | 45 | 50 | 55 | 58 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| FAN1–FAN3 duty | 30% | 35% | 45% | 60% | 80% | 100% |
+
+With that curve, an hour of back-to-back passes (2026-10-08 07:11–08:12, guests
+idle, case top open from 07:29) ran 172 of 175 passes at full speed, Copy ~151 GB/s
+and Triad ~105.5 GB/s. At 08:05 DIMM F reached 66 °C just after CT 120 served a
+request, and three passes, about two minutes, ran capped at 53 GB/s. ⚠️ At full fan
+speed the hottest DIMM settles at 64–65 °C, so the curve alone does not prevent the
+cap under sustained full-bandwidth load; more margin needs airflow aimed at the DIMMs.
+Read DIMM temperatures alongside any CPU-offload throughput measurement.
 
 ## Local validation
 
