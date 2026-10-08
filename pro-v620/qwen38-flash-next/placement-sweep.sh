@@ -310,29 +310,18 @@ start_server() {
   log "healthy after ${t}s"
 }
 
-# One ~3k-token prompt fills whole 1024-token ubatches. The compute buffer grows past its
-# load-time reservation on the first such batch (1,356 -> 1,709 MiB on CT 123 at -ncmoe 34),
-# so free VRAM read before it overstates what a cache can take.
-warm_request() {
-  python3 - "$BASE" <<'PY'
-import json, sys, urllib.request
-words = ("The council reviewed the harbour budget, the rail timetable and the library plan, "
-         "then asked each department for revised figures before the spring session.").split()
-prompt = " ".join(words[i % len(words)] for i in range(2400))
-body = json.dumps({"messages": [{"role": "user", "content": prompt + "\n\nSummarise in one sentence."}],
-                   "max_tokens": 16, "temperature": 0, "cache_prompt": False}).encode()
-urllib.request.urlopen(urllib.request.Request(sys.argv[1] + "/v1/chat/completions", body,
-                       {"content-type": "application/json"}), timeout=1800).read()
-PY
-}
-
 # `auto` cache per n_cpu_moe, sized once and reused by every round.
 declare -A AUTO_CACHE=()
 size_auto_cache() {
   local ncmoe="$1" free cache
   log "=== sizing the auto cache for n_cpu_moe ${ncmoe} ==="
   start_server "$ncmoe" ""
-  warm_request
+  # One code prompt at the deepest probed depth, through the probe itself, so the compute
+  # buffer settles where the cells will run it. A single synthetic request read 2,229 MiB
+  # free at -ncmoe 34 against ~1,700 under probes, and sized the cache past the margin.
+  ./placement-probe.py "$BASE" --reps 1 --n-predict 64 --classes code \
+    --depths "$(tr ',' '\n' <<<"$DEPTHS" | sort -n | tail -1)" >/dev/null 2>&1 \
+    || log "sizing probe failed for n_cpu_moe ${ncmoe}"
   free=$(( $(vram_total_mib "${CARDS[0]}") - $(vram_mib "${CARDS[0]}") ))
   cache=$(( free - CACHE_MARGIN_MIB ))
   if [ "$cache" -lt 256 ]; then
@@ -340,7 +329,7 @@ size_auto_cache() {
     cache=0
   fi
   AUTO_CACHE[$ncmoe]="$cache"
-  log "n_cpu_moe ${ncmoe}: ${free} MiB free after a full ubatch -> cache ${cache} MiB"
+  log "n_cpu_moe ${ncmoe}: ${free} MiB free after a sizing probe -> cache ${cache} MiB"
   printf '%s %s %s\n' "$ncmoe" "$free" "$cache" >>"${OUT_DIR}/auto-cache.txt"
 }
 
@@ -424,6 +413,14 @@ for round in $(seq 1 "$REPS"); do
     wait "$DIMM_PID" 2>/dev/null || true
     DIMM_PID=""
 
+    # Read again under the probe's own buffers: a spill shows as GTT that grew while it ran.
+    p_used=(); p_gtt=()
+    for card in "${CARDS[@]}"; do p_used+=("$(vram_mib "$card")"); p_gtt+=("$(gtt_mib "$card")"); done
+    log "after the probe: VRAM ${p_used[*]} MiB | GTT ${p_gtt[*]} MiB"
+    for i in "${!c_id[@]}"; do
+      if [ $(( p_gtt[i] - c_gtt[i] )) -gt 256 ]; then spill=true; log "⚠️  GTT grew during the probe — possible spill"; fi
+    done
+
     # The cache logs its hit rate when the context is destroyed, so stop the server now
     # and collect this cell's lines.
     pct exec "$VMID" -- systemctl stop llamacpp-qwen38fn 2>/dev/null || true
@@ -433,11 +430,11 @@ for round in $(seq 1 "$REPS"); do
     cards_csv="$(printf '%s\n' "${c_id[@]}" | paste -sd, -)"
     python3 - "${OUT_DIR}/${tag}.json" "$ncmoe" "$spec" "${cache:-0}" "$spill" \
       "$cards_csv" "${c_used[*]}" "${c_gtt[*]}" "${c_total[*]}" \
-      "${OUT_DIR}/${tag}.moecache.log" "${OUT_DIR}/${tag}.dimm.tsv" "$cmdline" <<'PYADD'
+      "${OUT_DIR}/${tag}.moecache.log" "${OUT_DIR}/${tag}.dimm.tsv" "$cmdline" "${p_used[*]}" "${p_gtt[*]}" <<'PYADD'
 import json, pathlib, re, sys
-(path, ncmoe, spec, cache, spill, cards, vs, gs, ts, cache_log, dimm_log, cmdline) = sys.argv[1:13]
+(path, ncmoe, spec, cache, spill, cards, vs, gs, ts, cache_log, dimm_log, cmdline, pvs, pgs) = sys.argv[1:15]
 cards = cards.split(",")
-vs, gs, ts = ([int(x) for x in s.split()] for s in (vs, gs, ts))
+vs, gs, ts, pvs, pgs = ([int(x) for x in s.split()] for s in (vs, gs, ts, pvs, pgs))
 p = pathlib.Path(path)
 try:
     d = json.loads(p.read_text())
@@ -452,10 +449,12 @@ pl = {
     "vram_free_for_a_guest_mib": sum(t - v for t, v in zip(ts, vs)),
     "possible_gtt_spill": spill == "true",
     "server_cmdline": cmdline.strip() or None,
+    "vram_free_after_probe_mib": sum(t - v for t, v in zip(ts, pvs)),
 }
 for i, name in enumerate(("gpu1", "gpu2")):
     if i < len(cards):
         pl[name + "_vram_mib"], pl[name + "_gtt_mib"], pl[name + "_card_mib"] = vs[i], gs[i], ts[i]
+        pl[name + "_vram_after_probe_mib"], pl[name + "_gtt_after_probe_mib"] = pvs[i], pgs[i]
 text = pathlib.Path(cache_log).read_text() if pathlib.Path(cache_log).exists() else ""
 mc = {"lines": len(text.splitlines())}
 m = re.search(r"MoE cache size =\s*([\d.]+) MiB for ([\d.]+) MiB of host experts", text)

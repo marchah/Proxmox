@@ -274,10 +274,13 @@ and an 18.6 GB cache. It has not run on these cards. The serve script passes
 `placement-sweep.sh` measures it through `CONFIGS`, a list of `NCMOE[:CACHE]`
 entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the planned run.
 
-- `auto` starts the placement without a cache, sends one ~3k-token request, and
-  sizes the cache to the free VRAM minus `CACHE_MARGIN_MIB` (default 1024). The
-  request matters: the compute buffer grows past its load-time size on the first
-  full ubatch (1,356 to 1,709 MiB at `-ncmoe 34`).
+- `auto` starts the placement without a cache, runs one code prompt at the deepest
+  probed depth through the probe, and sizes the cache to the free VRAM minus
+  `CACHE_MARGIN_MIB` (default 1024). A single synthetic request is not enough: it
+  read 2,229 MiB free at `-ncmoe 34`, against ~1,700 under probes, because the compute
+  buffer grows past its load-time size (1,356 to 1,709 MiB) under the probe's
+  requests. Each cell also reads VRAM and GTT after its probe and is flagged as a
+  possible spill if GTT grew by more than 256 MiB.
 - Each extra CPU layer frees ~1.56 GB for the cache, so `34`, `40` and `48`
   compare the same VRAM spent on whole layers or on cached experts.
 - The cache's size and hit-rate lines are library INFO, which this build logs only
