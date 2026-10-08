@@ -24,33 +24,43 @@ def main():
         except Exception as e:
             manifest_error = e
 
-    # group the per-round files by config: placement, plus cache spec when set
+    # Group the per-round files by cell: its label, or for sweeps that predate labels its
+    # placement plus cache spec.
     by = {}
     contract = None
-    for f in sorted(d.glob("ncmoe*-r*.json")):
+    for f in sorted(d.glob("*-r*.json")):
         try:
             j = json.loads(f.read_text())
         except Exception:
             continue
         pl = j.get("placement") or {}
-        n = pl.get("n_cpu_moe")
-        if n is None:
+        if pl.get("label"):
+            key = pl["label"]
+        elif pl.get("n_cpu_moe") is not None:
+            key = (pl["n_cpu_moe"], pl.get("moe_cache_spec") or "")
+        else:
             continue
-        key = (n, pl.get("moe_cache_spec") or "")
         g = by.setdefault(key, {"decode": {}, "prefill": {}, "vram": [], "free": [],
                                 "gtt": [], "spill": False, "degen": False,
                                 "disagree": False, "errors": 0, "cache_mib": [],
                                 "hit": [], "dimm": [], "capped": 0, "cache_inactive": 0,
-                                "shas": {}})
+                                "shas": {}, "load_failed": 0, "load_s": [], "gpus": None,
+                                "cell": pl.get("cell")})
+        if pl.get("load_failed"):
+            g["load_failed"] += 1
+            continue
         if j.get("error"):
             g["errors"] += 1
+        if pl.get("load_s") is not None:
+            g["load_s"].append(pl["load_s"])
+        g["gpus"] = pl.get("gpus", g["gpus"])
         g["vram"].append(pl.get("vram_total_mib") or 0)
         g["free"].append(pl.get("vram_free_for_a_guest_mib") or 0)
         g["gtt"].append(max(pl.get("gpu1_gtt_mib") or 0, pl.get("gpu2_gtt_mib") or 0))
         g["spill"] |= bool(pl.get("possible_gtt_spill"))
         g["degen"] |= bool(j.get("any_degenerate"))
         g["disagree"] |= (j.get("all_reps_agree") is False)
-        if key[1]:
+        if pl.get("moe_cache_spec"):
             mc = pl.get("moe_cache") or {}
             g["cache_mib"].append(pl.get("moe_cache_mib") or 0)
             if (mc.get("small") or {}).get("hit_rate_pct") is not None:
@@ -76,6 +86,12 @@ def main():
         print("No parsable sweep results in %s" % d)
         return
 
+    order = [c["label"] for c in manifest.get("cells") or []]
+    def sort_key(key):
+        if isinstance(key, str):
+            return (0, order.index(key) if key in order else len(order), key)
+        return (1, key)
+    keys = sorted(by, key=sort_key)
     cells = sorted({k for g in by.values() for k in g["decode"]})
     depths = sorted({c.split("/")[0] for c in cells},
                     key=lambda s: int(s.lstrip("d")))
@@ -88,17 +104,32 @@ def main():
               "%s · %s GiB host RAM · llama.cpp `%s`\n" % (
                   manifest.get("ctx"), manifest.get("parallel"), manifest.get("reps"),
                   manifest.get("n_predict"), manifest.get("depths"),
-                  "ONE GPU" if manifest.get("one_gpu") else "two GPUs",
+                  ("%d cells" % len(manifest["cells"])) if manifest.get("cells")
+                  else ("ONE GPU" if manifest.get("one_gpu") else "two GPUs"),
                   manifest.get("host_ram_gib"),
                   str(manifest.get("llamacpp_dir", "")).rsplit("/", 1)[-1]))
 
     def label(key):
+        if isinstance(key, str):
+            mib = med(by[key]["cache_mib"])
+            return key + (" (cache %d MiB)" % mib if mib else "")
         n, spec = key
         if not spec:
             return "%d" % n
         mib = med(by[key]["cache_mib"])
         how = {"auto": " (auto)"}.get(spec, " (leaves %s MiB free)" % spec[5:] if spec.startswith("leave") else "")
         return "%d + cache %s MiB%s" % (n, "%d" % mib if mib is not None else "?", how)
+
+    # --- the cells ----------------------------------------------------------------
+    if any(isinstance(k, str) for k in keys):
+        print("| cell | settings | GPUs | load, s |")
+        print("|---|---|---:|---:|")
+        for key in keys:
+            g = by[key]
+            settings = " ".join("%s=%s" % kv for kv in (g["cell"] or {}).items())
+            print("| %s | `%s` | %s | %s |" % (key, settings or "-", g["gpus"] if g["gpus"] is not None else "—",
+                                             "%.0f" % med(g["load_s"]) if g["load_s"] else "—"))
+        print()
 
     # --- the decision table -------------------------------------------------------
     hdr = (["config", "VRAM used", "free for a guest", "max GTT", "decode hit rate",
@@ -108,7 +139,7 @@ def main():
 
     base_free = None
     rows_for_tradeoff = []
-    for key in sorted(by):
+    for key in keys:
         g = by[key]
         vram = med(g["vram"]) or 0
         free = med(g["free"]) or 0
@@ -122,6 +153,8 @@ def main():
             flags.append("⚠️ reps disagree" + (" (%s)" % ", ".join(split) if split else ""))
         if g["errors"]:
             flags.append("🔴 %d probe error(s)" % g["errors"])
+        if g["load_failed"]:
+            flags.append("🔴 load failed in %d run(s)" % g["load_failed"])
         if g["cache_inactive"]:
             flags.append("🔴 cache not active in %d run(s)" % g["cache_inactive"])
         if g["capped"]:
@@ -162,7 +195,7 @@ def main():
               "axis here — a short-prompt number is not this model's throughput.\n")
         print("| config | " + " | ".join(depths) + " |")
         print("|" + "|".join(["---"] * (len(depths) + 1)) + "|")
-        for key in sorted(by):
+        for key in keys:
             g = by[key]
             vals = []
             for dep in depths:
@@ -179,7 +212,7 @@ def main():
               "cost.\n")
         print("| config | " + " | ".join("prefill " + dep for dep in deep) + " |")
         print("|" + "|".join(["---"] * (len(deep) + 1)) + "|")
-        for key in sorted(by):
+        for key in keys:
             g = by[key]
             vals = []
             for dep in deep:
