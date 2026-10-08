@@ -188,11 +188,15 @@ tokens), so the prompt cache cannot serve a repeated prompt. Without it, on CT 1
 and took 28 from the cache, reading 32–38 tok/s against 125 tok/s cold. The openai
 manifest records `cold_requests: true`.
 
-Older runs do not compare with later ones. Until 2026-10-07 the `medium` and `long`
-scenarios and the sweeps sent a repeated sentence or the word "token". Runs without
-`cold_requests` in their manifest sent each promptset prompt verbatim, so the
-baseline, concurrency, soak and context-sweep requests after the first were mostly
-served from cache, which skewed their prefill rates and TTFT.
+Older runs do not compare with later ones; their openai manifest tells which:
+
+- No `corpus` key: the `medium` and `long` scenarios and the sweeps sent a repeated
+  sentence or the word "token".
+- No `cold_requests` key: each promptset prompt was sent verbatim, and a repeat was
+  served from cache when it landed on the slot that held its previous copy. That is
+  every repeat at concurrency 1 (baseline, context sweep, GPU 2's single slot), and
+  fewer when several copies were in flight at once (the `concurrency` and `soak`
+  profiles). Their prefill rates and TTFT are skewed by it.
 
 ## Agent Sessions And Document Ingestion
 

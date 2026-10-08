@@ -478,8 +478,9 @@ def main() -> int:
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    # One salt per process, so every request id is unique across requests and sweep
-    # points (each point is a separate invocation), and differs on reruns too.
+    # One salt per process, so ids differ between sweep points (each point is a
+    # separate invocation) and between reruns. Within a run, scenarios reuse indexes;
+    # their prompts differ right after the id.
     run_salt = uuid.uuid4().hex[:8]
 
     jobs = []
