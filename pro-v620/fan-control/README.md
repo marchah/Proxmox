@@ -1,7 +1,9 @@
 # B550 GPU fan control
 
 Reference service for the MSI MAG B550 Tomahawk Max's NCT6687D controller.
-The ROMED8-2T uses [gpu-blower-control](../gpu-blower-control/README.md).
+The ROMED8-2T uses [gpu-blower-control](../gpu-blower-control/README.md). The
+service, the DKMS driver and their modprobe files were removed from the host on
+2026-10-07.
 
 One systemd instance controls one fan channel, using GPU temperatures and
 PCI-address matching. The B550 hub profile drives two 9733 blowers on PUMP_FAN1

@@ -347,6 +347,9 @@ Per round and model: `llama-bench -p 512 -n 128 -d 0,8192,32768 -r 3` and
 
 ## Teardown after the last phase
 
+Done on 2026-10-07: VM 301, CT 123's `mp1` and the `rocm-ab-models` volume no longer
+exist. A new run starts again from [Preparing the VM](#preparing-the-vm).
+
 ```sh
 qm destroy 301 --purge
 pct set 123 -delete mp1

@@ -85,7 +85,9 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   IPMI; [undervolt/](pro-v620/undervolt/README.md) keeps both cards at stock 0 mV.
   −100 mV silently corrupts compute under prefill load. Qualify any offset with
   `ppl-determinism.sh`: repeated perplexity runs must be bit-identical.
-  Confirm physical fan pairing after rewiring. The BMC manages CPU/DIMM cooling.
+  Confirm physical fan pairing after rewiring. The BMC manages CPU/DIMM cooling; its
+  curve reaches 100% at 58 °C because the DIMMs cap memory bandwidth to a third at
+  66 °C. Even at full fan speed, sustained full-bandwidth load leaves about 1 °C. See the [memory bandwidth notes](pro-v620/qwen38-flash-next/README.md#dimm-thermal-throttle).
 - [gpu-thermal-watchdog/](pro-v620/gpu-thermal-watchdog/README.md) stops the mapped
   service at 102 °C junction / 101 °C memory and leaves it stopped. A trip warrants
   checking cooling before restarting. Keep its map aligned with the owning units.
