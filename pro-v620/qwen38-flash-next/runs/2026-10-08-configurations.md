@@ -67,9 +67,9 @@ VMID=120 CELLS=runs/2026-10-08-configurations.cells DEPTHS="0,8000" ./placement-
 - Each cell's batch comes from its mode: two cards 1024/256 (the shape the split rule
   was found at), one card and CPU 4096/1024; `2gpu-34` overrides to 4096/1024 to match
   `1gpu-34`.
-- One-GPU cells run on `Vulkan0` in a two-card container; the sweep reads VRAM from the
-  card each cell loaded onto. CT 123's card and CT 120's card were validated
-  equivalent.
+- One-GPU cells run on `Vulkan0`, `0000:03:00.0`, in a two-card container; the sweep reads
+  VRAM from the card each cell loaded onto. CT 123 serves from the other card, which is
+  not identical ([Radeon Pro V620](../../README.md)).
 - Expected duration: about 3–3.5 hours, the CPU-only cell being the slowest.
 - Raw data: `/root/qwen38-flash-next/sweep-<timestamp>/`.
 
@@ -335,8 +335,8 @@ cells; `1gpu-40` differed from `1gpu-34` in three, `2gpu-16` and `1gpu-48` in fi
 never read 62 °C. No thermal-guard trip.
 
 `1gpu-34` ran here in CT 120 on `0000:03:00.0` with 48 cores; the `--moe-cache-mib`
-record's control, the same placement on CT 123's `0000:83:00.0` with 24 cores, measured
-12.7–13.7 t/s on the same build. This run does not separate the container, card and core
+record's control, the same placement in CT 123 on `0000:83:00.0`, the card that clocked
+higher on the B550 board, with 24 cores, measured 12.7–13.7 t/s on the same build. This run does not separate the container, card and core
 count.
 
 ## Deviations

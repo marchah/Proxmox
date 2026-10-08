@@ -162,6 +162,8 @@ def card(pci):
         "pci": pci,
         "name": sh("lspci -s %s | cut -d: -f3-" % pci[5:]) or None,
         "driver": os.path.basename(os.path.realpath(base + "/driver")) if os.path.exists(base + "/driver") else None,
+        # The physical card: the two V620s are not identical, and addresses follow slots.
+        "unique_id": read(base + "/unique_id"),
         "vbios": read(base + "/vbios_version"),
         "vram_total_mib": int(total) // 1048576 if total else None,
         "od_vddgfx_offset": m.group(1) if m else None,

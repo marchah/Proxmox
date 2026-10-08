@@ -65,6 +65,8 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
 | `0000:03:00.0` | CT 120 `llamacpp` | FAN5 |
 | `0000:83:00.0` | CT 123 `llamacpp-qwen38fn` | FAN4 |
 
+- The cards are not identical: `83:00.0` clocked higher on the prior board (see
+  `pro-v620/README.md`). Compare measurements only with others taken on the same card.
 - Pin passthrough by `/dev/dri/by-path/pci-<address>-render`, resolving the real
   destination node name. `cardN` numbering can change after hardware/kernel changes;
   follow the recovery procedure in `pro-v620/README.md`.

@@ -15,6 +15,15 @@ The
 [thermal watchdog](gpu-thermal-watchdog/README.md) stops the owning service at
 102 °C junction / 101 °C memory and leaves it stopped until the cooling fault is resolved.
 
+The two cards are not identical. `83:00.0` is the V620 bought 2026-07-09 (`unique_id`
+`99b104541144b36c`), `03:00.0` the first one (`150e6a6800f84ebe`); `unique_id` is in
+`/sys/bus/pci/devices/<address>/`. On the B550 board (2026-08-22, b10361, both cards at
+−100 mV and 250 W), the card now at `83:00.0` sustained ~130 MHz higher clocks (2462
+against 2333 MHz) and prefilled 0.8–4.0% faster on Qwen3.6-35B-A3B and Qwen3.8-27B. Its
+decode there was lower only because its Gen3 x4 chipset slot added ~3.45 ms per token, a
+cost no slot on this board has. The cards have not been compared on this board, so
+compare a measurement only with others taken on the same card.
+
 `create-lxc-llama-swap-gpu2.sh` is a reference recipe for the retired CT 123
 runtime. Its model config needs explicit device selection before reuse alongside
 another GPU container. The [B550 fan controller](fan-control/README.md) targets

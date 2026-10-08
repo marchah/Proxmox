@@ -19,14 +19,15 @@ current configuration; a record never changes what is deployed by itself.
   `ALLOW_DIRTY=true`) are not cited by records.
 - **Paste the environment.** [`capture-env.sh`](capture-env.sh) records the llama.cpp
   build and binary checksum, the backend (Mesa or ROCm), kernel and firmware, each
-  card's VBIOS, voltage offset, power cap and PCIe link, DIMMs, governor, the guest's
-  env file, the server's command line and the model files. `placement-sweep.sh` saves
-  it as `environment.json` and records each cell's command line beside it. `make bench`
-  puts it in every run's `versions.json`, captured once before the batch reloads the
-  model per item, so its env file and command line show the server as the batch found
-  it; the slot layout a run used is in that run's own records (`/props` for the agent
-  and ingestion workloads, `build_info.parallel` for the regression items). For a
-  hand-run test, run `./capture-env.sh <vmid>` on the host first.
+  card's identity (`unique_id`), VBIOS, voltage offset, power cap and PCIe link, DIMMs,
+  governor, the guest's env file, the server's command line and the model files.
+  `placement-sweep.sh` saves it as `environment.json` and records each cell's command
+  line beside it. `make bench` puts it in every run's `versions.json`, captured once
+  before the batch reloads the model per item, so its env file and command line show the
+  server as the batch found it; the slot layout a run used is in that run's own records
+  (`/props` for the agent and ingestion workloads, `build_info.parallel` for the
+  regression items). For a hand-run test, run `./capture-env.sh <vmid>` on the host
+  first.
 - **Start from the standard configurations**: two GPUs, one GPU, CPU only (the whole
   model in system RAM, no GPU), and an optimized configuration that leaves resources free,
   such as VRAM for a second model. Include each one that makes sense for the question,
