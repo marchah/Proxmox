@@ -62,6 +62,12 @@ CACHE_MARGIN_MIB="${CACHE_MARGIN_MIB:-1024}"
 LOG_VERBOSITY="${LOG_VERBOSITY:-}"
 # Put back the container's env file, and the service state, when the sweep ends.
 RESTORE="${RESTORE:-true}"
+# A run a test record cites must come from ../push-harness.sh, which pins the scripts to a
+# commit. UNPINNED=true allows a scratch run from an arbitrary copy.
+UNPINNED="${UNPINNED:-false}"
+# thermal-guard.sh writes this on a trip. The sweep then starts no further cell and
+# leaves the server stopped, as the production watchdog does, until cooling is checked.
+TRIP_FILE="${TRIP_FILE:-/root/qwen38-flash-next/THERMAL_TRIP}"
 OUT_DIR="${OUT_DIR:-/root/qwen38-flash-next/sweep-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 readonly ENVFILE=/etc/llamacpp-qwen38fn.env
@@ -75,6 +81,19 @@ log() { printf '==> %s\n' "$*"; }
 cd "$(dirname "$(readlink -f "$0")")"
 [ -x ./placement-probe.py ]   || die "placement-probe.py not found or not executable"
 [ -x ./summarize-sweep.py ]   || die "summarize-sweep.py not found or not executable"
+[ -x ../capture-env.sh ]      || die "../capture-env.sh not found or not executable"
+[ ! -e "$TRIP_FILE" ] || die "thermal trip recorded in ${TRIP_FILE}; check cooling, then remove it"
+
+HARNESS_COMMIT=""
+d="$PWD"
+while [ "$d" != "/" ]; do
+  if [ -f "$d/HARNESS_COMMIT" ]; then HARNESS_COMMIT="$(head -1 "$d/HARNESS_COMMIT")"; break; fi
+  d="$(dirname "$d")"
+done
+if [ -z "$HARNESS_COMMIT" ]; then
+  [ "$UNPINNED" = "true" ] || die "no HARNESS_COMMIT: stage with pro-v620/push-harness.sh, or set UNPINNED=true for a run no record will cite"
+  HARNESS_COMMIT="unpinned"
+fi
 mkdir -p "$OUT_DIR"
 
 # The cards passed through to this container, from its by-path bind mounts. Reading them
@@ -117,7 +136,11 @@ fi
 CT_IP="$(pct exec "$VMID" -- hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "$CT_IP" ] || die "could not resolve CT ${VMID}'s IP"
 BASE="http://${CT_IP}:${PORT}"
-log "CT ${VMID} at ${BASE}, cards ${CARDS[*]}; results -> ${OUT_DIR}"
+log "CT ${VMID} at ${BASE}, cards ${CARDS[*]}, harness ${HARNESS_COMMIT:0:12}; results -> ${OUT_DIR}"
+
+# The environment block a test record pastes, taken before the sweep changes anything.
+../capture-env.sh "$VMID" llamacpp-qwen38fn >"${OUT_DIR}/environment.json" \
+  || die "capture-env.sh failed for CT ${VMID}"
 
 vram_mib()       { echo $(( $(cat "/sys/bus/pci/devices/$1/mem_info_vram_used"  2>/dev/null || echo 0) / 1048576 )); }
 vram_total_mib() { echo $(( $(cat "/sys/bus/pci/devices/$1/mem_info_vram_total" 2>/dev/null || echo 0) / 1048576 )); }
@@ -158,7 +181,10 @@ cleanup() {
   [ -n "$DIMM_PID" ] && kill "$DIMM_PID" 2>/dev/null
   if [ "$RESTORE" = "true" ]; then
     pct exec "$VMID" -- cp -p "$ENV_BACKUP" "$ENVFILE"
-    if [ "$WAS_ACTIVE" = "active" ]; then
+    if [ -e "$TRIP_FILE" ]; then
+      pct exec "$VMID" -- systemctl stop llamacpp-qwen38fn 2>/dev/null || true
+      log "restored ${ENVFILE}; thermal trip in ${TRIP_FILE}, so the service stays stopped"
+    elif [ "$WAS_ACTIVE" = "active" ]; then
       pct exec "$VMID" -- systemctl restart llamacpp-qwen38fn
       log "restored ${ENVFILE} from ${ENV_BACKUP} and restarted llamacpp-qwen38fn"
     else
@@ -171,6 +197,7 @@ trap cleanup EXIT
 
 start_server() {
   local ncmoe="$1" cache="${2:-}"
+  [ ! -e "$TRIP_FILE" ] || die "thermal trip recorded in ${TRIP_FILE}; stopping the sweep"
   pct exec "$VMID" -- systemctl stop llamacpp-qwen38fn 2>/dev/null || true
 
   # Wait for VRAM to actually drain. Starting the next config on top of the previous
@@ -321,6 +348,7 @@ dimm_sampler() {
 cat >"${OUT_DIR}/manifest.json" <<JSON
 {
  "when": "$(date -u +%FT%TZ)",
+ "harness_commit": "${HARNESS_COMMIT}",
  "vmid": ${VMID}, "cards": "${CARDS[*]}",
  "ctx": ${CTX}, "parallel": ${PARALLEL}, "reps": ${REPS},
  "n_predict": ${N_PREDICT}, "depths": "${DEPTHS}",
@@ -363,6 +391,8 @@ for round in $(seq 1 "$REPS"); do
       c_id+=("$card"); c_used+=("$(vram_mib "$card")"); c_gtt+=("$(gtt_mib "$card")"); c_total+=("$(vram_total_mib "$card")")
     done
     log "VRAM ${c_used[*]} MiB of ${c_total[*]} | GTT ${c_gtt[*]} MiB (${c_id[*]})"
+    # shellcheck disable=SC2016  # expands inside the container
+    cmdline="$(pct exec "$VMID" -- bash -c 'p=$(pgrep -o -x llama-server) && tr "\0" " " <"/proc/${p}/cmdline"' 2>/dev/null || true)"
 
     # 🔴 The spill check: under ~1 GiB of headroom RADV silently moves allocations to GTT
     # and decode collapses. Measured against each card's real size: the 30,704 MiB the
@@ -396,9 +426,9 @@ for round in $(seq 1 "$REPS"); do
     cards_csv="$(printf '%s\n' "${c_id[@]}" | paste -sd, -)"
     python3 - "${OUT_DIR}/${tag}.json" "$ncmoe" "$spec" "${cache:-0}" "$spill" \
       "$cards_csv" "${c_used[*]}" "${c_gtt[*]}" "${c_total[*]}" \
-      "${OUT_DIR}/${tag}.moecache.log" "${OUT_DIR}/${tag}.dimm.tsv" <<'PYADD'
+      "${OUT_DIR}/${tag}.moecache.log" "${OUT_DIR}/${tag}.dimm.tsv" "$cmdline" <<'PYADD'
 import json, pathlib, re, sys
-(path, ncmoe, spec, cache, spill, cards, vs, gs, ts, cache_log, dimm_log) = sys.argv[1:12]
+(path, ncmoe, spec, cache, spill, cards, vs, gs, ts, cache_log, dimm_log, cmdline) = sys.argv[1:13]
 cards = cards.split(",")
 vs, gs, ts = ([int(x) for x in s.split()] for s in (vs, gs, ts))
 p = pathlib.Path(path)
@@ -414,6 +444,7 @@ pl = {
     "vram_total_mib": sum(vs),
     "vram_free_for_a_guest_mib": sum(t - v for t, v in zip(ts, vs)),
     "possible_gtt_spill": spill == "true",
+    "server_cmdline": cmdline.strip() or None,
 }
 for i, name in enumerate(("gpu1", "gpu2")):
     if i < len(cards):

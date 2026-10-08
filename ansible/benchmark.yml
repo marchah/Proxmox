@@ -3,11 +3,12 @@
 #
 #   ansible-playbook ansible/benchmark.yml -e @ansible/secrets.yml -e gpu=1
 #
-# It pushes the LOCAL bench-runner suite to the Proxmox host (so runs use your
-# latest, even uncommitted code), provisions CT 200 if it is missing, injects
-# HF_TOKEN, (re)loads the selected GPU's model at the requested --parallel, runs the
-# batch, and fetches the result folders back into
-# pro-v620/results/<results label>/parallel-<n>/.
+# It pushes the local bench-runner suite to the Proxmox host, provisions CT 200 if it
+# is missing, injects HF_TOKEN, (re)loads the selected GPU's model at the requested
+# --parallel, runs the batch, and fetches the result folders back into
+# pro-v620/results/<results label>/parallel-<n>/. Every run's versions.json carries the
+# source commit and the environment from pro-v620/capture-env.sh. The play stops on
+# uncommitted benchmark code unless allow_dirty=true (pro-v620/TEST-RECORDS.md).
 #
 # The containers have no SSH of their own, so tasks act on them via `pct` on the
 # Proxmox host (this is the "light" orchestrator around the existing bash scripts).
@@ -92,6 +93,10 @@
     context_sweep: false
     context_sweep_contexts: "4096 16384 32768 65536"
     repo_root: "{{ playbook_dir }}/.."
+    # Stop on uncommitted changes to the code a run executes, so the recorded commit
+    # names it exactly. allow_dirty=true is for scratch runs no record will cite.
+    allow_dirty: false
+    run_code_paths: [bench-runner, ansible, pro-v620/capture-env.sh]
     host_suite_dir: /tmp/proxmox-bench
     results_dest: "{{ playbook_dir }}/../pro-v620/results/{{ runtime_label }}/parallel-{{ parallel }}"
     # suite=full (the default) runs the regression items, then the agent-session and
@@ -164,12 +169,36 @@
              if (gpu | string) == '2' else 'Reprovision the container or install the helper.' }}
       when: gpu_helper.rc is defined and gpu_helper.rc != 0
 
+    - name: Capture the local source commit (controller)
+      delegate_to: localhost
+      ansible.builtin.command: "git -C {{ repo_root }} rev-parse HEAD"
+      register: local_git_commit
+      changed_when: false
+      failed_when: false
+
+    - name: Capture uncommitted changes to the benchmark code (controller)
+      delegate_to: localhost
+      ansible.builtin.command:
+        argv: "{{ ['git', '-C', repo_root, 'status', '--short', '--'] + run_code_paths }}"
+      register: local_git_status
+      changed_when: false
+      failed_when: false
+
+    - name: Stop on uncommitted benchmark code
+      ansible.builtin.fail:
+        msg: >-
+          Uncommitted changes in {{ run_code_paths | join(', ') }}:
+          {{ local_git_status.stdout_lines | join('; ') }}. Commit them so the run's recorded
+          commit names the code it ran, or set allow_dirty=true (ALLOW_DIRTY=true) for a
+          scratch run.
+      when: (local_git_status.stdout | trim | length > 0) and not (allow_dirty | bool)
+
     - name: Wipe any previous suite copy on the host
       ansible.builtin.file:
         path: "{{ host_suite_dir }}"
         state: absent
 
-    - name: Push the local bench-runner suite to the host (latest, incl. uncommitted)
+    - name: Push the local bench-runner suite to the host
       ansible.builtin.copy:
         src: "{{ repo_root }}/bench-runner/"
         dest: "{{ host_suite_dir }}/"
@@ -184,20 +213,6 @@
         - run-with-host-telemetry.sh
         - run-with-target-telemetry.sh
 
-    - name: Capture the local source commit (controller)
-      delegate_to: localhost
-      ansible.builtin.command: "git -C {{ repo_root }} rev-parse HEAD"
-      register: local_git_commit
-      changed_when: false
-      failed_when: false
-
-    - name: Capture the local working-tree dirtiness (controller)
-      delegate_to: localhost
-      ansible.builtin.command: "git -C {{ repo_root }} status --short"
-      register: local_git_status
-      changed_when: false
-      failed_when: false
-
     # Capture the engine build from the model container itself, where the
     # binary actually lives — the bench-runner can't see it. The version_cmd merges
     # stderr (llama-server prints to it) but does NOT pipe to head, so its real exit
@@ -210,6 +225,18 @@
       register: engine_version_raw
       changed_when: false
       failed_when: false
+
+    - name: Push capture-env.sh to the host
+      ansible.builtin.copy:
+        src: "{{ repo_root }}/pro-v620/capture-env.sh"
+        dest: "{{ host_suite_dir }}/host/capture-env.sh"
+        mode: "0755"
+
+    - name: Capture the GPU container's environment (build, backend, host, cards, models)
+      ansible.builtin.command:
+        argv: ["{{ host_suite_dir }}/host/capture-env.sh", "{{ gpu_vmid }}", "{{ gpu_config.service }}"]
+      register: env_capture
+      changed_when: false
 
     - name: Record build-info into the host suite copy (provenance for runs)
       ansible.builtin.copy:
@@ -225,7 +252,8 @@
             "gpu_vmid": {{ gpu_vmid | int }},
             "model_key": {{ model_key | to_json }},
             "runtime": {{ runtime | to_json }},
-            "engine_version": {{ ( ((engine_version_raw.stdout | default('')).splitlines() | first | default('') | trim) if (engine_version_raw.rc | default(1)) == 0 else '' ) | to_json }}
+            "engine_version": {{ ( ((engine_version_raw.stdout | default('')).splitlines() | first | default('') | trim) if (engine_version_raw.rc | default(1)) == 0 else '' ) | to_json }},
+            "environment": {{ env_capture.stdout | from_json | to_json }}
           }
 
     - name: Check whether the bench-runner LXC already exists

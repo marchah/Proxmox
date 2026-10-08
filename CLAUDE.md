@@ -97,6 +97,11 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
 
 ## Benchmark conventions
 
+- Each test campaign gets a record in `<model dir>/runs/`: the plan is committed before
+  the run and the results are appended after it; see
+  [pro-v620/TEST-RECORDS.md](pro-v620/TEST-RECORDS.md). Run code staged by commit
+  (`pro-v620/push-harness.sh`; `make bench` refuses uncommitted benchmark code) and
+  paste the environment from `pro-v620/capture-env.sh` rather than typing it.
 - Interleave configurations with at least three repetitions. Match model hashes,
   binary, prompt set, context depth and power settings. Check output correctness as
   well as speed; include a non-speculative control when testing a drafter.

@@ -221,17 +221,32 @@ overpredicts its throughput. Output hashes were stable at d0, but occasionally
 varied at depth even with greedy sampling; check content quality and use repeated
 measurements at depth.
 
+## Test records
+
+Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.md).
+
+| Date | Build | Backend | Record | Status |
+| --- | --- | --- | --- | --- |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [`--moe-cache-mib` on one V620](runs/2026-10-08-moe-cache.md) | planned |
+
 ## Benchmark tools
 
-`placement-sweep.sh` writes per-config JSON and `SUMMARY.md` under
-`/root/qwen38-flash-next/sweep-<ts>/`. It reads VRAM from the cards in the
-container's config, records the hottest DIMM per cell, and on exit restores the
-container's env file and restarts the service if it was running. Run the thermal
-guard in a separate shell before a manual sweep; the host watchdog only stops
-systemd services.
+Stage this directory on the host with [`../push-harness.sh`](../push-harness.sh) and
+run it from `/root/harness/<sha12>/pro-v620/qwen38-flash-next/`; the sweep refuses an
+unstaged copy unless `UNPINNED=true`. `placement-sweep.sh` writes per-config JSON,
+`environment.json` and `SUMMARY.md` under `/root/qwen38-flash-next/sweep-<ts>/`. It
+reads VRAM from the cards in the container's config, records each cell's server
+command line and hottest DIMM, and on exit restores the container's env file and
+restarts the service if it was running.
+
+Run the thermal guard in a separate shell first; the host watchdog only stops systemd
+services. `VMID=<ct>` limits it to that container's cards and acts only inside that
+container. On a trip it writes `/root/qwen38-flash-next/THERMAL_TRIP`: the sweep then
+starts no further cell, leaves the server stopped, and refuses to start until the file
+is removed after cooling is checked.
 
 ```bash
-./thermal-guard.sh
+VMID=123 ./thermal-guard.sh
 ```
 
 In the sweep shell, after preparing the intended container/GPU configuration:
@@ -257,11 +272,7 @@ and an 18.6 GB cache. It has not run on these cards. The serve script passes
 `MODEL_MOE_CACHE_MIB`; the shipped configs leave it empty.
 
 `placement-sweep.sh` measures it through `CONFIGS`, a list of `NCMOE[:CACHE]`
-entries:
-
-```bash
-VMID=123 CONFIGS="34 34:auto 40:auto 48:auto" DEPTHS="0,8000" ./placement-sweep.sh
-```
+entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the planned run.
 
 - `auto` starts the placement without a cache, sends one ~3k-token request, and
   sizes the cache to the free VRAM minus `CACHE_MARGIN_MIB` (default 1024). The

@@ -14,8 +14,11 @@ RUNTIME  ?= llamacpp
 SUITE    ?= full
 AGENT    ?= true
 INGEST   ?= true
+# The batch stops on uncommitted benchmark code; ALLOW_DIRTY=true runs it anyway, for a
+# scratch run no test record will cite (pro-v620/TEST-RECORDS.md).
+ALLOW_DIRTY ?= false
 SELECT   := -e suite=$(SUITE) -e run_agent_sessions=$(AGENT) -e run_doc_ingest=$(INGEST)
-TARGET   := -e gpu=$(GPU) $(if $(PARALLEL),-e parallel=$(PARALLEL)) -e runtime=$(RUNTIME)
+TARGET   := -e gpu=$(GPU) $(if $(PARALLEL),-e parallel=$(PARALLEL)) -e runtime=$(RUNTIME) -e allow_dirty=$(ALLOW_DIRTY)
 
 .DEFAULT_GOAL := help
 .PHONY: help ping check smoke bench context-sweep
@@ -33,7 +36,7 @@ check: ## Syntax-check the playbook
 smoke: ## Plumbing test: push suite + reload model, run NO benchmarks (GPU, PARALLEL overridable)
 	ansible-playbook $(PLAYBOOK) $(TARGET) -e '{"benchmarks": []}'
 
-bench: ## Run the batch (GPU=1|2, SUITE=full|short, AGENT/INGEST=false, PARALLEL)
+bench: ## Run the batch (GPU=1|2, SUITE=full|short, AGENT/INGEST=false, PARALLEL, ALLOW_DIRTY)
 	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) $(TARGET) $(SELECT)
 
 context-sweep: ## Run the context-length sweep on top of the batch (same flags as bench)
