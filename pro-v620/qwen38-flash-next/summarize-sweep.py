@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Reduce a placement-sweep output directory to one Markdown table.
 
-Rows are placements (n_cpu_moe). The point of the table is the trade the sweep exists to
-settle: VRAM handed back to a second model versus decode lost. So "free VRAM" sits next
-to the decode medians, and the versatility column is decode per GB given up.
+Rows are configs: an n_cpu_moe placement, plus a --moe-cache-mib size when the sweep set
+one. The point of the table is the trade the sweep exists to settle: VRAM handed back to a
+second model versus decode lost. So "free VRAM" sits next to the decode medians, and the
+versatility column is decode per GB given up. Cache rows add the decode hit rate, and every
+row its hottest DIMM, since the BMC caps memory bandwidth at 66 °C.
 """
 import json, pathlib, statistics, sys
 
@@ -22,7 +24,7 @@ def main():
         except Exception:
             pass
 
-    # group the per-round files by n_cpu_moe
+    # group the per-round files by config: placement, plus cache spec when set
     by = {}
     contract = None
     for f in sorted(d.glob("ncmoe*-r*.json")):
@@ -34,9 +36,11 @@ def main():
         n = pl.get("n_cpu_moe")
         if n is None:
             continue
-        g = by.setdefault(n, {"decode": {}, "prefill": {}, "vram": [], "free": [],
-                              "gtt": [], "spill": False, "degen": False,
-                              "disagree": False, "errors": 0})
+        key = (n, pl.get("moe_cache_spec") or "")
+        g = by.setdefault(key, {"decode": {}, "prefill": {}, "vram": [], "free": [],
+                                "gtt": [], "spill": False, "degen": False,
+                                "disagree": False, "errors": 0, "cache_mib": [],
+                                "hit": [], "dimm": [], "capped": 0, "cache_inactive": 0})
         if j.get("error"):
             g["errors"] += 1
         g["vram"].append(pl.get("vram_total_mib") or 0)
@@ -45,6 +49,16 @@ def main():
         g["spill"] |= bool(pl.get("possible_gtt_spill"))
         g["degen"] |= bool(j.get("any_degenerate"))
         g["disagree"] |= (j.get("all_reps_agree") is False)
+        if key[1]:
+            mc = pl.get("moe_cache") or {}
+            g["cache_mib"].append(pl.get("moe_cache_mib") or 0)
+            if (mc.get("small") or {}).get("hit_rate_pct") is not None:
+                g["hit"].append(mc["small"]["hit_rate_pct"])
+            if (pl.get("moe_cache_mib") or 0) > 0 and (mc.get("disabled") or "size_mib" not in mc):
+                g["cache_inactive"] += 1
+        if pl.get("dimm_max_c"):
+            g["dimm"].append(pl["dimm_max_c"])
+        g["capped"] += pl.get("dimm_samples_at_cap") or 0
         for k, v in (j.get("summary") or {}).items():
             if v.get("decode_tps_median"):
                 g["decode"].setdefault(k, []).append(v["decode_tps_median"])
@@ -71,16 +85,24 @@ def main():
                   manifest.get("host_ram_gib"),
                   str(manifest.get("llamacpp_dir", "")).rsplit("/", 1)[-1]))
 
+    def label(key):
+        n, spec = key
+        if not spec:
+            return "%d" % n
+        mib = med(by[key]["cache_mib"])
+        return "%d + cache %s MiB%s" % (n, "%d" % mib if mib is not None else "?",
+                                       " (auto)" if spec == "auto" else "")
+
     # --- the decision table -------------------------------------------------------
-    hdr = (["n_cpu_moe", "VRAM used", "free for a guest", "max GTT"]
-           + ["decode " + c for c in cells] + ["flags"])
+    hdr = (["config", "VRAM used", "free for a guest", "max GTT", "decode hit rate",
+            "hottest DIMM"] + ["decode " + c for c in cells] + ["flags"])
     print("| " + " | ".join(hdr) + " |")
     print("|" + "|".join(["---"] * len(hdr)) + "|")
 
     base_free = None
     rows_for_tradeoff = []
-    for n in sorted(by):
-        g = by[n]
+    for key in sorted(by):
+        g = by[key]
         vram = med(g["vram"]) or 0
         free = med(g["free"]) or 0
         flags = []
@@ -92,29 +114,36 @@ def main():
             flags.append("⚠️ reps disagree")
         if g["errors"]:
             flags.append("🔴 %d probe error(s)" % g["errors"])
+        if g["cache_inactive"]:
+            flags.append("🔴 cache not active in %d run(s)" % g["cache_inactive"])
+        if g["capped"]:
+            flags.append("⚠️ DIMM at 66 °C in %d sample(s): bandwidth capped" % g["capped"])
         cellvals = [med(g["decode"].get(c, [])) for c in cells]
-        print("| %d | %.1f GiB | **%.1f GiB** | %d MiB | %s | %s |" % (
-            n, vram / 1024, free / 1024, med(g["gtt"]) or 0,
+        hit = med(g["hit"])
+        print("| %s | %.1f GiB | **%.1f GiB** | %d MiB | %s | %s | %s | %s |" % (
+            label(key), vram / 1024, free / 1024, med(g["gtt"]) or 0,
+            ("%.1f%%" % hit) if hit is not None else "—",
+            ("%d °C" % max(g["dimm"])) if g["dimm"] else "—",
             " | ".join("%.1f" % v if v else "—" for v in cellvals),
             ", ".join(flags) or "ok"))
         overall = [v for v in cellvals if v]
         if overall:
-            rows_for_tradeoff.append((n, free / 1024, med(overall)))
+            rows_for_tradeoff.append((label(key), free / 1024, med(overall)))
 
     # --- what it decides ----------------------------------------------------------
     if len(rows_for_tradeoff) >= 2:
         # the fastest placement is the reference; everything else trades decode for VRAM
         ref = max(rows_for_tradeoff, key=lambda r: r[2])
         print("\n## The trade, against the fastest placement\n")
-        print("Reference: `n_cpu_moe %d` at **%.1f t/s** with %.1f GiB free.\n"
+        print("Reference: `%s` at **%.1f t/s** with %.1f GiB free.\n"
               % (ref[0], ref[2], ref[1]))
-        print("| n_cpu_moe | decode | vs fastest | extra VRAM freed | cost per GB freed |")
+        print("| config | decode | vs fastest | extra VRAM freed | cost per GB freed |")
         print("|---|---:|---:|---:|---:|")
         for n, free, dec in rows_for_tradeoff:
             dgb = free - ref[1]
             loss = dec - ref[2]
             per = ("%.2f t/s per GiB" % (abs(loss) / dgb)) if dgb > 0.05 else "—"
-            print("| %d | %.1f t/s | %+.1f%% | %+.1f GiB | %s |" % (
+            print("| %s | %.1f t/s | %+.1f%% | %+.1f GiB | %s |" % (
                 n, dec, 100.0 * loss / ref[2] if ref[2] else 0, dgb, per))
 
     # --- depth effect -------------------------------------------------------------
@@ -123,15 +152,32 @@ def main():
         print("The QSA indexer rescored block summaries over the whole cached context "
               "every token until llama.cpp #28699 (an open draft), so depth is a real "
               "axis here — a short-prompt number is not this model's throughput.\n")
-        print("| n_cpu_moe | " + " | ".join(depths) + " |")
+        print("| config | " + " | ".join(depths) + " |")
         print("|" + "|".join(["---"] * (len(depths) + 1)) + "|")
-        for n in sorted(by):
-            g = by[n]
+        for key in sorted(by):
+            g = by[key]
             vals = []
             for dep in depths:
                 xs = [v for c, vv in g["decode"].items() if c.startswith(dep + "/") for v in vv]
                 vals.append("%.1f" % med(xs) if xs else "—")
-            print("| %d | %s |" % (n, " | ".join(vals)))
+            print("| %s | %s |" % (label(key), " | ".join(vals)))
+
+    # --- prefill ------------------------------------------------------------------
+    deep = [dep for dep in depths if dep != "d0"]
+    if deep:
+        print("\n## Prefill versus context depth\n")
+        print("Prefill is this model's binding constraint. The MoE cache serves only batches "
+              "of up to 32 tokens, so a cache row's prefill shows what its extra CPU layers "
+              "cost.\n")
+        print("| config | " + " | ".join("prefill " + dep for dep in deep) + " |")
+        print("|" + "|".join(["---"] * (len(deep) + 1)) + "|")
+        for key in sorted(by):
+            g = by[key]
+            vals = []
+            for dep in deep:
+                xs = [v for c, vv in g["prefill"].items() if c.startswith(dep + "/") for v in vv]
+                vals.append("%.1f" % med(xs) if xs else "—")
+            print("| %s | %s |" % (label(key), " | ".join(vals)))
 
     # --- the template contract ----------------------------------------------------
     if contract:

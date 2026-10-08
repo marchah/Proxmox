@@ -64,6 +64,7 @@ args=(
 # "keep the Mixture of Experts (MoE) weights of the first N layers in the CPU").
 # 0 = none, which needs 82.6 GB of VRAM and does not fit two cards.
 [ -n "${MODEL_CPU_MOE:-}" ] && [ "${MODEL_CPU_MOE}" != "0" ] && args+=( --n-cpu-moe "${MODEL_CPU_MOE}" )
+[ -n "${MODEL_MOE_CACHE_MIB:-}" ] && [ "${MODEL_MOE_CACHE_MIB}" != "0" ] && args+=( --moe-cache-mib "${MODEL_MOE_CACHE_MIB}" )
 
 # Explicit split for multiple cards: CPU-expert layers are lighter than GPU layers.
 # At 1024/256 batch, start with card1=N+(48-N)/2-2; N=48 uses 48,0.
