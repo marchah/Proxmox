@@ -283,6 +283,11 @@ entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the planned
   more than 256 MiB.
 - `leaveM` uses the same measurement and leaves M MiB free instead, e.g. room for a
   second model: `48:leave12288`.
+- RADV limits one allocation to 4 GiB, and the cache keeps each expert tensor type
+  in one buffer, so the cache is capped well below free VRAM: at `-ncmoe 48` about
+  11.3 GB loads and 13 GB does not. An unallocatable cache aborts at load on a
+  scheduler assertion under llama-server's default fit check, and with `--fit off`
+  fails with `failed to allocate the MoE cache buffers`.
 - Each extra CPU layer frees ~1.56 GB for the cache, so `34`, `40` and `48`
   compare the same VRAM spent on whole layers or on cached experts.
 - The cache's size and hit-rate lines are library INFO, which this build logs only

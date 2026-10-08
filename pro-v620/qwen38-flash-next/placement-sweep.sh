@@ -6,7 +6,7 @@
 #   ./placement-sweep.sh                            # the default matrix, CT 120
 #   NCMOE_LIST="20 28 34" CTX=65536 ./placement-sweep.sh
 #   ONE_GPU=true NCMOE_LIST="34 40 48" ./placement-sweep.sh
-#   VMID=123 CONFIGS="34 34:auto 40:auto 48:auto 48:leave12288" DEPTHS=0,8000 ./placement-sweep.sh
+#   VMID=123 CONFIGS="34 34:auto 40:auto 48:leave12288" DEPTHS=0,8000 ./placement-sweep.sh
 #
 # What it answers: how much VRAM can be handed back to a second model before decode
 # degrades unacceptably — i.e. which placement is the most VERSATILE, not just fastest.
