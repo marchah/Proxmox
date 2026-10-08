@@ -117,6 +117,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | Date | Build | Backend | Record | Status |
 | --- | --- | --- | --- | --- |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [`--moe-cache-mib` on one V620](runs/2026-10-08-moe-cache.md) | done |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Standard configurations on eight channels](runs/2026-10-08-configurations.md) | planned |
 
 ## Benchmark tools
 
