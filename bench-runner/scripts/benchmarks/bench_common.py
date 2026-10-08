@@ -271,6 +271,46 @@ def rate(tokens: list[int | None], milliseconds: list[float | None]) -> float | 
     return sum(t for t, _ in pairs) / (total_ms / 1000) if total_ms else None
 
 
+# The BMC caps memory bandwidth to about a third once the hottest DIMM reads 66 °C and
+# lifts the cap near 62-63 °C (pro-v620/qwen38-flash-next/README.md, "DIMM thermal
+# throttle"). Nothing is logged, so the cap shows only in the temperatures.
+DIMM_CAP_ON_C = 66
+DIMM_CAP_OFF_C = 62
+
+
+def dimm_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Peak DIMM temperatures from host/bmc-sampler.py records, and how long the
+    bandwidth cap was probably on (on at 66 °C, off again at 62 °C)."""
+    peaks: dict[str, float] = {}
+    capped_seconds = 0.0
+    capped = False
+    previous_epoch = None
+    for record in records:
+        dimms = {name: value for name, value in (record.get("temperatures_c") or {}).items() if "DDR" in name}
+        epoch = record.get("epoch")
+        if capped and previous_epoch is not None and epoch is not None:
+            capped_seconds += epoch - previous_epoch
+        if dimms:
+            hottest = max(dimms.values())
+            if hottest >= DIMM_CAP_ON_C:
+                capped = True
+            elif hottest <= DIMM_CAP_OFF_C:
+                capped = False
+        for name, value in dimms.items():
+            peaks[name] = max(peaks.get(name, value), value)
+        previous_epoch = epoch
+    hottest_dimm = max(peaks, key=peaks.get) if peaks else None
+    return {
+        "samples": len(records),
+        "dimm_max_c": dict(sorted(peaks.items())),
+        "hottest_dimm": hottest_dimm,
+        "hottest_dimm_max_c": peaks.get(hottest_dimm) if hottest_dimm else None,
+        "cap_on_c": DIMM_CAP_ON_C,
+        "cap_off_c": DIMM_CAP_OFF_C,
+        "capped_seconds_estimate": capped_seconds,
+    }
+
+
 def acceptance(drafted: list[int | None], accepted: list[int | None]) -> float | None:
     total = sum(d or 0 for d in drafted)
     return sum(a or 0 for a in accepted) / total if total else None

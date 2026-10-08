@@ -102,8 +102,9 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   well as speed; include a non-speculative control when testing a drafter.
 - Quote decode with prompt class and depth, and report prefill separately.
 - CT 200 CPU/RAM/process telemetry describes the client. Use
-  `bench-runner/host/run-with-target-telemetry.sh` for model-server metrics; after
-  merging telemetry, regenerate reports with `finalize-run.py`.
+  `bench-runner/host/run-with-target-telemetry.sh` for model-server metrics and the
+  BMC's DIMM temperatures; after merging telemetry, regenerate reports with
+  `finalize-run.py`.
 - The in-container suite layers local model config, profile defaults and process
   env overrides, checks `/v1/models`, runs enabled targets, then writes JSON/JSONL
   results and `REPORT.md`/`SLO.md`. See `bench-runner/BENCHMARKS.md` for schemas.

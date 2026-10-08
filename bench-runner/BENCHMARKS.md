@@ -68,6 +68,14 @@ When a run is launched through the Ansible batch (or wrapped manually with
   wrapper regenerates the run's `REPORT.md` (a "Model Server Telemetry" section)
   and `SLO.md` (a `model-server-target` entry) via `finalize-run.py`, so the
   server-side data actually feeds the report and SLO verdict.
+- `bmc-telemetry.jsonl` - the BMC's CPU and DIMM A–H temperatures, read with
+  `ipmitool` on the host every 10 s (`host/bmc-sampler.py`, `BMC_INTERVAL`). When the
+  hottest DIMM reads 66 °C the BMC caps memory bandwidth to about a third until it
+  cools to ~62 °C, and logs nothing, so a model with weights in system RAM (GPU 2)
+  slows down with no other trace. `REPORT.md` gets a "Memory Temperature (BMC)"
+  section with each DIMM's peak and the estimated time capped, plus a limits line
+  when the cap engaged; `SLO.md` gets a `memory-dimms` entry that warns at 66 °C
+  (`dimm_temperature_c` in the SLO file).
 
 Telemetry includes the best available local data:
 
@@ -396,7 +404,9 @@ CONTEXTS="4096 16384 32768 65536" ./host/run-context-sweep.sh
 ```
 
 It writes `context-sweep.md` correlating context length with peak VRAM and GPU
-utilization (from host telemetry) and TTFT/latency/throughput (from the client).
+utilization (from host telemetry), TTFT/latency/throughput (from the client) and
+the hottest DIMM with its estimated capped time (from the BMC, which
+`run-with-host-telemetry.sh` samples too).
 For CT 123, pass its container, model and helper, or use `make context-sweep GPU=2`:
 
 ```bash

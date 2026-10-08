@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from bench_common import dimm_summary
+
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -212,6 +214,25 @@ def evaluate_target_telemetry(run_dir: Path, telemetry_rules: dict[str, Any]) ->
 SUMMARY_PATTERNS = ("openai-*-summary.json", "agent-summary.json", "ingest-summary.json")
 
 
+def evaluate_dimm_temperature(run_dir: Path, telemetry_rules: dict[str, Any]) -> dict[str, Any] | None:
+    """The hottest DIMM against `dimm_temperature_c`: at 66 °C the BMC silently caps
+    memory bandwidth, so a model with weights in system RAM runs slow."""
+    records = iter_jsonl(run_dir / "bmc-telemetry.jsonl")
+    if not records:
+        return None
+    dimm = dimm_summary(records)
+    thresholds = telemetry_rules.get("dimm_temperature_c", {})
+    value = dimm["hottest_dimm_max_c"]
+    status = "pass"
+    if value is not None and thresholds:
+        if value >= thresholds.get("fail", 10**9):
+            status = "fail"
+        elif value >= thresholds.get("warn", 10**9):
+            status = "warn"
+    check = {"name": f"dimm_temperature:{dimm['hottest_dimm']}", "value": value, "limit": thresholds, "status": status}
+    return {"name": "memory-dimms", "status": status, "checks": [check], "telemetry": dimm}
+
+
 def find_summary(target_dir: Path) -> dict[str, Any] | None:
     for pattern in SUMMARY_PATTERNS:
         for candidate in target_dir.glob(pattern):
@@ -261,6 +282,11 @@ def main() -> int:
         target_result = evaluate_target_telemetry(run_dir, telemetry_rules)
         overall = worse(overall, target_result["status"])
         benchmarks.append(target_result)
+
+    dimm_result = evaluate_dimm_temperature(run_dir, telemetry_rules)
+    if dimm_result:
+        overall = worse(overall, dimm_result["status"])
+        benchmarks.append(dimm_result)
 
     # No benchmark summaries means nothing was actually benchmarked. Report that
     # as a failure rather than silently passing on an empty result set (target

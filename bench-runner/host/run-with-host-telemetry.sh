@@ -4,7 +4,9 @@ set -Eeuo pipefail
 
 # Run on the Proxmox host. Samples the GPU container's telemetry (utilization,
 # VRAM, clocks, temps) while a benchmark command runs, then summarizes the
-# peaks so you can see the hardware cause behind a latency/throughput result.
+# peaks so you can see the hardware cause behind a latency/throughput result. The
+# BMC's CPU and DIMM temperatures are sampled on the host beside it: a DIMM at 66 °C
+# silently caps memory bandwidth to a third.
 #
 # The benchmark itself usually runs in the bench-runner LXC, e.g.:
 #   ./run-with-host-telemetry.sh pct exec 200 -- bash -lc 'llm-bench-baseline'
@@ -14,10 +16,13 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly SAMPLER="${SCRIPT_DIR}/../scripts/benchmarks/system-sampler.py"
 readonly SUMMARIZER="${SCRIPT_DIR}/../scripts/benchmarks/summarize-telemetry.py"
+readonly BMC_SAMPLER="${SCRIPT_DIR}/bmc-sampler.py"
 
 GPU_VMID="${GPU_VMID:-120}"
 OUT_DIR="${OUT_DIR:-./host-telemetry}"
 TELEMETRY_INTERVAL="${TELEMETRY_INTERVAL:-1}"
+# ipmitool needs ~3 s per read.
+BMC_INTERVAL="${BMC_INTERVAL:-10}"
 HOST_PROCESS_PATTERNS="${HOST_PROCESS_PATTERNS:-lms,LM Studio,llama-server,llmster}"
 
 readonly REMOTE_SAMPLER="/tmp/bench-system-sampler.py"
@@ -37,8 +42,10 @@ Example:
 
 Env overrides:
   GPU_VMID=120                Container that owns the GPU.
-  OUT_DIR=./host-telemetry    Where to write host-telemetry.jsonl + summary.
+  OUT_DIR=./host-telemetry    Where to write host-telemetry.jsonl, bmc-telemetry.jsonl
+                              and their summaries.
   TELEMETRY_INTERVAL=1        Sampler interval (seconds).
+  BMC_INTERVAL=10             BMC temperature interval (seconds).
   HOST_PROCESS_PATTERNS=...   Comma-separated process names to track RSS for.
 USAGE
 }
@@ -98,6 +105,14 @@ main() {
 
   log "Starting GPU-host telemetry sampler"
   start_sampler
+  local bmc_pid=""
+  if command -v ipmitool >/dev/null 2>&1; then
+    : >"${OUT_DIR}/bmc-telemetry.jsonl"
+    python3 "${BMC_SAMPLER}" --output "${OUT_DIR}/bmc-telemetry.jsonl" --interval "${BMC_INTERVAL}" &
+    bmc_pid=$!
+  else
+    log "ipmitool not found; skipping BMC (DIMM) temperatures"
+  fi
 
   local rc=0
   log "Running: $*"
@@ -105,6 +120,12 @@ main() {
 
   log "Stopping sampler and pulling telemetry"
   stop_sampler
+  if [[ -n ${bmc_pid} ]]; then
+    kill "${bmc_pid}" 2>/dev/null || true
+    wait "${bmc_pid}" 2>/dev/null || true
+    python3 "${BMC_SAMPLER}" --summarize "${OUT_DIR}/bmc-telemetry.jsonl" \
+      --json-out "${OUT_DIR}/bmc-telemetry-summary.json" || true
+  fi
   pct pull "${GPU_VMID}" "${REMOTE_OUT}" "${OUT_DIR}/host-telemetry.jsonl"
   cleanup_remote
 

@@ -7,7 +7,8 @@ llama.cpp; the `gpus` map in `benchmark.yml` holds each one's model, context, sl
 counts, reload helper and results folder. It:
 
 1. pushes the local `bench-runner/` suite to the host (latest, incl. uncommitted),
-2. provisions CT 200 if it is missing (idempotent),
+2. provisions CT 200 if it is missing (idempotent), or starts it if it is stopped and
+   shuts it down again at the end,
 3. injects `HF_TOKEN` into the container's `/etc/bench-runner.env`,
 4. checks the GPU container is serving its model and has its reload helper, then
    (re)loads the model at the chosen `--parallel`,
@@ -42,7 +43,7 @@ The repo-root `Makefile` wraps the common invocations (run from the repo root):
 make help            # list targets
 make ping            # test SSH connectivity to the Proxmox host
 make check           # syntax-check the playbook
-make smoke           # plumbing test (push + reload, no benchmarks)
+make smoke           # plumbing test (push + reload and restore, no benchmarks)
 make bench           # full batch on GPU 1, --parallel 4 (benchmark default; CT 120 ships --parallel 2)
 make bench GPU=2     # the same on GPU 2 (CT 123, one 64k slot); runs for hours
 make bench SUITE=short  # regression items only: no agent sessions or document ingestion
@@ -99,7 +100,9 @@ still fetched); the failure is reported at the end.
 - Results land in the gitignored `pro-v620/results/llamacpp/parallel-<n>/`; raw
   run data is not committed.
 - Provisioning is skipped if CT 200 already exists; the model reload and the batch
-  run every invocation.
+  run every invocation. A run that fails partway leaves a CT 200 it started running.
+- The batch also samples the BMC's DIMM temperatures on the host and flags the
+  66 °C bandwidth cap in each run's `REPORT.md` and `SLO.md` (`bench-runner/BENCHMARKS.md`).
 - The batch auto-retargets CT 120's current IP before running, so a recreated or
   renumbered model container (e.g. after recreating CT 120 or a model swap that
   picks up a new DHCP lease) is benchmarked correctly without hand-editing
