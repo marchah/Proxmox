@@ -76,7 +76,7 @@ if [ -n "${MODEL_KV_TYPE:-}" ]; then
   args+=( --cache-type-k "${MODEL_KV_TYPE}" --cache-type-v "${MODEL_KV_TYPE}" )
 fi
 
-# Load mode: empty uses auto (mmap), faster than none in the recorded A/B.
+# Load mode: empty uses auto (mmap).
 [ -n "${MODEL_LOAD_MODE:-}" ] && args+=( --load-mode "${MODEL_LOAD_MODE}" )
 
 # Optional template effort: low, medium or xhigh. Recheck --contract after changes.

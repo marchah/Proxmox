@@ -1,0 +1,5 @@
+# Cells for runs/2026-10-08-kv-context.md, run on CT 123 (one V620, production placement).
+# Depth targets give ~0.72 as many prompt tokens: 82000 is ~59k, 165000 is ~119k.
+q8-64k    MODE=1gpu NCMOE=34 KV=q8_0 CTX=65536
+f16-64k   MODE=1gpu NCMOE=34 KV=f16  CTX=65536
+q8-128k   MODE=1gpu NCMOE=34 KV=q8_0 CTX=131072 DEPTHS=0,8000,44000,82000,165000

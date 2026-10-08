@@ -47,7 +47,8 @@ FILLER = (
 )
 
 
-def post(url, body, timeout=1800):
+# Long enough for a ~120k-token prefill on the hybrid CPU+GPU placements.
+def post(url, body, timeout=3600):
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:

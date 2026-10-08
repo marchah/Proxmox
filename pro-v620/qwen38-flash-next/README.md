@@ -117,7 +117,10 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | Date | Build | Backend | Record | Status |
 | --- | --- | --- | --- | --- |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [`--moe-cache-mib` on one V620](runs/2026-10-08-moe-cache.md) | done |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Standard configurations on eight channels](runs/2026-10-08-configurations.md) | planned |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Standard configurations on eight channels](runs/2026-10-08-configurations.md) | running |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Context depth and KV type on one card](runs/2026-10-08-kv-context.md) | planned |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Threads and concurrent streams on one card](runs/2026-10-08-threads-concurrency.md) | planned |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on one card](runs/2026-10-08-load-modes.md) | planned |
 
 ## Benchmark tools
 
@@ -126,7 +129,7 @@ run it from `/root/harness/<sha12>/pro-v620/qwen38-flash-next/`; the sweep refus
 unstaged copy unless `UNPINNED=true`. `placement-sweep.sh` writes per-config JSON,
 `environment.json` and `SUMMARY.md` under `/root/qwen38-flash-next/sweep-<ts>/`. It
 reads VRAM from the cards in the container's config, records each cell's server
-command line and hottest DIMM, and on exit restores the container's env file and
+command line, load time, container memory and hottest DIMM, and on exit restores the container's env file and
 restarts the service if it was running.
 
 Run the thermal guard in a separate shell first; the host watchdog only stops systemd
@@ -139,13 +142,23 @@ is removed after cooling is checked.
 VMID=123 ./thermal-guard.sh
 ```
 
-In the sweep shell, after preparing the intended container/GPU configuration:
+In the sweep shell, after preparing the intended container/GPU configuration, pass a
+cells file: one cell per line, a label then `KEY=value` settings. The script's header
+lists the keys: device mode (`2gpu`, `1gpu`, `cpu`), CPU expert layers, cache, split
+mode, batch, threads, KV type, context, slots, load mode and extra arguments, plus a
+cell's own `DEPTHS` and `STREAMS`, which adds a `concurrency-probe.py` run with that many
+streams. `CONFIGS`, a list of `NCMOE[:CACHE]` entries, is the short form.
 
 ```bash
-./placement-sweep.sh
-NCMOE_LIST="20 28" DEPTHS="0,32000" ./placement-sweep.sh
-ONE_GPU=true NCMOE_LIST="34 40 48" ./placement-sweep.sh
+VMID=123 CELLS=runs/2026-10-08-threads-concurrency.cells DEPTHS="0,8000" ./placement-sweep.sh
+VMID=123 CONFIGS="34 40 48" ./placement-sweep.sh
 ```
+
+`PROBE_CLASSES` limits the prompt classes, and `DROP_CACHES=true` drops the host page
+cache before every load, for cold loads. A depth is the probe's target: its filler gives
+about 0.72 prompt tokens per unit (d8000 is ~5.8k tokens), and `SUMMARY.md` prints the
+measured sizes. Every cell is checked before the first load; a cell that fails to load
+is recorded and the sweep moves on.
 
 These experiments restart model servers. Check their container/device settings
 before use. The B550 harness in `../gpu-ab-bench/` contains old PCI addresses;
@@ -164,7 +177,7 @@ decoded slower than `-ncmoe 34` without one, at 4.3–7.3 against 13.6 t/s
 `MODEL_MOE_CACHE_MIB`; the shipped configs leave it empty.
 
 `placement-sweep.sh` measures it through `CONFIGS`, a list of `NCMOE[:CACHE]`
-entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the planned run.
+entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the run.
 
 - `auto` starts the placement without a cache, runs one code prompt at the deepest
   probed depth through the probe, and sizes the cache to the lower of the free VRAM

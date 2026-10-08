@@ -26,7 +26,7 @@ def main():
 
     # Group the per-round files by cell: its label, or for sweeps that predate labels its
     # placement plus cache spec.
-    by = {}
+    by, prompt_tokens = {}, {}
     contract = None
     for f in sorted(d.glob("*-r*.json")):
         try:
@@ -45,7 +45,7 @@ def main():
                                 "disagree": False, "errors": 0, "cache_mib": [],
                                 "hit": [], "dimm": [], "capped": 0, "cache_inactive": 0,
                                 "shas": {}, "load_failed": 0, "load_s": [], "gpus": None,
-                                "cell": pl.get("cell")})
+                                "cell": pl.get("cell"), "conc": [], "mem": []})
         if pl.get("load_failed"):
             g["load_failed"] += 1
             continue
@@ -54,6 +54,10 @@ def main():
         if pl.get("load_s") is not None:
             g["load_s"].append(pl["load_s"])
         g["gpus"] = pl.get("gpus", g["gpus"])
+        if pl.get("ct_mem_mib"):
+            g["mem"].append((pl["ct_mem_mib"], pl["ct_anon_mib"], pl["ct_file_mib"]))
+        if pl.get("concurrency"):
+            g["conc"].append(pl["concurrency"])
         g["vram"].append(pl.get("vram_total_mib") or 0)
         g["free"].append(pl.get("vram_free_for_a_guest_mib") or 0)
         g["gtt"].append(max(pl.get("gpu1_gtt_mib") or 0, pl.get("gpu2_gtt_mib") or 0))
@@ -72,6 +76,8 @@ def main():
             g["dimm"].append(pl["dimm_max_c"])
         g["capped"] += pl.get("dimm_samples_at_cap") or 0
         for k, v in (j.get("summary") or {}).items():
+            if v.get("prompt_n"):
+                prompt_tokens.setdefault(k.split("/")[0], []).append(v["prompt_n"])
             # Each pass is one rep; the reps of a cell are its passes.
             if v.get("sha"):
                 g["shas"].setdefault(k, set()).add(v["sha"])
@@ -108,6 +114,16 @@ def main():
                   else ("ONE GPU" if manifest.get("one_gpu") else "two GPUs"),
                   manifest.get("host_ram_gib"),
                   str(manifest.get("llamacpp_dir", "")).rsplit("/", 1)[-1]))
+        if manifest.get("drop_caches"):
+            print("Every load was cold: the host page cache was dropped before each one.\n")
+        if manifest.get("probe_classes"):
+            print("Prompt classes: `%s` only.\n" % manifest["probe_classes"])
+    # A depth label is the probe's target; the filler tokenizes at about 5.5 characters per
+    # token, so d8000 is a ~5,800-token prompt. Quote the measured size, not the label.
+    if any(dep != "d0" for dep in prompt_tokens):
+        print("Measured prompt tokens per depth label, median: " + " · ".join(
+            "%s = %d" % (dep, statistics.median(prompt_tokens[dep]))
+            for dep in depths if dep in prompt_tokens) + "\n")
 
     def label(key):
         if isinstance(key, str):
@@ -122,13 +138,19 @@ def main():
 
     # --- the cells ----------------------------------------------------------------
     if any(isinstance(k, str) for k in keys):
-        print("| cell | settings | GPUs | load, s |")
-        print("|---|---|---:|---:|")
+        print("Load time to `/health`; container memory after load, median GiB: total "
+              "(anonymous / page cache).\n")
+        print("| cell | settings | GPUs | load, s | container memory, GiB |")
+        print("|---|---|---:|---:|---:|")
         for key in keys:
             g = by[key]
             settings = " ".join("%s=%s" % kv for kv in (g["cell"] or {}).items())
-            print("| %s | `%s` | %s | %s |" % (key, settings or "-", g["gpus"] if g["gpus"] is not None else "—",
-                                             "%.0f" % med(g["load_s"]) if g["load_s"] else "—"))
+            mem = "—"
+            if g["mem"]:
+                cur, anon, fil = (med([m[i] / 1024 for m in g["mem"]]) for i in range(3))
+                mem = "%.1f (%.1f / %.1f)" % (cur, anon, fil)
+            print("| %s | `%s` | %s | %s | %s |" % (key, settings or "-", g["gpus"] if g["gpus"] is not None else "—",
+                                                  "%.0f" % med(g["load_s"]) if g["load_s"] else "—", mem))
         print()
 
     # --- the decision table -------------------------------------------------------
@@ -219,6 +241,35 @@ def main():
                 xs = [v for c, vv in g["prefill"].items() if c.startswith(dep + "/") for v in vv]
                 vals.append("%.1f" % med(xs) if xs else "—")
             print("| %s | %s |" % (label(key), " | ".join(vals)))
+
+    # --- concurrency --------------------------------------------------------------
+    if any(by[k]["conc"] for k in keys):
+        print("\n## Concurrency\n")
+        print("Medians across passes. Per-stream is what one user sees; aggregate is the "
+              "box's throughput; wall aggregate includes the slowest stream's tail.\n")
+        print("| cell | streams | slots | ctx/slot | per-stream t/s | aggregate t/s | wall aggregate t/s | flags |")
+        print("|---|---:|---:|---:|---:|---:|---:|---|")
+        for key in keys:
+            c = [x for x in by[key]["conc"] if "error" not in x]
+            failed = len(by[key]["conc"]) - len(c)
+            if not by[key]["conc"]:
+                continue
+            if not c:
+                print("| %s | | | | | | | 🔴 probe failed in %d pass(es) |" % (label(key), failed))
+                continue
+            f = ["🔴 probe failed in %d pass(es)" % failed] if failed else []
+            if any(x.get("any_degenerate") for x in c):
+                f.append("🔴 degenerate")
+            if any(x.get("total_failed") for x in c):
+                f.append("🔴 failed requests")
+            if any((x.get("total_slots") or 0) < (x.get("streams") or 0) for x in c):
+                f.append("⚠️ fewer slots than streams")
+            print("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                label(key), c[0].get("streams"), c[0].get("total_slots"), c[0].get("n_ctx_per_slot"),
+                med([x["per_stream_tps"] for x in c if x.get("per_stream_tps")]),
+                med([x["aggregate_tps"] for x in c if x.get("aggregate_tps")]),
+                med([x["wall_aggregate_tps"] for x in c if x.get("wall_aggregate_tps")]),
+                ", ".join(f) or "ok"))
 
     # --- the template contract ----------------------------------------------------
     if contract:

@@ -19,6 +19,9 @@
 #   TENSOR_SPLIT, BATCH, UBATCH, THREADS, KV, CTX, PARALLEL, LOAD_MODE, MMPROJ_CPU
 #               override the server setting of the same meaning
 #   EXTRA       more llama-server arguments
+#   STREAMS     also run concurrency-probe.py with this many concurrent streams; set
+#               PARALLEL to at least as many slots
+#   DEPTHS      this cell's probe depths, replacing the global DEPTHS
 # CONFIGS (NCMOE[:CACHE] entries) is the short form for cells that vary only those two.
 #
 # ⚠️ Method rules this encodes, each learned the hard way on this box:
@@ -42,11 +45,19 @@ CTX="${CTX:-65536}"
 PARALLEL="${PARALLEL:-1}"
 REPS="${REPS:-3}"
 N_PREDICT="${N_PREDICT:-256}"
+# Probe depth targets. The filler tokenizes at about 5.5 characters per token, so a target
+# yields ~0.72 as many prompt tokens (d8000 is ~5,800); the summary prints the measured size.
 DEPTHS="${DEPTHS:-0,8000,32000}"
+# Comma-separated placement-probe classes (code, list, prose); empty runs all three. Decode
+# is prompt-dependent, so a record that limits classes quotes decode for those classes only.
+PROBE_CLASSES="${PROBE_CLASSES:-}"
 ONE_GPU="${ONE_GPU:-false}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-1800}"
 # auto | none | mmap | mlock | mmap+mlock | dio. Empty leaves the default (auto).
 LOAD_MODE="${LOAD_MODE:-}"
+# Drop the host page cache before every load, so each cell loads cold from the NVMe store.
+# Host-wide: run it with the other guests shut down.
+DROP_CACHES="${DROP_CACHES:-false}"
 # Override the derived layer split (see start_server). Empty = derive from n_cpu_moe.
 TENSOR_SPLIT="${TENSOR_SPLIT:-}"
 # llama-server --threads. Empty leaves whatever the env file already has. The CPU-side
@@ -79,6 +90,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 log() { printf '==> %s\n' "$*"; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"
+case "$DROP_CACHES" in true | false) ;; *) die "DROP_CACHES must be true or false" ;; esac
 # Be location-independent: systemd-run and cron do not inherit a working directory, and the
 # helper scripts are resolved relative to this one.
 [ -z "$CELLS" ] || CELLS="$(readlink -f "$CELLS")"
@@ -133,7 +145,7 @@ if [ -n "$CELLS" ]; then
   parsed="$(python3 - "$CELLS" <<'PY'
 import re, shlex, sys
 KEYS = {"MODE", "NCMOE", "CACHE", "SPLIT_MODE", "TENSOR_SPLIT", "BATCH", "UBATCH", "THREADS",
-        "KV", "CTX", "PARALLEL", "LOAD_MODE", "MMPROJ_CPU", "EXTRA"}
+        "KV", "CTX", "PARALLEL", "LOAD_MODE", "MMPROJ_CPU", "EXTRA", "STREAMS", "DEPTHS"}
 seen = set()
 for n, line in enumerate(open(sys.argv[1]), 1):
     words = shlex.split(line, comments=True)
@@ -202,10 +214,17 @@ for label in "${CELL_ORDER[@]}"; do
     tensor | row) [ "$gpus" -ge 2 ] || bad "SPLIT_MODE ${CELL[$label|SPLIT_MODE]} needs two GPUs" ;;
     *) bad "SPLIT_MODE must be layer, tensor or row" ;;
   esac
-  for key in BATCH UBATCH THREADS CTX PARALLEL; do
+  for key in BATCH UBATCH THREADS CTX PARALLEL STREAMS; do
     v="${CELL[$label|$key]:-}"
     [ -z "$v" ] || [[ "$v" =~ ^[0-9]+$ ]] || bad "${key} must be a number"
   done
+  v="${CELL[$label|DEPTHS]:-}"
+  [ -z "$v" ] || [[ "$v" =~ ^[0-9]+(,[0-9]+)*$ ]] || bad "DEPTHS must be comma-separated numbers"
+  streams="${CELL[$label|STREAMS]:-}"
+  if [ -n "$streams" ]; then
+    [ "$streams" -le "${CELL[$label|PARALLEL]:-$PARALLEL}" ] || bad "STREAMS ${streams} needs PARALLEL of at least ${streams}"
+    [ -x ./concurrency-probe.py ] || bad "STREAMS needs concurrency-probe.py, not found or not executable"
+  fi
 done
 if [ "$has_cache" = "true" ]; then
   [ -n "$LOG_VERBOSITY" ] || LOG_VERBOSITY=4
@@ -223,6 +242,15 @@ log "CT ${VMID} at ${BASE}, cards ${CARDS[*]}, harness ${HARNESS_COMMIT:0:12}; $
 vram_mib()       { echo $(( $(cat "/sys/bus/pci/devices/$1/mem_info_vram_used"  2>/dev/null || echo 0) / 1048576 )); }
 vram_total_mib() { echo $(( $(cat "/sys/bus/pci/devices/$1/mem_info_vram_total" 2>/dev/null || echo 0) / 1048576 )); }
 gtt_mib()        { echo $(( $(cat "/sys/bus/pci/devices/$1/mem_info_gtt_used"   2>/dev/null || echo 0) / 1048576 )); }
+# The container's memory charge in MiB: total, anonymous, page cache. Anonymous memory is
+# what the load mode copies into RAM (none, dio). Page cache is charged to whichever cgroup
+# first read the file, so an mmap load of files already cached shows little of it.
+ct_mem() {
+  local cg="/sys/fs/cgroup/lxc/${VMID}"
+  if [ ! -r "${cg}/memory.current" ]; then echo "0 0 0"; return; fi
+  awk -v cur="$(cat "${cg}/memory.current")" '$1 == "anon" { a = $2 } $1 == "file" { f = $2 }
+    END { printf "%d %d %d\n", cur / 1048576, a / 1048576, f / 1048576 }' "${cg}/memory.stat"
+}
 # The card holding the most VRAM: the one a one-GPU cell loaded onto, whichever Vulkan0 is.
 active_card() {
   local card best="" most=-1 used
@@ -377,10 +405,17 @@ start_server() {
   [ -n "$LOG_VERBOSITY" ] && dev="${dev:+$dev }-lv ${LOG_VERBOSITY}"
   set_env_var EXTRA_ARGS "$dev"
 
+  if [ "$DROP_CACHES" = "true" ]; then
+    # Stop first: pages a running server has mapped are not dropped.
+    pct exec "$VMID" -- systemctl stop llamacpp-qwen38fn
+    sync; echo 3 >/proc/sys/vm/drop_caches
+    log "page cache dropped ($(awk '/^Cached:/ { printf "%d MiB", $2 / 1024 }' /proc/meminfo) left)"
+  fi
   pct exec "$VMID" -- systemctl restart llamacpp-qwen38fn
 
   log "waiting for /health (a 111 GB model is slow to load cold)"
-  local t=0
+  local t=0 t0
+  t0="$(date +%s)"
   LOAD_OK=false; LOAD_S=0
   until curl -fsS --max-time 5 "${BASE}/health" >/dev/null 2>&1; do
     if ! pct exec "$VMID" -- systemctl is-active --quiet llamacpp-qwen38fn; then
@@ -388,13 +423,14 @@ start_server() {
       log "🔴 ${label}: server exited while loading (cache ${cache:-none}) — cell recorded as failed"
       return 0
     fi
-    sleep 5; t=$((t + 5))
+    sleep 1; t=$(( $(date +%s) - t0 ))
     if [ "$t" -ge "$HEALTH_TIMEOUT" ]; then
       pct exec "$VMID" -- journalctl -u llamacpp-qwen38fn --no-pager -n 40 -o cat >&2
       log "🔴 ${label}: not healthy after ${HEALTH_TIMEOUT}s — cell recorded as failed"
       return 0
     fi
   done
+  t=$(( $(date +%s) - t0 ))
   LOAD_OK=true; LOAD_S="$t"
   log "healthy after ${t}s"
 }
@@ -453,7 +489,7 @@ dimm_sampler() {
 # A cell's settings as a JSON object, for the manifest and its per-cell JSON.
 cell_json() {
   local label="$1" key args=()
-  for key in MODE NCMOE CACHE SPLIT_MODE TENSOR_SPLIT BATCH UBATCH THREADS KV CTX PARALLEL LOAD_MODE MMPROJ_CPU EXTRA; do
+  for key in MODE NCMOE CACHE SPLIT_MODE TENSOR_SPLIT BATCH UBATCH THREADS KV CTX PARALLEL LOAD_MODE MMPROJ_CPU EXTRA STREAMS DEPTHS; do
     [ -n "${CELL[$label|$key]+x}" ] && args+=("$key" "${CELL[$label|$key]}")
   done
   python3 -c 'import json, sys; a = sys.argv[1:]; print(json.dumps(dict(zip(a[::2], a[1::2]))))' "${args[@]}"
@@ -467,7 +503,8 @@ cat >"${OUT_DIR}/manifest.json" <<JSON
  "harness_commit": "${HARNESS_COMMIT}",
  "vmid": ${VMID}, "cards": "${CARDS[*]}",
  "ctx": ${CTX}, "parallel": ${PARALLEL}, "reps": ${REPS},
- "n_predict": ${N_PREDICT}, "depths": "${DEPTHS}",
+ "n_predict": ${N_PREDICT}, "depths": "${DEPTHS}", "probe_classes": "${PROBE_CLASSES}",
+ "drop_caches": ${DROP_CACHES},
  "one_gpu": ${ONE_GPU}, "expected_gpus": ${GLOBAL_GPUS},
  "load_mode": "${LOAD_MODE}", "tensor_split_override": "${TENSOR_SPLIT}",
  "threads_override": "${THREADS}", "cpu_only": ${CPU_ONLY:-false},
@@ -528,6 +565,8 @@ PYFAIL
       c_id+=("$card"); c_used+=("$(vram_mib "$card")"); c_gtt+=("$(gtt_mib "$card")"); c_total+=("$(vram_total_mib "$card")")
     done
     log "VRAM ${c_used[*]} MiB of ${c_total[*]} | GTT ${c_gtt[*]} MiB (${c_id[*]})"
+    mem="$(ct_mem)"
+    log "CT ${VMID} memory, MiB (total anon file): ${mem}"
     # shellcheck disable=SC2016  # expands inside the container
     cmdline="$(pct exec "$VMID" -- bash -c 'p=$(pgrep -o -x llama-server) && tr "\0" " " <"/proc/${p}/cmdline"' 2>/dev/null || true)"
 
@@ -541,7 +580,8 @@ PYFAIL
     done
     if [ "$spill" = "true" ]; then log "⚠️  possible GTT spill — treat this row's decode as suspect"; fi
 
-    probe_args=( "$BASE" --reps 1 --n-predict "$N_PREDICT" --depths "$DEPTHS" )
+    probe_args=( "$BASE" --reps 1 --n-predict "$N_PREDICT" --depths "${CELL[$label|DEPTHS]:-$DEPTHS}" )
+    [ -n "$PROBE_CLASSES" ] && probe_args+=( --classes "$PROBE_CLASSES" )
     # The template-contract assertions only need running once per sweep.
     [ "$round" = "1" ] && [ "$label" = "$first_label" ] && probe_args+=( --contract )
 
@@ -550,6 +590,12 @@ PYFAIL
     ./placement-probe.py "${probe_args[@]}" \
       >"${OUT_DIR}/${tag}.json" 2>"${OUT_DIR}/${tag}.rows.jsonl" \
       || log "probe FAILED for ${tag} (row kept, marked)"
+    streams="${CELL[$label|STREAMS]:-}"
+    if [ -n "$streams" ]; then
+      ./concurrency-probe.py "$BASE" "$streams" --reps 1 --n-predict "$N_PREDICT" \
+        >"${OUT_DIR}/${tag}.concurrency.json" 2>"${OUT_DIR}/${tag}.concurrency.log" \
+        || log "concurrency probe FAILED for ${tag}"
+    fi
     kill "$DIMM_PID" 2>/dev/null || true
     wait "$DIMM_PID" 2>/dev/null || true
     DIMM_PID=""
@@ -572,10 +618,10 @@ PYFAIL
     python3 - "${OUT_DIR}/${tag}.json" "$ncmoe" "$spec" "${cache:-0}" "$spill" \
       "$cards_csv" "${c_used[*]}" "${c_gtt[*]}" "${c_total[*]}" \
       "${OUT_DIR}/${tag}.moecache.log" "${OUT_DIR}/${tag}.dimm.tsv" "$cmdline" "${p_used[*]}" "${p_gtt[*]}" \
-      "$label" "$(cell_json "$label")" "$(cell_gpus "$label")" "$LOAD_S" <<'PYADD'
+      "$label" "$(cell_json "$label")" "$(cell_gpus "$label")" "$LOAD_S" "${OUT_DIR}/${tag}.concurrency.json" "$mem" <<'PYADD'
 import json, pathlib, re, sys
 (path, ncmoe, spec, cache, spill, cards, vs, gs, ts, cache_log, dimm_log, cmdline, pvs, pgs,
- label, settings, gpus, load_s) = sys.argv[1:19]
+ label, settings, gpus, load_s, conc_path, mem) = sys.argv[1:21]
 cards = cards.split(",")
 vs, gs, ts, pvs, pgs = ([int(x) for x in s.split()] for s in (vs, gs, ts, pvs, pgs))
 p = pathlib.Path(path)
@@ -598,6 +644,7 @@ pl = {
     "server_cmdline": cmdline.strip() or None,
     "vram_free_after_probe_mib": sum(t - v for t, v in zip(ts, pvs)),
 }
+pl["ct_mem_mib"], pl["ct_anon_mib"], pl["ct_file_mib"] = (int(x) for x in mem.split())
 for i, name in enumerate(("gpu1", "gpu2")):
     if i < len(cards):
         pl[name + "_vram_mib"], pl[name + "_gtt_mib"], pl[name + "_card_mib"] = vs[i], gs[i], ts[i]
@@ -626,6 +673,15 @@ pl["dimm_max_c"] = max(temps) if temps else None
 pl["dimm_samples"] = len(temps)
 # The BMC caps bandwidth to a third at 66 °C and releases near 62-63 °C.
 pl["dimm_samples_at_cap"] = sum(1 for t in temps if t >= 66)
+conc = pathlib.Path(conc_path)
+if conc.exists():
+    try:
+        c = json.loads(conc.read_text())
+        pl["concurrency"] = {k: c.get(k) for k in ("streams", "total_slots", "n_ctx_per_slot",
+                             "per_stream_tps", "aggregate_tps", "wall_aggregate_tps",
+                             "any_degenerate", "total_failed")}
+    except Exception as e:
+        pl["concurrency"] = {"error": "unparsable: %r" % (e,)}
 d["placement"] = pl
 p.write_text(json.dumps(d, indent=1))
 PYADD
