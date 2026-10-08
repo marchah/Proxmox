@@ -72,7 +72,8 @@ wrong model name in session and usage records.
 
 The model service and container keep swap disabled. The CPU expert weights and
 PLE table must stay resident. Tensor placement changes require a full reload, which
-took 10–15 s from the NVMe store's page cache in the 2026-10-08 sweeps.
+took 10–35 s on the cards and 55 s CPU-only from the NVMe store's page cache in the
+2026-10-08 sweeps.
 
 ## Response contract
 
@@ -100,9 +101,10 @@ but costs image-encoding latency; text requests are unaffected.
   12 KiB/token against 24 for f16.
 - A two-card setup needs an explicit split: CPU-expert layers are much lighter
   than the remaining layers. At batch/ubatch 1024/256, the starting rule found on
-  b11018 is `card1_layers = N + (48 - N)/2 - 2`, with `48,0` for N=48.
-  Recheck placement after changing build, batch size, context or projector
-  placement.
+  b11018 is `card1_layers = N + (48 - N)/2 - 2`, with `48,0` for N=48. On b11505
+  it held without spill at N=16 (`30,18`, 1024/256) and N=34 (`39,9`, 4096/1024)
+  ([configurations record](runs/2026-10-08-configurations.md)). Recheck placement
+  after changing build, batch size, context or projector placement.
 
 Measure free VRAM and GTT together after a completion. Aggregate capacity does
 not prove each card fits, and the startup guard does not catch spill. New
@@ -117,7 +119,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | Date | Build | Backend | Record | Status |
 | --- | --- | --- | --- | --- |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [`--moe-cache-mib` on one V620](runs/2026-10-08-moe-cache.md) | done |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Standard configurations on eight channels](runs/2026-10-08-configurations.md) | running |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Standard configurations on eight channels](runs/2026-10-08-configurations.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Context depth and KV type on one card](runs/2026-10-08-kv-context.md) | planned |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Threads and concurrent streams on one card](runs/2026-10-08-threads-concurrency.md) | planned |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on one card](runs/2026-10-08-load-modes.md) | planned |
