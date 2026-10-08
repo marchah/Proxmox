@@ -1,6 +1,6 @@
 # Qwen3.8-Flash-Next: context depth and KV type on one card
 
-Plan committed 2026-10-08 · Run not started · Status: planned
+Plan committed 2026-10-08 · Run 2026-10-08 · Status: running
 
 ## Question
 
