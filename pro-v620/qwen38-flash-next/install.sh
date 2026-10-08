@@ -98,7 +98,9 @@ pct exec "$VMID" -- bash -lc '
   echo "  serve:  $(test -x /usr/local/bin/llamacpp-serve-qwen38fn && echo ok || echo MISSING)"
   echo "  reload: $(test -x /usr/local/bin/llamacpp-qwen38fn-reload && echo ok || echo MISSING)"
   echo "  unit:   $(systemctl is-enabled llamacpp-qwen38fn 2>&1 | head -1)"
-  echo "  shards: $(ls /models/hf/qwen3.8-flash-next/*.verified 2>/dev/null | wc -l)/5 verified"
+  d=/models/hf/qwen3.8-flash-next
+  echo "  model:  $(ls "$d"/Qwen3.8-*.verified "$d"/mmproj-*.verified 2>/dev/null | wc -l)/5 verified (4 shards + projector)"
+  echo "  MTP:    $(ls "$d"/mtp-*.verified 2>/dev/null | wc -l)/3 heads verified (optional)"
   echo "  dl:     $(systemctl is-active qwen38fn-dl 2>&1 | head -1)"'
 echo
-echo "Next: follow README.md deployment steps once all 5 files are verified."
+echo "Next: follow README.md deployment steps once the 5 model files are verified."

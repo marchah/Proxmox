@@ -27,7 +27,7 @@ with a pinned llama.cpp Vulkan release and a checksum-verified model.
 
 | Setting | Shipped value |
 | --- | --- |
-| Engine | llama.cpp `b11475`, prebuilt Vulkan x64 |
+| Engine | llama.cpp `b11505`, prebuilt Vulkan x64 |
 | Model | `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`, `Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf` (MTP head kept) |
 | Alias | `qwen3.6-35b-a3b` |
 | GPU | `0000:03:00.0`, all layers offloaded |

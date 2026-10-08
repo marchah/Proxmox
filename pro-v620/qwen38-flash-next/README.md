@@ -10,7 +10,7 @@ at `0000:83:00.0`**, leaving CT 120's Qwen3.6 service on the other card.
 | Setting | CT 123: deployed | CT 120: two-card alternative |
 | --- | --- | --- |
 | Env file | `qwen38fn-gpu2.env` | `qwen38fn.env` |
-| Binary tree | `llama-b11475` (release tarball) | `llama-b11475` (release tarball) |
+| Binary tree | `llama-b11505` (release tarball) | `llama-b11505` (release tarball) |
 | GPUs | one, `0000:83:00.0` | both V620s |
 | CPU expert layers | 34 | 16 |
 | Tensor split | none | `30,18` |
@@ -221,14 +221,32 @@ overpredicts its throughput. Output hashes were stable at d0, but occasionally
 varied at depth even with greedy sampling; check content quality and use repeated
 measurements at depth.
 
+## Test records
+
+Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.md).
+
+| Date | Build | Backend | Record | Status |
+| --- | --- | --- | --- | --- |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [`--moe-cache-mib` on one V620](runs/2026-10-08-moe-cache.md) | planned |
+
 ## Benchmark tools
 
-`placement-sweep.sh` writes per-config JSON and `SUMMARY.md` under
-`/root/qwen38-flash-next/sweep-<ts>/`. Run the thermal guard in a separate shell
-before a manual sweep; the host watchdog only stops systemd services.
+Stage this directory on the host with [`../push-harness.sh`](../push-harness.sh) and
+run it from `/root/harness/<sha12>/pro-v620/qwen38-flash-next/`; the sweep refuses an
+unstaged copy unless `UNPINNED=true`. `placement-sweep.sh` writes per-config JSON,
+`environment.json` and `SUMMARY.md` under `/root/qwen38-flash-next/sweep-<ts>/`. It
+reads VRAM from the cards in the container's config, records each cell's server
+command line and hottest DIMM, and on exit restores the container's env file and
+restarts the service if it was running.
+
+Run the thermal guard in a separate shell first; the host watchdog only stops systemd
+services. `VMID=<ct>` limits it to that container's cards and acts only inside that
+container. On a trip it writes `/root/qwen38-flash-next/THERMAL_TRIP`: the sweep then
+starts no further cell, leaves the server stopped, and refuses to start until the file
+is removed after cooling is checked.
 
 ```bash
-./thermal-guard.sh
+VMID=123 ./thermal-guard.sh
 ```
 
 In the sweep shell, after preparing the intended container/GPU configuration:
@@ -243,10 +261,38 @@ These experiments restart model servers. Check their container/device settings
 before use. The B550 harness in `../gpu-ab-bench/` contains old PCI addresses;
 this directory's guard targets the ROMED8-2T.
 
+## MoE expert cache
+
+`--moe-cache-mib N` (llama.cpp #29887, in b11505) keeps an LRU cache of the
+experts `--n-cpu-moe` leaves in RAM on the GPU, uploads only misses, and runs
+those layers' expert matmuls on the GPU. It serves batches of up to 32 tokens,
+so decode; prefill keeps the CPU path. Upstream measured 1.57–2.20× decode on
+Qwen3.8-Flash-Next Q4_0 with CUDA, the largest gain with every expert on the CPU
+and an 18.6 GB cache. It has not run on these cards. The serve script passes
+`MODEL_MOE_CACHE_MIB`; the shipped configs leave it empty.
+
+`placement-sweep.sh` measures it through `CONFIGS`, a list of `NCMOE[:CACHE]`
+entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the planned run.
+
+- `auto` starts the placement without a cache, sends one ~3k-token request, and
+  sizes the cache to the free VRAM minus `CACHE_MARGIN_MIB` (default 1024). The
+  request matters: the compute buffer grows past its load-time size on the first
+  full ubatch (1,356 to 1,709 MiB at `-ncmoe 34`).
+- Each extra CPU layer frees ~1.56 GB for the cache, so `34`, `40` and `48`
+  compare the same VRAM spent on whole layers or on cached experts.
+- The cache's size and hit-rate lines are library INFO, which this build logs only
+  at `-lv 4`; a sweep with a cache sets it for every cell. The hit rate is logged
+  when the server stops, which the sweep does after each cell.
+- A cache needs a one-card container; the sweep refuses otherwise.
+- At `-ncmoe 48` about 104 GB (97 GiB) of weights stay in host RAM, PLE included,
+  against CT 123's 120 GiB memory limit.
+- The rows read with the DIMM column: the CPU-side layers depend on memory
+  bandwidth, which the BMC caps at 66 °C.
+
 ## MTP experiment
 
 Upstream merged a qwen4exp MTP graph in llama.cpp #29761, included in b11475. Whether
-b11475 loads unsloth's separate qwen4exp heads is untested. Unsloth's `MTP/README.md`
+b11505 loads unsloth's separate qwen4exp heads is untested. Unsloth's `MTP/README.md`
 predates #29761 and says stock builds cannot use them, but on 2026-10-06 unsloth copied
 the self-contained `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` to the repo root for `llama.cpp -hf`.
 The `shared-` heads borrow the main model's embedding and output tensors.
