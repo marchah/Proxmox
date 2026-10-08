@@ -86,8 +86,8 @@ restore_model() {
 }
 
 format_row() {
-  local context="$1" openai_summary="$2" host_summary="$3"
-  python3 - "${context}" "${openai_summary}" "${host_summary}" <<'PY'
+  local context="$1" openai_summary="$2" host_summary="$3" bmc_summary="$4"
+  python3 - "${context}" "${openai_summary}" "${host_summary}" "${bmc_summary}" <<'PY'
 import json
 import sys
 
@@ -111,6 +111,7 @@ def fmt(value):
 context = sys.argv[1]
 openai = load(sys.argv[2])
 host = load(sys.argv[3])
+bmc = load(sys.argv[4])
 latency = openai.get("latency_total_seconds", {})
 ttft = openai.get("ttft_seconds", {})
 gpu = host.get("gpu", {})
@@ -119,7 +120,8 @@ print(
     f"{fmt(gpu.get('max_busy_percent'))} | {fmt(ttft.get('p95'))} | {fmt(latency.get('p95'))} | "
     f"{fmt(openai.get('aggregate_output_tokens_per_second'))} | "
     f"{fmt(openai.get('prefill_tokens_per_second', {}).get('median'))} | "
-    f"{fmt(openai.get('decode_tokens_per_second', {}).get('median'))} |"
+    f"{fmt(openai.get('decode_tokens_per_second', {}).get('median'))} | "
+    f"{fmt(bmc.get('hottest_dimm_max_c'))} | {fmt(bmc.get('capped_seconds_estimate'))} |"
 )
 PY
 }
@@ -159,13 +161,15 @@ main() {
   local sweep_stamp sweep_status=0
   sweep_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   local report="${OUT_DIR}/context-sweep.md"
+  # A DIMM at 66 °C caps memory bandwidth to a third until it cools to ~62 °C; the
+  # capped time is estimated from the BMC samples.
   {
     printf '# Context-Length Sweep\n\n'
     # shellcheck disable=SC2016  # backticks are literal markdown; %s are printf args
     printf -- '- Model: `%s` on CT %s, benched from CT %s\n' "${MODEL_KEY}" "${GPU_VMID}" "${BENCH_VMID}"
     printf -- '- Requests per point: %s\n\n' "${BENCHMARK_REQUESTS}"
-    printf '| Context | VRAM used (MiB) | VRAM ratio | GPU util %% | TTFT p95 (s) | Latency p95 (s) | tok/s | pp p50 tok/s | tg p50 tok/s |\n'
-    printf '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n'
+    printf '| Context | VRAM used (MiB) | VRAM ratio | GPU util %% | TTFT p95 (s) | Latency p95 (s) | tok/s | pp p50 tok/s | tg p50 tok/s | DIMM max °C | DIMM capped s |\n'
+    printf '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n'
   } >"${report}"
 
   for context in ${CONTEXTS}; do
@@ -175,7 +179,7 @@ main() {
 
     log "Reloading ${MODEL_KEY} at context ${context}"
     if ! reload_model "${context}"; then
-      printf '| %s | reload failed | | | | | |\n' "${context}" >>"${report}"
+      printf '| %s | reload failed | | | | | | | | | |\n' "${context}" >>"${report}"
       sweep_status=1
       continue
     fi
@@ -214,7 +218,8 @@ main() {
 
     format_row "${context}" \
       "${point_dir}/openai-direct-summary.json" \
-      "${point_dir}/host/host-telemetry-summary.json" >>"${report}"
+      "${point_dir}/host/host-telemetry-summary.json" \
+      "${point_dir}/host/bmc-telemetry-summary.json" >>"${report}"
   done
 
   log "Done"

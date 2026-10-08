@@ -52,7 +52,8 @@
         parallel: 1
         restore_parallel: 1
         reload_helper: /usr/local/bin/llamacpp-qwen38fn-reload
-        # A local build: its libraries sit next to the binary, as the launcher sets.
+        # The launcher puts LLAMACPP_DIR on the library path; so does this, which
+        # works for a release tree and a local build alike.
         version_cmd: '. /etc/llamacpp-qwen38fn.env && LD_LIBRARY_PATH="${LLAMACPP_DIR}" "${LLAMACPP_DIR}/llama-server" --version 2>&1'
         results_label: llamacpp-gpu2
         # One 64k slot holds neither agent preset's full depth (hermes 64k and coding
@@ -239,6 +240,23 @@
         chdir: "{{ host_suite_dir }}"
       when: ct_status.rc != 0
 
+    # A stopped CT 200 is started for the run and shut down again at the end, so the
+    # run leaves it as it found it.
+    - name: Start the bench-runner LXC if it is stopped
+      ansible.builtin.command: "pct start {{ bench_vmid }}"
+      register: bench_started
+      when: ct_status.rc == 0 and 'stopped' in ct_status.stdout
+
+    - name: Wait for the bench-runner LXC's network
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ bench_vmid }}", "--", sh, "-c", "ip -4 route show default | grep -q ."]
+      register: bench_network
+      until: bench_network.rc == 0
+      retries: 30
+      delay: 2
+      changed_when: false
+      when: bench_started is changed
+
     # Provisioning only installs the suite at container-creation time, so an
     # existing CT 200 would otherwise keep running whatever code it was born
     # with. Always overlay the latest scripts/config so runs use the code we
@@ -336,14 +354,18 @@
             slot_parallel: "{{ item.parallel if (item is mapping and item.parallel is defined) else parallel }}"
       always:
         # Don't let a restore failure abort the play before results are fetched;
-        # it's reported at the end alongside any benchmark failures.
+        # it's reported at the end alongside any benchmark failures. With no items
+        # (make smoke) only the pre-batch reload ran, so restore when it changed the
+        # slot count.
         - name: Restore the GPU container to the operational default after the batch
           ansible.builtin.command:
             argv: [pct, exec, "{{ gpu_vmid }}", "--", bash, "-lc", "{{ model_restore_cmd }}"]
           changed_when: true
           register: post_batch_restore
           failed_when: false
-          when: reload_model | bool and (benchmarks | length > 0)
+          when: >-
+            reload_model | bool and
+            ((benchmarks | length > 0) or (parallel | int != restore_parallel | int))
 
     - name: List result runs after the batch
       ansible.builtin.command:
@@ -439,11 +461,19 @@
     # an EXIT trap (RESTORE_CONTEXT/RESTORE_PARALLEL above), so it is put back even
     # if the sweep errors or is interrupted — the single source of truth for restore.
 
+    - name: Shut the bench-runner LXC down again (it was stopped before the run)
+      ansible.builtin.command: "pct shutdown {{ bench_vmid }} --timeout 120"
+      register: bench_shutdown
+      failed_when: false
+      when: bench_started is changed
+
     - name: Summary
       ansible.builtin.debug:
         msg: >-
           {{ (new_runs | length) }} new run(s) fetched into {{ results_dest }}:
-          {{ new_runs | join(', ') if new_runs else '(none)' }}
+          {{ new_runs | join(', ') if new_runs else '(none)' }}{{
+          ('. CT ' ~ bench_vmid ~ ' did not shut down again; stop it by hand.')
+          if (bench_shutdown.rc | default(0)) != 0 else '' }}
 
     # Results are already fetched above, so fail loudly *now* if any benchmark
     # exited non-zero or the post-batch model restore failed — rather than letting

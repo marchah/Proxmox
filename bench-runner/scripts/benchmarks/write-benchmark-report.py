@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from bench_common import dimm_summary
+
 AMD_GPU_DEVICE_NAMES = {
     "0x73df": "AMD Radeon RX 6700 XT (Navi 22)",
 }
@@ -694,6 +696,37 @@ def render_gpu_clock_table(telemetry: dict[str, Any]) -> list[str]:
     return lines
 
 
+def render_dimm_section(dimm: dict[str, Any]) -> list[str]:
+    lines = [
+        "## Memory Temperature (BMC)",
+        "",
+        "Sampled on the Proxmox host from the BMC. When the hottest DIMM reads "
+        f"{dimm['cap_on_c']} °C the BMC caps memory bandwidth to about a third, until it cools "
+        f"to ~{dimm['cap_off_c']} °C, and logs nothing. A model that keeps weights in system RAM "
+        "slows down with it.",
+        "",
+        f"- Samples: `{dimm['samples']}`",
+        f"- Hottest DIMM: `{dimm['hottest_dimm'] or 'n/a'}` at `{fmt(dimm['hottest_dimm_max_c'], 0)} °C`",
+        f"- Estimated time capped: `{fmt(dimm['capped_seconds_estimate'], 0)} s`",
+        "",
+    ]
+    if dimm["dimm_max_c"]:
+        lines.extend(["| DIMM | Max °C |", "| --- | ---: |"])
+        lines.extend(f"| {name} | {fmt(value, 0)} |" for name, value in dimm["dimm_max_c"].items())
+        lines.append("")
+    return lines
+
+
+def dimm_limit(dimm: dict[str, Any]) -> str | None:
+    if dimm["capped_seconds_estimate"] > 0 or (dimm["hottest_dimm_max_c"] or 0) >= dimm["cap_on_c"]:
+        return (
+            f"Memory: {dimm['hottest_dimm']} reached {fmt(dimm['hottest_dimm_max_c'], 0)} °C, so memory bandwidth "
+            f"was capped for ~{fmt(dimm['capped_seconds_estimate'], 0)} s; throughput of a model with weights "
+            "in system RAM is understated for that time."
+        )
+    return None
+
+
 def infer_improvements(rows: list[dict[str, Any]]) -> list[str]:
     improvements = [
         "Repeat this same run after any hardware, driver, runtime, model, quantization, or context change.",
@@ -866,6 +899,12 @@ def render_report(run_dir: Path, description: str) -> str:
             ]
         )
 
+    # BMC temperatures sampled on the host by host/bmc-sampler.py, merged in beside the
+    # target telemetry.
+    dimm = dimm_summary(iter_jsonl(run_dir / "bmc-telemetry.jsonl"))
+    if dimm["samples"]:
+        lines.extend(render_dimm_section(dimm))
+
     if slo:
         lines.extend(["## SLO Checks", ""])
         for benchmark in slo.get("benchmarks", []):
@@ -880,6 +919,8 @@ def render_report(run_dir: Path, description: str) -> str:
 
     lines.extend(["## Software And Hardware Limits Observed", ""])
     limits = infer_limits(rows)
+    if dimm["samples"] and (limit := dimm_limit(dimm)):
+        limits.append(limit)
     if limits:
         lines.extend(f"- {item}" for item in limits)
     else:
@@ -901,6 +942,8 @@ def render_report(run_dir: Path, description: str) -> str:
     lines.append("- `<benchmark>/stdout.log` and `<benchmark>/stderr.log` - command output.")
     lines.append("- `<benchmark>/*summary.json` and `<benchmark>/*requests.jsonl` - benchmark-specific results")
     lines.append("  (`agent-sessions/` and `doc-ingest/` hold one request row per turn or document).")
+    lines.append("- `target-telemetry.jsonl` and `bmc-telemetry.jsonl` - model-container samples and BMC")
+    lines.append("  temperatures, merged in by `host/run-with-target-telemetry.sh`.")
     lines.append("- `versions.json` - software, hardware, Git, and model hash metadata.")
     lines.append("- `system-logs/before/` and `system-logs/after/` - system log snapshots.")
     lines.append("- `slo-report.json` and `SLO.md` - pass/warn/fail checks.")

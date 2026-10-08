@@ -1,5 +1,5 @@
 {
-  "description": "Default homelab SLOs for interactive local inference. Tune after the first real baseline. gpu_memory_used_ratio is warn-only (no fail threshold): the V620 runs Qwen3.6-Q5 at 256k context intentionally near-full (~99% VRAM), so a high ratio is expected, not a run failure.",
+  "description": "Default homelab SLOs for interactive local inference. Tune after the first real baseline. gpu_memory_used_ratio is warn-only (no fail threshold): the V620 runs Qwen3.6-Q5 at 256k context intentionally near-full (~99% VRAM), so a high ratio is expected, not a run failure. dimm_temperature_c reads the BMC samples (bmc-telemetry.jsonl): at 66 °C on the hottest DIMM the BMC silently caps memory bandwidth to a third.",
   "benchmarks": {
     "openai-direct": {
       "error_count_max": 0,
@@ -44,6 +44,9 @@
         "warn": 85,
         "fail": 95
       }
+    },
+    "dimm_temperature_c": {
+      "warn": 66
     },
     "min_memory_available_gib_warn": 2,
     "gpu_memory_used_ratio_warn": 0.9
