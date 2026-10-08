@@ -58,6 +58,10 @@ LOAD_MODE="${LOAD_MODE:-}"
 # Drop the host page cache before every load, so each cell loads cold from the NVMe store.
 # Host-wide: run it with the other guests shut down.
 DROP_CACHES="${DROP_CACHES:-false}"
+# Start no cell while the hottest DIMM is above this, so one cell's heat does not carry into
+# the next. The BMC silently caps memory bandwidth to a third at 66 °C and its fan curve
+# reaches 100% at 58 °C.
+DIMM_START_MAX_C="${DIMM_START_MAX_C:-58}"
 # Override the derived layer split (see start_server). Empty = derive from n_cpu_moe.
 TENSOR_SPLIT="${TENSOR_SPLIT:-}"
 # llama-server --threads. Empty leaves whatever the env file already has. The CPU-side
@@ -91,6 +95,7 @@ log() { printf '==> %s\n' "$*"; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"
 case "$DROP_CACHES" in true | false) ;; *) die "DROP_CACHES must be true or false" ;; esac
+[[ "$DIMM_START_MAX_C" =~ ^[0-9]+$ ]] || die "DIMM_START_MAX_C must be a whole number of °C"
 # Be location-independent: systemd-run and cron do not inherit a working directory, and the
 # helper scripts are resolved relative to this one.
 [ -z "$CELLS" ] || CELLS="$(readlink -f "$CELLS")"
@@ -478,12 +483,24 @@ size_auto_cache() {  # <label> <sig> <MiB to leave free>; prints the cache size.
 }
 
 # The hottest DIMM every ~10 s (ipmitool takes ~3 s), as "epoch<TAB>max °C".
+hottest_dimm() {
+  ipmitool sdr type Temperature 2>/dev/null \
+    | awk -F'|' '/DDR4/ && $5 ~ /degrees/ {v = $5; gsub(/[^0-9]/, "", v); if (v + 0 > m) m = v + 0} END {print m + 0}'
+}
 dimm_sampler() {
   while :; do
-    printf '%s\t%s\n' "$(date +%s)" "$(ipmitool sdr type Temperature 2>/dev/null \
-      | awk -F'|' '/DDR4/ && $5 ~ /degrees/ {v = $5; gsub(/[^0-9]/, "", v); if (v + 0 > m) m = v + 0} END {print m + 0}')"
+    printf '%s\t%s\n' "$(date +%s)" "$(hottest_dimm)"
     sleep 10
   done
+}
+# Wait for the DIMMs to cool to DIMM_START_MAX_C. An unreadable BMC reads 0 and does not wait.
+dimm_cooldown() {
+  local t waited=0
+  while t="$(hottest_dimm)"; [ "$t" -gt "$DIMM_START_MAX_C" ]; do
+    [ "$waited" -gt 0 ] || log "hottest DIMM ${t} °C, above ${DIMM_START_MAX_C} °C: waiting before the next cell"
+    sleep 30; waited=$((waited + 30))
+  done
+  [ "$waited" -eq 0 ] || log "hottest DIMM ${t} °C after ${waited}s"
 }
 
 # A cell's settings as a JSON object, for the manifest and its per-cell JSON.
@@ -504,7 +521,7 @@ cat >"${OUT_DIR}/manifest.json" <<JSON
  "vmid": ${VMID}, "cards": "${CARDS[*]}",
  "ctx": ${CTX}, "parallel": ${PARALLEL}, "reps": ${REPS},
  "n_predict": ${N_PREDICT}, "depths": "${DEPTHS}", "probe_classes": "${PROBE_CLASSES}",
- "drop_caches": ${DROP_CACHES},
+ "drop_caches": ${DROP_CACHES}, "dimm_start_max_c": ${DIMM_START_MAX_C},
  "one_gpu": ${ONE_GPU}, "expected_gpus": ${GLOBAL_GPUS},
  "load_mode": "${LOAD_MODE}", "tensor_split_override": "${TENSOR_SPLIT}",
  "threads_override": "${THREADS}", "cpu_only": ${CPU_ONLY:-false},
@@ -542,6 +559,7 @@ for round in $(seq 1 "$REPS"); do
       *)      cache="$spec" ;;
     esac
     log "=== ${tag} (mode ${CELL[$label|MODE]:-default}, n_cpu_moe ${ncmoe:-n/a}, cache ${cache:-none}) ==="
+    dimm_cooldown
     cell_start="$(date +%s)"
     if [ "$cache" = fail ]; then
       LOAD_OK=false

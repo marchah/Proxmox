@@ -158,7 +158,9 @@ VMID=123 CONFIGS="34 40 48" ./placement-sweep.sh
 cache before every load, for cold loads. A depth is the probe's target: its filler gives
 about 0.72 prompt tokens per unit (d8000 is ~5.8k tokens), and `SUMMARY.md` prints the
 measured sizes. Every cell is checked before the first load; a cell that fails to load
-is recorded and the sweep moves on.
+is recorded and the sweep moves on. No cell starts while the hottest DIMM is above
+`DIMM_START_MAX_C` (58 °C), and a cell with a DIMM sample at 66 °C, where the BMC caps
+memory bandwidth to a third, is flagged invalid in `SUMMARY.md`.
 
 These experiments restart model servers. Check their container/device settings
 before use. The B550 harness in `../gpu-ab-bench/` contains old PCI addresses;

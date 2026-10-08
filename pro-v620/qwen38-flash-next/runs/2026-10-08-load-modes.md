@@ -51,9 +51,10 @@ The cells are in [`2026-10-08-load-modes.cells`](2026-10-08-load-modes.cells).
 
 ## Method
 
-Harness: `placement-sweep.sh` at the commit that adds this record, staged with
-[`push-harness.sh`](../../push-harness.sh). The sweep's method rules are in its header
-and in [Benchmark tools](../README.md#benchmark-tools).
+Harness: `placement-sweep.sh` at the branch head when the run starts (its commit is in
+the run's `manifest.json`), staged with [`push-harness.sh`](../../push-harness.sh). The
+sweep's method rules are in its header and in [Benchmark
+tools](../README.md#benchmark-tools).
 
 ```bash
 # Host; CT 123 holds 0000:83:00.0
@@ -79,6 +80,9 @@ VMID=123 CELLS=runs/2026-10-08-load-modes.cells DEPTHS="0,8000" DROP_CACHES=true
 
 ## Safety
 
+- The sweep starts no cell while the hottest DIMM is above 58 °C (`DIMM_START_MAX_C`),
+  so one cell's heat does not carry into the next. A cell with any DIMM sample at
+  66 °C ran at a third of the memory bandwidth and is invalid.
 - Every other guest stays shut down: CT 120 `llamacpp`, CT 121 `hermes`, CT 140 `kb-rag`,
   VM 300 `docker-host`, CT 200 and CT 201. Dropping the page cache is host-wide, so this
   run needs them off. Starting them again waits for the owner's go-ahead.

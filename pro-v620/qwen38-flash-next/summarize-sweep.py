@@ -180,7 +180,7 @@ def main():
         if g["cache_inactive"]:
             flags.append("🔴 cache not active in %d run(s)" % g["cache_inactive"])
         if g["capped"]:
-            flags.append("⚠️ DIMM at 66 °C in %d sample(s): bandwidth capped" % g["capped"])
+            flags.append("🔴 DIMM at 66 °C in %d sample(s): bandwidth capped, row invalid" % g["capped"])
         cellvals = [med(g["decode"].get(c, [])) for c in cells]
         hit = med(g["hit"])
         print("| %s | %.1f GiB | **%.1f GiB** | %d MiB | %s | %s | %s | %s |" % (
