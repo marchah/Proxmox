@@ -148,6 +148,8 @@ def one(base, prompt, n_predict):
         # Degeneracy gate. Repetition is cheap to generate and would read as a win.
         "degenerate": uniq < 0.7,
         "content_sha": hashlib.sha256(content.encode()).hexdigest()[:12],
+        # The text itself, so a response that differs from its control can be read.
+        "content": content,
         # b11505 reports `stop_type`; older builds set stopped_eos / stopped_limit.
         "stop": r.get("stop_type") or ("eos" if r.get("stopped_eos") else
                                        "limit" if r.get("stopped_limit") else "other"),
