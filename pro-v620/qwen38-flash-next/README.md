@@ -176,7 +176,9 @@ VMID=123 CONFIGS="34 40 48" ./placement-sweep.sh
 ```
 
 `PROBE_CLASSES` limits the prompt classes, and `DROP_CACHES=true` drops the host page
-cache before every load, for cold loads. A depth is the probe's target: its filler gives
+cache before every load, for cold loads. `CONC_REPS` sets the concurrency probe's rounds
+per pass (default 1); its medians come only from rounds in which every stream completed,
+and `SUMMARY.md` counts the others. A depth is the probe's target: its filler gives
 about 0.72 prompt tokens per unit (d8000 is ~5.8k tokens), and `SUMMARY.md` prints the
 measured sizes. Every cell is checked before the first load; a cell that fails to load
 is recorded and the sweep moves on. No cell starts while the hottest DIMM is above

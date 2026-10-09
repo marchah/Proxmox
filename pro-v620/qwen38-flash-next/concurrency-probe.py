@@ -91,8 +91,9 @@ def one(base: str, prompt: str, n_predict: int) -> dict:
         "uniq_8gram": uniq,
         "degenerate": uniq < 0.7,
         "content_sha": hashlib.sha256(content.encode()).hexdigest()[:12],
-        "stop": ("eos" if r.get("stopped_eos") else
-                 "limit" if r.get("stopped_limit") else "other"),
+        # b11505 reports `stop_type`; older builds set stopped_eos / stopped_limit.
+        "stop": r.get("stop_type") or ("eos" if r.get("stopped_eos") else
+                                       "limit" if r.get("stopped_limit") else "other"),
     }
 
 
@@ -174,8 +175,11 @@ def main() -> int:
         print(json.dumps({k: v for k, v in rounds[-1].items() if k != "rows"}),
               file=sys.stderr)
 
-    good = [r for r in rounds if r["completed"]]
+    # A round with a failed stream is not a measurement of `streams` concurrent streams,
+    # so the medians come only from rounds in which every stream completed.
+    good = [r for r in rounds if r["completed"] == a.streams]
     result["rounds"] = rounds
+    result["complete_rounds"] = len(good)
     result["per_stream_tps"] = round(st.median([r["per_stream_tps"] for r in good]), 2) if good else 0.0
     result["aggregate_tps"] = round(st.median([r["aggregate_tps"] for r in good]), 2) if good else 0.0
     result["wall_aggregate_tps"] = round(st.median([r["wall_aggregate_tps"] for r in good]), 2) if good else 0.0

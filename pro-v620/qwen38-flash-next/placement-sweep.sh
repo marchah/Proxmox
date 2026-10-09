@@ -47,6 +47,9 @@ CTX="${CTX:-65536}"
 PARALLEL="${PARALLEL:-1}"
 REPS="${REPS:-3}"
 N_PREDICT="${N_PREDICT:-256}"
+# Rounds of concurrent requests per pass in a STREAMS cell. The concurrency probe takes its
+# medians from the rounds in which every stream completed.
+CONC_REPS="${CONC_REPS:-1}"
 # Probe depth targets. The filler tokenizes at about 5.5 characters per token, so a target
 # yields ~0.72 as many prompt tokens (d8000 is ~5,800); the summary prints the measured size.
 DEPTHS="${DEPTHS:-0,8000,32000}"
@@ -98,6 +101,7 @@ log() { printf '==> %s\n' "$*"; }
 [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"
 case "$DROP_CACHES" in true | false) ;; *) die "DROP_CACHES must be true or false" ;; esac
 [[ "$DIMM_START_MAX_C" =~ ^[0-9]+$ ]] || die "DIMM_START_MAX_C must be a whole number of °C"
+[[ "$CONC_REPS" =~ ^[1-9][0-9]*$ ]] || die "CONC_REPS must be a whole number of rounds, at least 1"
 # Be location-independent: systemd-run and cron do not inherit a working directory, and the
 # helper scripts are resolved relative to this one.
 [ -z "$CELLS" ] || CELLS="$(readlink -f "$CELLS")"
@@ -550,7 +554,7 @@ cat >"${OUT_DIR}/manifest.json" <<JSON
  "harness_commit": "${HARNESS_COMMIT}",
  "vmid": ${VMID}, "cards": "${CARDS[*]}",
  "ctx": ${CTX}, "parallel": ${PARALLEL}, "reps": ${REPS},
- "n_predict": ${N_PREDICT}, "depths": "${DEPTHS}", "probe_classes": "${PROBE_CLASSES}",
+ "n_predict": ${N_PREDICT}, "conc_reps": ${CONC_REPS}, "depths": "${DEPTHS}", "probe_classes": "${PROBE_CLASSES}",
  "drop_caches": ${DROP_CACHES}, "dimm_start_max_c": ${DIMM_START_MAX_C},
  "one_gpu": ${ONE_GPU}, "expected_gpus": ${GLOBAL_GPUS},
  "load_mode": "${LOAD_MODE}", "tensor_split_override": "${TENSOR_SPLIT}",
@@ -649,7 +653,7 @@ PYFAIL
     conc_span=""
     if [ -n "$streams" ]; then
       conc_span="$(date +%s.%N)"
-      ./concurrency-probe.py "$BASE" "$streams" --reps 1 --n-predict "$N_PREDICT" \
+      ./concurrency-probe.py "$BASE" "$streams" --reps "$CONC_REPS" --n-predict "$N_PREDICT" \
         >"${OUT_DIR}/${tag}.concurrency.json" 2>"${OUT_DIR}/${tag}.concurrency.log" \
         || log "concurrency probe FAILED for ${tag}"
       conc_span="${conc_span} $(date +%s.%N)"
@@ -741,7 +745,8 @@ if conc.exists():
         c = json.loads(conc.read_text())
         pl["concurrency"] = {k: c.get(k) for k in ("streams", "total_slots", "n_ctx_per_slot",
                              "per_stream_tps", "aggregate_tps", "wall_aggregate_tps",
-                             "any_degenerate", "total_failed", "accept_pct")}
+                             "any_degenerate", "total_failed", "accept_pct",
+                             "reps", "complete_rounds")}
     except Exception as e:
         pl["concurrency"] = {"error": "unparsable: %r" % (e,)}
 # Utilization per phase. Prefill is each deep request's prompt time, decode its generation

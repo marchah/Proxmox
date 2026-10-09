@@ -272,7 +272,10 @@ def main():
             if any(x.get("any_degenerate") for x in c):
                 f.append("🔴 degenerate")
             if any(x.get("total_failed") for x in c):
-                f.append("🔴 failed requests")
+                rounds = sum(x.get("reps") or 1 for x in c)
+                whole = sum(x["complete_rounds"] for x in c if x.get("complete_rounds") is not None)
+                f.append("🔴 failed requests" if not any("complete_rounds" in x for x in c) else
+                         "🔴 failed requests: %d of %d rounds complete" % (whole, rounds))
             if any((x.get("total_slots") or 0) < (x.get("streams") or 0) for x in c):
                 f.append("⚠️ fewer slots than streams")
             print("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
