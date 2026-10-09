@@ -42,10 +42,12 @@ current configuration; a record never changes what is deployed by itself.
   DFlash 2 or DFlash block drafter, or another draft model trained for it (EAGLE-3), each
   only if the build loads it (`--spec-type draft-mtp`, `draft-dflash`, `draft-dspark`,
   `draft-eagle3`). Measure each against a no-speculation control, at one and two
-  concurrent streams, and quote its acceptance. Drafter-free n-gram speculation
-  (`ngram-*`) pays off only on text already in the context, so test it on a workload
-  that edits or repeats text. Say in the plan which drafters exist for the model and why
-  any is left out.
+  concurrent streams, and quote its acceptance. Scan the draft length
+  (`--spec-draft-n-max`) up from 1 until decode has clearly fallen past its peak, rather
+  than testing one or two values, then time the best length and its neighbours.
+  Drafter-free n-gram speculation (`ngram-*`) pays off only on text already in the
+  context, so test it on a workload that edits or repeats text. Say in the plan which
+  drafters exist for the model and why any is left out.
 - **Run with every other guest shut down.** Before the run, shut down every guest the
   test does not use (`make bench` uses the GPU container and CT 200; a sweep uses only
   the GPU container) and list them in the record's Safety section. When the run ends,
