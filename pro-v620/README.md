@@ -171,7 +171,12 @@ both, in alternating order, and samples each card's clocks, power and temperatur
 
 | Date | Build | Backend | Record | Status |
 | --- | --- | --- | --- | --- |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared on the ROMED8-2T](runs/2026-10-08-card-ab.md) | planned |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared on the ROMED8-2T](runs/2026-10-08-card-ab.md) | done |
+
+- On the ROMED8-2T, `0000:83:00.0` ran Qwen3.6-35B-A3B under `llama-bench` 3.4–4.8% slower
+  in prefill and 1.1–1.3% slower in decode than `0000:03:00.0`, at about 115 MHz lower
+  sclk with the same clock ceiling, power cap and voltage offset. Qwen3.8-Flash-Next at
+  `-ncmoe 34` showed no difference beyond the pass-to-pass spread.
 
 ## Backend and power
 

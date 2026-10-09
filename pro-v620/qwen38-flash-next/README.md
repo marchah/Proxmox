@@ -133,7 +133,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Threads and concurrent streams on one card](runs/2026-10-08-threads-concurrency.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on one card](runs/2026-10-08-load-modes.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [What each configuration uses, rerun with telemetry](runs/2026-10-08-utilization.md) | done |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared, with `-ncmoe 34` on each](../runs/2026-10-08-card-ab.md) | planned |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared, with `-ncmoe 34` on each](../runs/2026-10-08-card-ab.md) | done |
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on two cards](runs/2026-10-09-load-modes-two-cards.md) | planned |
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [MTP speculative decoding on one and two cards](runs/2026-10-09-mtp.md) | planned |
 
