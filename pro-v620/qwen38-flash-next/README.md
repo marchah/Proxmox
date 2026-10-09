@@ -104,6 +104,10 @@ but costs image-encoding latency; text requests are unaffected.
   (52.8 GB at `-ncmoe 34`); on b11505 that prefilled 3.2–3.3 times as fast with the
   same decode and output, and took about twice as long to load cold ([load-modes
   record](runs/2026-10-08-load-modes.md)).
+- Card use under `auto` on b11505: no placement's median card power exceeded 66 W of
+  the 250 W cap in prefill or decode. On one card without the MoE cache, prefill used
+  under one CPU core and decode 13–16; CPU only used 14.5–16 ([utilization
+  record](runs/2026-10-08-utilization.md)).
 - A two-card setup needs an explicit split: CPU-expert layers are much lighter
   than the remaining layers. At batch/ubatch 1024/256, the starting rule found on
   b11018 is `card1_layers = N + (48 - N)/2 - 2`, with `48,0` for N=48. On b11505
@@ -128,7 +132,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Context depth and KV type on one card](runs/2026-10-08-kv-context.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Threads and concurrent streams on one card](runs/2026-10-08-threads-concurrency.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on one card](runs/2026-10-08-load-modes.md) | done |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [What each configuration uses, rerun with telemetry](runs/2026-10-08-utilization.md) | planned |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [What each configuration uses, rerun with telemetry](runs/2026-10-08-utilization.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared, with `-ncmoe 34` on each](../runs/2026-10-08-card-ab.md) | planned |
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on two cards](runs/2026-10-09-load-modes-two-cards.md) | planned |
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [MTP speculative decoding on one and two cards](runs/2026-10-09-mtp.md) | planned |
