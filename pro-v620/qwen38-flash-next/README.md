@@ -139,7 +139,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [What each configuration uses, rerun with telemetry](runs/2026-10-08-utilization.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared, with `-ncmoe 34` on each](../runs/2026-10-08-card-ab.md) | done |
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on two cards](runs/2026-10-09-load-modes-two-cards.md) | done |
-| 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [MTP speculative decoding on one and two cards](runs/2026-10-09-mtp.md) | planned |
+| 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [MTP speculative decoding on one and two cards](runs/2026-10-09-mtp.md) | done |
 
 ## Benchmark tools
 
@@ -231,12 +231,27 @@ entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the run.
 
 ## MTP experiment
 
-Upstream merged a qwen4exp MTP graph in llama.cpp #29761, included in b11475. Whether
-b11505 loads unsloth's separate qwen4exp heads is untested; the
-[MTP record](runs/2026-10-09-mtp.md) tests it. Unsloth's `MTP/README.md`
-predates #29761 and says stock builds cannot use them, but on 2026-10-06 unsloth copied
-the self-contained `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` to the repo root for `llama.cpp -hf`.
-The `shared-` heads borrow the main model's embedding and output tensors.
+Upstream merged a qwen4exp MTP graph in llama.cpp #29761, included in b11475. On b11505
+the self-contained heads load with `--spec-type draft-mtp --model-draft <head>
+--spec-draft-ngl all --spec-draft-n-max N`. The `shared-` heads, which borrow the main
+model's embedding and output tensors, fail with `check_tensor_dims: tensor
+'token_embd.weight' not found`. Unsloth's `MTP/README.md` predates #29761 and says stock
+builds cannot use the heads.
+
+The [MTP record](runs/2026-10-09-mtp.md) measured the Q4_K_M head on b11505, Vulkan, in
+CT 120 holding both cards with two slots, against the fastest no-head configurations
+(`-ncmoe 34` on one card, 16 on two):
+
+| | One card, head at `-ncmoe 36` | Two cards, head at `-ncmoe 20` |
+| --- | --- | --- |
+| Single-stream decode at n-max 3, median of six prompt cells | 19.9 t/s against 14.2 | 22.1 t/s against 15.2 |
+| Two-stream aggregate at n-max 2 and 3 | 24.6–25.4 t/s against 20.3 | 30.2–30.4 t/s against 24.1 |
+| Two-stream aggregate at n-max 4 | 13.8 t/s | 16.2 t/s |
+| Prefill at d8000 against the fastest | 6.2–10.5% lower | 19.6–20.6% lower |
+
+- The head takes 3.5 GiB of VRAM on one card at n-max 3 and about 225 MiB more per extra
+  draft token, so a placement that fits one draft length can spill at a longer one.
+- Text differs from the no-head text in every prompt; all of it read as coherent.
 
 `qwen38fn-download.sh` fetches the self-contained Q8_0 and Q4_K_M heads, re-exported
 upstream on 2026-10-05, and the 2026-09-01 `shared-Q4_K_M` head. That re-export changed
