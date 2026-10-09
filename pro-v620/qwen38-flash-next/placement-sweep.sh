@@ -741,7 +741,7 @@ if conc.exists():
         c = json.loads(conc.read_text())
         pl["concurrency"] = {k: c.get(k) for k in ("streams", "total_slots", "n_ctx_per_slot",
                              "per_stream_tps", "aggregate_tps", "wall_aggregate_tps",
-                             "any_degenerate", "total_failed")}
+                             "any_degenerate", "total_failed", "accept_pct")}
     except Exception as e:
         pl["concurrency"] = {"error": "unparsable: %r" % (e,)}
 # Utilization per phase. Prefill is each deep request's prompt time, decode its generation

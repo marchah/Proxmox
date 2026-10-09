@@ -40,7 +40,7 @@ def main():
             key = (pl["n_cpu_moe"], pl.get("moe_cache_spec") or "")
         else:
             continue
-        g = by.setdefault(key, {"decode": {}, "prefill": {}, "vram": [], "free": [],
+        g = by.setdefault(key, {"decode": {}, "prefill": {}, "accept": {}, "vram": [], "free": [],
                                 "gtt": [], "spill": False, "degen": False,
                                 "disagree": False, "errors": 0, "cache_mib": [],
                                 "hit": [], "dimm": [], "capped": 0, "cache_inactive": 0,
@@ -89,6 +89,8 @@ def main():
                 g["decode"].setdefault(k, []).append(v["decode_tps_median"])
             if v.get("prefill_tps_median"):
                 g["prefill"].setdefault(k, []).append(v["prefill_tps_median"])
+            if v.get("accept_pct_median") is not None:
+                g["accept"].setdefault(k, []).append(v["accept_pct_median"])
         if contract is None and j.get("contract"):
             contract = j["contract"]
 
@@ -279,6 +281,25 @@ def main():
                 med([x["aggregate_tps"] for x in c if x.get("aggregate_tps")]),
                 med([x["wall_aggregate_tps"] for x in c if x.get("wall_aggregate_tps")]),
                 ", ".join(f) or "ok"))
+
+    # --- draft acceptance ------------------------------------------------------------
+    if any(by[k]["accept"] for k in keys):
+        conc_any = any(x.get("accept_pct") is not None for k in keys for x in by[k]["conc"])
+        print("\n## Draft acceptance\n")
+        print("Accepted draft tokens as a percentage of drafted ones, median across passes. "
+              "Judge a speculative cell by acceptance as well as speed: the same acceptance "
+              "at a different speed means the workload moved, not the drafter. Cells "
+              "without speculation are the controls.\n")
+        hdr = ["config"] + cells + (["streams"] if conc_any else [])
+        print("| " + " | ".join(hdr) + " |")
+        print("|" + "|".join(["---"] * len(hdr)) + "|")
+        for key in keys:
+            g = by[key]
+            vals = ["%.1f%%" % med(g["accept"][c]) if g["accept"].get(c) else "—" for c in cells]
+            if conc_any:
+                xs = [x["accept_pct"] for x in g["conc"] if x.get("accept_pct") is not None]
+                vals.append("%.1f%%" % med(xs) if xs else "—")
+            print("| %s | %s |" % (label(key), " | ".join(vals)))
 
     # --- utilization -------------------------------------------------------------
     if any(by[k]["util"] for k in keys):

@@ -85,6 +85,9 @@ def one(base: str, prompt: str, n_predict: int) -> dict:
         "prefill_tps": tm.get("prompt_per_second"),
         "predicted_n": tm.get("predicted_n"),
         "decode_tps": tm.get("predicted_per_second"),
+        # Present only when speculation is active.
+        "draft_n": tm.get("draft_n"),
+        "draft_n_accepted": tm.get("draft_n_accepted"),
         "uniq_8gram": uniq,
         "degenerate": uniq < 0.7,
         "content_sha": hashlib.sha256(content.encode()).hexdigest()[:12],
@@ -178,6 +181,10 @@ def main() -> int:
     result["wall_aggregate_tps"] = round(st.median([r["wall_aggregate_tps"] for r in good]), 2) if good else 0.0
     result["any_degenerate"] = any(r["any_degenerate"] for r in rounds)
     result["total_failed"] = sum(r["failed"] for r in rounds)
+    # Draft acceptance over every completed stream: accepted / drafted tokens.
+    drafted = sum(r.get("draft_n") or 0 for rd in rounds for r in rd["rows"])
+    accepted = sum(r.get("draft_n_accepted") or 0 for rd in rounds for r in rd["rows"])
+    result["accept_pct"] = round(100.0 * accepted / drafted, 1) if drafted else None
     print(json.dumps(result, indent=1))
     return 0
 

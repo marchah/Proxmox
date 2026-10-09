@@ -138,9 +138,10 @@ run it from `/root/harness/<sha12>/pro-v620/qwen38-flash-next/`; the sweep refus
 unstaged copy unless `UNPINNED=true`. `placement-sweep.sh` writes per-config JSON,
 `environment.json` and `SUMMARY.md` under `/root/qwen38-flash-next/sweep-<ts>/`. It
 reads VRAM from the cards in the container's config, records each cell's server
-command line, load time, container memory, hottest DIMM, and per-phase GPU and CPU use
-(prefill, decode, concurrent streams), and on exit restores the container's env file and
-restarts the service if it was running.
+command line, load time, container memory, hottest DIMM, per-phase GPU and CPU use
+(prefill, decode, concurrent streams) and, for a speculative cell, draft acceptance per
+prompt and under concurrency. On exit it restores the container's env file and restarts
+the service if it was running.
 
 Run the thermal guard in a separate shell first; the host watchdog only stops systemd
 services. `VMID=<ct>` limits it to that container's cards and acts only inside that
