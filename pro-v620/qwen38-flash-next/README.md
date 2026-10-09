@@ -99,9 +99,9 @@ but costs image-encoding latency; text requests are unaffected.
   GPU memory.
 - KV cache: the model has 12 full-attention layers, so q8_0 KV costs about
   12 KiB/token against 24 for f16.
-- Load mode: the default `auto` maps the files, and prefill copies the CPU-resident
-  experts to the card through pageable memory. `--load-mode none` or `dio` loads them
-  into pinned host memory that RADV counts as GTT (52.8 GB at `-ncmoe 34`); on b11505
+- Load mode: the default `auto` maps the model files. `--load-mode none` or `dio`
+  loads the CPU-resident experts into pinned host memory that RADV counts as GTT
+  (52.8 GB at `-ncmoe 34`); on b11505
   that prefilled 3.2–3.3 times as fast with the same decode and output, and took about
   twice as long to load cold ([load-modes record](runs/2026-10-08-load-modes.md)).
 - A two-card setup needs an explicit split: CPU-expert layers are much lighter
