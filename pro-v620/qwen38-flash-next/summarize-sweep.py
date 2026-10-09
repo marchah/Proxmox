@@ -102,7 +102,9 @@ def main():
             return (0, order.index(key) if key in order else len(order), key)
         return (1, key)
     keys = sorted(by, key=sort_key)
-    cells = sorted({k for g in by.values() for k in g["decode"]})
+    # By depth as a number, then class: as text, d165000 sorts before d44000.
+    cells = sorted({k for g in by.values() for k in g["decode"]},
+                   key=lambda c: (int(c.split("/")[0].lstrip("d")), c))
     depths = sorted({c.split("/")[0] for c in cells},
                     key=lambda s: int(s.lstrip("d")))
 
