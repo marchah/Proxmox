@@ -101,9 +101,9 @@ but costs image-encoding latency; text requests are unaffected.
   12 KiB/token against 24 for f16.
 - Load mode: the default `auto` maps the model files. `--load-mode none` or `dio`
   loads the CPU-resident experts into pinned host memory that RADV counts as GTT
-  (52.8 GB at `-ncmoe 34`); on b11505
-  that prefilled 3.2–3.3 times as fast with the same decode and output, and took about
-  twice as long to load cold ([load-modes record](runs/2026-10-08-load-modes.md)).
+  (52.8 GB at `-ncmoe 34`); on b11505 that prefilled 3.2–3.3 times as fast with the
+  same decode and output, and took about twice as long to load cold ([load-modes
+  record](runs/2026-10-08-load-modes.md)).
 - A two-card setup needs an explicit split: CPU-expert layers are much lighter
   than the remaining layers. At batch/ubatch 1024/256, the starting rule found on
   b11018 is `card1_layers = N + (48 - N)/2 - 2`, with `48,0` for N=48. On b11505
