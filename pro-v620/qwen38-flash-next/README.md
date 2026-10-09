@@ -99,6 +99,11 @@ but costs image-encoding latency; text requests are unaffected.
   GPU memory.
 - KV cache: the model has 12 full-attention layers, so q8_0 KV costs about
   12 KiB/token against 24 for f16.
+- Load mode: the default `auto` maps the files, and prefill copies the CPU-resident
+  experts to the card through pageable memory. `--load-mode none` or `dio` loads them
+  into pinned host memory that RADV counts as GTT (52.8 GB at `-ncmoe 34`); on b11505
+  that prefilled 3.2–3.3 times as fast with the same decode and output, and took about
+  twice as long to load cold ([load-modes record](runs/2026-10-08-load-modes.md)).
 - A two-card setup needs an explicit split: CPU-expert layers are much lighter
   than the remaining layers. At batch/ubatch 1024/256, the starting rule found on
   b11018 is `card1_layers = N + (48 - N)/2 - 2`, with `48,0` for N=48. On b11505
@@ -122,7 +127,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Standard configurations on eight channels](runs/2026-10-08-configurations.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Context depth and KV type on one card](runs/2026-10-08-kv-context.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Threads and concurrent streams on one card](runs/2026-10-08-threads-concurrency.md) | done |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on one card](runs/2026-10-08-load-modes.md) | planned |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on one card](runs/2026-10-08-load-modes.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [What each configuration uses, rerun with telemetry](runs/2026-10-08-utilization.md) | planned |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared, with `-ncmoe 34` on each](../runs/2026-10-08-card-ab.md) | planned |
 

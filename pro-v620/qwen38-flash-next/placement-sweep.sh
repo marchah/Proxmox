@@ -624,7 +624,12 @@ PYFAIL
     spill=false
     for i in "${!c_id[@]}"; do
       if [ "${c_used[$i]}" -gt 1000 ] && [ $(( c_total[i] - c_used[i] )) -lt 1024 ]; then spill=true; fi
-      if [ "${c_gtt[$i]}" -gt 1536 ]; then spill=true; fi
+      # With none or dio the CPU-resident weights load into pinned host memory, which RADV
+      # counts as GTT (52.8 GB at -ncmoe 34). There only GTT that grows under the probe is spill.
+      case "${CELL[$label|LOAD_MODE]:-${LOAD_MODE:-auto}}" in
+        none | dio) ;;
+        *) if [ "${c_gtt[$i]}" -gt 1536 ]; then spill=true; fi ;;
+      esac
     done
     if [ "$spill" = "true" ]; then log "⚠️  possible GTT spill — treat this row's decode as suspect"; fi
 
