@@ -1,0 +1,12 @@
+# Stage 1 of runs/2026-10-09-mtp.md, run on CT 120 holding both V620s with REPS=1: does each
+# MTP head load, what VRAM does it take on each card, and what does it accept? Placements
+# with room for the largest head, each with a no-head control. The one-card cells use
+# 0000:83:00.0, which the card comparison maps to Vulkan1 in CT 120.
+1c40         MODE=1gpu NCMOE=40 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2
+1c40-q8      MODE=1gpu NCMOE=40 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q8_0.gguf --spec-draft-ngl all --spec-draft-n-max 3'
+1c40-q4      MODE=1gpu NCMOE=40 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'
+1c40-shared  MODE=1gpu NCMOE=40 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'
+2c20         MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2
+2c20-q8      MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q8_0.gguf --spec-draft-ngl all --spec-draft-n-max 3'
+2c20-q4      MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'
+2c20-shared  MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'

@@ -1,0 +1,7 @@
+# Cells for runs/2026-10-09-load-modes-two-cards.md, run on CT 120 holding both V620s with
+# DROP_CACHES=true. The one-card cells use 0000:83:00.0, which the card comparison maps to
+# Vulkan1 in CT 120.
+2gpu-16-auto   MODE=2gpu NCMOE=16 LOAD_MODE=auto
+2gpu-16-none   MODE=2gpu NCMOE=16 LOAD_MODE=none
+1gpu-34-auto   MODE=1gpu NCMOE=34 DEVICE=Vulkan1 LOAD_MODE=auto
+1gpu-34-none   MODE=1gpu NCMOE=34 DEVICE=Vulkan1 LOAD_MODE=none

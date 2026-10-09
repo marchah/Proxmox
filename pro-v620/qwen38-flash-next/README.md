@@ -130,6 +130,8 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on one card](runs/2026-10-08-load-modes.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [What each configuration uses, rerun with telemetry](runs/2026-10-08-utilization.md) | planned |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared, with `-ncmoe 34` on each](../runs/2026-10-08-card-ab.md) | planned |
+| 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on two cards](runs/2026-10-09-load-modes-two-cards.md) | planned |
+| 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [MTP speculative decoding on one and two cards](runs/2026-10-09-mtp.md) | planned |
 
 ## Benchmark tools
 
@@ -220,7 +222,8 @@ entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the run.
 ## MTP experiment
 
 Upstream merged a qwen4exp MTP graph in llama.cpp #29761, included in b11475. Whether
-b11505 loads unsloth's separate qwen4exp heads is untested. Unsloth's `MTP/README.md`
+b11505 loads unsloth's separate qwen4exp heads is untested; the
+[MTP record](runs/2026-10-09-mtp.md) tests it. Unsloth's `MTP/README.md`
 predates #29761 and says stock builds cannot use them, but on 2026-10-06 unsloth copied
 the self-contained `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` to the repo root for `llama.cpp -hf`.
 The `shared-` heads borrow the main model's embedding and output tensors.
