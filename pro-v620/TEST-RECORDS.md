@@ -29,6 +29,11 @@ current configuration; a record never changes what is deployed by itself.
   (`/props` for the agent and ingestion workloads, `build_info.parallel` for the
   regression items). For a hand-run test, run `./capture-env.sh <vmid>` on the host
   first.
+- **Report what each phase uses.** Beside the speed, quote each card's power against its
+  250 W cap, its clocks and busy %, and the CPU cores in use, per phase (prefill, decode,
+  concurrent streams), so a result shows whether the card, the CPU or a transfer limits
+  it. `placement-sweep.sh` and `card-ab.sh` record them. `gpu_busy_percent` alone reads
+  near 100% at a fraction of the power cap.
 - **Start from the standard configurations**: two GPUs, one GPU, CPU only (the whole
   model in system RAM, no GPU), and an optimized configuration that leaves resources free,
   such as VRAM for a second model. Include each one that makes sense for the question,

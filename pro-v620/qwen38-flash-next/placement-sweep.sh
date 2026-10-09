@@ -305,9 +305,10 @@ open(path, "w").write(src)
 ENV_BACKUP="${ENVFILE}.pre-sweep-$(date -u +%Y%m%dT%H%M%SZ)"
 pct exec "$VMID" -- cp -p "$ENVFILE" "$ENV_BACKUP"
 WAS_ACTIVE="$(pct exec "$VMID" -- systemctl is-active llamacpp-qwen38fn 2>/dev/null || true)"
-DIMM_PID=""
+DIMM_PID=""; GPU_PID=""
 cleanup() {
   [ -n "$DIMM_PID" ] && kill "$DIMM_PID" 2>/dev/null
+  [ -n "$GPU_PID" ] && kill "$GPU_PID" 2>/dev/null
   if [ "$RESTORE" = "true" ]; then
     pct exec "$VMID" -- cp -p "$ENV_BACKUP" "$ENVFILE"
     if [ -e "$TRIP_FILE" ]; then
@@ -502,6 +503,26 @@ dimm_sampler() {
     sleep 10
   done
 }
+# Each second, per card: GPU busy %, VRAM-controller busy %, sclk MHz, power W, junction °C,
+# plus the container's cumulative CPU time in µs. gpu_busy_percent counts any queued work,
+# so it reads 99% at a fraction of the power cap; power and clocks show the real load. A
+# busy read can fail with EBUSY; it is logged as -1 and left out.
+gpu_sampler() {
+  local card h cpu
+  while :; do
+    cpu="$(awk '/^usage_usec/ {print $2}' "/sys/fs/cgroup/lxc/${VMID}/cpu.stat" 2>/dev/null || echo 0)"
+    for card in "${CARDS[@]}"; do
+      h=""; for h in "/sys/bus/pci/devices/${card}"/hwmon/hwmon*; do break; done
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s.%N)" "$card" \
+        "$(cat "/sys/bus/pci/devices/${card}/gpu_busy_percent" 2>/dev/null || echo -1)" \
+        "$(cat "/sys/bus/pci/devices/${card}/mem_busy_percent" 2>/dev/null || echo -1)" \
+        "$(( $(cat "$h/freq1_input" 2>/dev/null || echo 0) / 1000000 ))" \
+        "$(( $(cat "$h/power1_average" 2>/dev/null || echo 0) / 1000000 ))" \
+        "$(( $(cat "$h/temp2_input" 2>/dev/null || echo 0) / 1000 ))" "${cpu:-0}"
+    done
+    sleep 1
+  done
+}
 # Wait for the DIMMs to cool to DIMM_START_MAX_C. An unreadable BMC reads 0 and does not wait.
 dimm_cooldown() {
   local t waited=0
@@ -614,18 +635,23 @@ PYFAIL
 
     dimm_sampler >"${OUT_DIR}/${tag}.dimm.tsv" 2>/dev/null &
     DIMM_PID=$!
+    gpu_sampler >"${OUT_DIR}/${tag}.gpu.tsv" 2>/dev/null &
+    GPU_PID=$!
     ./placement-probe.py "${probe_args[@]}" \
       >"${OUT_DIR}/${tag}.json" 2>"${OUT_DIR}/${tag}.rows.jsonl" \
       || log "probe FAILED for ${tag} (row kept, marked)"
     streams="${CELL[$label|STREAMS]:-}"
+    conc_span=""
     if [ -n "$streams" ]; then
+      conc_span="$(date +%s.%N)"
       ./concurrency-probe.py "$BASE" "$streams" --reps 1 --n-predict "$N_PREDICT" \
         >"${OUT_DIR}/${tag}.concurrency.json" 2>"${OUT_DIR}/${tag}.concurrency.log" \
         || log "concurrency probe FAILED for ${tag}"
+      conc_span="${conc_span} $(date +%s.%N)"
     fi
-    kill "$DIMM_PID" 2>/dev/null || true
-    wait "$DIMM_PID" 2>/dev/null || true
-    DIMM_PID=""
+    kill "$DIMM_PID" "$GPU_PID" 2>/dev/null || true
+    wait "$DIMM_PID" "$GPU_PID" 2>/dev/null || true
+    DIMM_PID=""; GPU_PID=""
 
     # Read again under the probe's own buffers: a spill shows as GTT that grew while it ran.
     p_used=(); p_gtt=()
@@ -645,10 +671,11 @@ PYFAIL
     python3 - "${OUT_DIR}/${tag}.json" "$ncmoe" "$spec" "${cache:-0}" "$spill" \
       "$cards_csv" "${c_used[*]}" "${c_gtt[*]}" "${c_total[*]}" \
       "${OUT_DIR}/${tag}.moecache.log" "${OUT_DIR}/${tag}.dimm.tsv" "$cmdline" "${p_used[*]}" "${p_gtt[*]}" \
-      "$label" "$(cell_json "$label")" "$(cell_gpus "$label")" "$LOAD_S" "${OUT_DIR}/${tag}.concurrency.json" "$mem" <<'PYADD'
-import json, pathlib, re, sys
+      "$label" "$(cell_json "$label")" "$(cell_gpus "$label")" "$LOAD_S" "${OUT_DIR}/${tag}.concurrency.json" "$mem" \
+      "${OUT_DIR}/${tag}.gpu.tsv" "${OUT_DIR}/${tag}.rows.jsonl" "$conc_span" <<'PYADD'
+import json, pathlib, re, statistics, sys
 (path, ncmoe, spec, cache, spill, cards, vs, gs, ts, cache_log, dimm_log, cmdline, pvs, pgs,
- label, settings, gpus, load_s, conc_path, mem) = sys.argv[1:21]
+ label, settings, gpus, load_s, conc_path, mem, gpu_log, rows_log, conc_span) = sys.argv[1:24]
 cards = cards.split(",")
 vs, gs, ts, pvs, pgs = ([int(x) for x in s.split()] for s in (vs, gs, ts, pvs, pgs))
 p = pathlib.Path(path)
@@ -712,6 +739,54 @@ if conc.exists():
                              "any_degenerate", "total_failed")}
     except Exception as e:
         pl["concurrency"] = {"error": "unparsable: %r" % (e,)}
+# Utilization per phase. Prefill is each deep request's prompt time, decode its generation
+# time, streams the concurrency probe's span; samples are placed by timestamp.
+samples = []
+if pathlib.Path(gpu_log).exists():
+    for line in pathlib.Path(gpu_log).read_text().splitlines():
+        f = line.split("\t")
+        if len(f) == 8:
+            samples.append((float(f[0]), f[1], *(int(x) for x in f[2:8])))
+windows = {"prefill": [], "decode": [], "streams": []}
+if pathlib.Path(rows_log).exists():
+    for line in pathlib.Path(rows_log).read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not (r.get("t0") and r.get("prompt_ms") is not None and r.get("predicted_ms") is not None):
+            continue
+        a, b = r["t0"], r["t0"] + r["prompt_ms"] / 1000
+        if r.get("depth_target"):
+            windows["prefill"].append((a, b))
+        windows["decode"].append((b, b + r["predicted_ms"] / 1000))
+if len(conc_span.split()) == 2:
+    windows["streams"].append(tuple(float(x) for x in conc_span.split()))
+util = {}
+for phase, wins in windows.items():
+    inside = [s for s in samples if any(a <= s[0] <= b for a, b in wins)]
+    if not inside:
+        continue
+    u = {"samples": len(inside)}
+    # Only the cards holding the model; an idle card's readings are noise.
+    held = {c for c, v in zip(cards, vs) if v > 1024}
+    for card in sorted({s[1] for s in inside} & held):
+        cs = [s for s in inside if s[1] == card]
+        busy = [s[2] for s in cs if s[2] >= 0]
+        mbusy = [s[3] for s in cs if s[3] >= 0]
+        u[card] = {"busy_pct": statistics.median(busy) if busy else None,
+                   "mem_busy_pct": statistics.median(mbusy) if mbusy else None,
+                   "sclk_mhz": statistics.median(s[4] for s in cs),
+                   "power_w": statistics.median(s[5] for s in cs),
+                   "junction_max_c": max(s[6] for s in cs)}
+    # CPU cores in use: the container's CPU time between consecutive samples of one card.
+    first = inside[0][1]
+    seq = sorted((s[0], s[7]) for s in samples if s[1] == first)
+    rates = [(c2 - c1) / 1e6 / (t2 - t1) for (t1, c1), (t2, c2) in zip(seq, seq[1:])
+             if t2 > t1 and any(a <= t2 <= b for a, b in wins)]
+    u["cpu_cores"] = round(statistics.median(rates), 1) if rates else None
+    util[phase] = u
+pl["utilization"] = util
 d["placement"] = pl
 p.write_text(json.dumps(d, indent=1))
 PYADD

@@ -26,6 +26,8 @@ The 2026-09 study's governor trial is not repeated: `cpu-governor.service` sets
 - **Memory:** the container's total, anonymous and page-cache memory after the load.
 - **Speed:** median decode per prompt class at d0 and d8000, and prefill at d8000,
   against `auto`, by the same rule. d0 is the first request after each load.
+- **Utilization:** per phase, the card's power, clocks and busy %, and the CPU cores in
+  use (`SUMMARY.md`'s Utilization table), to show what limits each cell.
 - A cell with any DIMM at 66 °C is reported as capped and left out of the comparisons.
 
 ## Configurations

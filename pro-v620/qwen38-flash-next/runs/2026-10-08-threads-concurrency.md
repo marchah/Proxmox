@@ -25,6 +25,8 @@ llama.cpp b11505:
   for each thread count.
 - **Slot cost:** single-stream decode at parallel 2 and 4 against parallel 1, at the same
   thread count.
+- **Utilization:** per phase, the card's power, clocks and busy %, and the CPU cores in
+  use (`SUMMARY.md`'s Utilization table), to show what limits each cell.
 - A difference counts when it is larger than the pass-to-pass spread of both cells.
 - A cell with any DIMM at 66 °C is reported as capped and left out of the comparisons.
 

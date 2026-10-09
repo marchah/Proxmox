@@ -132,6 +132,11 @@ def one(base, prompt, n_predict):
     accept = round(100.0 * da / dn, 1) if (dn and da is not None) else None
     return {
         "wall_s": round(wall, 2),
+        # When the request started and how its time split, so the sweep can place its
+        # telemetry samples in the prefill or the decode phase.
+        "t0": round(t0, 3),
+        "prompt_ms": tm.get("prompt_ms"),
+        "predicted_ms": tm.get("predicted_ms"),
         "prompt_n": tm.get("prompt_n"),
         "prefill_tps": tm.get("prompt_per_second"),
         "predicted_n": tm.get("predicted_n"),

@@ -81,19 +81,20 @@ cat >"${OUT_DIR}/manifest.json" <<JSON
 JSON
 
 hw() { local h; for h in "/sys/bus/pci/devices/$1"/hwmon/hwmon*; do echo "$h"; return; done; }
-# ts, card, sclk MHz, mclk MHz, power W, junction °C, VRAM MiB
+# ts, card, sclk MHz, mclk MHz, power W, junction °C, VRAM MiB, GPU busy % (-1: unreadable)
 sampler() {
   while :; do
     local now card h
     now="$(date +%s)"
     for card in "${CARDS[@]}"; do
       h="$(hw "$card")"
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$now" "$card" \
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$now" "$card" \
         "$(( $(cat "$h/freq1_input" 2>/dev/null || echo 0) / 1000000 ))" \
         "$(( $(cat "$h/freq2_input" 2>/dev/null || echo 0) / 1000000 ))" \
         "$(( $(cat "$h/power1_average" 2>/dev/null || echo 0) / 1000000 ))" \
         "$(( $(cat "$h/temp2_input" 2>/dev/null || echo 0) / 1000 ))" \
-        "$(( $(cat "/sys/bus/pci/devices/${card}/mem_info_vram_used" 2>/dev/null || echo 0) / 1048576 ))"
+        "$(( $(cat "/sys/bus/pci/devices/${card}/mem_info_vram_used" 2>/dev/null || echo 0) / 1048576 ))" \
+        "$(cat "/sys/bus/pci/devices/${card}/gpu_busy_percent" 2>/dev/null || echo -1)"
     done
     sleep 1
   done
@@ -127,7 +128,7 @@ d = pathlib.Path(sys.argv[1])
 res, tel = {}, {}
 for f in sorted(d.glob("r*-Vulkan*-t*.json")):
     tag = f.stem
-    rows = [l.split("\t") for l in (d / (tag + ".tsv")).read_text().splitlines() if l.count("\t") == 6]
+    rows = [l.split("\t") for l in (d / (tag + ".tsv")).read_text().splitlines() if l.count("\t") == 7]
     base = {}
     for r in rows:
         base.setdefault(r[1], int(r[6]))
@@ -135,9 +136,11 @@ for f in sorted(d.glob("r*-Vulkan*-t*.json")):
     # The card this bench ran on: the one whose VRAM rose.
     card = max(base, key=lambda c: peak[c] - base[c]) if base else "?"
     busy = [r for r in rows if r[1] == card and int(r[6]) - base[card] > 1024]
-    t = tel.setdefault(card, {"sclk": [], "mclk": [], "w": [], "tj": []})
+    t = tel.setdefault(card, {"sclk": [], "mclk": [], "w": [], "tj": [], "busy": []})
     for r in busy:
         t["sclk"].append(int(r[2])); t["mclk"].append(int(r[3])); t["w"].append(int(r[4])); t["tj"].append(int(r[5]))
+        if int(r[7]) >= 0:
+            t["busy"].append(int(r[7]))
     try:
         data = json.loads(f.read_text() or "[]")
     except json.JSONDecodeError:
@@ -160,12 +163,13 @@ for test in sorted(res, key=lambda k: (k.startswith("tg"), int(k.split()[0][2:])
     xs = [res[test].get(c, []) for c in cards]
     delta = "%+.1f%%" % (100 * (st.median(xs[1]) / st.median(xs[0]) - 1)) if len(cards) == 2 and all(xs) else "—"
     print("| %s | %s | %s |" % (test, " | ".join(fmt(x) for x in xs), delta))
-print("\n| card | median sclk, MHz | median mclk, MHz | median power, W | max junction, °C | samples |")
-print("|---|---:|---:|---:|---:|---:|")
+print("\n| card | median GPU busy % | median sclk, MHz | median mclk, MHz | median power, W | max junction, °C | samples |")
+print("|---|---:|---:|---:|---:|---:|---:|")
 for c in cards:
     t = tel[c]
     if t["sclk"]:
-        print("| `%s` | %d | %d | %d | %d | %d |" % (c, st.median(t["sclk"]), st.median(t["mclk"]),
+        print("| `%s` | %s | %d | %d | %d | %d | %d |" % (c, "%d" % st.median(t["busy"]) if t["busy"] else "—",
+              st.median(t["sclk"]), st.median(t["mclk"]),
               st.median(t["w"]), max(t["tj"]), len(t["sclk"])))
 PY
 log "done — ${OUT_DIR}/SUMMARY.md"

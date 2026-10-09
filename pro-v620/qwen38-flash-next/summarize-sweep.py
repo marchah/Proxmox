@@ -45,7 +45,7 @@ def main():
                                 "disagree": False, "errors": 0, "cache_mib": [],
                                 "hit": [], "dimm": [], "capped": 0, "cache_inactive": 0,
                                 "shas": {}, "load_failed": 0, "load_s": [], "gpus": None,
-                                "cell": pl.get("cell"), "conc": [], "mem": []})
+                                "cell": pl.get("cell"), "conc": [], "mem": [], "util": []})
         if pl.get("load_failed"):
             g["load_failed"] += 1
             continue
@@ -56,6 +56,8 @@ def main():
         g["gpus"] = pl.get("gpus", g["gpus"])
         if pl.get("active_card"):
             g.setdefault("cards", set()).add(pl["active_card"])
+        if pl.get("utilization"):
+            g["util"].append(pl["utilization"])
         if pl.get("ct_mem_mib"):
             g["mem"].append((pl["ct_mem_mib"], pl["ct_anon_mib"], pl["ct_file_mib"]))
         if pl.get("concurrency"):
@@ -275,6 +277,35 @@ def main():
                 med([x["aggregate_tps"] for x in c if x.get("aggregate_tps")]),
                 med([x["wall_aggregate_tps"] for x in c if x.get("wall_aggregate_tps")]),
                 ", ".join(f) or "ok"))
+
+    # --- utilization -------------------------------------------------------------
+    if any(by[k]["util"] for k in keys):
+        print("\n## Utilization\n")
+        print("Medians of 1 s samples across passes, per phase: prefill is the deep requests' "
+              "prompt time, decode their generation, streams the concurrency probe. "
+              "`gpu_busy_percent` counts any queued work, so it reads high at a fraction of the "
+              "250 W power cap; power and sclk show how hard a card works. Two-card cells list "
+              "each card. CPU is cores in use by the container.\n")
+        print("| cell | phase | GPU busy % | power, W | sclk, MHz | VRAM busy % | max junction, °C | CPU cores |")
+        print("|---|---|---:|---:|---:|---:|---:|---:|")
+        for key in keys:
+            us = by[key]["util"]
+            for phase in ("prefill", "decode", "streams"):
+                ps = [u[phase] for u in us if u.get(phase)]
+                if not ps:
+                    continue
+                cards = sorted({c for p_ in ps for c in p_ if c.startswith("0000:")})
+                def col(field, agg=statistics.median):
+                    vals = []
+                    for c in cards:
+                        xs = [p_[c][field] for p_ in ps if c in p_ and p_[c][field] is not None]
+                        vals.append("%d" % agg(xs) if xs else "—")
+                    return " / ".join(vals)
+                cores = [p_["cpu_cores"] for p_ in ps if p_.get("cpu_cores") is not None]
+                print("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                    label(key), phase, col("busy_pct"), col("power_w"), col("sclk_mhz"),
+                    col("mem_busy_pct"), col("junction_max_c", max),
+                    "%.1f" % statistics.median(cores) if cores else "—"))
 
     # --- the template contract ----------------------------------------------------
     if contract:
