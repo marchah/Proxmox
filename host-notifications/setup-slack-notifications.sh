@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 # Route Proxmox notifications (backup failures, replication errors, fencing, package updates,
-# ...) to Slack, in addition to the built-in mail-to-root target.
+# ...) to Slack, and by default turn off the built-in email route (see MAIL_TO_ROOT).
 #
 # WHY THIS EXISTS: the weekly backup job can fail silently for weeks — Proxmox *does* notify, but
 # to root's local mailbox via postfix, which nobody reads. A notification nobody sees is not a
@@ -30,9 +30,15 @@ MIN_SEVERITY="${MIN_SEVERITY:-}"
 # Use it when several hosts post to one channel: Proxmox titles carry the node name, and two
 # standalone nodes can share one.
 LABEL="${LABEL:-}"
+# The built-in default-matcher emails every notification to root@pam's address through the
+# mail-to-root target. A host without an authenticated mail relay sends that mail straight to
+# the recipient's server, and Gmail rejects it as unauthenticated (no SPF or DKIM). Each bounce
+# comes back to root, and proxmox-mail-forward posts it to Slack as "Undelivered Mail Returned
+# to Sender". off (default) disables default-matcher; on enables it.
+MAIL_TO_ROOT="${MAIL_TO_ROOT:-off}"
 
 usage() {
-  sed -n '3,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '3,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -71,6 +77,7 @@ main() {
   [[ -n ${token} && ${token} != */ ]] || die "the webhook URL looks truncated after /services/"
   # The label goes into the JSON body verbatim, so keep it to characters that need no escaping.
   [[ ${LABEL} =~ ^[A-Za-z0-9._-]*$ ]] || die "LABEL may only contain letters, digits, '.', '_' and '-'"
+  [[ ${MAIL_TO_ROOT} == on || ${MAIL_TO_ROOT} == off ]] || die "MAIL_TO_ROOT must be on or off"
 
   local prefix=''
   [[ -n ${LABEL} ]] && prefix="[${LABEL}] "
@@ -96,21 +103,26 @@ main() {
     || die "failed to create the webhook endpoint"
 
   log "Creating matcher '${MATCHER_NAME}'"
-  # A matcher with mode=all and no match rules matches everything. This is ADDITIONAL to the
-  # builtin default-matcher, so mail-to-root keeps working; Proxmox delivers to the union of
-  # every matching matcher's targets.
+  # A matcher with mode=all and no match rules matches everything. Proxmox delivers to the
+  # union of every enabled matcher's targets, so this one works whatever MAIL_TO_ROOT is.
   pvesh delete "/cluster/notifications/matchers/${MATCHER_NAME}" >/dev/null 2>&1 || true
   local -a matcher_args=(
     --name "${MATCHER_NAME}"
     --mode all
     --target "${ENDPOINT_NAME}"
-    --comment 'Forward notifications to Slack (in addition to mail-to-root)'
+    --comment 'Forward all notifications to Slack'
   )
   if [[ -n ${MIN_SEVERITY} ]]; then
     matcher_args+=(--match-severity "${MIN_SEVERITY}")
   fi
   pvesh create /cluster/notifications/matchers "${matcher_args[@]}" \
     || die "failed to create the matcher"
+
+  log "Turning the built-in default-matcher (email to root@pam) ${MAIL_TO_ROOT}"
+  local disable=1
+  [[ ${MAIL_TO_ROOT} == on ]] && disable=0
+  pvesh set /cluster/notifications/matchers/default-matcher --disable "${disable}" \
+    || die "failed to update default-matcher"
 
   log "Sending a test notification"
   if pvesh create "/cluster/notifications/targets/${ENDPOINT_NAME}/test" >/dev/null 2>&1; then
@@ -123,9 +135,8 @@ main() {
   fi
 
   log "Done"
-  printf 'Endpoint: %s   Matcher: %s   Severity filter: %s   Label: %s\n' \
-    "${ENDPOINT_NAME}" "${MATCHER_NAME}" "${MIN_SEVERITY:-<all>}" "${LABEL:-<none>}"
-  printf 'Notifications now go to BOTH Slack and mail-to-root.\n'
+  printf 'Endpoint: %s   Matcher: %s   Severity filter: %s   Label: %s   Email: %s\n' \
+    "${ENDPOINT_NAME}" "${MATCHER_NAME}" "${MIN_SEVERITY:-<all>}" "${LABEL:-<none>}" "${MAIL_TO_ROOT}"
   printf '\nVerify the weekly backup job reports in:\n'
   printf '  pvesh get /cluster/notifications/matchers\n'
   printf '  vzdump 200 --storage Synology-Backup --mode stop   # a real job that will notify\n'
