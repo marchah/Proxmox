@@ -103,7 +103,11 @@ but costs image-encoding latency; text requests are unaffected.
   loads the CPU-resident experts into pinned host memory that RADV counts as GTT
   (52.8 GB at `-ncmoe 34`); on b11505 that prefilled 3.2–3.3 times as fast with the
   same decode and output, and took about twice as long to load cold ([load-modes
-  record](runs/2026-10-08-load-modes.md)).
+  record](runs/2026-10-08-load-modes.md)). On two cards at `-ncmoe 16` it prefilled
+  3.1 times as fast (276 t/s), with the same output and decode at least as fast. In a
+  container holding both cards, the pinned memory was charged to `Vulkan0`, and one
+  card on `Vulkan1` prefilled no faster than under `auto` ([two-card
+  record](runs/2026-10-09-load-modes-two-cards.md)).
 - Card use under `auto` on b11505: no placement's median card power exceeded 66 W of
   the 250 W cap in prefill or decode. On one card without the MoE cache, prefill used
   under one CPU core and decode 13–16; CPU only used 14.5–16 ([utilization
@@ -134,7 +138,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on one card](runs/2026-10-08-load-modes.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [What each configuration uses, rerun with telemetry](runs/2026-10-08-utilization.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared, with `-ncmoe 34` on each](../runs/2026-10-08-card-ab.md) | done |
-| 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on two cards](runs/2026-10-09-load-modes-two-cards.md) | planned |
+| 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on two cards](runs/2026-10-09-load-modes-two-cards.md) | done |
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [MTP speculative decoding on one and two cards](runs/2026-10-09-mtp.md) | planned |
 
 ## Benchmark tools
