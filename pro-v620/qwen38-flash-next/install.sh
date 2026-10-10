@@ -8,7 +8,7 @@
 # Two deployments use this, and they differ only in the env file:
 #
 #   VMID=120                                  ./install.sh   # two cards, -ncmoe 16 (qwen38fn.env)
-#   VMID=123 ENV_FILE=qwen38fn-gpu2.env       ./install.sh   # ONE card, -ncmoe 34
+#   VMID=123 ENV_FILE=qwen38fn-gpu2.env       ./install.sh   # ONE card, -ncmoe 37, dio, MTP head
 #
 # This only installs. It does not attach a GPU, change the container's limits, or stop
 # the qwen3.6 server — ./ct120-cutover.sh does all of that, reversibly.

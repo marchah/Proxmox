@@ -12,7 +12,9 @@ at `0000:83:00.0`**, leaving CT 120's Qwen3.6 service on the other card.
 | Env file | `qwen38fn-gpu2.env` | `qwen38fn.env` |
 | Binary tree | `llama-b11505` (release tarball) | `llama-b11505` (release tarball) |
 | GPUs | one, `0000:83:00.0` | both V620s |
-| CPU expert layers | 34 | 16 |
+| CPU expert layers | 37 | 16 |
+| Load mode | `dio` | `auto` |
+| Speculative decoding | Q4_K_M MTP head, n-max 3 | none |
 | Tensor split | none | `30,18` |
 | Context / parallel | 65536 / 1 | 65536 / 1 |
 | Threads | 16 | 16 |
@@ -120,7 +122,10 @@ but costs image-encoding latency; text requests are unaffected.
   after changing build, batch size, context or projector placement.
 
 Measure free VRAM and GTT together after a completion. Aggregate capacity does
-not prove each card fits, and the startup guard does not catch spill. New
+not prove each card fits, and the startup guard does not catch spill. Under `dio`, GTT
+also holds the pinned experts (58,042 MiB in use on CT 123 after a request), so read
+spill as VRAM-requested memory outside VRAM ([benchmark tools](#benchmark-tools))
+rather than from the GTT total. New
 placements need at least 2048 MiB free on each card or an end-to-end load check
 recording the minimum at the intended batch size. With the MTP head, 1,822 MiB free after
 a probe was not enough: buffers created during agent sessions still went to GTT ([MTP
@@ -269,7 +274,8 @@ CT 120 holding both cards with two slots, against the fastest no-head configurat
   draft token, so a placement that fits one draft length can spill at a longer one.
 - Text differs from the no-head text in every prompt; all of it read as coherent.
 - With `--load-mode dio` on CT 123 (one 64k slot), the full benchmark batch prefilled
-  about three times as fast as the deployed configuration.
+  about three times as fast as the previous configuration (`-ncmoe 34`, `auto`, no
+  head).
   - At `-ncmoe 36`, llama-server frees and creates buffers of up to 1,024 MiB within
     requests. When VRAM could not hold one at that moment, it was created in GTT, and
     prefill ran at 61–214 t/s while it stayed there. For 70 minutes of one batch it
@@ -277,7 +283,7 @@ CT 120 holding both cards with two slots, against the fastest no-head configurat
     configuration's ([batch record](runs/2026-10-10-bench.md), [prefill-slowdown
     record](runs/2026-10-10-prefill-slowdown.md)).
   - At `-ncmoe 37`, with 3.3 GiB free at load, none was. Agent sessions took 54–55% less
-    time than with the deployed configuration and document ingestion 53–61% less
+    time than with the previous configuration and document ingestion 53–61% less
     ([prefill-slowdown record](runs/2026-10-10-prefill-slowdown.md)).
   - Over three interleaved reps of each configuration, 32-token replies to 512-token
     prompts decoded at a median 12.4 t/s against 13.9 (−10.9%, beyond the rep-to-rep
@@ -288,7 +294,8 @@ CT 120 holding both cards with two slots, against the fastest no-head configurat
 
 `qwen38fn-download.sh` fetches the self-contained Q8_0 and Q4_K_M heads, re-exported
 upstream on 2026-10-05, and the 2026-09-01 `shared-Q4_K_M` head. That re-export changed
-only the self-contained heads; the UD-Q4_K_XL shards are unchanged. MTP is not deployed.
+only the self-contained heads; the UD-Q4_K_XL shards are unchanged. CT 123 runs the
+Q4_K_M head at n-max 3 with `dio` at `-ncmoe 37` since 2026-10-10.
 
 The [MTP patches](mtp-patches/README.md) and `mtp-standalone.sh` are the earlier
 b11018 attempt, which aborted in `graph_mtp` → `build_hc_mix` with

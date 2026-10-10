@@ -308,10 +308,10 @@ has its reload helper. It stops if the two-card cutover is active, or if CT 123 
 | `make bench INGEST=false` | Regression items and agent sessions |
 | `make bench AGENT=false` | Regression items and document ingestion |
 
-GPU 2 is slow. On 2026-10-09 its model (b11505, `-ncmoe 34`, q8_0 KV, one 64k slot, eight
-DIMMs) prefilled cold prompts of 8k to 48k tokens at 102–103 tok/s and decoded at 12–14
-tok/s, and the full batch ran for 5 h 34 min
-([record](../pro-v620/qwen38-flash-next/runs/2026-10-09-bench.md)).
+GPU 2 is slow. On 2026-10-10 its model (b11505, `-ncmoe 37`, `dio`, MTP head at n-max 3,
+q8_0 KV, one 64k slot, eight DIMMs) prefilled cold prompts of 8k to 48k tokens at
+283–306 tok/s and decoded the notes at 17.5–19.9 tok/s, and the full batch ran for
+2 h 40 min ([record](../pro-v620/qwen38-flash-next/runs/2026-10-10-prefill-slowdown.md)).
 
 On GPU 1, Hermes keeps using CT 120 during a run. Its requests slow the workloads and can
 take a session's slot (counted in `cache_misses`). Keep long runs clear of CT 121's 04:00 ET KB

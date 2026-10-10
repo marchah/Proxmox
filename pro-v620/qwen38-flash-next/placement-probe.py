@@ -18,9 +18,9 @@ can turn a working server into 500s (see below).
      rescored every block summary over the whole cached context every token until
      llama.cpp #28699 (still an open draft). A single short-prompt number is therefore
      not a throughput figure for this model. Hence --depths.
-  3. Speculation is NOT in play. The MTP head is not deployed, so draft_n is absent and
-     tok/s is a plain bandwidth number — unlike CT 123's coder, where it is
-     prompt-dependent.
+  3. With the MTP head (CT 123's deployed env), decode depends on how many drafted tokens
+     the prompt gets accepted, so each row records draft_n and draft_n_accepted. Without
+     it, draft_n is absent and tok/s is a plain bandwidth number.
 """
 import argparse, hashlib, json, sys, time, urllib.error, urllib.request
 
