@@ -124,6 +124,18 @@ def evaluate_dimm_temperature(run_dir: Path, telemetry_rules: dict[str, Any]) ->
     return {"name": "memory-dimms", "status": status, "checks": [check], "telemetry": dimm}
 
 
+def evaluate_tool_status(target_dir: Path) -> dict[str, Any] | None:
+    """A tool that writes no summary file (llama-benchy) still ran if the suite wrote its
+    status.json; its exit code is the check."""
+    status_file = target_dir / "status.json"
+    if not status_file.exists():
+        return None
+    code = load_json(status_file).get("exit_code")
+    status = "pass" if code == 0 else "fail"
+    check = {"name": "exit_code", "value": code, "limit": 0, "status": status}
+    return {"name": target_dir.name, "status": status, "checks": [check], "telemetry": {}}
+
+
 def find_summary(target_dir: Path) -> dict[str, Any] | None:
     for pattern in SUMMARY_PATTERNS:
         for candidate in target_dir.glob(pattern):
@@ -159,6 +171,10 @@ def main() -> int:
     for target_dir in sorted(path for path in run_dir.iterdir() if path.is_dir()):
         summary = find_summary(target_dir)
         if not summary:
+            tool_result = evaluate_tool_status(target_dir)
+            if tool_result:
+                overall = worse(overall, tool_result["status"])
+                benchmarks.append(tool_result)
             continue
         rules = slo.get("benchmarks", {}).get(target_dir.name, {})
         result = evaluate_benchmark(target_dir, summary, rules, telemetry_rules)
@@ -179,15 +195,15 @@ def main() -> int:
         overall = worse(overall, dimm_result["status"])
         benchmarks.append(dimm_result)
 
-    # No benchmark summaries means nothing was actually benchmarked. Report that
-    # as a failure rather than silently passing on an empty result set (target
+    # No benchmark summary or tool status means nothing was actually benchmarked. Report
+    # that as a failure rather than silently passing on an empty result set (target
     # telemetry alone does not count as a benchmark having run).
     if summary_count == 0:
         overall = "fail"
 
     output = {"status": overall, "slo_file": str(Path(args.slo_file)), "benchmarks": benchmarks}
     if summary_count == 0:
-        output["error"] = "no benchmark summaries found to evaluate"
+        output["error"] = "no benchmark summary or tool status found to evaluate"
     (run_dir / "slo-report.json").write_text(json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (run_dir / "SLO.md").write_text(render_markdown(output), encoding="utf-8")
     print(json.dumps(output, indent=2, sort_keys=True))
