@@ -11,10 +11,13 @@ GTT in use and temperatures, and for each process named --comm that has the card
 - from /proc/<pid>/fdinfo, the kernel's own accounting: resident VRAM and GTT,
   `amd-evicted-vram` (memory that asked for VRAM but sits in GTT) and the requested
   VRAM and GTT;
-- from debugfs `amdgpu_gem_info`, the count and bytes of its buffers in each placement.
+- from debugfs `amdgpu_gem_info`, the count and bytes of its buffers in each placement;
+  `UNKNOWN` counts buffers the kernel could not lock to read, those in use by a submission.
 
 When a buffer of at least --min-move-mib changes placement, the line also carries a
-`moves` list (handle, size, from, to). The first line for a process lists every such
+`moves` list (handle, size, from, to); a buffer read as UNKNOWN keeps its last known
+placement. GEM handles are reused, so a buffer freed and another of the same size created
+under its handle between two samples reads as a move. The first line for a process lists every such
 buffer's placement as its starting point. A process that appears again with a new pid
 (the server restarted) starts a new baseline.
 """
@@ -167,7 +170,10 @@ def main():
                     slot[0] += 1
                     slot[1] += size
                 proc["bos"] = {place: {"count": c, "mib": round(b / 2**20, 1)} for place, (c, b) in by.items()}
-                big = {h: v for h, v in bos.items() if v[0] >= min_move}
+                # gem_info prints UNKNOWN for a buffer it could not lock (one in use by a
+                # submission); keep its last known placement rather than call it a move.
+                big = {h: (v[0], last.get(pid, {}).get(h, (None, v[1]))[1] if v[1] == "UNKNOWN" else v[1])
+                       for h, v in bos.items() if v[0] >= min_move}
                 if pid not in last:
                     proc["baseline"] = [[h, round(s / 2**20, 1), p] for h, (s, p) in sorted(big.items())]
                 else:
