@@ -139,7 +139,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [MTP speculative decoding on one and two cards](runs/2026-10-09-mtp.md) | done |
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch on CT 123](runs/2026-10-09-bench.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [`dio` and the MTP head together on one card](runs/2026-10-10-best-config.md) | done |
-| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch with `dio` and the MTP head](runs/2026-10-10-bench.md) | planned |
+| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch with `dio` and the MTP head](runs/2026-10-10-bench.md) | done |
 
 ## Benchmark tools
 
@@ -252,6 +252,11 @@ CT 120 holding both cards with two slots, against the fastest no-head configurat
 - The head takes 3.5 GiB of VRAM on one card at n-max 3 and about 225 MiB more per extra
   draft token, so a placement that fits one draft length can spill at a longer one.
 - Text differs from the no-head text in every prompt; all of it read as coherent.
+- With `--load-mode dio` on CT 123 (one 64k slot, `-ncmoe 36`), the full benchmark batch
+  prefilled about three times as fast as the deployed configuration. For 70 minutes of its
+  agent sessions, though, GTT held 1,024 MiB more than usual, VRAM had peaked at 30,678 of
+  30,704 MiB, and prefill fell to 61–91 t/s. Its `coding` sessions then ran longer than
+  the deployed configuration's ([batch record](runs/2026-10-10-bench.md)).
 
 `qwen38fn-download.sh` fetches the self-contained Q8_0 and Q4_K_M heads, re-exported
 upstream on 2026-10-05, and the 2026-09-01 `shared-Q4_K_M` head. That re-export changed
