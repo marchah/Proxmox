@@ -74,8 +74,8 @@ wrong model name in session and usage records.
 
 The model service and container keep swap disabled. The CPU expert weights and
 PLE table must stay resident. Tensor placement changes require a full reload, which
-took 10–35 s on the cards and 55 s CPU-only from the NVMe store's page cache in the
-2026-10-08 sweeps.
+under `auto` took 9–37 s on the cards and 62 s CPU-only in the 2026-10-08 sweeps, with
+the host page cache kept ([utilization record](runs/2026-10-08-utilization.md)).
 
 ## Response contract
 
