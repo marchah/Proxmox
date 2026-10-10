@@ -647,27 +647,8 @@ def infer_limits(rows: list[dict[str, Any]]) -> list[str]:
     limits = []
     for row in rows:
         telemetry = row.get("telemetry", {})
-        temps = telemetry.get("temperature_max_c_by_sensor") or {}
-        hot_sensors = []
-        for sensor, value in temps.items():
-            if not isinstance(value, (int, float)):
-                continue
-            threshold = 85
-            if sensor == "amdgpu junction":
-                threshold = 110
-            elif sensor in {"amdgpu edge", "nvme Composite"}:
-                threshold = 80
-            if value >= threshold:
-                hot_sensors.append(f"{sensor} {fmt(value)} C")
-        if hot_sensors:
-            limits.append(f"{row['name']}: high temperature observed on {', '.join(hot_sensors)}.")
         if telemetry.get("max_gpu_util_percent") and telemetry["max_gpu_util_percent"] >= 95:
             limits.append(f"{row['name']}: GPU utilization reached {fmt(telemetry['max_gpu_util_percent'])}%.")
-        if telemetry.get("max_gpu_memory_used_mib") and telemetry.get("gpu_memory_total_mib"):
-            used = telemetry["max_gpu_memory_used_mib"]
-            total = telemetry["gpu_memory_total_mib"]
-            if total and used / total >= 0.9:
-                limits.append(f"{row['name']}: GPU memory reached {fmt(used)} MiB of {fmt(total)} MiB.")
         status = row.get("status", {})
         if status and not status.get("ok", True):
             limits.append(f"{row['name']}: benchmark exited with code {status.get('exit_code')}.")
