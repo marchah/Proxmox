@@ -26,10 +26,13 @@ B550-specific `nct6687` sysfs.
 
 ## Fan pairing
 
-| Blower | Card |
-| --- | --- |
-| FAN4 | `0000:83:00.0` (top) |
-| FAN5 | `0000:03:00.0` (bottom) |
+| Blower | Card | Log name |
+| --- | --- | --- |
+| FAN4 | `0000:83:00.0` (top), CT 123 | `gpu2` |
+| FAN5 | `0000:03:00.0` (bottom), CT 120 | `gpu1` |
+
+`gpu1` and `gpu2` follow the repo's GPU numbering (`make bench GPU=1|2`), and each log line
+names the card's PCI address, e.g. `gpu1 03:00.0[host] edge=62C hot=68C ov=0 -> 60%`.
 
 Verify the physical pairing after rewiring: change one blower's duty and confirm
 that blower responds. PCI bus order does not identify the fan header. Reversed
@@ -75,7 +78,7 @@ are cold) but means the blowers are not a standby-power safety net.
 A card bound to `vfio-pci` has no host hwmon. The service then finds the **running** VM whose
 config passes that address through (`hostpciN: 0000:83:00.0,...`) and reads the card's temps
 inside the guest with `qm guest exec`. The log names the source each time it changes, e.g.
-`gpu1 0000:83:00.0 temps from: vm301`.
+`gpu2 0000:83:00.0 temps from: vm301`.
 
 The guest needs:
 

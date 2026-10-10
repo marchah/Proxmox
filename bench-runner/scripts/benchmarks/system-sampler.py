@@ -149,6 +149,9 @@ def collect_temperatures() -> dict[str, Any]:
 
     for hwmon in Path("/sys/class/hwmon").glob("hwmon*"):
         chip = read_text(hwmon / "name")
+        # The device behind the chip, e.g. a GPU's PCI address: every V620 reports
+        # the same "amdgpu" chip and labels, and CT 123 and CT 200 both see both cards.
+        device = Path(os.path.realpath(hwmon / "device")).name if (hwmon / "device").exists() else None
         for temp_input in hwmon.glob("temp*_input"):
             raw = read_text(temp_input)
             if not raw:
@@ -161,6 +164,7 @@ def collect_temperatures() -> dict[str, Any]:
             temps["hwmon"].append(
                 {
                     "chip": chip,
+                    "device": device,
                     "sensor": stem,
                     "label": read_text(hwmon / f"{stem}_label"),
                     "temp_c": millideg / 1000,

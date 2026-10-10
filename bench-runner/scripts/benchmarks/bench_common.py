@@ -311,6 +311,38 @@ def dimm_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def hwmon_instances(items: list[dict[str, Any]]) -> list[str | None]:
+    """Tell apart the chips in one sample's system-sampler.py hwmon readings, which
+    otherwise share names: both V620s report "amdgpu junction". Aligned with `items`:
+    an amdgpu reading gets its card's PCI address, recorded as `device`; another chip
+    seen more than once gets its device; None for a chip seen once. Samples taken
+    before the sampler recorded devices get `#N`, the chip's Nth hwmon in sampling
+    order: one hwmon's readings are contiguous, and a repeated sensor starts the next.
+    """
+    positions: list[tuple[str, int]] = []
+    counts: dict[str, int] = {}
+    previous_chip = None
+    sensors: set[Any] = set()
+    for item in items:
+        chip = item.get("chip") or "hwmon"
+        sensor = item.get("sensor")
+        if chip != previous_chip or sensor in sensors:
+            counts[chip] = counts.get(chip, 0) + 1
+            sensors = set()
+        sensors.add(sensor)
+        previous_chip = chip
+        positions.append((chip, counts[chip]))
+    instances: list[str | None] = []
+    for item, (chip, number) in zip(items, positions):
+        if chip == "amdgpu" and item.get("device"):
+            instances.append(item["device"])
+        elif counts[chip] > 1:
+            instances.append(item.get("device") or f"#{number}")
+        else:
+            instances.append(None)
+    return instances
+
+
 def acceptance(drafted: list[int | None], accepted: list[int | None]) -> float | None:
     total = sum(d or 0 for d in drafted)
     return sum(a or 0 for a in accepted) / total if total else None

@@ -65,6 +65,8 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
 | `0000:03:00.0` | CT 120 `llamacpp` | FAN5 |
 | `0000:83:00.0` | CT 123 `llamacpp-qwen38fn` | FAN4 |
 
+- The two cards are not interchangeable for measurements: compare a result only with
+  others taken on the same card.
 - Pin passthrough by `/dev/dri/by-path/pci-<address>-render`, resolving the real
   destination node name. `cardN` numbering can change after hardware/kernel changes;
   follow the recovery procedure in `pro-v620/README.md`.
@@ -81,6 +83,9 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   q8_0 KV. Keep q8_0: at 262k, f16 KV spills ~2 GiB to GTT and decodes slower than no
   speculation. Measure a spec change at two concurrent streams too, not just one; see
   `pro-v620/spec-ab/`.
+- CT 123 runs Flash-Next's Q4_K_M MTP head at n-max 3 with `--load-mode dio` at
+  `-ncmoe 37`. `dio` pins the CPU experts as about 57 GiB of GTT, so the GTT total is not
+  spill there; read requested minus resident VRAM (`vram-residency-sampler.py`).
 - [gpu-blower-control/](pro-v620/gpu-blower-control/README.md) drives FAN4/FAN5 via
   IPMI; [undervolt/](pro-v620/undervolt/README.md) keeps both cards at stock 0 mV.
   −100 mV silently corrupts compute under prefill load. Qualify any offset with

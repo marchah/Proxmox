@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from bench_common import dimm_summary
+from bench_common import dimm_summary, hwmon_instances
 
 AMD_GPU_DEVICE_NAMES = {
     "0x73df": "AMD Radeon RX 6700 XT (Navi 22)",
@@ -281,7 +281,7 @@ def collect_temperature(snapshot: dict[str, Any]) -> list[float]:
     return values
 
 
-def temperature_sensor_name(group: str, item: dict[str, Any]) -> str:
+def temperature_sensor_name(group: str, item: dict[str, Any], instance: str | None = None) -> str:
     if group == "nvidia":
         name = item.get("name") or item.get("index") or "gpu"
         return f"nvidia {name} gpu"
@@ -289,6 +289,8 @@ def temperature_sensor_name(group: str, item: dict[str, Any]) -> str:
         return f"thermal {item.get('type') or item.get('name') or 'unknown'}"
     chip = item.get("chip") or "unknown"
     label = item.get("label") or item.get("sensor") or "temp"
+    if instance:
+        label = f"{instance} {label}"
     if chip == "amdgpu":
         return f"amdgpu {label}"
     if chip == "k10temp":
@@ -303,9 +305,10 @@ def collect_temperatures_by_sensor(snapshot: dict[str, Any]) -> dict[str, float]
     for item in snapshot.get("temperature", {}).get("thermal_zones", []):
         if isinstance(item.get("temp_c"), (int, float)):
             values[temperature_sensor_name("thermal_zone", item)] = float(item["temp_c"])
-    for item in snapshot.get("temperature", {}).get("hwmon", []):
+    hwmon = snapshot.get("temperature", {}).get("hwmon", [])
+    for item, instance in zip(hwmon, hwmon_instances(hwmon)):
         if isinstance(item.get("temp_c"), (int, float)):
-            values[temperature_sensor_name("hwmon", item)] = float(item["temp_c"])
+            values[temperature_sensor_name("hwmon", item, instance)] = float(item["temp_c"])
     for gpu in snapshot.get("gpu", {}).get("nvidia_smi", []):
         temp = gpu.get("temperature_gpu")
         if isinstance(temp, (int, float)):
@@ -647,27 +650,8 @@ def infer_limits(rows: list[dict[str, Any]]) -> list[str]:
     limits = []
     for row in rows:
         telemetry = row.get("telemetry", {})
-        temps = telemetry.get("temperature_max_c_by_sensor") or {}
-        hot_sensors = []
-        for sensor, value in temps.items():
-            if not isinstance(value, (int, float)):
-                continue
-            threshold = 85
-            if sensor == "amdgpu junction":
-                threshold = 110
-            elif sensor in {"amdgpu edge", "nvme Composite"}:
-                threshold = 80
-            if value >= threshold:
-                hot_sensors.append(f"{sensor} {fmt(value)} C")
-        if hot_sensors:
-            limits.append(f"{row['name']}: high temperature observed on {', '.join(hot_sensors)}.")
         if telemetry.get("max_gpu_util_percent") and telemetry["max_gpu_util_percent"] >= 95:
             limits.append(f"{row['name']}: GPU utilization reached {fmt(telemetry['max_gpu_util_percent'])}%.")
-        if telemetry.get("max_gpu_memory_used_mib") and telemetry.get("gpu_memory_total_mib"):
-            used = telemetry["max_gpu_memory_used_mib"]
-            total = telemetry["gpu_memory_total_mib"]
-            if total and used / total >= 0.9:
-                limits.append(f"{row['name']}: GPU memory reached {fmt(used)} MiB of {fmt(total)} MiB.")
         status = row.get("status", {})
         if status and not status.get("ok", True):
             limits.append(f"{row['name']}: benchmark exited with code {status.get('exit_code')}.")

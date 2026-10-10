@@ -9,7 +9,7 @@ readonly GPU_NAME="Radeon Pro V620"
 # This container is pinned to one card (0000:83:00.0). The other (0000:03:00.0)
 # runs CT 120 (qwen3.6 ops). Passthrough binds ONLY GPU 2's DRM nodes — the only
 # reboot-stable way to pin one of two IDENTICAL cards (see configure_gpu_passthrough).
-readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:83:00.0}"    # the card this container uses (both are Gen4 x16 and equivalent)
+readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:83:00.0}"    # the card this container uses (both slots are CPU-direct Gen4 x16)
 readonly OTHER_GPU_PCI_ADDRESS="${OTHER_GPU_PCI_ADDRESS:-0000:03:00.0}"  # runs CT 120, NOT passed through here
 
 # Pinned prebuilt Vulkan llama.cpp release (same as CT 120). llama-swap launches

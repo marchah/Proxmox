@@ -1,0 +1,22 @@
+# Stage 3 of runs/2026-10-09-mtp.md, run on CT 120 holding both V620s with REPS=1 and
+# CONC_REPS=3: the Q4_K_M head at the fitted placements with --spec-draft-n-max 1 to 8, at
+# one and two streams. Stage 2 fitted -ncmoe 36 on one card (1,486 MiB free on
+# 0000:83:00.0 after the request) and 20 on two (stage 1's 2c20-q4; 18 left 707 MiB on
+# 83:00.0, and 19 has the same 31,17 split). Cells alternate between the placements, and
+# the draft lengths run out of order so that drift over the run does not follow length.
+1c36-n3  MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'
+2c20-n4  MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 4'
+1c36-n7  MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 7'
+2c20-n6  MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 6'
+1c36-n1  MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 1'
+2c20-n2  MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 2'
+1c36-n5  MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 5'
+2c20-n8  MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 8'
+1c36-n8  MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 8'
+2c20-n5  MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 5'
+1c36-n2  MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 2'
+2c20-n1  MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 1'
+1c36-n6  MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 6'
+2c20-n7  MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 7'
+1c36-n4  MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 4'
+2c20-n3  MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'

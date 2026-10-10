@@ -1,0 +1,20 @@
+# Stage 4 of runs/2026-10-09-mtp.md, run on CT 120 holding both V620s with REPS=3 and
+# CONC_REPS=3: the Q4_K_M head timed against no-head controls. The scan's best
+# single-stream length was 3 on both placements, so the head cells use n-max 2, 3 and 4;
+# the best two-stream length (3 on two cards, 2 on one) is among them.
+#
+# One card runs at -ncmoe 36, stage 2's fit: in the first scan there, n-max 4 left
+# 1,261 MiB free on 0000:83:00.0 after the request and was not flagged for spill. Two cards
+# run at 20 (32,16), where n-max 4 left 2,242 MiB free on 83:00.0. Each placement has its
+# no-head control and the fastest no-head configuration (34 on one card; 16 on two, split
+# 30,18). Cells alternate between the placements.
+1c36-n3  MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'
+2c20     MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2
+1c34     MODE=1gpu NCMOE=34 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2
+2c20-n2  MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 2'
+1c36-n4  MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 4'
+2c16     MODE=2gpu NCMOE=16 PARALLEL=2 STREAMS=2
+1c36     MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2
+2c20-n4  MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 4'
+1c36-n2  MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 2'
+2c20-n3  MODE=2gpu NCMOE=20 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'

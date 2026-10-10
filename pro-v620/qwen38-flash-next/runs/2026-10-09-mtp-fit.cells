@@ -1,0 +1,17 @@
+# Stage 2 of runs/2026-10-09-mtp.md, run on CT 120 holding both V620s with REPS=1: the
+# smallest -ncmoe at which the chosen head leaves at least 1 GiB of VRAM free on each card
+# after the ~5.8k-token request, without the sweep's spill flag.
+#
+# Head: Q4_K_M on both placements. In stage 1 its median single-stream decode was within
+# 2% of Q8_0's (1.2% on one card, 1.7% on two); the shared Q4_K_M head did not load.
+#
+# One card: stage 1's head took 3,559 MiB on 0000:83:00.0 after the request. With 1,501 MiB
+# per CPU-resident layer, -ncmoe 35 leaves no room and 36 should leave about 1.5 GiB. 37 is
+# the next step if 36 fails the rule.
+#
+# Two cards: the head went to the second card (+2,936 MiB there, +471 on the first). The
+# split rule gives 18 and 19 the same 31,17 split, which should leave about 0.7 GiB on the
+# second card; 20 (32,16) is stage 1's 2c20-q4, which passed. 18 checks that estimate.
+1c36-q4  MODE=1gpu NCMOE=36 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'
+1c37-q4  MODE=1gpu NCMOE=37 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'
+2c18-q4  MODE=2gpu NCMOE=18 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'

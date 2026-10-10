@@ -7,7 +7,7 @@ set -Eeuo pipefail
 readonly GPU_NAME="Radeon Pro V620"
 # Pin one card by PCI address; the other card remains available to its own container.
 # Both cards stay amdgpu-bound for host cooling, undervolt and watchdog services.
-readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:03:00.0}"    # the card this container uses (both are Gen4 x16 and equivalent)
+readonly GPU_PCI_ADDRESS="${GPU_PCI_ADDRESS:-0000:03:00.0}"    # the card this container uses (both slots are CPU-direct Gen4 x16)
 # The other V620 is INFORMATIONAL ONLY (logs/comments); the passthrough
 # uses GPU_PCI_ADDRESS alone. It is DERIVED at runtime (resolve_idle_gpu) from the
 # other V620 present, so it can't collide with the pinned card when GPU_PCI_ADDRESS

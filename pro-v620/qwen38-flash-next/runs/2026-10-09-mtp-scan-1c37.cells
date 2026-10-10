@@ -1,0 +1,13 @@
+# Stage 3 of runs/2026-10-09-mtp.md, one card again, run on CT 120 holding both V620s with
+# REPS=1 and CONC_REPS=3. In the first scan at -ncmoe 36, the head's VRAM grew about
+# 225 MiB per draft token on 0000:83:00.0, so n-max 5 and 7 spilled to GTT there. At 37,
+# which stage 2 measured with 2,988 MiB free at n-max 3, n-max 8 should leave about
+# 1.9 GiB. The draft lengths run out of order so that drift does not follow length.
+1c37-n5  MODE=1gpu NCMOE=37 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 5'
+1c37-n2  MODE=1gpu NCMOE=37 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 2'
+1c37-n8  MODE=1gpu NCMOE=37 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 8'
+1c37-n4  MODE=1gpu NCMOE=37 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 4'
+1c37-n1  MODE=1gpu NCMOE=37 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 1'
+1c37-n7  MODE=1gpu NCMOE=37 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 7'
+1c37-n3  MODE=1gpu NCMOE=37 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'
+1c37-n6  MODE=1gpu NCMOE=37 DEVICE=Vulkan1 PARALLEL=2 STREAMS=2 EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 6'
