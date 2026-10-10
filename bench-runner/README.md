@@ -140,7 +140,7 @@ rates kept apart (from llama-server `timings`; see `BENCHMARKS.md`) **and**
 GPU telemetry — utilization, VRAM, core clocks, and temperatures — because
 `system-sampler.py` reads the Proxmox host's `/sys/class/drm` and hwmon even from
 this unprivileged LXC. A baseline run captured 99% GPU util, 7.24 GiB VRAM, and a
-103 °C junction temperature, and the GPU/temperature SLO checks ran.
+103 °C junction temperature.
 
 Caveat: the amdgpu counters are only meaningful **under load**. Some engines (e.g.
 LM Studio) free VRAM when idle, so `mem_info_vram_used` can read near-zero between

@@ -24,6 +24,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from bench_common import hwmon_instances
+
 
 def iter_jsonl(path: Path) -> list[dict[str, Any]]:
     records = []
@@ -49,11 +51,12 @@ def temps_by_sensor(record: dict[str, Any]) -> dict[str, float]:
     for item in temperature.get("thermal_zones", []) or []:
         if is_num(item.get("temp_c")):
             out[f"thermal {item.get('type') or item.get('name') or 'zone'}"] = float(item["temp_c"])
-    for item in temperature.get("hwmon", []) or []:
+    hwmon = temperature.get("hwmon", []) or []
+    for item, instance in zip(hwmon, hwmon_instances(hwmon)):
         if is_num(item.get("temp_c")):
             chip = item.get("chip") or "hwmon"
             label = item.get("label") or item.get("sensor") or "temp"
-            out[f"{chip} {label}"] = float(item["temp_c"])
+            out[" ".join(part for part in (chip, instance, label) if part)] = float(item["temp_c"])
     for gpu in record.get("gpu", {}).get("nvidia_smi", []) or []:
         if is_num(gpu.get("temperature_gpu")):
             out[f"nvidia {gpu.get('index', 'gpu')}"] = float(gpu["temperature_gpu"])

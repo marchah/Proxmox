@@ -1,0 +1,4 @@
+# Cells for runs/2026-10-08-load-modes.md, run on CT 123 with DROP_CACHES=true.
+auto      MODE=1gpu NCMOE=34 LOAD_MODE=auto
+none      MODE=1gpu NCMOE=34 LOAD_MODE=none
+dio       MODE=1gpu NCMOE=34 LOAD_MODE=dio

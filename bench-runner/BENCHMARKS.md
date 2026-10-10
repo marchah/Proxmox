@@ -10,9 +10,8 @@ database later.
 Running from the benchmark runner LXC records client-side metrics (latency, TTFT,
 throughput) **and** GPU telemetry — utilization, VRAM, core clocks, and
 temperatures — because `system-sampler.py` reads the Proxmox host's
-`/sys/class/drm` and hwmon even from this unprivileged container. So the GPU and
-temperature SLO checks run from here; you do not need to benchmark on the LLM
-runtime host to get GPU data.
+`/sys/class/drm` and hwmon even from this unprivileged container, so you do not
+need to benchmark on the LLM runtime host to get GPU data.
 
 Caveat: the amdgpu counters are only meaningful under active load — LM Studio frees
 VRAM when idle (so `mem_info_vram_used` reads near-zero between requests; a
@@ -82,7 +81,9 @@ Telemetry includes the best available local data:
 - CPU count, load average, `/proc/stat`, CPU frequency, pressure stall info.
 - RAM and swap from `/proc/meminfo`.
 - Disk and network counters from `/proc`.
-- Temperatures from Linux thermal zones and hwmon.
+- Temperatures from Linux thermal zones and hwmon, with each hwmon chip's device. The
+  report names GPU sensors by PCI address, since every V620 reports the same `amdgpu`
+  labels and CT 123 and CT 200 both see both cards.
 - Optional `sensors -j` output when `lm-sensors` is installed.
 - Optional `nvidia-smi` output for NVIDIA GPUs.
 - Optional `rocm-smi --json` output for AMD GPUs.
@@ -145,7 +146,10 @@ python3 scripts/benchmarks/benchmark-openai-api.py \
 
 - Profiles: `config/benchmark-profiles/*.env`.
 - Default promptset: `config/benchmark-promptsets/homelab-core.jsonl`.
-- Default SLO thresholds: `config/benchmark-slos/default.json`.
+- Pass/fail checks: `config/benchmark-slos/default.json`. A run fails on a failed
+  request in any item, and warns when the hottest DIMM reaches 66 °C or free RAM drops
+  under 2 GiB. Speed, latency and temperatures are reported, not judged: they depend on
+  the model and its placement.
 - Run comparison: `scripts/benchmarks/compare-benchmark-runs.py`.
 
 Example:
@@ -304,9 +308,10 @@ has its reload helper. It stops if the two-card cutover is active, or if CT 123 
 | `make bench INGEST=false` | Regression items and agent sessions |
 | `make bench AGENT=false` | Regression items and document ingestion |
 
-GPU 2 is slow. On 2026-10-02 its model (b11018 baseline build, `-ncmoe 34`, q8_0 KV, one
-64k slot) prefilled an 8k cold prompt at 61 tok/s and decoded at 10 tok/s, so a full
-batch there runs for hours.
+GPU 2 is slow. On 2026-10-09 its model (b11505, `-ncmoe 34`, q8_0 KV, one 64k slot, eight
+DIMMs) prefilled cold prompts of 8k to 48k tokens at 102–103 tok/s and decoded at 12–14
+tok/s, and the full batch ran for 5 h 34 min
+([record](../pro-v620/qwen38-flash-next/runs/2026-10-09-bench.md)).
 
 On GPU 1, Hermes keeps using CT 120 during a run. Its requests slow the workloads and can
 take a session's slot (counted in `cache_misses`). Keep long runs clear of CT 121's 04:00 ET KB

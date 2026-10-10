@@ -19,8 +19,9 @@ CONF=${CONF:-/etc/gpu-blower-control.env}
 # shellcheck source=/dev/null  # runtime config, path is site-specific
 [[ -r $CONF ]] && . "$CONF"
 
-: "${GPU1_PCI:=0000:03:00.0}"; : "${GPU1_FAN:=4}"
-: "${GPU2_PCI:=0000:83:00.0}"; : "${GPU2_FAN:=5}"
+# GPU 1 is CT 120's card, GPU 2 CT 123's; FAN4 cools the top card (83:00.0), FAN5 the bottom.
+: "${GPU1_PCI:=0000:03:00.0}"; : "${GPU1_FAN:=5}"
+: "${GPU2_PCI:=0000:83:00.0}"; : "${GPU2_FAN:=4}"
 : "${EDGE_MIN_C:=35}"          # at/below -> PWM_MIN_PCT
 : "${EDGE_MAX_C:=88}"          # at/above -> 100%
 : "${PWM_MIN_PCT:=20}"         # BMC enforces Fan_PWM_Min=20, so 12 (the nct6687 floor) is not reachable
@@ -142,7 +143,7 @@ claim_fans(){ local modes i args=()
     if (( i == GPU1_FAN || i == GPU2_FAN )); then args+=(0x01); else args+=("0x${modes[i-1]}"); fi
   done
   ipmitool raw 0x3a 0xd8 "${args[@]}" >/dev/null 2>&1 || die "cannot set fan modes"
-  log "claimed FAN$GPU1_FAN/FAN$GPU2_FAN in Manual; ramp edge ${EDGE_MIN_C}-${EDGE_MAX_C}C ${PWM_MIN_PCT}-100%, hotspot override ${HOTSPOT_OVERRIDE_C}/${HOTSPOT_RESUME_C}C"; }
+  log "claimed FAN$GPU1_FAN (gpu1 ${GPU1_PCI#0000:})/FAN$GPU2_FAN (gpu2 ${GPU2_PCI#0000:}) in Manual; ramp edge ${EDGE_MIN_C}-${EDGE_MAX_C}C ${PWM_MIN_PCT}-100%, hotspot override ${HOTSPOT_OVERRIDE_C}/${HOTSPOT_RESUME_C}C"; }
 
 # Log where a card's temps come from whenever that changes, rather than every poll.
 note_source(){ local n=$1 pci=$2 fan=$3 old=$4 new=$5
@@ -173,7 +174,7 @@ while :; do
   if (( a >= DUTY_STEP || b >= DUTY_STEP || d1 == 100 || d2 == 100 )); then
     if set_duties "$d1" "$d2"; then
       (( d1 != last1 || d2 != last2 )) && \
-        log "gpu1[$s1] edge=${e1}C hot=${hs1}C ov=${ov1} -> ${d1}%  |  gpu2[$s2] edge=${e2}C hot=${hs2}C ov=${ov2} -> ${d2}%"
+        log "gpu1 ${GPU1_PCI#0000:}[$s1] edge=${e1}C hot=${hs1}C ov=${ov1} -> ${d1}%  |  gpu2 ${GPU2_PCI#0000:}[$s2] edge=${e2}C hot=${hs2}C ov=${ov2} -> ${d2}%"
       last1=$d1; last2=$d2
     else
       log "WARN ipmi write failed — forcing ${FAIL_DUTY}%"

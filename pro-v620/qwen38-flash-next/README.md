@@ -22,8 +22,8 @@ at `0000:83:00.0`**, leaving CT 120's Qwen3.6 service on the other card.
 
 Vulkan requires **b11013 or later** for the hyper-connection operations. A
 registered `qwen4exp` architecture alone does not establish backend support.
-The measurements below were taken on b11018 (`b11018-baseline`, a local build of the
-same commit as the release tarball). Re-measure on the deployed build before comparing.
+Measurements live in the [test records](#test-records), each with its build and
+hardware.
 
 ## Deployment
 
@@ -71,8 +71,9 @@ request's `model` field, so a stale id still gets answers. It only shows up as t
 wrong model name in session and usage records.
 
 The model service and container keep swap disabled. The CPU expert weights and
-PLE table must stay resident. Recorded load times were 2m38s from cold SATA page
-cache and 40–46s warm; tensor placement changes require a full reload.
+PLE table must stay resident. Tensor placement changes require a full reload, which
+took 10–35 s on the cards and 55 s CPU-only from the NVMe store's page cache in the
+2026-10-08 sweeps.
 
 ## Response contract
 
@@ -93,12 +94,30 @@ but costs image-encoding latency; text requests are unaffected.
 - `--n-cpu-moe N` moves routed experts from the first N of 48 layers to RAM,
   freeing roughly 1.5 GiB per layer. Attention, shared experts, routers, norms
   and KV remain on GPU.
-- `-ncmoe 48` still uses about 9.2 GiB on one card. `-ngl 0` moves the model
-  path to CPU; a separate projector can still occupy GPU memory.
+- `-ncmoe 48` still uses about 7.0 GiB on one card (b11505, q8_0 KV, projector on
+  CPU). `-ngl 0` moves the model path to CPU; a separate projector can still occupy
+  GPU memory.
+- KV cache: the model has 12 full-attention layers, so q8_0 KV costs about
+  12 KiB/token against 24 for f16.
+- Load mode: the default `auto` maps the model files. `--load-mode none` or `dio`
+  loads the CPU-resident experts into pinned host memory that RADV counts as GTT
+  (52.8 GB at `-ncmoe 34`); on b11505 that prefilled 3.2–3.3 times as fast with the
+  same decode and output, and took about twice as long to load cold ([load-modes
+  record](runs/2026-10-08-load-modes.md)). On two cards at `-ncmoe 16` it prefilled
+  3.1 times as fast (276 t/s), with the same output and decode at least as fast. In a
+  container holding both cards, the pinned memory was charged to `Vulkan0`, and one
+  card on `Vulkan1` prefilled no faster than under `auto` ([two-card
+  record](runs/2026-10-09-load-modes-two-cards.md)).
+- Card use under `auto` on b11505: no placement's median card power exceeded 66 W of
+  the 250 W cap in prefill or decode. On one card without the MoE cache, prefill used
+  under one CPU core and decode 13–16; CPU only used 14.5–16 ([utilization
+  record](runs/2026-10-08-utilization.md)).
 - A two-card setup needs an explicit split: CPU-expert layers are much lighter
-  than the remaining layers. At batch/ubatch 1024/256, the measured starting
-  rule is `card1_layers = N + (48 - N)/2 - 2`, with `48,0` for N=48.
-  Recheck placement after changing batch size, context or projector placement.
+  than the remaining layers. At batch/ubatch 1024/256, the starting rule found on
+  b11018 is `card1_layers = N + (48 - N)/2 - 2`, with `48,0` for N=48. On b11505
+  it held without spill at N=16 (`30,18`, 1024/256) and N=34 (`39,9`, 4096/1024)
+  ([utilization record](runs/2026-10-08-utilization.md)). Recheck placement
+  after changing build, batch size, context or projector placement.
 
 Measure free VRAM and GTT together after a completion. Aggregate capacity does
 not prove each card fits, and the startup guard does not catch spill. New
@@ -106,128 +125,22 @@ placements need at least 2048 MiB free on each card or an end-to-end load check
 recording the minimum at the intended batch size. Do not use automatic context
 fitting on this RADV setup.
 
-## Placement measurements — 2026-09-18
-
-These sweep results use **b11018-baseline, `schedutil`, 65536 context and
-1024/256 batch/ubatch**. They are not measurements of every shipped binary/batch
-combination. `d0` means a short prompt; `d8k` means an approximately 8k-token
-prompt. Speeds are tokens/s; VRAM readings were taken after load and a completion.
-
-| `-ncmoe` | split | KV / projector | card 1 | card 2 | total | headroom | decode d0 / d8k |
-| ---: | --- | --- | ---: | ---: | ---: | --- | ---: |
-| 15 | `29,19` | f16 / GPU | 31094 M | 32715 M | 62.3 G | 🔴 **SPILLED** at every split | — |
-| **16** | `30,18` | **q8_0 / CPU** | 29848 M | 30843 M | **59.3 G** | tight (2.9/1.9 G free) | **14.17 / 13.45** |
-| 16 | `30,18` | f16 / GPU | 31431 M | 31174 M | 61.1 G | tight (1.3/1.6 G free) | 14.16 / 13.07 |
-| 20 | `32,16` | f16 / GPU | 28738 M | 27864 M | 55.3 G | fits (4.0/4.9 G free) | 13.03 / 12.06 |
-| 28 | `36,12` | f16 / GPU | 23216 M | 21381 M | 43.6 G | fits (9.6/11.4 G free) | ~11.3 / ~10.6 |
-
-**One card** (`--device Vulkan0`, no split), `q8_0` + projector on CPU:
-
-| `-ncmoe` | VRAM used | free on that card | decode d0 / d8k | prefill 8k |
-| ---: | ---: | ---: | ---: | ---: |
-| **34** | **31100 M (30.4 G)** | 1668 M | **13.01 / 12.23** | 39.1 |
-| 36 | 28097 M (27.4 G) | 4671 M | 12.43 / 11.81 | 37.1 |
-| 40 | 22089 M (21.6 G) | 10679 M | 11.40 / 10.94 | 33.7 |
-| 48 | **9443 M (9.2 G)** | **23.3 G** | 10.18 / 8.70 | 29.0 |
-
-`-ncmoe 34` is the lowest validated one-card setting. Increasing it trades
-throughput for spare VRAM. On two cards, 16 is the supported floor. At 15 with
-q8_0 KV and a CPU projector, split `29,19` spilled (3256 / 89 MiB free).
-Other splits at 15 remain unvalidated; estimated balanced headroom is about
-1571 MiB/card, below the new-placement threshold.
-
-### One versus two cards
-
-Matched at `-ncmoe 34`, one card measured 13.01 / 12.23 t/s at d0/d8k versus
-10.76 / 9.85 for two cards; prefill was 39.1 versus 38.9 t/s. This is consistent
-with the QSA indexer's inter-GPU transfers described in llama.cpp #28699.
-Remeasure after backend changes.
-
-Using the second card for more GPU expert layers (`-ncmoe 16`) on the baseline
-build at 131072 context measured 14.46 / 13.37 t/s and 77.2 t/s prefill. Against
-one card at 34, this improves decode about 11% and nearly doubles prefill. An 8k
-cold prompt took roughly **104s on two cards versus 205s on one** in these sweeps.
-The one-card deployment preserves CT 120's faster endpoint for Hermes.
-
-### Verification boundaries
-
-- **CT 123, baseline binary, 4096/1024:** the deployment load check recorded
-  28965 MiB used of 30704 MiB, 1739 MiB free, and 241 MiB GTT. The placement-table
-  throughput above came from the smaller sweep batch.
-- **CT 120, release binary, 1024/256:** this exact shipped combination has not
-  had an end-to-end load check. Do not assign the baseline sweep's headroom to it.
-- **CT 120, release binary, 4096/1024:** measured minimum free VRAM was
-  2922 / 877 MiB, with GTT rising to 306 MiB on one card. That batch is not the
-  shipped two-card setting. It measured 173–236 t/s prefill, but the comparison
-  also changes the binary, so it does not isolate the batch-size effect.
-- `-ncmoe 16`, split `31,17`, batch `4096/1024` is an unvalidated candidate.
-  Measure both cards under load before adopting it.
-
-### KV and context
-
-At `-ncmoe 16`, split `30,18`, 65536 context on the baseline build:
-
-| KV / projector | Decode d0 / d8k | Free VRAM, MiB |
-| --- | ---: | ---: |
-| f16 / GPU | 14.16 / 13.07 | 1305 / 1553 |
-| q8_0 / CPU | 14.17 / 13.45 | 2881 / 1878 |
-
-The combined q8_0/CPU-projector configuration saves about 1.6 GiB without a
-measured text-speed penalty. This comparison changes two variables; it does not
-isolate either effect. The q8_0 KV cache uses about 12 KiB/token versus 24 for f16
-across the model's 12 full-attention layers.
-
-Raising context to 131072 with **f16** spilled, reducing d8k decode from 13.07 to
-10.34 t/s while prefill stayed near 77 t/s. With **q8_0 and CPU projector**, the
-baseline build passed at 131072; that is a measured alternative, while the env
-files ship 65536.
-
-### Threads and concurrency
-
-Baseline build, `-ncmoe 16`, split `30,18`, q8_0 KV and CPU projector.
-`concurrency-probe.py` uses a different prompt set from the placement probe;
-compare within this table.
-
-| `--parallel` | `--threads` | `--ctx-size` | ctx/slot | per-stream t/s | aggregate t/s |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 32 | 65536 | 65536 | 13.22 | 13.22 |
-| 1 | 16 | 65536 | 65536 | 14.09 | 14.09 |
-| 1 | **8** | 65536 | 65536 | **14.25** | 14.25 |
-| 2 | 32 | 65536 | 32768 | 10.23 | 20.46 |
-| 2 | **16** | 65536 | 32768 | **11.05** | **22.10** |
-| 4 | 32 | 65536 | 16384 | 7.67 | 30.46 |
-| 4 | **16** | 65536 | 16384 | 7.73 | **30.88** |
-| 4 | 8 | 65536 | 16384 | 7.38 | 29.37 |
-| 4 | 32 | **131072** | **32768** | 7.66 | 30.52 |
-
-Sixteen threads is the shipped compromise: close to eight for a solo request
-and better at two/four concurrent streams. Four streams trade individual latency
-for aggregate throughput. The 131072-context result was measured at 32 threads;
-it does not independently validate every thread/context combination.
-
-### Governor, load mode and CPU-only trials
-
-- `schedutil` measured within 2% of `performance`; `powersave` parked the tested
-  CPU at 1500 MHz and cost about 30% decode. Record governor and clocks for A/Bs.
-- `--load-mode auto` measured 11.74 t/s and 14 MiB GTT in a matched trial;
-  `none` measured 11.18 t/s and 31.6 GiB GTT. The shipped configs use auto.
-- CPU-only text inference measured 6.04 / 5.51 t/s at d0/d8k, compared with
-  10.18 / 8.70 for one card at `-ncmoe 48`. The CPU-only trial retained its GPU
-  projector; use `--no-mmproj-offload` to free that allocation as well.
-
-Device utilization and clock/concurrency trials suggest synchronization overhead
-limits this hybrid configuration. A bytes/bandwidth estimate alone substantially
-overpredicts its throughput. Output hashes were stable at d0, but occasionally
-varied at depth even with greedy sampling; check content quality and use repeated
-measurements at depth.
-
 ## Test records
 
 Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.md).
 
 | Date | Build | Backend | Record | Status |
 | --- | --- | --- | --- | --- |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [`--moe-cache-mib` on one V620](runs/2026-10-08-moe-cache.md) | done |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Threads and concurrent streams on one card](runs/2026-10-08-threads-concurrency.md) | done |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on one card](runs/2026-10-08-load-modes.md) | done |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Configurations, context, KV type and MoE cache, with telemetry](runs/2026-10-08-utilization.md) | done |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared, with `-ncmoe 34` on each](../runs/2026-10-08-card-ab.md) | done |
+| 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on two cards](runs/2026-10-09-load-modes-two-cards.md) | done |
+| 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [MTP speculative decoding on one and two cards](runs/2026-10-09-mtp.md) | done |
+| 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch on CT 123](runs/2026-10-09-bench.md) | done |
+| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [`dio` and the MTP head together on one card](runs/2026-10-10-best-config.md) | done |
+| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch with `dio` and the MTP head](runs/2026-10-10-bench.md) | done |
+| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The prefill slowdown with `dio` and the MTP head](runs/2026-10-10-prefill-slowdown.md) | planned |
 
 ## Benchmark tools
 
@@ -236,8 +149,10 @@ run it from `/root/harness/<sha12>/pro-v620/qwen38-flash-next/`; the sweep refus
 unstaged copy unless `UNPINNED=true`. `placement-sweep.sh` writes per-config JSON,
 `environment.json` and `SUMMARY.md` under `/root/qwen38-flash-next/sweep-<ts>/`. It
 reads VRAM from the cards in the container's config, records each cell's server
-command line and hottest DIMM, and on exit restores the container's env file and
-restarts the service if it was running.
+command line, load time, container memory, hottest DIMM, per-phase GPU and CPU use
+(prefill, decode, concurrent streams) and, for a speculative cell, draft acceptance per
+prompt and under concurrency. On exit it restores the container's env file and restarts
+the service if it was running.
 
 Run the thermal guard in a separate shell first; the host watchdog only stops systemd
 services. `VMID=<ct>` limits it to that container's cards and acts only inside that
@@ -249,12 +164,37 @@ is removed after cooling is checked.
 VMID=123 ./thermal-guard.sh
 ```
 
-In the sweep shell, after preparing the intended container/GPU configuration:
+In the sweep shell, after preparing the intended container/GPU configuration, pass a
+cells file: one cell per line, a label then `KEY=value` settings. The script's header
+lists the keys: device mode (`2gpu`, `1gpu`, `cpu`), CPU expert layers, cache, split
+mode, batch, threads, KV type, context, slots, load mode and extra arguments, plus a
+cell's own `DEPTHS`, `STREAMS`, which adds a `concurrency-probe.py` run with that many
+streams, and `DEVICE`, the card a one-GPU cell runs on. `CONFIGS`, a list of `NCMOE[:CACHE]` entries, is the short form.
 
 ```bash
-./placement-sweep.sh
-NCMOE_LIST="20 28" DEPTHS="0,32000" ./placement-sweep.sh
-ONE_GPU=true NCMOE_LIST="34 40 48" ./placement-sweep.sh
+VMID=123 CELLS=runs/2026-10-08-threads-concurrency.cells DEPTHS="0,8000" ./placement-sweep.sh
+VMID=123 CONFIGS="34 40 48" ./placement-sweep.sh
+```
+
+`PROBE_CLASSES` limits the prompt classes, and `DROP_CACHES=true` drops the host page
+cache before every load, for cold loads. `CONC_REPS` sets the concurrency probe's rounds
+per pass (default 1); its medians come only from rounds in which every stream completed,
+and `SUMMARY.md` counts the others. A depth is the probe's target: its filler gives
+about 0.72 prompt tokens per unit (d8000 is ~5.8k tokens), and `SUMMARY.md` prints the
+measured sizes. Every cell is checked before the first load; a cell that fails to load
+is recorded and the sweep moves on. No cell starts while the hottest DIMM is above
+`DIMM_START_MAX_C` (58 °C), and a cell with a DIMM sample at 66 °C, where the BMC caps
+memory bandwidth to a third, is flagged invalid in `SUMMARY.md`.
+
+`vram-residency-sampler.py` runs on the host as root, beside a sweep or a batch. Once a
+second it records the card's memory and core clocks, power, VRAM and GTT. For each
+llama-server process holding the card, it also records the kernel's counters:
+`amd-evicted-vram`, for memory that asked for VRAM and sits in GTT, and the placement of
+each of its buffers, including any that move.
+
+```bash
+systemd-run --unit=vram-residency --collect /usr/bin/python3 "$PWD/vram-residency-sampler.py" \
+  --pci 0000:83:00.0 --output /root/qwen38-flash-next/residency.jsonl
 ```
 
 These experiments restart model servers. Check their container/device settings
@@ -269,25 +209,25 @@ those layers' expert matmuls on the GPU. It serves batches of up to 32 tokens,
 so decode; prefill keeps the CPU path. Upstream measured 1.57–2.20× decode on
 Qwen3.8-Flash-Next Q4_0 with CUDA, the largest gain with every expert on the CPU
 and an 18.6 GB cache. On one V620 it runs, but every cache configuration measured
-decoded slower than `-ncmoe 34` without one, at 4.3–7.3 against 13.6 t/s
-([2026-10-08 record](runs/2026-10-08-moe-cache.md)). The serve script passes
+decoded slower than `-ncmoe 34` without one, at medians of 4.2–7.4 against 13.2 t/s
+([utilization record](runs/2026-10-08-utilization.md)). The serve script passes
 `MODEL_MOE_CACHE_MIB`; the shipped configs leave it empty.
 
 `placement-sweep.sh` measures it through `CONFIGS`, a list of `NCMOE[:CACHE]`
-entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the planned run.
+entries; the [utilization record](runs/2026-10-08-utilization.md) holds the run.
 
 - `auto` starts the placement without a cache, runs one code prompt at the deepest
   probed depth through the probe, and sizes the cache to the lower of the free VRAM
   right after load and after that prompt, minus `CACHE_MARGIN_MIB` (default 1024). At
-  `-ncmoe 34` those read 2,076 and 2,154 MiB, and the probe's other prompts change
+  `-ncmoe 34` those read 2,077 and 2,155 MiB, and the probe's other prompts change
   neither; a synthetic 3k request read 2,229 and oversized the cache. Each cell also
   reads VRAM and GTT after its probe and is flagged as a possible spill if GTT grew by
   more than 256 MiB.
 - `leaveM` uses the same measurement and leaves M MiB free instead, e.g. room for a
   second model: `48:leave12288`.
 - RADV limits one allocation to 4 GiB, and the cache keeps each expert tensor type
-  in one buffer, so the cache is capped well below free VRAM: at `-ncmoe 48` about
-  11.3 GB loads and 13 GB does not. An unallocatable cache aborts at load on a
+  in one buffer, so the cache is capped well below free VRAM: at `-ncmoe 48`
+  11,302 MiB loads and 13,000 MiB does not. An unallocatable cache aborts at load on a
   scheduler assertion under llama-server's default fit check, and with `--fit off`
   fails with `failed to allocate the MoE cache buffers`.
 - Each extra CPU layer frees ~1.56 GB for the cache, so `34`, `40` and `48`
@@ -303,11 +243,32 @@ entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the planned
 
 ## MTP experiment
 
-Upstream merged a qwen4exp MTP graph in llama.cpp #29761, included in b11475. Whether
-b11505 loads unsloth's separate qwen4exp heads is untested. Unsloth's `MTP/README.md`
-predates #29761 and says stock builds cannot use them, but on 2026-10-06 unsloth copied
-the self-contained `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` to the repo root for `llama.cpp -hf`.
-The `shared-` heads borrow the main model's embedding and output tensors.
+Upstream merged a qwen4exp MTP graph in llama.cpp #29761, included in b11475. On b11505
+the self-contained heads load with `--spec-type draft-mtp --model-draft <head>
+--spec-draft-ngl all --spec-draft-n-max N`. The `shared-` heads, which borrow the main
+model's embedding and output tensors, fail with `check_tensor_dims: tensor
+'token_embd.weight' not found`. Unsloth's `MTP/README.md` predates #29761 and says stock
+builds cannot use the heads.
+
+The [MTP record](runs/2026-10-09-mtp.md) measured the Q4_K_M head on b11505, Vulkan, in
+CT 120 holding both cards with two slots, against the fastest no-head configurations
+(`-ncmoe 34` on one card, 16 on two):
+
+| | One card, head at `-ncmoe 36` | Two cards, head at `-ncmoe 20` |
+| --- | --- | --- |
+| Single-stream decode at n-max 3, median of six prompt cells | 19.9 t/s against 14.2 | 22.1 t/s against 15.2 |
+| Two-stream aggregate at n-max 2 and 3 | 24.6–25.4 t/s against 20.3 | 30.2–30.4 t/s against 24.1 |
+| Two-stream aggregate at n-max 4 | 13.8 t/s | 16.2 t/s |
+| Prefill at d8000 against the fastest | 6.2–10.5% lower | 19.6–20.6% lower |
+
+- The head takes 3.5 GiB of VRAM on one card at n-max 3 and about 225 MiB more per extra
+  draft token, so a placement that fits one draft length can spill at a longer one.
+- Text differs from the no-head text in every prompt; all of it read as coherent.
+- With `--load-mode dio` on CT 123 (one 64k slot, `-ncmoe 36`), the full benchmark batch
+  prefilled about three times as fast as the deployed configuration. For 70 minutes of its
+  agent sessions, though, GTT held 1,024 MiB more than usual, VRAM had peaked at 30,678 of
+  30,704 MiB, and prefill fell to 61–91 t/s. Its `coding` sessions then ran longer than
+  the deployed configuration's ([batch record](runs/2026-10-10-bench.md)).
 
 `qwen38fn-download.sh` fetches the self-contained Q8_0 and Q4_K_M heads, re-exported
 upstream on 2026-10-05, and the 2026-09-01 `shared-Q4_K_M` head. That re-export changed
@@ -323,26 +284,24 @@ b11018 attempt, which aborted in `graph_mtp` → `build_hc_mix` with
 RDIMMs, kernel `7.0.14-22-pve`, `schedutil` governor, guests running but idle. BIOS:
 NPS1, memory interleaving Auto, APBDIS Auto, DF C-states enabled. STREAM 5.10, built
 with `gcc -O3 -march=native -fopenmp` and three 8 GB arrays, reports the best of 20
-passes. The four-channel columns are the same harness on 2026-09-17 with
-C1/D1/G1/H1 populated.
+passes.
 
-| Threads | Copy | Scale | Add | Triad | Copy, 4 ch | Triad, 4 ch |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 8 | 151.0 GB/s | 96.3 | 107.5 | 107.5 | 80.3 | 56.3 |
-| 16 | 152.7 | 97.3 | 106.4 | 106.6 | 77.8 | 55.0 |
-| 32 | 148.6 | 95.4 | 104.3 | 104.4 | 74.8 | 54.1 |
-| 64 | 141.9 | 94.1 | 103.6 | 103.6 | — | — |
+| Threads | Copy | Scale | Add | Triad |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 151.0 GB/s | 96.3 | 107.5 | 107.5 |
+| 16 | 152.7 | 97.3 | 106.4 | 106.6 |
+| 32 | 148.6 | 95.4 | 104.3 | 104.4 |
+| 64 | 141.9 | 94.1 | 103.6 | 103.6 |
 
-Eight channels deliver 1.90× four. Copy peaks at 75% of the 204.8 GB/s
+Copy peaks at 75% of the 204.8 GB/s
 theoretical bandwidth. STREAM reports application bytes; counting
 read-for-ownership, Triad moves about 143 GB/s. Untested settings that can add
 bandwidth: NPS4, APBDIS 1 with SOC P-state P0, DF C-states disabled, and a STREAM
 build with non-temporal stores, which removes the read-for-ownership traffic.
 
 A random pointer chase with huge pages measured 116.45 ns/load over 256 MiB and
-123.86 ns over 4 GiB, against 141.36 ns over 4 GiB on four channels; the kernel
-also changed between those runs. With 4 KiB pages the four-channel run measured
-226.95 ns, which includes page-table walks. Report page configuration with latency.
+123.86 ns over 4 GiB. Report page configuration with latency: 4 KiB pages add
+page-table walks.
 
 ### DIMM thermal throttle
 

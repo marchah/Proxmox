@@ -1,0 +1,4 @@
+# Cells for runs/2026-10-08-card-ab.md, run on CT 120 holding both V620s: CT 123's production
+# placement on each card. The record maps each Vulkan index to its PCI address from the run.
+vk0-34    MODE=1gpu NCMOE=34 DEVICE=Vulkan0
+vk1-34    MODE=1gpu NCMOE=34 DEVICE=Vulkan1

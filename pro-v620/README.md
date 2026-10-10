@@ -163,6 +163,21 @@ concurrency 4, 4.5% single-stream, cut TTFT by about 40% and saved 0.5 GiB of VR
 prefills. `llama-bench` cannot use `-b 4096` on this card (RADV out of memory); the
 server can.
 
+### Test records
+
+Records about the cards themselves, per [TEST-RECORDS.md](TEST-RECORDS.md).
+[`card-ab.sh`](card-ab.sh) runs `llama-bench` on each card from one container that holds
+both, in alternating order, and samples each card's clocks, power and temperature.
+
+| Date | Build | Backend | Record | Status |
+| --- | --- | --- | --- | --- |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared on the ROMED8-2T](runs/2026-10-08-card-ab.md) | done |
+
+- On the ROMED8-2T, `0000:83:00.0` ran Qwen3.6-35B-A3B under `llama-bench` 3.4–4.8% slower
+  in prefill and 1.1–1.3% slower in decode than `0000:03:00.0`, at about 115 MHz lower
+  sclk with the same clock ceiling, power cap and voltage offset. Qwen3.8-Flash-Next at
+  `-ncmoe 34` showed no difference beyond the pass-to-pass spread.
+
 ## Backend and power
 
 Vulkan/RADV is the supported backend. ROCm needs AMD's `amdgpu-dkms` for discrete

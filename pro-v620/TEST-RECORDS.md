@@ -2,7 +2,8 @@
 
 Each test campaign gets one record: a plan committed before the run, with the results
 appended after it. Records live with the model they test, in
-`<model dir>/runs/YYYY-MM-DD-<topic>.md`. The model's README lists them and keeps the
+`<model dir>/runs/YYYY-MM-DD-<topic>.md`; records about the cards themselves are in
+`pro-v620/runs/`. The model's README lists them and keeps the
 current configuration; a record never changes what is deployed by itself.
 
 ## Rules
@@ -12,6 +13,12 @@ current configuration; a record never changes what is deployed by itself.
 - **Fix "What answers it" in the plan**: the measurement and threshold that answer
   the question. The Conclusion reports the data against it. Whether to deploy is
   decided separately.
+- **Decide the configuration before the run.** The plan names the configuration the
+  test runs and the records each setting comes from. A usage test, such as `make bench`,
+  runs the best configuration the records have found for the hardware it uses, deployed
+  or not. If it differs from the deployed one, the plan says how it is installed for the
+  run and restored afterwards; if it combines settings never measured together, the plan
+  says so.
 - **Run pinned code.** Stage `pro-v620/` on the host with
   [`push-harness.sh`](push-harness.sh), which writes `/root/harness/<sha12>/` and a
   `HARNESS_COMMIT` file; `placement-sweep.sh` refuses to run without it. `make bench`
@@ -19,18 +26,34 @@ current configuration; a record never changes what is deployed by itself.
   `ALLOW_DIRTY=true`) are not cited by records.
 - **Paste the environment.** [`capture-env.sh`](capture-env.sh) records the llama.cpp
   build and binary checksum, the backend (Mesa or ROCm), kernel and firmware, each
-  card's VBIOS, voltage offset, power cap and PCIe link, DIMMs, governor, the guest's
-  env file, the server's command line and the model files. `placement-sweep.sh` saves
-  it as `environment.json` and records each cell's command line beside it. `make bench`
-  puts it in every run's `versions.json`, captured once before the batch reloads the
-  model per item, so its env file and command line show the server as the batch found
-  it; the slot layout a run used is in that run's own records (`/props` for the agent
-  and ingestion workloads, `build_info.parallel` for the regression items). For a
-  hand-run test, run `./capture-env.sh <vmid>` on the host first.
+  card's identity (`unique_id`), VBIOS, voltage offset, power cap and PCIe link, DIMMs,
+  governor, the guest's env file, the server's command line and the model files.
+  `placement-sweep.sh` saves it as `environment.json` and records each cell's command
+  line beside it. `make bench` puts it in every run's `versions.json`, captured once
+  before the batch reloads the model per item, so its env file and command line show the
+  server as the batch found it; the slot layout a run used is in that run's own records
+  (`/props` for the agent and ingestion workloads, `build_info.parallel` for the
+  regression items). For a hand-run test, run `./capture-env.sh <vmid>` on the host
+  first.
+- **Report what each phase uses.** Beside the speed, quote each card's power against its
+  250 W cap, its clocks and busy %, and the CPU cores in use, per phase (prefill, decode,
+  concurrent streams), so a result shows whether the card, the CPU or a transfer limits
+  it. `placement-sweep.sh` and `card-ab.sh` record them. `gpu_busy_percent` alone reads
+  near 100% at a fraction of the power cap.
 - **Start from the standard configurations**: two GPUs, one GPU, CPU only (the whole
   model in system RAM, no GPU), and an optimized configuration that leaves resources free,
   such as VRAM for a second model. Include each one that makes sense for the question,
   adapt it where the test needs to, and say in the plan why any is left out.
+- **Include speculative decoding when the model has a drafter**: its own MTP head, a
+  DFlash 2 or DFlash block drafter, or another draft model trained for it (EAGLE-3), each
+  only if the build loads it (`--spec-type draft-mtp`, `draft-dflash`, `draft-dspark`,
+  `draft-eagle3`). Measure each against a no-speculation control, at one and two
+  concurrent streams, and quote its acceptance. Scan the draft length
+  (`--spec-draft-n-max`) up from 1 until decode has clearly fallen past its peak, rather
+  than testing one or two values, then time the best length and its neighbours.
+  Drafter-free n-gram speculation (`ngram-*`) pays off only on text already in the
+  context, so test it on a workload that edits or repeats text. Say in the plan which
+  drafters exist for the model and why any is left out.
 - **Run with every other guest shut down.** Before the run, shut down every guest the
   test does not use (`make bench` uses the GPU container and CT 200; a sweep uses only
   the GPU container) and list them in the record's Safety section. When the run ends,
@@ -59,8 +82,12 @@ Plan committed YYYY-MM-DD · Run YYYY-MM-DD · Status: planned | running | done
 ## Configurations
 
 <two GPUs · one GPU · CPU only · optimized (leaves resources free, e.g. VRAM for a second
-model). Keep the ones that make sense for the question, adapt them as needed, and give
-the reason for each one left out.>
+model) · speculative decoding (MTP head, DFlash 2 or another drafter, where one exists).
+Keep the ones that make sense for the question, adapt them as needed, and give the
+reason for each one left out.>
+
+<For a usage test: the best configuration found, the record behind each setting, and how
+it is installed and restored if it is not the deployed one.>
 
 ## Controls
 

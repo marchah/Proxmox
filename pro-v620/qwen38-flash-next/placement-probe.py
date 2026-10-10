@@ -47,7 +47,8 @@ FILLER = (
 )
 
 
-def post(url, body, timeout=1800):
+# Long enough for a ~120k-token prefill on the hybrid CPU+GPU placements.
+def post(url, body, timeout=3600):
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -131,6 +132,11 @@ def one(base, prompt, n_predict):
     accept = round(100.0 * da / dn, 1) if (dn and da is not None) else None
     return {
         "wall_s": round(wall, 2),
+        # When the request started and how its time split, so the sweep can place its
+        # telemetry samples in the prefill or the decode phase.
+        "t0": round(t0, 3),
+        "prompt_ms": tm.get("prompt_ms"),
+        "predicted_ms": tm.get("predicted_ms"),
         "prompt_n": tm.get("prompt_n"),
         "prefill_tps": tm.get("prompt_per_second"),
         "predicted_n": tm.get("predicted_n"),
@@ -142,8 +148,11 @@ def one(base, prompt, n_predict):
         # Degeneracy gate. Repetition is cheap to generate and would read as a win.
         "degenerate": uniq < 0.7,
         "content_sha": hashlib.sha256(content.encode()).hexdigest()[:12],
-        "stop": ("eos" if r.get("stopped_eos") else
-                 "limit" if r.get("stopped_limit") else "other"),
+        # The text itself, so a response that differs from its control can be read.
+        "content": content,
+        # b11505 reports `stop_type`; older builds set stopped_eos / stopped_limit.
+        "stop": r.get("stop_type") or ("eos" if r.get("stopped_eos") else
+                                       "limit" if r.get("stopped_limit") else "other"),
     }
 
 

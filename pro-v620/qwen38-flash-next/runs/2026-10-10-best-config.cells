@@ -1,0 +1,6 @@
+# Cells for runs/2026-10-10-best-config.md, run on CT 123 (one slot) with DROP_CACHES=true.
+# auto is the deployed configuration; dio-mtp3 needs -ncmoe 36 to make room for the head
+# (runs/2026-10-09-mtp.md, stage 2).
+auto      MODE=1gpu NCMOE=34 LOAD_MODE=auto
+dio       MODE=1gpu NCMOE=34 LOAD_MODE=dio
+dio-mtp3  MODE=1gpu NCMOE=36 LOAD_MODE=dio EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'

@@ -85,11 +85,15 @@ def one(base: str, prompt: str, n_predict: int) -> dict:
         "prefill_tps": tm.get("prompt_per_second"),
         "predicted_n": tm.get("predicted_n"),
         "decode_tps": tm.get("predicted_per_second"),
+        # Present only when speculation is active.
+        "draft_n": tm.get("draft_n"),
+        "draft_n_accepted": tm.get("draft_n_accepted"),
         "uniq_8gram": uniq,
         "degenerate": uniq < 0.7,
         "content_sha": hashlib.sha256(content.encode()).hexdigest()[:12],
-        "stop": ("eos" if r.get("stopped_eos") else
-                 "limit" if r.get("stopped_limit") else "other"),
+        # b11505 reports `stop_type`; older builds set stopped_eos / stopped_limit.
+        "stop": r.get("stop_type") or ("eos" if r.get("stopped_eos") else
+                                       "limit" if r.get("stopped_limit") else "other"),
     }
 
 
@@ -171,13 +175,20 @@ def main() -> int:
         print(json.dumps({k: v for k, v in rounds[-1].items() if k != "rows"}),
               file=sys.stderr)
 
-    good = [r for r in rounds if r["completed"]]
+    # A round with a failed stream is not a measurement of `streams` concurrent streams,
+    # so the medians come only from rounds in which every stream completed.
+    good = [r for r in rounds if r["completed"] == a.streams]
     result["rounds"] = rounds
+    result["complete_rounds"] = len(good)
     result["per_stream_tps"] = round(st.median([r["per_stream_tps"] for r in good]), 2) if good else 0.0
     result["aggregate_tps"] = round(st.median([r["aggregate_tps"] for r in good]), 2) if good else 0.0
     result["wall_aggregate_tps"] = round(st.median([r["wall_aggregate_tps"] for r in good]), 2) if good else 0.0
     result["any_degenerate"] = any(r["any_degenerate"] for r in rounds)
     result["total_failed"] = sum(r["failed"] for r in rounds)
+    # Draft acceptance over every completed stream: accepted / drafted tokens.
+    drafted = sum(r.get("draft_n") or 0 for rd in rounds for r in rd["rows"])
+    accepted = sum(r.get("draft_n_accepted") or 0 for rd in rounds for r in rd["rows"])
+    result["accept_pct"] = round(100.0 * accepted / drafted, 1) if drafted else None
     print(json.dumps(result, indent=1))
     return 0
 
