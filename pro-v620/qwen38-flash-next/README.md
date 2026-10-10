@@ -141,6 +141,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on two cards](runs/2026-10-09-load-modes-two-cards.md) | done |
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [MTP speculative decoding on one and two cards](runs/2026-10-09-mtp.md) | done |
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch on CT 123](runs/2026-10-09-bench.md) | done |
+| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [`dio` and the MTP head together on one card](runs/2026-10-10-best-config.md) | planned |
 
 ## Benchmark tools
 
