@@ -569,7 +569,7 @@ cat >"${OUT_DIR}/manifest.json" <<JSON
 }
 JSON
 
-first_label="${CELL_ORDER[0]}"
+contract_done=false
 # Round-robin, so thermal or cache drift spreads across cells instead of favouring
 # whichever ran first.
 for round in $(seq 1 "$REPS"); do
@@ -639,8 +639,9 @@ PYFAIL
 
     probe_args=( "$BASE" --reps 1 --n-predict "$N_PREDICT" --depths "${CELL[$label|DEPTHS]:-$DEPTHS}" )
     [ -n "$PROBE_CLASSES" ] && probe_args+=( --classes "$PROBE_CLASSES" )
-    # The template-contract assertions only need running once per sweep.
-    [ "$round" = "1" ] && [ "$label" = "$first_label" ] && probe_args+=( --contract )
+    # The template-contract assertions only need running once per sweep, on the first
+    # cell that loads: a cell that fails to load skips the probe.
+    if [ "$contract_done" = false ]; then probe_args+=( --contract ); contract_done=true; fi
 
     dimm_sampler >"${OUT_DIR}/${tag}.dimm.tsv" 2>/dev/null &
     DIMM_PID=$!
