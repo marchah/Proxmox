@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from bench_common import dimm_summary
+from bench_common import dimm_summary, hwmon_instances
 
 AMD_GPU_DEVICE_NAMES = {
     "0x73df": "AMD Radeon RX 6700 XT (Navi 22)",
@@ -281,7 +281,7 @@ def collect_temperature(snapshot: dict[str, Any]) -> list[float]:
     return values
 
 
-def temperature_sensor_name(group: str, item: dict[str, Any]) -> str:
+def temperature_sensor_name(group: str, item: dict[str, Any], instance: str | None = None) -> str:
     if group == "nvidia":
         name = item.get("name") or item.get("index") or "gpu"
         return f"nvidia {name} gpu"
@@ -289,6 +289,8 @@ def temperature_sensor_name(group: str, item: dict[str, Any]) -> str:
         return f"thermal {item.get('type') or item.get('name') or 'unknown'}"
     chip = item.get("chip") or "unknown"
     label = item.get("label") or item.get("sensor") or "temp"
+    if instance:
+        label = f"{instance} {label}"
     if chip == "amdgpu":
         return f"amdgpu {label}"
     if chip == "k10temp":
@@ -303,9 +305,10 @@ def collect_temperatures_by_sensor(snapshot: dict[str, Any]) -> dict[str, float]
     for item in snapshot.get("temperature", {}).get("thermal_zones", []):
         if isinstance(item.get("temp_c"), (int, float)):
             values[temperature_sensor_name("thermal_zone", item)] = float(item["temp_c"])
-    for item in snapshot.get("temperature", {}).get("hwmon", []):
+    hwmon = snapshot.get("temperature", {}).get("hwmon", [])
+    for item, instance in zip(hwmon, hwmon_instances(hwmon)):
         if isinstance(item.get("temp_c"), (int, float)):
-            values[temperature_sensor_name("hwmon", item)] = float(item["temp_c"])
+            values[temperature_sensor_name("hwmon", item, instance)] = float(item["temp_c"])
     for gpu in snapshot.get("gpu", {}).get("nvidia_smi", []):
         temp = gpu.get("temperature_gpu")
         if isinstance(temp, (int, float)):

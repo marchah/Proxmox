@@ -81,7 +81,9 @@ Telemetry includes the best available local data:
 - CPU count, load average, `/proc/stat`, CPU frequency, pressure stall info.
 - RAM and swap from `/proc/meminfo`.
 - Disk and network counters from `/proc`.
-- Temperatures from Linux thermal zones and hwmon.
+- Temperatures from Linux thermal zones and hwmon, with each hwmon chip's device. The
+  report names GPU sensors by PCI address, since every V620 reports the same `amdgpu`
+  labels and CT 123 and CT 200 both see both cards.
 - Optional `sensors -j` output when `lm-sensors` is installed.
 - Optional `nvidia-smi` output for NVIDIA GPUs.
 - Optional `rocm-smi --json` output for AMD GPUs.
