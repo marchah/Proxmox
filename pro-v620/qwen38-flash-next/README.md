@@ -142,7 +142,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [`dio` and the MTP head together on one card](runs/2026-10-10-best-config.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch with `dio` and the MTP head](runs/2026-10-10-bench.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The prefill slowdown with `dio` and the MTP head](runs/2026-10-10-prefill-slowdown.md) | done |
-| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [Short-reply decode with `dio` and the MTP head](runs/2026-10-10-short-reply-decode.md) | planned |
+| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [Short-reply decode with `dio` and the MTP head](runs/2026-10-10-short-reply-decode.md) | done |
 
 ## Benchmark tools
 
@@ -277,10 +277,14 @@ CT 120 holding both cards with two slots, against the fastest no-head configurat
     configuration's ([batch record](runs/2026-10-10-bench.md), [prefill-slowdown
     record](runs/2026-10-10-prefill-slowdown.md)).
   - At `-ncmoe 37`, with 3.3 GiB free at load, none was. Agent sessions took 54–55% less
-    time than with the deployed configuration and document ingestion 53–61% less. Median
-    decode of 32-token replies was 16–20% lower at two points: 512-token prompts, and
-    512-token prompts after 4,096 tokens of context ([prefill-slowdown
-    record](runs/2026-10-10-prefill-slowdown.md)).
+    time than with the deployed configuration and document ingestion 53–61% less
+    ([prefill-slowdown record](runs/2026-10-10-prefill-slowdown.md)).
+  - Over three interleaved reps of each configuration, 32-token replies to 512-token
+    prompts decoded at a median 12.4 t/s against 13.9 (−10.9%, beyond the rep-to-rep
+    spread). After 4,096 tokens of context, they decoded at 13.2 against 13.4 (−1.6%,
+    within it). At the 512-token point, decode rose with the draft tokens accepted:
+    10.7–11.1 t/s at 12 of 32, 15.0 at 18 ([short-reply
+    record](runs/2026-10-10-short-reply-decode.md)).
 
 `qwen38fn-download.sh` fetches the self-contained Q8_0 and Q4_K_M heads, re-exported
 upstream on 2026-10-05, and the 2026-09-01 `shared-Q4_K_M` head. That re-export changed
