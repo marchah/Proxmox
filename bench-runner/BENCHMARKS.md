@@ -347,7 +347,15 @@ BENCHMARK_PROFILE=baseline \
 ./scripts/benchmarks/run-ai-benchmark-suite.sh
 ```
 
-Override the matrix:
+Change the sizes, keeping the other defaults and the result in the run's folder:
+
+```bash
+RUN_OPENAI_DIRECT=false LLAMA_BENCHY_PP=512 LLAMA_BENCHY_TG=32 LLAMA_BENCHY_DEPTH="0 4096" \
+  llm-bench-baseline
+```
+
+The defaults are `512 2048`, `32 128` and `0 4096`. `LLAMA_BENCHY_ARGS` replaces the whole
+command line:
 
 ```bash
 source /etc/bench-runner.env

@@ -142,6 +142,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [`dio` and the MTP head together on one card](runs/2026-10-10-best-config.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch with `dio` and the MTP head](runs/2026-10-10-bench.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The prefill slowdown with `dio` and the MTP head](runs/2026-10-10-prefill-slowdown.md) | done |
+| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [Short-reply decode with `dio` and the MTP head](runs/2026-10-10-short-reply-decode.md) | planned |
 
 ## Benchmark tools
 

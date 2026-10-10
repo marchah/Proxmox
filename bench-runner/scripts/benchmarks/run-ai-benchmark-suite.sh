@@ -179,6 +179,9 @@ manifest = {
             "BENCHMARK_PROCESS_PATTERNS",
             "RUN_OPENAI_DIRECT",
             "RUN_LLAMA_BENCHY",
+            "LLAMA_BENCHY_PP",
+            "LLAMA_BENCHY_TG",
+            "LLAMA_BENCHY_DEPTH",
             "RUN_LM_EVAL",
             "RUN_AGENT_SESSIONS",
             "RUN_DOC_INGEST",
@@ -318,13 +321,18 @@ if [[ "${RUN_LLAMA_BENCHY:-false}" == "true" ]]; then
       # shellcheck disable=SC2206
       llama_benchy_args=(${LLAMA_BENCHY_ARGS})
     else
+      # LLAMA_BENCHY_PP, _TG and _DEPTH change the sizes and keep the rest of the defaults,
+      # including the result path in this run's folder.
+      read -r -a llama_benchy_pp <<<"${LLAMA_BENCHY_PP:-512 2048}"
+      read -r -a llama_benchy_tg <<<"${LLAMA_BENCHY_TG:-32 128}"
+      read -r -a llama_benchy_depth <<<"${LLAMA_BENCHY_DEPTH:-0 4096}"
       llama_benchy_args=(
         --base-url "${MODEL_API_URL}"
         --model "${MODEL_IDENTIFIER}"
         --concurrency "${LLAMA_BENCHY_CONCURRENCY:-${BENCHMARK_CONCURRENCY:-1}}"
-        --pp 512 2048
-        --tg 32 128
-        --depth 0 4096
+        --pp "${llama_benchy_pp[@]}"
+        --tg "${llama_benchy_tg[@]}"
+        --depth "${llama_benchy_depth[@]}"
         --runs "${BENCHMARK_RUNS}"
         --no-warmup
         --no-adapt-prompt
