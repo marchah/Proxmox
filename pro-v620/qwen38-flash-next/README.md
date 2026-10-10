@@ -140,6 +140,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch on CT 123](runs/2026-10-09-bench.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [`dio` and the MTP head together on one card](runs/2026-10-10-best-config.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch with `dio` and the MTP head](runs/2026-10-10-bench.md) | done |
+| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The prefill slowdown with `dio` and the MTP head](runs/2026-10-10-prefill-slowdown.md) | planned |
 
 ## Benchmark tools
 
@@ -184,6 +185,17 @@ measured sizes. Every cell is checked before the first load; a cell that fails t
 is recorded and the sweep moves on. No cell starts while the hottest DIMM is above
 `DIMM_START_MAX_C` (58 °C), and a cell with a DIMM sample at 66 °C, where the BMC caps
 memory bandwidth to a third, is flagged invalid in `SUMMARY.md`.
+
+`vram-residency-sampler.py` runs on the host as root, beside a sweep or a batch. Once a
+second it records the card's memory and core clocks, power, VRAM and GTT. For each
+llama-server process holding the card, it also records the kernel's counters:
+`amd-evicted-vram`, for memory that asked for VRAM and sits in GTT, and the placement of
+each of its buffers, including any that move.
+
+```bash
+systemd-run --unit=vram-residency --collect /usr/bin/python3 "$PWD/vram-residency-sampler.py" \
+  --pci 0000:83:00.0 --output /root/qwen38-flash-next/residency.jsonl
+```
 
 These experiments restart model servers. Check their container/device settings
 before use. The B550 harness in `../gpu-ab-bench/` contains old PCI addresses;

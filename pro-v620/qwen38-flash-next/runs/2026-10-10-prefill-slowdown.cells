@@ -1,0 +1,6 @@
+# Cells for runs/2026-10-10-prefill-slowdown.md, stage 2, run on CT 123 (one slot) with
+# DROP_CACHES=true. dio with the Q4_K_M head at n-max 3; -ncmoe 36 is the 2026-10-10 batch's
+# placement, 35 leaves about 1.5 GiB less VRAM free and 37 about 1.5 GiB more.
+h35  MODE=1gpu NCMOE=35 LOAD_MODE=dio EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'
+h36  MODE=1gpu NCMOE=36 LOAD_MODE=dio EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'
+h37  MODE=1gpu NCMOE=37 LOAD_MODE=dio EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'
