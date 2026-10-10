@@ -42,7 +42,7 @@ The cells are in [`2026-10-08-threads-concurrency.cells`](2026-10-08-threads-con
   either card count at a given `-ncmoe`; CT 123 holds one card.
 - **CPU only and optimized (`-ncmoe 48`):** left out. Both move more of the model onto the
   CPU, so their best thread count can differ from this one; each gets its own sweep if
-  the configurations record makes it a candidate.
+  the configurations sweep ([utilization record](2026-10-08-utilization.md)) makes it a candidate.
 - CT 123 has 24 cores, so 24 threads is its ceiling.
 
 ## Controls

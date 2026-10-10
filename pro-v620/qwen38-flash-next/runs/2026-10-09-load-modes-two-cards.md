@@ -7,8 +7,8 @@ Plan committed 2026-10-09 · Run 2026-10-09 · Status: done
 On one card at `-ncmoe 34`, `--load-mode none` and `dio` prefilled 3.2–3.3 times as fast
 as `auto` with the same decode
 ([load-modes record](2026-10-08-load-modes.md)). On two cards at `-ncmoe 16`, the
-two-card configuration with the fastest decode, `auto` prefilled 90 t/s against 123
-on one card ([configurations record](2026-10-08-configurations.md)). Loading cold, in CT 120
+two-card configuration with the fastest decode, `auto` prefilled 90 t/s against 124
+on one card ([utilization record](2026-10-08-utilization.md)). Loading cold, in CT 120
 holding both V620s:
 
 - Does `none` change two-card prefill, decode, load time and memory as it does on one

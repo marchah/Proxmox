@@ -116,7 +116,7 @@ but costs image-encoding latency; text requests are unaffected.
   than the remaining layers. At batch/ubatch 1024/256, the starting rule found on
   b11018 is `card1_layers = N + (48 - N)/2 - 2`, with `48,0` for N=48. On b11505
   it held without spill at N=16 (`30,18`, 1024/256) and N=34 (`39,9`, 4096/1024)
-  ([configurations record](runs/2026-10-08-configurations.md)). Recheck placement
+  ([utilization record](runs/2026-10-08-utilization.md)). Recheck placement
   after changing build, batch size, context or projector placement.
 
 Measure free VRAM and GTT together after a completion. Aggregate capacity does
@@ -131,12 +131,9 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 
 | Date | Build | Backend | Record | Status |
 | --- | --- | --- | --- | --- |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [`--moe-cache-mib` on one V620](runs/2026-10-08-moe-cache.md) | done |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Standard configurations on eight channels](runs/2026-10-08-configurations.md) | done |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Context depth and KV type on one card](runs/2026-10-08-kv-context.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Threads and concurrent streams on one card](runs/2026-10-08-threads-concurrency.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on one card](runs/2026-10-08-load-modes.md) | done |
-| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [What each configuration uses, rerun with telemetry](runs/2026-10-08-utilization.md) | done |
+| 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [Configurations, context, KV type and MoE cache, with telemetry](runs/2026-10-08-utilization.md) | done |
 | 2026-10-08 | b11505 | Vulkan, Mesa 26.2.4 | [The two cards compared, with `-ncmoe 34` on each](../runs/2026-10-08-card-ab.md) | done |
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [Cold load modes on two cards](runs/2026-10-09-load-modes-two-cards.md) | done |
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [MTP speculative decoding on one and two cards](runs/2026-10-09-mtp.md) | done |
@@ -199,25 +196,25 @@ those layers' expert matmuls on the GPU. It serves batches of up to 32 tokens,
 so decode; prefill keeps the CPU path. Upstream measured 1.57–2.20× decode on
 Qwen3.8-Flash-Next Q4_0 with CUDA, the largest gain with every expert on the CPU
 and an 18.6 GB cache. On one V620 it runs, but every cache configuration measured
-decoded slower than `-ncmoe 34` without one, at 4.3–7.3 against 13.6 t/s
-([2026-10-08 record](runs/2026-10-08-moe-cache.md)). The serve script passes
+decoded slower than `-ncmoe 34` without one, at medians of 4.2–7.4 against 13.2 t/s
+([utilization record](runs/2026-10-08-utilization.md)). The serve script passes
 `MODEL_MOE_CACHE_MIB`; the shipped configs leave it empty.
 
 `placement-sweep.sh` measures it through `CONFIGS`, a list of `NCMOE[:CACHE]`
-entries; the [2026-10-08 record](runs/2026-10-08-moe-cache.md) holds the run.
+entries; the [utilization record](runs/2026-10-08-utilization.md) holds the run.
 
 - `auto` starts the placement without a cache, runs one code prompt at the deepest
   probed depth through the probe, and sizes the cache to the lower of the free VRAM
   right after load and after that prompt, minus `CACHE_MARGIN_MIB` (default 1024). At
-  `-ncmoe 34` those read 2,076 and 2,154 MiB, and the probe's other prompts change
+  `-ncmoe 34` those read 2,077 and 2,155 MiB, and the probe's other prompts change
   neither; a synthetic 3k request read 2,229 and oversized the cache. Each cell also
   reads VRAM and GTT after its probe and is flagged as a possible spill if GTT grew by
   more than 256 MiB.
 - `leaveM` uses the same measurement and leaves M MiB free instead, e.g. room for a
   second model: `48:leave12288`.
 - RADV limits one allocation to 4 GiB, and the cache keeps each expert tensor type
-  in one buffer, so the cache is capped well below free VRAM: at `-ncmoe 48` about
-  11.3 GB loads and 13 GB does not. An unallocatable cache aborts at load on a
+  in one buffer, so the cache is capped well below free VRAM: at `-ncmoe 48`
+  11,302 MiB loads and 13,000 MiB does not. An unallocatable cache aborts at load on a
   scheduler assertion under llama-server's default fit check, and with `--fit off`
   fails with `failed to allocate the MoE cache buffers`.
 - Each extra CPU layer frees ~1.56 GB for the cache, so `34`, `40` and `48`

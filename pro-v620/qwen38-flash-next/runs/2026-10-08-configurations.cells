@@ -1,4 +1,5 @@
-# Cells for runs/2026-10-08-configurations.md, run on CT 120 holding both V620s.
+# Cells for the configurations sweep of runs/2026-10-08-utilization.md, run on CT 120 holding
+# both V620s.
 # Two GPUs: the shipped two-card config, its tensor-split alternative, and a two-card cell
 # matched to the one-card production placement and batch.
 2gpu-16          MODE=2gpu NCMOE=16

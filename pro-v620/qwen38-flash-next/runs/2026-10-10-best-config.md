@@ -51,8 +51,8 @@ measured alone against it:
 The cells are in [`2026-10-10-best-config.cells`](2026-10-10-best-config.cells).
 
 - **Two GPUs:** left out. GPU 1 stays with CT 120 for Hermes (owner, 2026-10-10).
-- **CPU only and optimized:** left out. The [configurations
-  record](2026-10-08-configurations.md) measured both slower than `-ncmoe 34`, and no
+- **CPU only and optimized:** left out. The [utilization
+  record](2026-10-08-utilization.md) measured both slower than `-ncmoe 34`, and no
   second model shares GPU 2.
 - **`none`:** left out. It matched `dio`'s speed within the spread and loaded 6 s slower.
 - **`auto` with the head:** left out. The MTP record measured it; it is only needed if

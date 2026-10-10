@@ -310,7 +310,7 @@ prompt cells. All seven template-contract checks passed.
 
 **Spill check:** the sweep flagged `none` and `dio` in every pass, because GTT exceeded
 1.5 GiB. That GTT held the CPU-resident weights: 52,821 MiB at load against the 51,950
-MiB of host experts the `--moe-cache-mib` record logged at this placement, and it grew
+MiB of host experts the [utilization record](2026-10-08-utilization.md)'s cache sweep logged at this placement, and it grew
 5 MiB during the probe while VRAM use matched `auto`. The sweep now exempts these two
 modes from the static GTT threshold and keeps the growth check.
 
