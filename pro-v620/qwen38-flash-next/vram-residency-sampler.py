@@ -37,6 +37,7 @@ FDINFO_KEYS = {
     "amd-requested-vram": "requested_vram_kib",
     "amd-requested-gtt": "requested_gtt_kib",
 }
+UNIT_KIB = {"KiB": 1, "MiB": 1024, "GiB": 1024 * 1024}
 GEM_PID = re.compile(r"^pid\s+(\d+)\s+command\s+(.*):\s*$")
 GEM_BO = re.compile(r"^\s+0x([0-9a-f]+):\s+(\d+) byte (\S+)")
 
@@ -126,8 +127,10 @@ def fdinfo(pid, pci):
         for line in info.splitlines():
             key, _, value = line.partition(":")
             if key in FDINFO_KEYS:
-                kib = int(value.split()[0]) if value.split() else 0
-                total[FDINFO_KEYS[key]] = total.get(FDINFO_KEYS[key], 0) + kib
+                # The kernel prints each size in the largest unit that divides it evenly.
+                parts = value.split()
+                kib = int(parts[0]) * UNIT_KIB.get(parts[1] if len(parts) > 1 else "", 1 / 1024) if parts else 0
+                total[FDINFO_KEYS[key]] = total.get(FDINFO_KEYS[key], 0) + int(kib)
     return total if found else None
 
 
