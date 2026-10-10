@@ -13,6 +13,12 @@ current configuration; a record never changes what is deployed by itself.
 - **Fix "What answers it" in the plan**: the measurement and threshold that answer
   the question. The Conclusion reports the data against it. Whether to deploy is
   decided separately.
+- **Decide the configuration before the run.** The plan names the configuration the
+  test runs and the records each setting comes from. A usage test, such as `make bench`,
+  runs the best configuration the records have found for the hardware it uses, deployed
+  or not. If it differs from the deployed one, the plan says how it is installed for the
+  run and restored afterwards; if it combines settings never measured together, the plan
+  says so.
 - **Run pinned code.** Stage `pro-v620/` on the host with
   [`push-harness.sh`](push-harness.sh), which writes `/root/harness/<sha12>/` and a
   `HARNESS_COMMIT` file; `placement-sweep.sh` refuses to run without it. `make bench`
@@ -79,6 +85,9 @@ Plan committed YYYY-MM-DD · Run YYYY-MM-DD · Status: planned | running | done
 model) · speculative decoding (MTP head, DFlash 2 or another drafter, where one exists).
 Keep the ones that make sense for the question, adapt them as needed, and give the
 reason for each one left out.>
+
+<For a usage test: the best configuration found, the record behind each setting, and how
+it is installed and restored if it is not the deployed one.>
 
 ## Controls
 
