@@ -8,9 +8,10 @@ Runs on the Proxmox HOST as root (it reads debugfs and other processes' fdinfo):
 Each JSONL line holds the card's memory and core clock levels, power, busy %, VRAM and
 GTT in use and temperatures, and for each process named --comm that has the card open:
 
-- from /proc/<pid>/fdinfo, the kernel's own accounting: resident VRAM and GTT,
-  `amd-evicted-vram` (memory that asked for VRAM but sits in GTT) and the requested
-  VRAM and GTT;
+- from /proc/<pid>/fdinfo, the kernel's own accounting: resident and requested VRAM
+  and GTT, and `amd-evicted-vram`. Requested minus resident VRAM is memory the process
+  asked to have in VRAM that sits elsewhere, including a buffer created in GTT because
+  VRAM was full; `amd-evicted-vram` counts only memory moved out after it was created;
 - from debugfs `amdgpu_gem_info`, the count and bytes of its buffers in each placement;
   `UNKNOWN` counts buffers the kernel could not lock to read, those in use by a submission.
 

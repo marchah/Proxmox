@@ -122,8 +122,9 @@ but costs image-encoding latency; text requests are unaffected.
 Measure free VRAM and GTT together after a completion. Aggregate capacity does
 not prove each card fits, and the startup guard does not catch spill. New
 placements need at least 2048 MiB free on each card or an end-to-end load check
-recording the minimum at the intended batch size. Do not use automatic context
-fitting on this RADV setup.
+recording the minimum at the intended batch size. With the MTP head, 1,822 MiB free after
+a probe was not enough: buffers created during agent sessions still went to GTT ([MTP
+experiment](#mtp-experiment)). Do not use automatic context fitting on this RADV setup.
 
 ## Test records
 
@@ -140,7 +141,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-09 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch on CT 123](runs/2026-10-09-bench.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [`dio` and the MTP head together on one card](runs/2026-10-10-best-config.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch with `dio` and the MTP head](runs/2026-10-10-bench.md) | done |
-| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The prefill slowdown with `dio` and the MTP head](runs/2026-10-10-prefill-slowdown.md) | planned |
+| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The prefill slowdown with `dio` and the MTP head](runs/2026-10-10-prefill-slowdown.md) | done |
 
 ## Benchmark tools
 
@@ -188,9 +189,11 @@ memory bandwidth to a third, is flagged invalid in `SUMMARY.md`.
 
 `vram-residency-sampler.py` runs on the host as root, beside a sweep or a batch. Once a
 second it records the card's memory and core clocks, power, VRAM and GTT. For each
-llama-server process holding the card, it also records the kernel's counters:
-`amd-evicted-vram`, for memory that asked for VRAM and sits in GTT, and the placement of
-each of its buffers, including any that move.
+llama-server process holding the card, it also records the kernel's per-process counters
+and the placement of each of its buffers. Requested minus resident VRAM is memory the
+process asked to have in VRAM that sits elsewhere, including a buffer created in GTT
+because VRAM was full; `amd-evicted-vram` counts only memory moved out after it was
+created. `residency-summary.py` matches each request's prefill to those samples.
 
 ```bash
 systemd-run --unit=vram-residency --collect /usr/bin/python3 "$PWD/vram-residency-sampler.py" \
@@ -264,11 +267,19 @@ CT 120 holding both cards with two slots, against the fastest no-head configurat
 - The head takes 3.5 GiB of VRAM on one card at n-max 3 and about 225 MiB more per extra
   draft token, so a placement that fits one draft length can spill at a longer one.
 - Text differs from the no-head text in every prompt; all of it read as coherent.
-- With `--load-mode dio` on CT 123 (one 64k slot, `-ncmoe 36`), the full benchmark batch
-  prefilled about three times as fast as the deployed configuration. For 70 minutes of its
-  agent sessions, though, GTT held 1,024 MiB more than usual, VRAM had peaked at 30,678 of
-  30,704 MiB, and prefill fell to 61–91 t/s. Its `coding` sessions then ran longer than
-  the deployed configuration's ([batch record](runs/2026-10-10-bench.md)).
+- With `--load-mode dio` on CT 123 (one 64k slot), the full benchmark batch prefilled
+  about three times as fast as the deployed configuration.
+  - At `-ncmoe 36`, llama-server frees and creates buffers of up to 1,024 MiB within
+    requests. When VRAM could not hold one at that moment, it was created in GTT, and
+    prefill ran at 61–214 t/s while it stayed there. For 70 minutes of one batch it
+    stayed, and that batch's `coding` sessions ran longer than the deployed
+    configuration's ([batch record](runs/2026-10-10-bench.md), [prefill-slowdown
+    record](runs/2026-10-10-prefill-slowdown.md)).
+  - At `-ncmoe 37`, with 3.3 GiB free at load, none was. Agent sessions took 54–55% less
+    time than with the deployed configuration and document ingestion 53–61% less. Median
+    decode of 32-token replies was 16–20% lower at two points: 512-token prompts, and
+    512-token prompts after 4,096 tokens of context ([prefill-slowdown
+    record](runs/2026-10-10-prefill-slowdown.md)).
 
 `qwen38fn-download.sh` fetches the self-contained Q8_0 and Q4_K_M heads, re-exported
 upstream on 2026-10-05, and the 2026-09-01 `shared-Q4_K_M` head. That re-export changed
