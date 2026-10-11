@@ -110,6 +110,9 @@ def main():
     depths = sorted({c.split("/")[0] for c in cells},
                     key=lambda s: int(s.lstrip("d")))
 
+    # Sweeps from before the manifest named its model were all Flash-Next. The notes below
+    # that explain a mechanism print only for the model that has it.
+    flash_next = manifest.get("model") in (None, "qwen3.8-flash-next")
     print("# %s placement sweep\n" % (manifest.get("model") or "Qwen3.8-Flash-Next"))
     if manifest_error:
         print("⚠️ `manifest.json` is unreadable (%s), so the run header is missing.\n" % manifest_error)
@@ -223,9 +226,12 @@ def main():
     # --- depth effect -------------------------------------------------------------
     if len(depths) > 1:
         print("\n## Decode versus context depth\n")
-        print("The QSA indexer rescored block summaries over the whole cached context "
-              "every token until llama.cpp #28699 (an open draft), so depth is a real "
-              "axis here — a short-prompt number is not this model's throughput.\n")
+        if flash_next:
+            print("The QSA indexer rescored block summaries over the whole cached context "
+                  "every token until llama.cpp #28699 (an open draft), so depth is a real "
+                  "axis here — a short-prompt number is not this model's throughput.\n")
+        else:
+            print("Decode per depth: a short-prompt number is not the throughput at depth.\n")
         print("| config | " + " | ".join(depths) + " |")
         print("|" + "|".join(["---"] * (len(depths) + 1)) + "|")
         for key in keys:
@@ -240,9 +246,10 @@ def main():
     deep = [dep for dep in depths if dep != "d0"]
     if deep:
         print("\n## Prefill versus context depth\n")
-        print("Prefill is this model's binding constraint. The MoE cache serves only batches "
-              "of up to 32 tokens, so a cache row's prefill shows what its extra CPU layers "
-              "cost.\n")
+        if flash_next:
+            print("Prefill is this model's binding constraint. The MoE cache serves only "
+                  "batches of up to 32 tokens, so a cache row's prefill shows what its extra "
+                  "CPU layers cost.\n")
         print("| config | " + " | ".join("prefill " + dep for dep in deep) + " |")
         print("|" + "|".join(["---"] * (len(deep) + 1)) + "|")
         for key in keys:
