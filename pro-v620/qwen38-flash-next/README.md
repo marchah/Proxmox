@@ -176,7 +176,12 @@ cells file: one cell per line, a label then `KEY=value` settings. The script's h
 lists the keys: device mode (`2gpu`, `1gpu`, `cpu`), CPU expert layers, cache, split
 mode, batch, threads, KV type, context, slots, load mode and extra arguments, plus a
 cell's own `DEPTHS`, `STREAMS`, which adds a `concurrency-probe.py` run with that many
-streams, and `DEVICE`, the card a one-GPU cell runs on. `CONFIGS`, a list of `NCMOE[:CACHE]` entries, is the short form.
+streams, and `DEVICE`, the card a one-GPU cell runs on. `VK_DEVICES` limits the cards the
+server sees (`GGML_VK_VISIBLE_DEVICES`), so a one-card cell in a two-card container gets
+`dio`'s pinned memory on its own card. `CONFIGS`, a list of `NCMOE[:CACHE]` entries, is the
+short form. `UNIT` points the sweep, `thermal-guard.sh` and `capture-env.sh` at another
+model's unit; [GLM-5.3-Flash](../glm53-flash/README.md#test-setup) uses
+`UNIT=llamacpp-glm53f N_BLOCKS=46`.
 
 ```bash
 VMID=123 CELLS=runs/2026-10-08-threads-concurrency.cells DEPTHS="0,8000" ./placement-sweep.sh

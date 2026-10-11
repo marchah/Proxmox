@@ -110,7 +110,10 @@ def main():
     depths = sorted({c.split("/")[0] for c in cells},
                     key=lambda s: int(s.lstrip("d")))
 
-    print("# Qwen3.8-Flash-Next placement sweep\n")
+    # Sweeps from before the manifest named its model were all Flash-Next. The notes below
+    # that explain a mechanism print only for the model that has it.
+    flash_next = manifest.get("model") in (None, "qwen3.8-flash-next")
+    print("# %s placement sweep\n" % (manifest.get("model") or "Qwen3.8-Flash-Next"))
     if manifest_error:
         print("⚠️ `manifest.json` is unreadable (%s), so the run header is missing.\n" % manifest_error)
     if manifest:
@@ -223,9 +226,12 @@ def main():
     # --- depth effect -------------------------------------------------------------
     if len(depths) > 1:
         print("\n## Decode versus context depth\n")
-        print("The QSA indexer rescored block summaries over the whole cached context "
-              "every token until llama.cpp #28699 (an open draft), so depth is a real "
-              "axis here — a short-prompt number is not this model's throughput.\n")
+        if flash_next:
+            print("The QSA indexer rescored block summaries over the whole cached context "
+                  "every token until llama.cpp #28699 (an open draft), so depth is a real "
+                  "axis here — a short-prompt number is not this model's throughput.\n")
+        else:
+            print("Decode per depth: a short-prompt number is not the throughput at depth.\n")
         print("| config | " + " | ".join(depths) + " |")
         print("|" + "|".join(["---"] * (len(depths) + 1)) + "|")
         for key in keys:
@@ -240,9 +246,10 @@ def main():
     deep = [dep for dep in depths if dep != "d0"]
     if deep:
         print("\n## Prefill versus context depth\n")
-        print("Prefill is this model's binding constraint. The MoE cache serves only batches "
-              "of up to 32 tokens, so a cache row's prefill shows what its extra CPU layers "
-              "cost.\n")
+        if flash_next:
+            print("Prefill is this model's binding constraint. The MoE cache serves only "
+                  "batches of up to 32 tokens, so a cache row's prefill shows what its extra "
+                  "CPU layers cost.\n")
         print("| config | " + " | ".join("prefill " + dep for dep in deep) + " |")
         print("|" + "|".join(["---"] * (len(deep) + 1)) + "|")
         for key in keys:
@@ -336,11 +343,10 @@ def main():
     # --- the template contract ----------------------------------------------------
     if contract:
         print("\n## Template contract\n")
-        print("This model's raw template resolves `reasoning_effort|default('xhigh')` and RAISES "
-              "on `\"none\"` and `\"high\"` — the two values that work on CT 123's coder. The "
-              "server runs `--reasoning off`, which stops those values reaching the template at "
-              "all. So the assertion is **a caller cannot break this server**, NOT that the "
-              "template rejects anything.\n")
+        print("The server runs `--reasoning off`. The assertion is **a caller cannot break this "
+              "server**: every effort value answers with clean `content`. Flash-Next's raw "
+              "template raises on `\"none\"` and `\"high\"`; GLM-5.3-Flash's opens `<think>` on "
+              "every turn and reads unknown values as `max`.\n")
         bc = contract.get("bare_chat", {})
         ok = bool(bc.get("ok"))
         print("- Bare chat request answers: **%s**%s" % (
@@ -349,10 +355,25 @@ def main():
         # `content` must be clean. reasoning_content being absent is NOT a failure — it only
         # means llama.cpp emitted no thought block at all, which is the point of --reasoning
         # off. What would be broken is a <think> tag leaking into content.
-        leaked = [k for k, v in contract.items()
-                  if isinstance(v, dict) and "<think>" in (v.get("content") or "")]
-        print("- No `<think>` leaked into `content`: **%s**%s" % (
+        # The probe flags a leak on the whole reply and stores only its first 40-80
+        # characters; GLM-5.3-Flash's </think> follows the reasoning, past that prefix. Probe
+        # output without the flag falls back to scanning the prefix.
+        def leaked_tag(v):
+            if "think_leaked_into_content" in v:
+                return bool(v["think_leaked_into_content"])
+            c = v.get("content") or ""
+            return "<think>" in c or "</think>" in c
+        leaked = [k for k, v in contract.items() if isinstance(v, dict) and leaked_tag(v)]
+        print("- No think tag leaked into `content`: **%s**%s" % (
             "yes" if not leaked else "NO", "" if not leaked else " — %s" % ", ".join(leaked)))
+        # Probes from before reasoning_chars was recorded leave it out.
+        thought = {k: v["reasoning_chars"] for k, v in contract.items()
+                   if isinstance(v, dict) and v.get("reasoning_chars")}
+        if any("reasoning_chars" in v for v in contract.values() if isinstance(v, dict)):
+            print("- No reasoning block despite `--reasoning off`: **%s**%s" % (
+                "yes" if not thought else "NO",
+                "" if not thought else " — " + ", ".join(
+                    "%s %d chars" % kv for kv in sorted(thought.items()))))
         efforts = sorted(k[len("effort_"):] for k in contract if k.startswith("effort_"))
         for val in efforts:
             e = contract.get("effort_" + val, {})

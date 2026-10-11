@@ -10,6 +10,8 @@ Use component READMEs for deployment commands, defaults, and measurements.
 - [pro-v620/](pro-v620/README.md): CT 120, GPU passthrough and Qwen3.6 serving.
 - [qwen38-flash-next/](pro-v620/qwen38-flash-next/README.md): CT 123 and the optional
   two-card CT 120 configuration, placement measurements and cutover procedure.
+- [glm53-flash/](pro-v620/glm53-flash/README.md): GLM-5.3-Flash model notes and test
+  records; not deployed.
 - [hermes/](hermes/README.md): CT 121 agent gateway.
 - [kb-rag/](kb-rag/README.md): CT 140 retrieval API and corpus policy.
 - [bench-runner/](bench-runner/README.md) and [ansible/](ansible/README.md): endpoint
@@ -75,7 +77,8 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   and GTT together after a real request.
 - CT 120 and CT 123 must never own the same card. Use `ct120-cutover.sh` for the
   two-card alternative: it changes passthrough, CT 123's `onboot` and the watchdog
-  service map together.
+  service map together. `glm53-flash/ct123-test-host.sh` does the same in the other
+  direction for the GLM-5.3-Flash test, giving CT 123 both cards while CT 120 stays off.
 - Both servers use `--reasoning off --reasoning-format auto`. The first disables
   thinking; the second removes empty think tags from response content. Revalidate
   response content and tool calls when changing these flags or the KV cache type.

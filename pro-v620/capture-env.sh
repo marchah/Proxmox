@@ -34,14 +34,14 @@ else
 fi
 
 if [ -z "$UNIT" ]; then
-  for u in llamacpp-qwen38fn llamacpp llama-swap; do
+  for u in llamacpp-qwen38fn llamacpp-glm53f llamacpp llama-swap; do
     if guest "systemctl is-active --quiet $u" 2>/dev/null; then UNIT="$u"; break; fi
   done
 fi
+# Each llama.cpp unit's launcher sources /etc/<unit>.env.
 case "$UNIT" in
-  llamacpp)          ENVFILE=/etc/llamacpp.env ;;
-  llamacpp-qwen38fn) ENVFILE=/etc/llamacpp-qwen38fn.env ;;
-  *)                 ENVFILE="" ;;
+  llamacpp | llamacpp-*) ENVFILE="/etc/${UNIT}.env" ;;
+  *)                     ENVFILE="" ;;
 esac
 
 # Cards: LXC passthrough binds /dev/dri/by-path/pci-<address>-render; a VM lists hostpci.

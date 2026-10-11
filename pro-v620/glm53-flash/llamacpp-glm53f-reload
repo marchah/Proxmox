@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Restart GLM-5.3-Flash at a context length and slot count, then wait until it serves.
+# Same interface as llamacpp-reload (CT 120) and llamacpp-qwen38fn-reload.
+# Installed as /usr/local/bin/llamacpp-glm53f-reload in CT 123 by install.sh.
+#
+#   llamacpp-glm53f-reload <context-length> <parallel>
+#
+# The context is the total, split across the slots. Read free VRAM and requested-minus-
+# resident VRAM after a real request: a larger context can push buffers out of VRAM.
+set -Eeuo pipefail
+
+usage='usage: llamacpp-glm53f-reload <context-length> <parallel>'
+ctx="${1:?${usage}}"
+parallel="${2:?${usage}}"
+[[ ${ctx} =~ ^[0-9]+$ && ${parallel} =~ ^[0-9]+$ ]] || { echo "${usage}" >&2; exit 2; }
+
+env_file=/etc/llamacpp-glm53f.env
+sed -i \
+  -e "s/^MODEL_CONTEXT_LENGTH=.*/MODEL_CONTEXT_LENGTH=\"${ctx}\"/" \
+  -e "s/^MODEL_PARALLEL=.*/MODEL_PARALLEL=\"${parallel}\"/" \
+  "${env_file}"
+systemctl restart llamacpp-glm53f.service
+
+# shellcheck disable=SC1090  # runtime-only env file
+port="$(. "${env_file}"; printf '%s' "${MODEL_SERVER_PORT:-1234}")"
+# The unit allows 30 min for a load (TimeoutStartSec=1800); stop early if it fails.
+for _ in $(seq 1 360); do
+  if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+    exit 0
+  fi
+  if systemctl is-failed --quiet llamacpp-glm53f.service; then
+    echo "llamacpp-glm53f-reload: the server failed to start; see journalctl -u llamacpp-glm53f" >&2
+    exit 1
+  fi
+  sleep 5
+done
+echo "llamacpp-glm53f-reload: the server was not healthy after 30 min" >&2
+exit 1

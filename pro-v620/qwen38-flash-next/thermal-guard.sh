@@ -29,6 +29,8 @@ CARDS="${CARDS:-0000:03:00.0 0000:83:00.0}"
 # placement-sweep.sh refuses to start a cell while this file exists, and does not restart
 # the server on exit. Remove it once cooling is checked.
 TRIP_FILE="${TRIP_FILE:-/root/qwen38-flash-next/THERMAL_TRIP}"
+# The model unit a sweep drives in the guarded container (placement-sweep.sh's UNIT).
+UNIT="${UNIT:-llamacpp-qwen38fn}"
 
 mkdir -p "$(dirname "$LOG")"
 
@@ -54,7 +56,7 @@ hwmon_for() {
 for pci in $CARDS; do
   hwmon_for "$pci" >/dev/null || { echo "FATAL: no hwmon for ${pci} — refusing to run blind" >&2; exit 1; }
 done
-echo "$(date -u +%FT%TZ) guard armed: cards=[${CARDS}] limit=${LIMIT}C patterns=[${PATTERNS}]" | tee -a "$LOG"
+echo "$(date -u +%FT%TZ) guard armed: cards=[${CARDS}] limit=${LIMIT}C patterns=[${PATTERNS}] unit=${UNIT}" | tee -a "$LOG"
 
 while :; do
   for pci in $CARDS; do
@@ -88,7 +90,7 @@ while :; do
       if [ -n "$ct" ]; then
         for p in $PATTERNS; do pct exec "$ct" -- pkill -f "$p" || true; done
         # A sweep drives this unit; stopping it ends the cell.
-        pct exec "$ct" -- systemctl stop llamacpp-qwen38fn 2>/dev/null || true
+        pct exec "$ct" -- systemctl stop "$UNIT" 2>/dev/null || true
       else
         # No container owns the card: the load was started on the host.
         for p in $PATTERNS; do pkill -f "$p" || true; done

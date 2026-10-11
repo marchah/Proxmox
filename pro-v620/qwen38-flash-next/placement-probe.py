@@ -55,7 +55,7 @@ def post(url, body, timeout=3600):
         return json.loads(r.read())
 
 
-def contract_check(base):
+def contract_check(base, efforts):
     """The template traps, asserted rather than assumed."""
     out = {}
     msgs = [{"role": "user", "content": "Reply with exactly: OK"}]
@@ -68,6 +68,7 @@ def contract_check(base):
                   "max_tokens": 64, "temperature": 0})
         ch = r["choices"][0]["message"]
         content = ch.get("content") or ""
+        reasoning = ch.get("reasoning_content") or ""
         out["bare_chat"] = {
             "ok": bool(content.strip()),
             "content": content[:80],
@@ -76,8 +77,12 @@ def contract_check(base):
             # --reasoning off. A <think> tag leaking into content is the real defect, and it
             # silently corrupts every generated file (a KB run once produced frontmatter
             # starting "<think>\n\n</think>\n\n---").
-            "think_leaked_into_content": "<think>" in content,
+            "think_leaked_into_content": "<think>" in content or "</think>" in content,
             "reasoning_content_present": ch.get("reasoning_content") is not None,
+            # A reasoning block despite --reasoning off: GLM-5.3-Flash's template opens
+            # <think> on every turn and has no switch of its own to close it.
+            "reasoning_chars": len(reasoning),
+            "finish_reason": r["choices"][0].get("finish_reason"),
         }
     except Exception as e:
         out["bare_chat"] = {"ok": False, "error": repr(e)[:200]}
@@ -89,17 +94,24 @@ def contract_check(base):
     # NEUTRALISES the caller-side trap rather than exposing it.
     # So the assertion is "a caller cannot break this", not "the template rejects it".
     # A non-200, or empty content, means the protection has regressed.
-    for val in ("none", "high", "low", "medium", "xhigh"):
+    for val in efforts:
         try:
             r = post(base + "/v1/chat/completions",
                      {"model": "qwen3.8-flash-next", "messages": msgs,
                       "max_tokens": 32, "temperature": 0, "reasoning_effort": val})
             ch = r["choices"][0]["message"]
-            ok = bool((ch.get("content") or "").strip())
+            content = ch.get("content") or ""
+            ok = bool(content.strip())
+            # On the whole reply: GLM-5.3-Flash's tag follows the reasoning, past the stored prefix.
+            leaked = "<think>" in content or "</think>" in content
             out["effort_" + val] = {
-                "harmless": ok,
-                "content": (ch.get("content") or "")[:40],
-                "note": "" if ok else "200 but EMPTY content — --reasoning off may have stopped working",
+                "harmless": ok and not leaked,
+                "content": content[:40],
+                "think_leaked_into_content": leaked,
+                "reasoning_chars": len(ch.get("reasoning_content") or ""),
+                "note": ("200 but EMPTY content — --reasoning off may have stopped working" if not ok
+                         else "think tag in content — the reasoning block reached the answer"
+                         if leaked else ""),
             }
         except urllib.error.HTTPError as e:
             out["effort_" + val] = {
@@ -164,6 +176,10 @@ def main():
     ap.add_argument("--depths", default="0",
                     help="comma-separated approximate prompt-token depths, e.g. 0,8000,32000")
     ap.add_argument("--contract", action="store_true")
+    # Flash-Next's template takes low, medium and xhigh and raises on none and high;
+    # GLM-5.3-Flash's takes low, high and max and reads anything else as max.
+    ap.add_argument("--efforts", default="none,high,low,medium,xhigh",
+                    help="comma-separated reasoning_effort values --contract sends")
     # Limit which prompt classes run. The WARM pass does not need all three -- warming is
     # about weights, the graph and the deep-prefill indexer state, none of which is
     # prompt-class specific -- and at depth each class costs a full 8k prefill, which is
@@ -176,7 +192,8 @@ def main():
     result = {"base": a.base, "reps": a.reps, "n_predict": a.n_predict,
               "classes": a.classes or "all"}
     if a.contract:
-        result["contract"] = contract_check(a.base)
+        result["contract"] = contract_check(
+            a.base, [e.strip() for e in a.efforts.split(",") if e.strip()])
 
     rows = []
     for depth in [int(d) for d in a.depths.split(",")]:
