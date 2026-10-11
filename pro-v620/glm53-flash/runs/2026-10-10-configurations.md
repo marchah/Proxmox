@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run from 2026-10-10 (stage 1 done) · Status: running
+Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–2 done) · Status: running
 
 ## Question
 
@@ -594,6 +594,33 @@ with `MODEL_REASONING_BUDGET=0` and `placement-probe.py --contract` from the sam
 - **Reasoning: `--reasoning-budget 0`** joins every later stage; `glm53f.env` now sets it.
 - **Two slots: no `--kv-unified`.** `base-p2-nokvu` completed both streams.
 - **Larger micro-batch for stage 2: 4096.** It costs 2,490 MiB over 1024, under one expert layer.
+
+### Stage 2, fit — 2026-10-10 22:55–23:13 ET
+
+Harness `644c589`, cells
+[`2026-10-10-configurations-fit.cells`](2026-10-10-configurations-fit.cells): no speculation,
+`dio`, f16 KV, context 65536, two slots, `--reasoning-budget 0`, raw `/completion` (this stage
+measures VRAM and residency only). One pass with `REPS=1 DEPTHS=8000 PROBE_CLASSES=code`, and the
+residency sampler read over each cell's d8000 request and two-stream round. Raw data:
+`/root/glm53-flash/sweep-fit-20261011T025441Z/` and `residency-fit.jsonl` on the host.
+
+| Cell | Micro-batch | `-ncmoe` (expert layers on the card) | VRAM after load, MiB | Free | VRAM-requested memory outside VRAM, max | Passes |
+| --- | ---: | --- | ---: | ---: | ---: | --- |
+| `f1-42` | 1024 | 42 (blocks 42–44) | 28,375 | 2,329 | 0 | no: under 3,072 free |
+| `f1-43` | 1024 | 43 (blocks 43–44) | 24,198 | 6,506 | 0 | **yes** |
+| `f2-43` | 4096 | 43 (blocks 43–44) | 25,927 | 4,777 | 1,890 MiB, 12 of 134 samples | no: memory outside VRAM |
+| `f2-44` | 4096 | 44 (block 44) | 21,750 | 8,954 | 0 | **yes** |
+
+- **Fits:** `-ncmoe 43` at micro-batch 1024 and `-ncmoe 44` at 4096. The larger micro-batch costs
+  one expert layer.
+- `f2-43` passed the free-VRAM test with 4,777 MiB but still had up to 1,890 MiB of
+  VRAM-requested memory outside VRAM during its prefill, the effect seen on Flash-Next. The
+  residency condition, not the margin, rejected it.
+- Each cell pinned 165–174 GiB of GTT (the CPU-resident experts) and loaded in 111–115 s.
+- One pass, so not compared, but for orientation: decode at d8000 6.2–6.5 t/s in every cell;
+  prefill at d8000 143–145 t/s at micro-batch 1024 and 180–188 t/s at 4096. Prefill drew
+  166–177 W on under one CPU core, decode 52 W on about 15 cores. Two streams completed in every
+  cell, 8.7–9.4 t/s aggregate. Hottest DIMM 51–54 °C.
 
 ## Deviations
 
