@@ -68,14 +68,27 @@ def get(url: str, timeout: int = 30) -> dict:
         return json.loads(r.read().decode())
 
 
-def one(base: str, prompt: str, n_predict: int) -> dict:
+def one(base: str, prompt: str, n_predict: int, chat: bool = False) -> dict:
     t0 = time.time()
-    r = post(base + "/completion",
-             {"prompt": prompt, "n_predict": n_predict, "temperature": 0, "top_k": 1,
-              "cache_prompt": False, "stream": False})
+    if chat:
+        # The same text as one user turn through the chat template (placement-probe.py --chat).
+        r = post(base + "/v1/chat/completions",
+                 {"messages": [{"role": "user", "content": prompt}], "max_tokens": n_predict,
+                  "temperature": 0, "top_k": 1, "cache_prompt": False, "stream": False})
+        choice = r["choices"][0]
+        content = (choice.get("message") or {}).get("content") or ""
+        stop = {"length": "limit", "stop": "eos"}.get(choice.get("finish_reason"),
+                                                      choice.get("finish_reason") or "other")
+    else:
+        r = post(base + "/completion",
+                 {"prompt": prompt, "n_predict": n_predict, "temperature": 0, "top_k": 1,
+                  "cache_prompt": False, "stream": False})
+        content = r.get("content") or ""
+        # b11505 reports `stop_type`; older builds set stopped_eos / stopped_limit.
+        stop = r.get("stop_type") or ("eos" if r.get("stopped_eos") else
+                                      "limit" if r.get("stopped_limit") else "other")
     wall = time.time() - t0
     tm = r.get("timings", {})
-    content = r.get("content") or ""
     words = content.split()
     shingles = {" ".join(words[j:j + 8]) for j in range(max(0, len(words) - 7))}
     uniq = round(len(shingles) / max(1, len(words) - 7), 3)
@@ -91,9 +104,7 @@ def one(base: str, prompt: str, n_predict: int) -> dict:
         "uniq_8gram": uniq,
         "degenerate": uniq < 0.7,
         "content_sha": hashlib.sha256(content.encode()).hexdigest()[:12],
-        # b11505 reports `stop_type`; older builds set stopped_eos / stopped_limit.
-        "stop": r.get("stop_type") or ("eos" if r.get("stopped_eos") else
-                                       "limit" if r.get("stopped_limit") else "other"),
+        "stop": stop,
     }
 
 
@@ -118,12 +129,14 @@ def main() -> int:
     ap.add_argument("--reps", type=int, default=2,
                     help="rounds of `streams` concurrent requests (median across rounds)")
     ap.add_argument("--n-predict", type=int, default=160)
+    ap.add_argument("--chat", action="store_true",
+                    help="send the prompts through /v1/chat/completions")
     ap.add_argument("--depth", type=int, default=0,
                     help="approximate prompt-token depth to pad every stream to")
     a = ap.parse_args()
 
     result: dict = {"base": a.base, "streams": a.streams, "reps": a.reps,
-                    "n_predict": a.n_predict, "depth_target": a.depth}
+                    "n_predict": a.n_predict, "depth_target": a.depth, "chat": a.chat}
     result.update(server_props(a.base))
 
     # ⚠️ Loud, not silent. A server loaded with fewer slots than the requested stream count
@@ -143,7 +156,7 @@ def main() -> int:
                    for i in range(a.streams)]
         t0 = time.time()
         with cf.ThreadPoolExecutor(max_workers=a.streams) as ex:
-            futs = [ex.submit(one, a.base, p, a.n_predict) for p in prompts]
+            futs = [ex.submit(one, a.base, p, a.n_predict, a.chat) for p in prompts]
             rows = []
             for i, f in enumerate(futs):
                 try:

@@ -123,16 +123,37 @@ def contract_check(base, efforts):
     return out
 
 
-def one(base, prompt, n_predict):
-    body = {"prompt": prompt, "n_predict": n_predict, "temperature": 0, "top_k": 1,
-            # ⚠️ Without this, a repeated identical request reports prompt_n ~4 and every
-            # config looks the same — you measure cache hits, not the model.
-            "cache_prompt": False, "stream": False}
+def one(base, prompt, n_predict, chat=False):
+    # ⚠️ cache_prompt false: without it, a repeated identical request reports prompt_n ~4 and
+    # every config looks the same — you measure cache hits, not the model.
+    if chat:
+        # The same text as one user turn through the chat template. GLM-5.3-Flash reads the
+        # raw depth prompt (filler, then the instruction) as a document and continues the
+        # filler; as a question it answers. llama-server returns the same timings block.
+        body = {"messages": [{"role": "user", "content": prompt}], "max_tokens": n_predict,
+                "temperature": 0, "top_k": 1, "cache_prompt": False, "stream": False}
+        path = "/v1/chat/completions"
+    else:
+        body = {"prompt": prompt, "n_predict": n_predict, "temperature": 0, "top_k": 1,
+                "cache_prompt": False, "stream": False}
+        path = "/completion"
     t0 = time.time()
-    r = post(base + "/completion", body)
+    r = post(base + path, body)
     wall = time.time() - t0
     tm = r.get("timings", {})
-    content = r.get("content") or ""
+    if chat:
+        choice = r["choices"][0]
+        msg = choice.get("message") or {}
+        content = msg.get("content") or ""
+        reasoning_chars = len(msg.get("reasoning_content") or "")
+        stop = {"length": "limit", "stop": "eos"}.get(choice.get("finish_reason"),
+                                                      choice.get("finish_reason") or "other")
+    else:
+        content = r.get("content") or ""
+        reasoning_chars = None
+        # b11505 reports `stop_type`; older builds set stopped_eos / stopped_limit.
+        stop = r.get("stop_type") or ("eos" if r.get("stopped_eos") else
+                                      "limit" if r.get("stopped_limit") else "other")
     words = content.split()
     shingles = {" ".join(words[j:j + 8]) for j in range(max(0, len(words) - 7))}
     uniq = round(len(shingles) / max(1, len(words) - 7), 3)
@@ -162,9 +183,9 @@ def one(base, prompt, n_predict):
         "content_sha": hashlib.sha256(content.encode()).hexdigest()[:12],
         # The text itself, so a response that differs from its control can be read.
         "content": content,
-        # b11505 reports `stop_type`; older builds set stopped_eos / stopped_limit.
-        "stop": r.get("stop_type") or ("eos" if r.get("stopped_eos") else
-                                       "limit" if r.get("stopped_limit") else "other"),
+        "stop": stop,
+        # Chat requests only: tokens spent in a reasoning block count toward predicted_n.
+        "reasoning_chars": reasoning_chars,
     }
 
 
@@ -176,6 +197,8 @@ def main():
     ap.add_argument("--depths", default="0",
                     help="comma-separated approximate prompt-token depths, e.g. 0,8000,32000")
     ap.add_argument("--contract", action="store_true")
+    ap.add_argument("--chat", action="store_true",
+                    help="send the throughput prompts through /v1/chat/completions")
     # Flash-Next's template takes low, medium and xhigh and raises on none and high;
     # GLM-5.3-Flash's takes low, high and max and reads anything else as max.
     ap.add_argument("--efforts", default="none,high,low,medium,xhigh",
@@ -190,7 +213,7 @@ def main():
     a = ap.parse_args()
 
     result = {"base": a.base, "reps": a.reps, "n_predict": a.n_predict,
-              "classes": a.classes or "all"}
+              "classes": a.classes or "all", "chat": a.chat}
     if a.contract:
         result["contract"] = contract_check(
             a.base, [e.strip() for e in a.efforts.split(",") if e.strip()])
@@ -207,7 +230,7 @@ def main():
         for cls, p in ((c, PROMPTS[c]) for c in want):
             for rep in range(a.reps):
                 try:
-                    m = one(a.base, pad + p, a.n_predict)
+                    m = one(a.base, pad + p, a.n_predict, a.chat)
                 except Exception as e:
                     m = {"error": repr(e)[:200]}
                 m.update({"class": cls, "depth_target": depth, "rep": rep})

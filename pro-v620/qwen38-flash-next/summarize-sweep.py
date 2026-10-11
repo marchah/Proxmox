@@ -129,6 +129,9 @@ def main():
             print("Every load was cold: the host page cache was dropped before each one.\n")
         if manifest.get("probe_classes"):
             print("Prompt classes: `%s` only.\n" % manifest["probe_classes"])
+        if manifest.get("probe_chat"):
+            print("Requests went through the chat template (`/v1/chat/completions`), not raw "
+                  "`/completion`: compare only with other chat-mode sweeps.\n")
     # A depth label is the probe's target; the filler tokenizes at about 5.5 characters per
     # token, so d8000 is a ~5,800-token prompt. Quote the measured size, not the label.
     if any(dep != "d0" for dep in prompt_tokens):

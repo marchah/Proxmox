@@ -264,19 +264,23 @@ systemctl stop vram-residency
 | --- | --- | --- |
 | 1 | `screen` | `REPS=1 DEPTHS=0,8000 PROBE_CLASSES=code` |
 | 2 | `fit` | `REPS=1 DEPTHS=8000 PROBE_CLASSES=code` |
-| 3 | `load` | `DEPTHS=0,8000 CONC_REPS=3` |
-| 4 | `threads` | `DEPTHS=0,8000 CONC_REPS=3` |
-| 5 | `context` | `PROBE_CLASSES=code`; depths per cell |
-| 6a | `2c-fit` | `REPS=1 DEPTHS=8000 PROBE_CLASSES=code` |
-| 6b | `2c` | `DEPTHS=0,8000 CONC_REPS=3` |
-| 7a | `mtp-fit` | `REPS=1 DEPTHS=8000 PROBE_CLASSES=code` |
-| 7b | `mtp-scan` | `REPS=1 DEPTHS=0,8000` |
-| 7c | `mtp` | `DEPTHS=0,8000 CONC_REPS=3` |
-| 7c, short replies | `short` | `N_PREDICT=32 DEPTHS=0,700` |
+| 3 | `load` | `DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true` |
+| 4 | `threads` | `DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true` |
+| 5 | `context` | `PROBE_CLASSES=code PROBE_CHAT=true`; depths per cell |
+| 6a | `2c-fit` | `REPS=1 DEPTHS=8000 PROBE_CLASSES=code PROBE_CHAT=true` |
+| 6b | `2c` | `DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true` |
+| 7a | `mtp-fit` | `REPS=1 DEPTHS=8000 PROBE_CLASSES=code PROBE_CHAT=true` |
+| 7b | `mtp-scan` | `REPS=1 DEPTHS=0,8000 PROBE_CHAT=true` |
+| 7c | `mtp` | `DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true` |
+| 7c, short replies | `short` | `N_PREDICT=32 DEPTHS=0,700 PROBE_CHAT=true` |
 
 - Sweep defaults: `N_PREDICT=256`, classes code, list and prose, 16 threads (stage 4
   varies it), the projector on the CPU, batch 4096. Micro-batch is per cell. The
   concurrency probe runs two streams at d0, each a different prompt.
+- From stage 3, `PROBE_CHAT=true` sends both probes' prompts through the chat template
+  (`/v1/chat/completions`), with the same text, sampling and `cache_prompt: false`, and
+  reads the same `timings` block. GLM's figures from stage 3 on are therefore not
+  comparable with Flash-Next's records, which use raw `/completion`.
 - Stage 5's cells set their own depths, code class only: 0, 8000, 82000 (~59k tokens) at
   every context, 165000 (~119k) at 131072 and 262144, and 330000 (~237k) at 262144.
 - `two-card` prints the Vulkan device order in CT 123; `1c-best`'s `VK_DEVICES` is GPU 2's
@@ -601,6 +605,11 @@ with `MODEL_REASONING_BUDGET=0` and `placement-probe.py --contract` from the sam
   context (was 7), stage 6 two cards without MTP (was 8), and stage 7 MTP (was 5–6, plus
   the MTP fit from stage 2). Stage 1's `base-mtp3` cell measured only MTP's VRAM and its
   image-request failure.
+- **Probe mode from stage 3** (owner, after stage 1): requests go through the chat template
+  (`PROBE_CHAT=true`). With the raw `/completion` prompt, GLM continued the d8000 filler
+  instead of answering, which failed the output gate and put MTP's d8000 acceptance at 99%;
+  through the chat template the same prompt was answered. Stages 1 and 2 used raw
+  `/completion`; stage 2 measures only VRAM and residency.
 - **Stage 1:** b11505's llama-server prints no per-buffer sizes at its default log level
   (`-lv 3`), so the VRAM components come from the differences between cells.
 - **Stage 1:** the `--reasoning-budget 0` repeat of `base` ran by hand, as described under the

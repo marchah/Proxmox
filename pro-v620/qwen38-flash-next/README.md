@@ -181,7 +181,9 @@ server sees (`GGML_VK_VISIBLE_DEVICES`), so a one-card cell in a two-card contai
 `dio`'s pinned memory on its own card. `CONFIGS`, a list of `NCMOE[:CACHE]` entries, is the
 short form. `UNIT` points the sweep, `thermal-guard.sh` and `capture-env.sh` at another
 model's unit; [GLM-5.3-Flash](../glm53-flash/README.md#test-setup) uses
-`UNIT=llamacpp-glm53f N_BLOCKS=46`.
+`UNIT=llamacpp-glm53f N_BLOCKS=46`. `PROBE_CHAT=true` sends both probes' prompts through
+`/v1/chat/completions` instead of `/completion`, with the same text and sampling; results
+compare only with other sweeps in the same mode.
 
 ```bash
 VMID=123 CELLS=runs/2026-10-08-threads-concurrency.cells DEPTHS="0,8000" ./placement-sweep.sh

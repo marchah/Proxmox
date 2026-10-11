@@ -86,6 +86,9 @@ THREADS="${THREADS:-}"
 N_BLOCKS="${N_BLOCKS:-48}"
 # Effort values the probe's --contract sends; empty uses the probe's default (Flash-Next's).
 CONTRACT_EFFORTS="${CONTRACT_EFFORTS:-}"
+# true sends the probes' prompts through /v1/chat/completions instead of /completion. GLM-5.3-
+# Flash continues the raw depth prompt's filler; as a chat turn it answers the instruction.
+PROBE_CHAT="${PROBE_CHAT:-false}"
 # Flash-Next: 48 MoE layers, ~1.56 GB of Q4 expert weight each, so each +1 hands ~1.56 GB back:
 #   15 = minimum that fits two cards · 20 = ~8 GB spare · 28 = ~20 GB spare
 #   34 = fits one card · 48 = all experts in RAM (the no-GPU-experts control)
@@ -114,6 +117,9 @@ log() { printf '==> %s\n' "$*"; }
 
 [[ "$UNIT" =~ ^llamacpp-[a-z0-9-]+$ ]] || die "UNIT must name a llamacpp-* unit"
 [[ "$N_BLOCKS" =~ ^[0-9]+$ ]] || die "N_BLOCKS must be a number"
+case "$PROBE_CHAT" in true | false) ;; *) die "PROBE_CHAT must be true or false" ;; esac
+CHAT_ARGS=()
+[ "$PROBE_CHAT" = "true" ] && CHAT_ARGS=( --chat )
 [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"
 case "$DROP_CACHES" in true | false) ;; *) die "DROP_CACHES must be true or false" ;; esac
 [[ "$DIMM_START_MAX_C" =~ ^[0-9]+$ ]] || die "DIMM_START_MAX_C must be a whole number of °C"
@@ -503,7 +509,7 @@ measure_free() {  # <label> <sig>
   # depth. At -ncmoe 34 those read 2,076 and 2,154 MiB; sizing from the second alone loaded
   # the cache cell under the margin. A synthetic 3k request read 2,229.
   at_load=$(( $(vram_total_mib "$card") - $(vram_mib "$card") ))
-  ./placement-probe.py "$BASE" --reps 1 --n-predict 64 --classes code \
+  ./placement-probe.py "$BASE" --reps 1 --n-predict 64 --classes code "${CHAT_ARGS[@]}" \
     --depths "$(tr ',' '\n' <<<"$DEPTHS" | sort -n | tail -1)" >/dev/null 2>&1 \
     || log "sizing probe failed for ${label}"
   after=$(( $(vram_total_mib "$card") - $(vram_mib "$card") ))
@@ -581,7 +587,7 @@ cat >"${OUT_DIR}/manifest.json" <<JSON
  "harness_commit": "${HARNESS_COMMIT}",
  "vmid": ${VMID}, "cards": "${CARDS[*]}", "unit": "${UNIT}", "n_blocks": ${N_BLOCKS},
  "model": $(python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))["guest"]["env"].get("MODEL_ALIAS")))' "${OUT_DIR}/environment.json"),
- "contract_efforts": "${CONTRACT_EFFORTS}",
+ "contract_efforts": "${CONTRACT_EFFORTS}", "probe_chat": ${PROBE_CHAT},
  "ctx": ${CTX}, "parallel": ${PARALLEL}, "reps": ${REPS},
  "n_predict": ${N_PREDICT}, "conc_reps": ${CONC_REPS}, "depths": "${DEPTHS}", "probe_classes": "${PROBE_CLASSES}",
  "drop_caches": ${DROP_CACHES}, "dimm_start_max_c": ${DIMM_START_MAX_C},
@@ -666,7 +672,7 @@ PYFAIL
     done
     if [ "$spill" = "true" ]; then log "⚠️  possible GTT spill — treat this row's decode as suspect"; fi
 
-    probe_args=( "$BASE" --reps 1 --n-predict "$N_PREDICT" --depths "${CELL[$label|DEPTHS]:-$DEPTHS}" )
+    probe_args=( "$BASE" --reps 1 --n-predict "$N_PREDICT" --depths "${CELL[$label|DEPTHS]:-$DEPTHS}" "${CHAT_ARGS[@]}" )
     [ -n "$PROBE_CLASSES" ] && probe_args+=( --classes "$PROBE_CLASSES" )
     # The template-contract assertions only need running once per sweep, on the first
     # cell that loads: a cell that fails to load skips the probe.
@@ -687,7 +693,7 @@ PYFAIL
     conc_span=""
     if [ -n "$streams" ]; then
       conc_span="$(date +%s.%N)"
-      ./concurrency-probe.py "$BASE" "$streams" --reps "$CONC_REPS" --n-predict "$N_PREDICT" \
+      ./concurrency-probe.py "$BASE" "$streams" --reps "$CONC_REPS" --n-predict "$N_PREDICT" "${CHAT_ARGS[@]}" \
         >"${OUT_DIR}/${tag}.concurrency.json" 2>"${OUT_DIR}/${tag}.concurrency.log" \
         || log "concurrency probe FAILED for ${tag}"
       conc_span="${conc_span} $(date +%s.%N)"
