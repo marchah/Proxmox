@@ -7,7 +7,7 @@ Plan committed 2026-10-10 · Run from 2026-10-10 (stage 1 done) · Status: runni
 GLM-5.3-Flash ([model notes](../README.md)) carries 189.9 GB of routed experts and
 9.8 GB of other weights at UD-Q4_K_XL, so one V620 holds the non-expert weights and a few
 expert layers, and host RAM serves the rest. On llama.cpp b11505, Vulkan, in CT 123 with
-GPU 2 (`0000:83:00.0`), and with both cards in stage 8:
+GPU 2 (`0000:83:00.0`), and with both cards in stage 6:
 
 - **Load and contract:** does b11505 load the model and its MTP block on RADV? Do two
   slots work, given #27773's note that several sequences need `--kv-unified`? The template
@@ -31,21 +31,22 @@ GPU 2 (`0000:83:00.0`), and with both cards in stage 8:
   all experts in RAM?
 - **CPU only:** with the whole model in host RAM and no card, how fast do decode and
   prefill run, at CPU only's own best thread count?
-- **MTP:** with the built-in MTP block, which draft length (`--spec-draft-n-max`) decodes
-  fastest at one and two streams? What share of drafts is accepted? Does the best length
-  beat the best configuration without it, including on short replies, where Flash-Next's
-  head lost ([short-reply record](../../qwen38-flash-next/runs/2026-10-10-short-reply-decode.md))?
 - **Context:** how many expert layers do 128k and 256k contexts cost? How do decode and
   prefill hold up at depth, given that the KDA layers keep a fixed state and the DSA
   indexer attends to at most 2,048 pools of four tokens?
-- **Two cards:** GPU 1 adds room for about five more expert layers (an estimate stage 8
-  measures). What does that add to decode and prefill, under each load mode and with MTP,
-  against the best one-card configuration?
+- **Two cards:** GPU 1 adds room for about five more expert layers (an estimate stage 6
+  measures). What does that add to decode and prefill, under each load mode, against the
+  best one-card configuration?
+- **MTP, last:** on the configuration the stages before it settle, which draft length
+  (`--spec-draft-n-max`) decodes fastest at one and two streams? What share of drafts is
+  accepted? Does the best length beat the same configuration without it, including on
+  short replies, where Flash-Next's head lost ([short-reply
+  record](../../qwen38-flash-next/runs/2026-10-10-short-reply-decode.md))?
 
 ## What answers it
 
 A difference counts when it is larger than the pass-to-pass spread of both cells. Any
-cell with a DIMM sample at 66 °C is invalid. Stages 1, 2, 5, 8a and 8b take one pass to
+cell with a DIMM sample at 66 °C is invalid. Stages 1, 2, 6a, 7a and 7b take one pass to
 choose what the timed stages measure; their figures are reported but not compared by the
 spread rule.
 
@@ -66,18 +67,13 @@ spread rule.
     `/completion`, which applies no template, so they stay valid.
   - **Two slots:** `--kv-unified` joins every two-slot cell if `base-p2-nokvu` fails or
     drops a stream.
-- **Stage 2, fit:** per variant, the smallest `--n-cpu-moe` that leaves at least
-  3,072 MiB free right after load, with requested-minus-resident VRAM at zero through a
-  d8000 code request at one and two streams. Flash-Next's head left 1,822 MiB free after a
+- **Stage 2, fit** (no speculation): per variant, the smallest `--n-cpu-moe` that leaves at
+  least 3,072 MiB free right after load, with requested-minus-resident VRAM at zero through
+  a d8000 code request at one and two streams. Flash-Next's head left 1,822 MiB free after a
   probe and still had buffers created in GTT ([prefill-slowdown
   record](../../qwen38-flash-next/runs/2026-10-10-prefill-slowdown.md)). Variants:
-  - no speculation at micro-batch 1024;
-  - no speculation at the largest micro-batch from stage 1 that costs at most one expert
-    layer more than 1024;
-  - MTP at n-max 8 with block 45's experts on the card;
-  - MTP at n-max 8 with block 45's experts in RAM.
-  The MTP fit is at the scan's longest draft: Flash-Next's head grew about 225 MiB per
-  draft token, and a fit at n-max 3 spilled at 5–8.
+  - micro-batch 1024;
+  - the largest micro-batch from stage 1 that costs at most one expert layer more than 1024.
 - **Stage 3, load mode and micro-batch** (timed):
   - Cells: `auto` and `dio` at micro-batch 1024, and `dio` at stage 2's larger micro-batch,
     each at its fit; `dio-experts-ram`; `cpu`.
@@ -92,22 +88,46 @@ spread rule.
   the six prompt cells. If another count wins the two-stream aggregate beyond the spread,
   the record reports both. CPU only's best count, by the same rule, is reported as CPU
   only's result: its decode and prefill against the best GPU configuration's.
-- **Stage 5, MTP screen and scan** (one pass):
-  - **Block placement:** block 45's experts on the card or in RAM, at n-max 3. The higher
-    median single-stream decode wins; within 2%, the one with more VRAM free.
-  - **Scan:** n-max 1 to 8 at one and two streams, with decode and acceptance per length.
-    The scan has gone far enough once decode at both stream counts is at least 10% below
-    its best length's. If not by 8, a second scan adds 10, 12 and 16 after a refit.
-- **Stage 6, MTP timed:**
-  - Cells: the scan's best single-stream length and the lengths one below and above it;
-    the best two-stream length if it differs; the no-speculation control at the same
-    placement; the best configuration from stages 3–4.
-  - Measures: the stage 3 measures, plus `SUMMARY.md`'s draft acceptance per prompt cell
-    and at two streams.
-  - A short-reply sweep: 32-token replies at d0 and d700 (~500 tokens), the best MTP cell
-    against the best no-speculation configuration.
-  - Greedy verification keeps the target's choices, so each MTP cell's text is compared
-    with its control's per prompt cell, and any difference is read for sense.
+- **Stage 5, context** (timed): stages 3–4's configuration at 65536, 131072 and 262144, each
+  at its own fit. Per context: the VRAM it costs, in MiB and in expert layers, and decode
+  and prefill at each depth it holds. Stage 7 runs at the context the owner picks from
+  these results, and at 65536 without a pick.
+- **Stage 6, two cards** (no speculation; `ct123-test-host.sh two-card` gives CT 123 GPU 1
+  as well; context 65536, as in stages 3–4):
+  - **6a, fit and split** (one pass): the stage 2 rule on each card at stage 3's
+    micro-batch. The split starts from the sweep's rule with 46 blocks and moves one block
+    at a time towards the card with more VRAM free. One cell runs `-sm tensor` at the fit;
+    if its median single-stream decode beats the layer split's by more than 2%, it joins 6b.
+  - **6b, timed:** `2c-auto` and `2c-dio` at the fit; the tensor-split cell if 6a
+    qualifies it; and `1c-best`, stages 3–4's configuration with only GPU 2 visible
+    (`VK_DEVICES`).
+  - `1c-best` stands in for the one-card results if its median d8000 prefill and
+    single-stream decode are within the spread of the same configuration's stage 4 cell.
+    If not, the record says the two-card container changes one-card results.
+  - **What the second card adds:** the best two-card cell by the stage 3 rule against
+    `1c-best`, on median single-stream decode across the six prompt cells, two-stream
+    aggregate decode, d8000 prefill, and the expert layers each card holds. Whether GPU 1
+    goes to GLM stays the owner's decision, and with it whether stage 7 also runs on two
+    cards.
+- **Stage 7, MTP** (last, on the configuration stages 2–6 settle):
+  - **7a, fit** (one pass): the stage 2 rule at stage 5's context, for MTP at n-max 8 with
+    block 45's experts on the card and in RAM. The fit is at the scan's longest draft:
+    Flash-Next's head grew about 225 MiB per draft token, and a fit at n-max 3 spilled at
+    5–8. The draft context grows with the total context (#28433), so this fit holds only
+    at the context it was measured at.
+  - **7b, block placement and scan** (one pass): block 45's experts on the card or in RAM, at
+    n-max 3; the higher median single-stream decode wins, and within 2% the one with more
+    VRAM free. Then n-max 1 to 8 at one and two streams, with decode and acceptance per
+    length. The scan has gone far enough once decode at both stream counts is at least 10%
+    below its best length's. If not by 8, a second scan adds 10, 12 and 16 after a refit.
+  - **7c, timed:** the scan's best single-stream length and the lengths one below and above
+    it; the best two-stream length if it differs; the no-speculation control at the same
+    placement; the best configuration from stages 3–5. Measures: the stage 3 measures, plus
+    `SUMMARY.md`'s draft acceptance per prompt cell and at two streams. A short-reply sweep:
+    32-token replies at d0 and d700 (~500 tokens), the best MTP cell against the best
+    no-speculation configuration. Greedy verification keeps the target's choices, so each
+    MTP cell's text is compared with its control's per prompt cell, and any difference is
+    read for sense.
   - **MTP joins the best configuration** if all four hold:
     1. median single-stream decode across the six prompt cells beats both the
        same-placement control and the best no-speculation configuration;
@@ -117,30 +137,6 @@ spread rule.
        class;
     4. 32-token replies are not slower at either depth.
     If (1) holds and another fails, the record names the failure and the owner decides.
-- **Stage 7, context** (timed): the best configuration at 65536, 131072 and 262144, each
-  at its own fit. Per context: the VRAM it costs, in MiB and in expert layers, and decode
-  and prefill at each depth it holds. The choice of context is left to the usage test's
-  plan.
-- **Stage 8, two cards** (`ct123-test-host.sh two-card` gives CT 123 GPU 1 as well):
-  - **8a, fit and split** (one pass): the stage 2 rule on each card, for no speculation at
-    stage 3's micro-batch and for MTP at n-max 8 with stage 5's block placement. The split
-    starts from the sweep's rule with 46 blocks and moves one block at a time towards the
-    card with more VRAM free. One cell runs `-sm tensor` at the no-speculation fit; if its
-    median single-stream decode beats the layer split's by more than 2%, it joins 8c.
-  - **8b, MTP scan** (one pass): stage 5's scan on two cards.
-  - **8c, timed:** `2c-auto` and `2c-dio` at the no-speculation fit; `2c-mtp` with `dio`
-    at 8b's best single-stream length, and at its best two-stream length if that differs;
-    the tensor-split cell if 8a qualifies it; and `1c-best`, the best one-card
-    configuration with only GPU 2 visible (`VK_DEVICES`).
-  - `1c-best` stands in for the one-card results if its median d8000 prefill and
-    single-stream decode are within the spread of the same configuration's stage 6 or 7
-    cell. If not, the record says the two-card container changes one-card results.
-  - **What the second card adds:** the best two-card cell against `1c-best`, on median
-    single-stream decode across the six prompt cells, two-stream aggregate decode, d8000
-    prefill, and the expert layers each card holds. The stage 3 rule picks the best
-    no-speculation two-card cell; `2c-mtp` replaces it if its median single-stream decode
-    is higher and it meets stage 6's conditions 2 and 3 against it. Whether GPU 1 goes to
-    GLM stays the owner's decision.
 
 The best configuration is the stages' combined choice. The full benchmark batch on it
 gets its own record and plan. Whether to deploy GLM-5.3-Flash is a separate decision.
@@ -154,11 +150,11 @@ results compare on the same card.
 
 | Standard configuration | Cells |
 | --- | --- |
-| One GPU | Stages 1–7 on `0000:83:00.0`, and `1c-best` in stage 8 |
-| Two GPUs | Stage 8: layer split (and tensor split if it qualifies), `auto`, `dio` and MTP |
+| One GPU | Stages 1–5 and 7 on `0000:83:00.0`, and `1c-best` in stage 6 |
+| Two GPUs | Stage 6: layer split (and tensor split if it qualifies), `auto` and `dio`; stage 7 too if the owner keeps two cards in play |
 | CPU only | `cpu` in stages 1, 3 and 4: the whole model in host RAM, `--device none`, at 16, 24 and 32 threads |
 | Optimized | `dio-experts-ram` in stage 3: every routed expert in RAM (`-ncmoe 46`), leaving the VRAM stage 1 measures free for a second model |
-| Speculative decoding | The built-in MTP block (GGUF block 45, `--spec-type draft-mtp`, no separate file), stages 5–6 |
+| Speculative decoding | The built-in MTP block (GGUF block 45, `--spec-type draft-mtp`, no separate file), stage 7, last before the usage test |
 
 Stage 1's cells are in
 [`2026-10-10-configurations-screen.cells`](2026-10-10-configurations-screen.cells). Each
@@ -199,15 +195,15 @@ later stage's cells follow from the stage before and are committed before it run
 - Cells run round-robin. Timed stages (3, 4, 6, 7) take three passes.
 - Each MTP cell has a no-speculation control at its own placement and the best
   no-speculation configuration.
-- From stage 2 on, every GPU cell except stage 7's loads at `--parallel 2`, so one load
+- From stage 2 on, every GPU cell except stage 5's loads at `--parallel 2`, so one load
   gives the single-stream and two-stream figures. The context totals 65536, shared by the
-  slots. Stage 7 loads one slot.
+  slots. Stage 5 loads one slot.
 - Output: the probe's greedy settings and 8-gram gate. Each prompt cell's text is
   compared across cells.
-- Spill: `vram-residency-sampler.py` runs for the whole run, one per card in stage 8.
+- Spill: `vram-residency-sampler.py` runs for the whole run, one per card in stage 6.
   Read requested-minus-resident VRAM, not the GTT total, which under `dio` holds the
   pinned experts.
-- In stage 8, `dio`'s pinned memory is charged to Vulkan0. With both cards visible that is
+- In stage 6, `dio`'s pinned memory is charged to Vulkan0. With both cards visible that is
   GPU 1 ([two-card load-mode
   record](../../qwen38-flash-next/runs/2026-10-09-load-modes-two-cards.md)); `1c-best`
   sees only GPU 2, so for it GPU 2 is Vulkan0.
@@ -247,7 +243,7 @@ VMID=123 ./install.sh --download          # verifies the model files (unit glm53
 
 # Shell 1; restart it after each ct123-test-host.sh call, since it reads the cards at start
 cd $H/qwen38-flash-next && VMID=123 UNIT=llamacpp-glm53f ./thermal-guard.sh
-# Shell 2, one sampler file per stage (and per card in stage 8)
+# Shell 2, one sampler file per stage (and per card in stage 6)
 systemd-run --unit=vram-residency --collect /usr/bin/python3 \
   $H/qwen38-flash-next/vram-residency-sampler.py --pci 0000:83:00.0 \
   --output /root/glm53-flash/residency-<stage>.jsonl
@@ -258,7 +254,7 @@ VMID=123 UNIT=llamacpp-glm53f N_BLOCKS=46 CONTRACT_EFFORTS=none,low,high,max \
   OUT_DIR=/root/glm53-flash/sweep-<stage>-$(date -u +%Y%m%dT%H%M%SZ) \
   <settings> ./placement-sweep.sh
 
-# Host, before stage 8 (CT 120 must be stopped), and after the last stage
+# Host, before stage 6 (CT 120 must be stopped), and after the last stage
 cd $H/glm53-flash && ./ct123-test-host.sh two-card
 cd $H/glm53-flash && ./ct123-test-host.sh restore   # also if the run stops early
 systemctl stop vram-residency
@@ -270,32 +266,31 @@ systemctl stop vram-residency
 | 2 | `fit` | `REPS=1 DEPTHS=8000 PROBE_CLASSES=code` |
 | 3 | `load` | `DEPTHS=0,8000 CONC_REPS=3` |
 | 4 | `threads` | `DEPTHS=0,8000 CONC_REPS=3` |
-| 5 | `mtp-scan` | `REPS=1 DEPTHS=0,8000` |
-| 6 | `mtp` | `DEPTHS=0,8000 CONC_REPS=3` |
-| 6, short replies | `short` | `N_PREDICT=32 DEPTHS=0,700` |
-| 7 | `context` | `PROBE_CLASSES=code`; depths per cell |
-| 8a | `2c-fit` | `REPS=1 DEPTHS=8000 PROBE_CLASSES=code` |
-| 8b | `2c-mtp-scan` | `REPS=1 DEPTHS=0,8000` |
-| 8c | `2c` | `DEPTHS=0,8000 CONC_REPS=3` |
+| 5 | `context` | `PROBE_CLASSES=code`; depths per cell |
+| 6a | `2c-fit` | `REPS=1 DEPTHS=8000 PROBE_CLASSES=code` |
+| 6b | `2c` | `DEPTHS=0,8000 CONC_REPS=3` |
+| 7a | `mtp-fit` | `REPS=1 DEPTHS=8000 PROBE_CLASSES=code` |
+| 7b | `mtp-scan` | `REPS=1 DEPTHS=0,8000` |
+| 7c | `mtp` | `DEPTHS=0,8000 CONC_REPS=3` |
+| 7c, short replies | `short` | `N_PREDICT=32 DEPTHS=0,700` |
 
 - Sweep defaults: `N_PREDICT=256`, classes code, list and prose, 16 threads (stage 4
   varies it), the projector on the CPU, batch 4096. Micro-batch is per cell. The
   concurrency probe runs two streams at d0, each a different prompt.
-- Stage 7's cells set their own depths, code class only: 0, 8000, 82000 (~59k tokens) at
+- Stage 5's cells set their own depths, code class only: 0, 8000, 82000 (~59k tokens) at
   every context, 165000 (~119k) at 131072 and 262144, and 330000 (~237k) at 262144.
 - `two-card` prints the Vulkan device order in CT 123; `1c-best`'s `VK_DEVICES` is GPU 2's
   index there, and its cell JSON must show `active_card` `0000:83:00.0`.
 - After `restore`, Flash-Next must load and answer with its free VRAM as deployed (about
   3.2 GiB) and nothing outside VRAM.
 - Expected duration, from Flash-Next's cell times scaled by the prefill estimate above:
-  - stage 1: about 1.5 h;
-  - stage 2: about 1 h;
+  - stage 1: about 1.5 h (ran in 1 h);
+  - stage 2: about 30 min;
   - stage 3: 3.5 h;
   - stage 4: 4.5 h, the CPU-only cells about half of it;
-  - stage 5: 2 h;
-  - stage 6: 4 h;
-  - stage 7: 4–5 h;
-  - stage 8: about 6 h.
+  - stage 5: 4–5 h;
+  - stage 6: about 4 h;
+  - stage 7: about 7 h.
   Each stage is a separate session, with its cells committed first.
 - Raw data: `/root/glm53-flash/sweep-<stage>-<timestamp>/` and the residency files, on the
   host.
@@ -308,7 +303,7 @@ systemctl stop vram-residency
   the owner.
 - CT 123's Flash-Next service is disabled for the run, so a container restart cannot start
   two models on one card. `ct123-test-host.sh restore` re-enables it.
-- Stage 8: `two-card` refuses unless CT 120 is stopped, and turns CT 120's autostart off
+- Stage 6: `two-card` refuses unless CT 120 is stopped, and turns CT 120's autostart off
   while CT 123 holds GPU 1, so a host reboot cannot put two servers on one card. `restore`
   detaches GPU 1 and puts CT 120's autostart back; CT 120 stays stopped.
 - Memory: CT 123 gets 240 GiB for the run, enough for the model under `auto` page cache or
@@ -598,6 +593,14 @@ with `MODEL_REASONING_BUDGET=0` and `placement-probe.py --contract` from the sam
 
 ## Deviations
 
+- **Stage order, changed after stage 1** (owner, 2026-10-10): MTP runs last, as stage 7,
+  on the configuration the other stages settle, right before the usage test. The committed
+  plan ran MTP as stages 5–6, fitted its placements in stage 2 and scanned it again on two
+  cards. MTP's fit and best draft length depend on micro-batch, threads, context and card
+  count, and its draft context grows with the total context (#28433). Stage 5 is now
+  context (was 7), stage 6 two cards without MTP (was 8), and stage 7 MTP (was 5–6, plus
+  the MTP fit from stage 2). Stage 1's `base-mtp3` cell measured only MTP's VRAM and its
+  image-request failure.
 - **Stage 1:** b11505's llama-server prints no per-buffer sizes at its default log level
   (`-lv 3`), so the VRAM components come from the differences between cells.
 - **Stage 1:** the `--reasoning-budget 0` repeat of `base` ran by hand, as described under the
