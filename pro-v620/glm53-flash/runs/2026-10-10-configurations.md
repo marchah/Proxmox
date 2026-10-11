@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run not started · Status: planned
+Plan committed 2026-10-10 · Run from 2026-10-10 (stage 1 done) · Status: running
 
 ## Question
 
@@ -325,20 +325,286 @@ systemctl stop vram-residency
 
 ## Environment
 
-Intended at plan time; replaced by `environment.json` when the run starts.
+llama.cpp b11505 (`ff5888f99`, release tarball), Mesa 26.2.4 (kisak-mesa), kernel
+`7.0.14-22-pve`, pve-firmware 3.18-7, `schedutil`, 8 × 64 GB DDR4-3200. CT 123 with 48 cores
+and 240 GiB holding `0000:83:00.0` (`unique_id` `99b104541144b36c`) on PCIe 4.0 x16 at 0 mV and
+250 W. Model `unsloth/GLM-5.3-Flash-GGUF` UD-Q4_K_XL at revision `a38483c8`, all seven files
+checked against the Hub's SHA-256. Stage 1's capture (2026-10-11 01:23 UTC) is below; later
+stages add theirs if anything but the time and free VRAM changes.
 
-- llama.cpp b11505 (`ff5888f99`, release tarball, `/opt/llamacpp/llama-b11505`).
-- Mesa 26.2.4 (kisak-mesa), kernel `7.0.14-22-pve`, `schedutil`.
-- 8 × 64 GB DDR4-3200.
-- CT 123, 48 cores and 240 GiB for the run, holding `0000:83:00.0` (`unique_id`
-  `99b104541144b36c`), and in stage 8 also `0000:03:00.0` (`150e6a6800f84ebe`), each on
-  PCIe 4.0 x16 at 0 mV and 250 W.
-- Model: `unsloth/GLM-5.3-Flash-GGUF` UD-Q4_K_XL at revision `a38483c8`.
+<details>
+<summary>environment.json, stage 1</summary>
+
+```json
+{
+ "captured_at": "2026-10-11T01:23:40Z",
+ "host": {
+  "hostname": "proxmox",
+  "kernel": "7.0.14-22-pve",
+  "pve_manager": "9.2.21",
+  "pve_firmware": "3.18-7",
+  "cpu": "AMD EPYC 7532 32-Core Processor",
+  "governor": "schedutil",
+  "mem_gib": 504,
+  "dimms": [
+   {
+    "locator": "P0 CHANNEL A",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL B",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL C",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL D",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL E",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL F",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL G",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL H",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   }
+  ]
+ },
+ "guest": {
+  "unit": "llamacpp-glm53f",
+  "env_file": "/etc/llamacpp-glm53f.env",
+  "env": {
+   "LLAMACPP_DIR": "/opt/llamacpp/llama-b11505",
+   "MODEL_PATH": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf",
+   "MODEL_ALIAS": "glm-5.3-flash",
+   "MODEL_MMPROJ": "/models/hf/glm-5.3-flash/mmproj-F16.gguf",
+   "MODEL_SERVER_BIND": "0.0.0.0",
+   "MODEL_SERVER_PORT": "1234",
+   "MODEL_GPU_LAYERS": "99",
+   "MODEL_CPU_MOE": "46",
+   "MODEL_OT_OVERRIDE": "",
+   "MODEL_CONTEXT_LENGTH": "65536",
+   "MODEL_PARALLEL": "1",
+   "MODEL_THREADS": "16",
+   "MODEL_EXPECTED_GPUS": "1",
+   "MODEL_VK_VISIBLE_DEVICES": "",
+   "MODEL_TENSOR_SPLIT": "",
+   "MODEL_LOAD_MODE": "",
+   "MODEL_REASONING_BUDGET": "",
+   "EXTRA_ARGS": "--device Vulkan0",
+   "MODEL_BATCH_SIZE": "4096",
+   "MODEL_UBATCH_SIZE": "1024",
+   "MODEL_KV_TYPE": "f16",
+   "MODEL_MMPROJ_ON_CPU": "true"
+  },
+  "unit_active": "inactive",
+  "server_cmdline": null,
+  "llamacpp": {
+   "dir": "/opt/llamacpp/llama-b11505",
+   "version": "version: 0.6.0-dev (build 11505, commit ff5888f99)",
+   "built_with": "built with GNU 11.4.0 for Linux x86_64",
+   "llama_server_sha256": "b8f67ab0ac46efeed0bc84fe84ef51e9eee08a52c5f7fe56375ec89d3f79729c",
+   "devices": "Vulkan0: AMD Radeon Pro V620 (RADV NAVI21) (30704 MiB, 30687 MiB free)"
+  },
+  "os": "Ubuntu 24.04 LTS",
+  "guest_kernel": "7.0.14-22-pve",
+  "mesa": "26.2.4~kisak1~n",
+  "vulkan_driver": "Mesa 26.2.4 - kisak-mesa PPA",
+  "rocm": null,
+  "model_files": [
+   {
+    "path": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf",
+    "exists": true,
+    "bytes": 9429984,
+    "verified_stamp": true
+   },
+   {
+    "path": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00002-of-00006.gguf",
+    "exists": true,
+    "bytes": 49198039200,
+    "verified_stamp": true
+   },
+   {
+    "path": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00003-of-00006.gguf",
+    "exists": true,
+    "bytes": 49988626304,
+    "verified_stamp": true
+   },
+   {
+    "path": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00004-of-00006.gguf",
+    "exists": true,
+    "bytes": 48700701344,
+    "verified_stamp": true
+   },
+   {
+    "path": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00005-of-00006.gguf",
+    "exists": true,
+    "bytes": 49026026752,
+    "verified_stamp": true
+   },
+   {
+    "path": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00006-of-00006.gguf",
+    "exists": true,
+    "bytes": 2784497888,
+    "verified_stamp": true
+   },
+   {
+    "path": "/models/hf/glm-5.3-flash/mmproj-F16.gguf",
+    "exists": true,
+    "bytes": 1128047296,
+    "verified_stamp": true
+   }
+  ],
+  "vmid": 123,
+  "kind": "lxc",
+  "config": {
+   "cores": "48",
+   "hostname": "gpu2",
+   "memory": "245760",
+   "ostype": "ubuntu",
+   "swap": "4096"
+  }
+ },
+ "cards": [
+  {
+   "pci": "0000:83:00.0",
+   "name": "Advanced Micro Devices, Inc. [AMD/ATI] Navi 21 [Radeon Pro V620]",
+   "driver": "amdgpu",
+   "unique_id": "99b104541144b36c",
+   "vbios": "113-D6030500-100",
+   "vram_total_mib": 30704,
+   "od_vddgfx_offset": "0mV",
+   "power_cap_w": 250,
+   "pcie_link": "16.0GT/s, x16 619Mhz"
+  }
+ ]
+}
+```
+
+</details>
 
 ---
 
 ## Results
 
+### Stage 1, screen — 2026-10-10 21:23–22:20 ET
+
+Harness `d0be39a` (`push-harness.sh`), run as `systemd-run` units on the host: the sweep
+(`REPS=1 DEPTHS=0,8000 PROBE_CLASSES=code`, `UNIT=llamacpp-glm53f N_BLOCKS=46
+CONTRACT_EFFORTS=none,low,high,max`), `thermal-guard.sh` (`VMID=123 UNIT=llamacpp-glm53f`) and
+`vram-residency-sampler.py` on `0000:83:00.0`. `ct123-test-host.sh one-card` set CT 123 up first.
+Raw data: `/root/glm53-flash/sweep-screen-20261011T012335Z/`, `residency-screen.jsonl` and
+`handcheck-*.json` on the host.
+
+Every cell loaded and answered. Every routed expert is in host RAM (`-ncmoe 46`), `auto` load
+mode unless noted, f16 KV, context 65536, micro-batch 1024, one slot unless noted. VRAM is
+`mem_info_vram_used` on the 30,704 MiB card. One pass, so the speed columns are a screen, not a
+comparison.
+
+| Cell | Differs from `base` | VRAM after load, MiB | Δ vs `base` | Load, s | Decode d0 / d8000, t/s | Prefill d8000, t/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `base` | — | 15,461 | — | 29 | 6.75 / 5.94 | 47.7 |
+| `base-q8` | q8_0 KV | 14,884 | −577 | 29 | 6.64 / 6.19 | 47.5 |
+| `base-ctx128k` | context 131072 | 17,047 | +1,586 | 28 | 6.60 / 6.11 | 47.7 |
+| `base-ctx256k` | context 262144 | 19,967 | +4,506 | 28 | 6.54 / 6.14 | 47.5 |
+| `base-ub2048` | micro-batch 2048 | 15,986 | +525 | 28 | 6.47 / 6.04 | 73.9 |
+| `base-ub4096` | micro-batch 4096 | 17,951 | +2,490 | 28 | 6.55 / 5.95 | 90.5 |
+| `base-n45` | block 45's experts eligible for the card | 15,461 | 0 | 29 | 6.66 / 6.15 | 46.6 |
+| `base-mtp3` | MTP, n-max 3 | 16,667 | +1,206 | 29 | 9.90 / 9.97 | 47.2 |
+| `base-p2` | two slots, `--kv-unified` | 15,703 | +242 | 29 | 6.54 / 6.00 | 47.3 |
+| `base-p2-nokvu` | two slots | 15,538 | +77 | 28 | 6.85 / 6.06 | 47.6 |
+| `base-dio` | `--load-mode dio` | 15,462 | +1 | 119 | 6.58 / 6.05 | 139.4 |
+| `cpu` | no card (`--device none`, `-ngl 0`) | 16 | — | 151 | 5.32 / — | — |
+
+- **Nothing left VRAM.** `residency-summary.py` over the 11 deep prefills: VRAM-requested memory
+  outside VRAM 0 MiB and nothing evicted in every one. The sweep's "possible spill" flags on
+  `base-ub2048`, `base-ub4096`, `base-mtp3` and `base-p2` were GTT growth of 273–296 MiB during the
+  probe, against `base`'s own 224 MiB, which stays under the flag's 256 MiB.
+- **Peak VRAM sits above the load reading at long context.** During `base-ctx256k`'s prefill the
+  least free VRAM was 9,794 MiB, so about 20.9 GiB in use against 19,967 MiB after load;
+  `base-ub4096` reached 17,081 MiB.
+- **Block 45 loads only with MTP.** `base-n45` used exactly `base`'s VRAM, and the load log lists
+  block 45's tensors as unused. Without speculation `-ncmoe 45` and `46` are the same placement.
+- **MTP:** the head without its experts, plus its draft context, took 1,206 MiB at n-max 3.
+  Acceptance was 77% at d0 and 99% at d8000; the d8000 figure measures copying the filler (see the
+  output gate below), not drafting.
+- **`dio`** pinned 177,777 MiB of GTT and loaded in 119 s against 28–29 s under `auto` with the
+  page cache warm. It prefilled 2.9 times as fast (139.4 against 47.7 t/s) at the same decode.
+  That is about 26 GB/s of expert upload per micro-batch, on the reading in the Question.
+- **Card and CPU use, `base`:** prefill 70 W at 534 MHz on under one CPU core; decode 50 W with
+  15.2 cores. `base-dio` prefill: 170 W at 2,370 MHz, 99% busy. CPU only decoded on 16.0 cores, and
+  its weights repacked into 106.5 GiB of anonymous memory.
+- **Two slots:** both two-stream rounds completed, at 9.1 t/s aggregate with `--kv-unified` and
+  9.0 without (4.6 and 4.5 per stream). One round each.
+- **DIMMs:** hottest 51–56 °C; no sample at 66 °C.
+
+**Output gate.** Every GPU cell's d8000 code reply is flagged degenerate (8-gram uniqueness 0.29
+in `base`). The probe sends `/completion` a raw prompt of ~5.8k tokens of repeated filler followed
+by the instruction. GLM restates the instruction and then continues the filler. Sent through the
+chat template as a user turn, the same prompt (5,804 tokens) was answered: a TypeScript debounce
+with JSDoc. So long-context attention works on this build, and the flag comes from the probe's
+prompt shape on this model. The d0 replies are coherent.
+
+**Contract** (bare chat and `reasoning_effort` `none`, `low`, `high`, `max`):
+
+| Server flags | Bare chat | `none` | `low` | `high` | `max` |
+| --- | --- | --- | --- | --- | --- |
+| `--reasoning off` | empty, 302 reasoning chars, stopped at the 64-token limit | empty, 161 chars | `OK` | `OK`, 45 reasoning chars | empty, 161 chars |
+| `--reasoning off --reasoning-budget 0` | `OK` | `OK` | `OK` | `OK` | `OK` |
+
+No think tag reached `content` in either row. The budget-0 row was run by hand: `base` started
+with `MODEL_REASONING_BUDGET=0` and `placement-probe.py --contract` from the same harness.
+
+**Hand checks** on `base` with `--reasoning-budget 0`:
+- Tool calls parse non-streamed (`get_weather`, `{"city":"Paris"}`, `finish_reason`
+  `tool_calls`) and streamed; a tool-result follow-up answers in plain text.
+- An image request (a 64 × 64 PNG, red left and blue right) is answered "Red and blue." without
+  MTP. With `--spec-type draft-mtp --spec-draft-n-max 3` it fails with HTTP 500 `decode() failed:
+  failed to process speculative batch` (#30204). The server survives, and the next text request
+  drafts normally.
+
+**Stage 1 rules applied:**
+- **KV type: f16.** q8_0 freed 577 MiB at 65536, under one expert layer (4,176 MiB).
+- **Reasoning: `--reasoning-budget 0`** joins every later stage; `glm53f.env` now sets it.
+- **Two slots: no `--kv-unified`.** `base-p2-nokvu` completed both streams.
+- **Larger micro-batch for stage 2: 4096.** It costs 2,490 MiB over 1024, under one expert layer.
+
 ## Deviations
+
+- **Stage 1:** b11505's llama-server prints no per-buffer sizes at its default log level
+  (`-lv 3`), so the VRAM components come from the differences between cells.
+- **Stage 1:** the `--reasoning-budget 0` repeat of `base` ran by hand, as described under the
+  contract table, not as a sweep cell.
+- **Stage 1:** `ct123-test-host.sh one-card` warned that CT 123 was "not fully up" and waited 60 s.
+  CT 123 had booted in 2.5 s: it reports `degraded` because AppArmor cannot load profiles in an
+  unprivileged container, and under `pipefail` the script never matched that state. Fixed after
+  the stage, with a mocked-test check.
 
 ## Conclusion
