@@ -315,7 +315,8 @@ the second stream's prompt (22 tokens) returned after one token with empty conte
 the first stream completed. That prompt completed all 256 tokens in the other seven
 two-stream runs and all nine four-stream runs. Under concurrency the generated text also
 varied between passes at temperature 0: up to four distinct outputs per stream across
-nine runs. All seven template-contract checks passed.
+nine runs. Template-contract checks passed on the first loaded cell only; the other
+cells were not checked.
 
 **Thermals:** hottest DIMM 53–54 °C; no sample at 66 °C. No thermal-guard trip.
 

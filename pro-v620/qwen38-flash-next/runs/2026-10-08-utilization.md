@@ -589,7 +589,8 @@ One-card rows are `0000:03:00.0`; the other card held 16 MiB. GTT on `83:00.0` s
 median 1.7–1.8 GiB, 0.5 GiB of it page cache; after the CPU-only load, 44.2 GiB, 43.5 GiB
 of it anonymous.
 
-**Output gate:** no degenerate output; all seven template-contract checks passed.
+**Output gate:** no degenerate output; template-contract checks passed on the first
+loaded cell only; the other cells were not checked.
 `2gpu-34`'s text matched `1gpu-34`'s in all six prompt cells; `1gpu-40` differed from
 `1gpu-34` in three, `2gpu-16` and `1gpu-48` in five, and `2gpu-16-tensor` and `cpu` in all
 six.
@@ -651,7 +652,8 @@ The ~119k-token prompt took about 21 minutes to its first token.
 its probe its VRAM use fell 196 MiB while its GTT rose 528 MiB: allocations moved to
 system memory. Loads took 16–18 s.
 
-**Output gate:** no degenerate output; all seven template-contract checks passed.
+**Output gate:** no degenerate output; template-contract checks passed on the first
+loaded cell only; the other cells were not checked.
 `q8-128k`'s text matched `q8-64k`'s at all four shared depths; `f16-64k`'s differed at
 three.
 
@@ -707,7 +709,8 @@ of any cache configuration was 9.4 t/s.
 free VRAM rose 270 MiB, so it reads as the cache's upload staging, not a spill; no cell
 was flagged. Loads took 10–19 s.
 
-**Output gate:** no degenerate output; all seven template-contract checks passed. The
+**Output gate:** no degenerate output; template-contract checks passed on the first
+loaded cell only; the other cells were not checked. The
 cache configurations' text differed from the control's in 17 of 18 prompt cells.
 
 **Thermals:** hottest DIMM 53–54 °C.

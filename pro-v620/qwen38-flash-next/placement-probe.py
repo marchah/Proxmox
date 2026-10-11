@@ -4,9 +4,10 @@
 Run from the Proxmox host against CT 120's llama-server.
 
 Why /completion and not /v1/chat/completions for the throughput rows: no chat template
-sits between configs, and llama.cpp returns the full `timings` block. The chat path is
-still exercised once, by --contract, because this model's template is the one thing that
-can turn a working server into 500s (see below).
+sits between configs, and llama.cpp returns the full `timings` block. The chat path
+is exercised by --contract after every cell load in placement-sweep.sh. Raw completion
+rows can generate reasoning even when the chat server has --reasoning off; validate
+the chosen configuration on chat workloads before treating it as a serving optimum.
 
 ⚠️ Three things this model breaks that others here do not:
 
@@ -22,7 +23,7 @@ can turn a working server into 500s (see below).
      the prompt gets accepted, so each row records draft_n and draft_n_accepted. Without
      it, draft_n is absent and tok/s is a plain bandwidth number.
 """
-import argparse, hashlib, json, sys, time, urllib.error, urllib.request
+import argparse, hashlib, json, math, statistics, sys, time, urllib.error, urllib.request
 
 # Three classes, because a speculative-free bandwidth number still moves with how much
 # the tokenizer packs per token. Named in the output so a range is never quoted bare.
@@ -136,13 +137,11 @@ def one(base, prompt, n_predict):
     words = content.split()
     shingles = {" ".join(words[j:j + 8]) for j in range(max(0, len(words) - 7))}
     uniq = round(len(shingles) / max(1, len(words) - 7), 3)
-    # Draft acceptance, present only when speculation is active. This repo's rule is to
-    # judge a speculative config by ACCEPTANCE, not tok/s — unchanged acceptance with a
-    # different tok/s means only the workload moved. Absent keys mean no speculation,
-    # which is a valid control, not a failure.
+    # Report acceptance alongside speed: the same acceptance can still have a different
+    # cost when placement, scheduling or the verification batch changes.
     dn, da = tm.get("draft_n"), tm.get("draft_n_accepted")
     accept = round(100.0 * da / dn, 1) if (dn and da is not None) else None
-    return {
+    row = {
         "wall_s": round(wall, 2),
         # When the request started and how its time split, so the sweep can place its
         # telemetry samples in the prefill or the decode phase.
@@ -166,6 +165,11 @@ def one(base, prompt, n_predict):
         "stop": r.get("stop_type") or ("eos" if r.get("stopped_eos") else
                                        "limit" if r.get("stopped_limit") else "other"),
     }
+    if not content.strip():
+        row["error"] = "empty completion"
+    elif not isinstance(row["decode_tps"], (int, float)) or not math.isfinite(row["decode_tps"]) or row["decode_tps"] <= 0:
+        row["error"] = "missing or invalid decode timing"
+    return row
 
 
 def main():
@@ -188,6 +192,8 @@ def main():
     ap.add_argument("--classes", default="",
                     help="comma-separated subset of %s (default: all)" % ",".join(PROMPTS))
     a = ap.parse_args()
+    if a.reps < 1 or a.n_predict < 1:
+        ap.error("--reps and --n-predict must be positive")
 
     result = {"base": a.base, "reps": a.reps, "n_predict": a.n_predict,
               "classes": a.classes or "all"}
@@ -219,7 +225,7 @@ def main():
     # already been actively misleading in this homelab.
     agg = {}
     for r in rows:
-        if "decode_tps" not in r or r.get("decode_tps") is None:
+        if r.get("error") or r.get("decode_tps") is None:
             continue
         k = "d%d/%s" % (r["depth_target"], r["class"])
         agg.setdefault(k, {"decode": [], "prefill": [], "accept": [], "sha": set(),
@@ -233,8 +239,7 @@ def main():
         agg[k]["degen"] |= bool(r.get("degenerate"))
 
     def med(xs):
-        xs = sorted(xs)
-        return round(xs[len(xs) // 2], 2) if xs else None
+        return round(statistics.median(xs), 2) if xs else None
 
     result["summary"] = {
         k: {"prompt_n": v["prompt_n"],
@@ -256,9 +261,18 @@ def main():
            if s["decode_tps_median"]]
     result["decode_tps_overall_median"] = med(dec)
     result["any_degenerate"] = any(s["any_degenerate"] for s in result["summary"].values())
-    result["all_reps_agree"] = all(s["reps_agree"] for s in result["summary"].values())
+    result["failed_requests"] = sum(bool(r.get("error")) for r in rows)
+    result["all_reps_agree"] = bool(agg) and not result["failed_requests"] and all(
+        s["reps_agree"] for s in result["summary"].values())
+    result["contract_ok"] = all(
+        v.get("ok", v.get("harmless", False)) and not v.get("think_leaked_into_content")
+        and not v.get("reasoning_chars") for v in result["contract"].values()
+    ) if a.contract else None
+    result["probe_ok"] = (result["all_reps_agree"] and not result["any_degenerate"]
+                          and result["contract_ok"] is not False)
     print(json.dumps(result, indent=1))
+    return 0 if result["probe_ok"] else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

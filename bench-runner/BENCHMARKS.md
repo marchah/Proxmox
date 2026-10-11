@@ -198,7 +198,14 @@ Every `openai-direct` and sweep request starts with its own id (`[<salt>-<n>] `,
 tokens), so the prompt cache cannot serve a repeated prompt. Without it, on CT 120
 (b11475), the second and third of three identical 32-token requests prefilled 4 tokens
 and took 28 from the cache, reading 32–38 tok/s against 125 tok/s cold. The openai
-manifest records `cold_requests: true`.
+manifest records `cold_requests: true`. The salt is random per invocation by default.
+
+For paired llama-server configuration comparisons, set the same
+`BENCHMARK_PROMPT_SALT` in each invocation, or pass `--prompt-salt` to
+`benchmark-openai-api.py`. This reuses byte-identical request prefixes and sends
+`cache_prompt: false`; the openai manifest records both the salt and cache setting.
+Verify the full prompt was prefilled in the server's per-request timings: other
+providers may ignore `cache_prompt`. Leave the salt unset for those providers.
 
 Older runs do not compare with later ones; their openai manifest tells which:
 

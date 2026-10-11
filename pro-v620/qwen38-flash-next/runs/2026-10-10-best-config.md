@@ -344,13 +344,16 @@ grew GTT by the same 162–168 MiB under `auto`.
 
 **Output gate:** no degenerate output, and every cell produced identical text in all
 three passes of every prompt. `dio`'s text matched `auto`'s in all six prompt cells;
-`dio-mtp3`'s differed in all six. All seven template-contract checks passed. Every
-request stopped at the 256-token limit.
+`dio-mtp3`'s differed in all six. Template-contract checks passed on the first loaded
+cell only; the other cells were not checked. Every request stopped at the 256-token limit.
 
 **Thermals:** hottest DIMM 50–54 °C; no sample at 66 °C. No thermal-guard trip.
 
 ## Deviations
 
+- **Review correction, 2026-10-11:** contract coverage and the prefill multiplier
+  are corrected from the raw results. The measurements and original speed comparison
+  are unchanged; the missing contract checks cannot be inferred from them.
 - The guard and the sweep ran as systemd transient units (`qwen38-guard-bestcfg`,
   `qwen38-sweep-bestcfg`) instead of two interactive shells, with the plan's scripts and
   arguments.
@@ -364,14 +367,16 @@ request stopped at the 256-token limit.
 ## Conclusion
 
 - **Gates:** all three cells loaded, kept at least 1 GiB of VRAM free after the d8000
-  request (`dio-mtp3` 1,822 MiB), passed the sweep's spill check and the output gate,
-  and ran with no DIMM sample at 66 °C and no guard trip.
+  request (`dio-mtp3` 1,822 MiB), passed the sweep's spill check and raw-completion
+  output gate, and ran with no DIMM sample at 66 °C and no guard trip.
 - **Speed:** `dio-mtp3` decoded fastest in every prompt cell (median of six 18.4 t/s
   against 13.7 for `dio` and 13.1 for `auto`) and prefilled 351.6–364.7 t/s at ~5.8k
-  tokens, against 393.2–394.5 for `dio` and 119.2–123.5 for `auto`. `dio` kept its
-  3.2–3.3× prefill with the head; the head kept a decode gain over `dio` of 19–54% by
+  tokens, against 393.2–394.5 for `dio` and 119.2–123.5 for `auto`. `dio` with the head
+  prefilled 2.95–2.97× as fast as `auto`; the head kept a decode gain over `dio` of 19–54% by
   prompt.
-- **The batch's configuration, by the plan's rule:** `dio`. `dio-mtp3` passed every
-  gate and the decode criterion (beyond the spread in six of six prompt cells), but its
+- **Chat-contract coverage:** only `auto-r1` was checked. Neither `dio` nor
+  `dio-mtp3` was qualified against that part of the plan's output gate.
+- **The batch's configuration, by the measured speed rule:** `dio`. `dio-mtp3` passed
+  the decode criterion (beyond the spread in six of six prompt cells), but its
   prefill was more than 10% below `dio`'s in one class: code, by 10.6% (list 7.4%,
   prose 7.6%).

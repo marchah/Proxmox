@@ -190,13 +190,27 @@ VMID=123 CONFIGS="34 40 48" ./placement-sweep.sh
 
 `PROBE_CLASSES` limits the prompt classes, and `DROP_CACHES=true` drops the host page
 cache before every load, for cold loads. `CONC_REPS` sets the concurrency probe's rounds
-per pass (default 1); its medians come only from rounds in which every stream completed,
-and `SUMMARY.md` counts the others. A depth is the probe's target: its filler gives
+per pass (default 1); its medians and acceptance come only from rounds in which every
+stream returned non-empty, non-degenerate output with valid timings. `SUMMARY.md` counts
+the other rounds; rates conditional on successful rounds do not establish serving
+reliability. A depth is the probe's target: its filler gives
 about 0.72 prompt tokens per unit (d8000 is ~5.8k tokens), and `SUMMARY.md` prints the
 measured sizes. Every cell is checked before the first load; a cell that fails to load
 is recorded and the sweep moves on. No cell starts while the hottest DIMM is above
 `DIMM_START_MAX_C` (58 °C), and a cell with a DIMM sample at 66 °C, where the BMC caps
 memory bandwidth to a third, is flagged invalid in `SUMMARY.md`.
+
+Each cell load runs the chat-contract checks, and the summary reports their coverage
+and failures per cell. A probe with failed requests, invalid timings, empty output,
+degenerate output, disagreeing repetitions or a failed contract exits nonzero while
+keeping its JSON for inspection. These gates validate the sampled requests; they do not
+check tool-call correctness. The older sweeps checked only their first loaded cell.
+Raw `/completion` throughput rows can generate reasoning despite the chat setting
+`--reasoning off`; confirm draft tuning through the production chat workloads.
+
+For matched `openai-direct` comparisons, reuse `BENCHMARK_PROMPT_SALT` (or
+`--prompt-salt`) across configurations and verify cold prefill in each request's
+timings; see [benchmark prompts](../../bench-runner/BENCHMARKS.md).
 
 `vram-residency-sampler.py` runs on the host as root, beside a sweep or a batch. Once a
 second it records the card's memory and core clocks, power, VRAM and GTT. For each
@@ -366,4 +380,5 @@ Read DIMM temperatures alongside any CPU-offload throughput measurement.
 ```bash
 shellcheck -S warning ./*.sh ./llamacpp-serve-qwen38fn ./llamacpp-qwen38fn-reload
 python3 -m py_compile ./*.py
+python3 test_probes.py
 ```
