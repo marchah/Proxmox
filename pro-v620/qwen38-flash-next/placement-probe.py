@@ -100,12 +100,18 @@ def contract_check(base, efforts):
                      {"model": "qwen3.8-flash-next", "messages": msgs,
                       "max_tokens": 32, "temperature": 0, "reasoning_effort": val})
             ch = r["choices"][0]["message"]
-            ok = bool((ch.get("content") or "").strip())
+            content = ch.get("content") or ""
+            ok = bool(content.strip())
+            # On the whole reply: GLM-5.3-Flash's tag follows the reasoning, past the stored prefix.
+            leaked = "<think>" in content or "</think>" in content
             out["effort_" + val] = {
-                "harmless": ok,
-                "content": (ch.get("content") or "")[:40],
+                "harmless": ok and not leaked,
+                "content": content[:40],
+                "think_leaked_into_content": leaked,
                 "reasoning_chars": len(ch.get("reasoning_content") or ""),
-                "note": "" if ok else "200 but EMPTY content — --reasoning off may have stopped working",
+                "note": ("200 but EMPTY content — --reasoning off may have stopped working" if not ok
+                         else "think tag in content — the reasoning block reached the answer"
+                         if leaked else ""),
             }
         except urllib.error.HTTPError as e:
             out["effort_" + val] = {

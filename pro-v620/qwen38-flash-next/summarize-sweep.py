@@ -355,9 +355,15 @@ def main():
         # `content` must be clean. reasoning_content being absent is NOT a failure — it only
         # means llama.cpp emitted no thought block at all, which is the point of --reasoning
         # off. What would be broken is a <think> tag leaking into content.
-        leaked = [k for k, v in contract.items()
-                  if isinstance(v, dict) and ("<think>" in (v.get("content") or "")
-                                              or "</think>" in (v.get("content") or ""))]
+        # The probe flags a leak on the whole reply and stores only its first 40-80
+        # characters; GLM-5.3-Flash's </think> follows the reasoning, past that prefix. Probe
+        # output without the flag falls back to scanning the prefix.
+        def leaked_tag(v):
+            if "think_leaked_into_content" in v:
+                return bool(v["think_leaked_into_content"])
+            c = v.get("content") or ""
+            return "<think>" in c or "</think>" in c
+        leaked = [k for k, v in contract.items() if isinstance(v, dict) and leaked_tag(v)]
         print("- No think tag leaked into `content`: **%s**%s" % (
             "yes" if not leaked else "NO", "" if not leaked else " — %s" % ", ".join(leaked)))
         # Probes from before reasoning_chars was recorded leave it out.
