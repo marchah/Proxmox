@@ -100,7 +100,8 @@ case "$sub" in
       systemctl)
         act="$2"; unit="${3:-}"
         case "$act" in
-          is-system-running) exit 0 ;;
+          # what CT 123 reports: apparmor.service fails in an unprivileged container
+          is-system-running) echo degraded; exit 1 ;;
           is-enabled) grep -q "^$vm $unit enabled " "$T/units" ;;
           is-active)  grep -q "^$vm $unit .* active$" "$T/units" ;;
           enable)  [ "$unit" = --now ] && unit="$4"
@@ -150,6 +151,7 @@ rm -rf "$T"
 echo "=== 2. one-card, two-card, reboot, restore ==="
 new_host
 run one-card || { bad "one-card exited non-zero"; tail_log; }
+grep -q "not fully up" "$T/out.log" && bad "a degraded container read as not up" || ok "degraded container counted as up"
 [ "$(unit 123 llamacpp-qwen38fn)" = "disabled inactive" ] && ok "Flash-Next retired" || bad "Flash-Next is $(unit 123 llamacpp-qwen38fn)"
 [ "$(limit 123 memory)/$(limit 123 cores)" = "245760/48" ] && ok "CT 123 at 240 GiB, 48 cores" || bad "limits $(limit 123 memory)/$(limit 123 cores)"
 [ "$(map)" = "${GPU1}=120:llamacpp,${GPU2}=123:llamacpp-glm53f" ] && ok "watchdog: GPU 2 -> GLM unit" || bad "map is $(map)"
