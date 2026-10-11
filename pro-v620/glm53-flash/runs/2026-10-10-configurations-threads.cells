@@ -1,0 +1,15 @@
+# Stage 4 of runs/2026-10-10-configurations.md (threads), CT 123 holding 0000:83:00.0 only, timed:
+# REPS=3 DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true, all three prompt classes, f16 KV, context
+# 65536, two slots, --reasoning-budget 0 (glm53f.env).
+#
+# Stage 3's choice: dio-4096 (dio, micro-batch 4096, -ncmoe 44). CT 123 has 48 of the EPYC 7532's
+# 64 CPUs (32 cores) in the test configuration, so 32 threads leaves 16 free; Flash-Next's
+# collapse at 24 threads was at every CPU of a 24-core container. The 16-thread cells repeat
+# stage 3's settings in this stage's time window.
+dio-4096-t16  MODE=1gpu NCMOE=44 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=16
+dio-4096-t24  MODE=1gpu NCMOE=44 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=24
+dio-4096-t32  MODE=1gpu NCMOE=44 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32
+# CPU only: the whole model in host RAM, --device none, the sweep's CPU batch (4096/1024).
+cpu-t16       MODE=cpu KV=f16 CTX=65536 PARALLEL=2 STREAMS=2 THREADS=16
+cpu-t24       MODE=cpu KV=f16 CTX=65536 PARALLEL=2 STREAMS=2 THREADS=24
+cpu-t32       MODE=cpu KV=f16 CTX=65536 PARALLEL=2 STREAMS=2 THREADS=32

@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–2 done) · Status: running
+Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–3 done) · Status: running
 
 ## Question
 
@@ -622,6 +622,103 @@ residency sampler read over each cell's d8000 request and two-stream round. Raw 
   166–177 W on under one CPU core, decode 52 W on about 15 cores. Two streams completed in every
   cell, 8.7–9.4 t/s aggregate. Hottest DIMM 51–54 °C.
 
+### Stage 3, load mode and micro-batch — 2026-10-11 08:18–12:18 ET
+
+Harness `3ab9c25`, cells
+[`2026-10-10-configurations-load.cells`](2026-10-10-configurations-load.cells): three passes,
+round-robin, `DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true`, all three prompt classes, f16 KV,
+context 65536, two slots, 16 threads, batch 4096, `--reasoning-budget 0`. Requests go through
+the chat template. The weekly backup had finished at 01:08 ET. Raw data:
+`/root/glm53-flash/sweep-load-20261011T121827Z/`, `residency-load.jsonl` and
+`handcheck-prefill-ab/` on the host.
+
+Decode is the median of the six prompt cells (three classes at d0 and d8000) per pass; prefill
+the median of the three d8000 requests per pass. Each figure is the median of the three passes,
+with their range in brackets.
+
+| Cell | Load mode, micro-batch, `-ncmoe` | VRAM after load, MiB | Free | Load, s | Decode, t/s | Prefill d8000, t/s | Two streams, aggregate t/s |
+| --- | --- | ---: | ---: | ---: | --- | --- | --- |
+| `auto-1024` | `auto`, 1024, 43 | 24,196 | 6,508 | 30–33 | 6.545 [6.475–6.545] | 41.4 [41.4–41.5] | 8.76 [8.73–8.92] |
+| `dio-1024` | `dio`, 1024, 43 | 24,198 | 6,506 | 113–114 | **6.680** [6.615–6.750] | 116.6 [116.5–116.6] | 9.09 [8.98–9.39] |
+| `dio-4096` | `dio`, 4096, 44 | 21,750 | 8,954 | 115–116 | 6.605 [6.460–6.675] | **174.4** [174.2–174.4] | 8.99 [8.76–9.15] |
+| `dio-experts-ram` | `dio`, 4096, 46 | 17,272 | 13,432 | 119–126 | 6.475 [6.360–6.505] | 172.7 [172.4–172.8] | 8.82 [8.69–9.07] |
+| `cpu` | no card, 1024 | 16 | — | 152–153 | 4.775 [4.565–4.790] | 17.1 [17.0–17.3] | 7.13 [6.64–7.30] |
+
+Decode per prompt cell, t/s, median of the three passes:
+
+| Cell | d0 code | d0 list | d0 prose | d8000 code | d8000 list | d8000 prose |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `auto-1024` | 6.88 | 6.75 | 6.72 | 6.28 | 6.15 | 6.23 |
+| `dio-1024` | 6.93 | 6.95 | 6.93 | 6.39 | 6.44 | 6.47 |
+| `dio-4096` | 6.89 | 6.87 | 6.94 | 6.31 | 6.31 | 6.27 |
+| `dio-experts-ram` | 6.67 | 6.77 | 6.89 | 6.01 | 6.18 | 6.28 |
+| `cpu` | 5.35 | 5.21 | 5.23 | 4.26 | 4.24 | 4.12 |
+
+**Stage 3 rule applied: next stages use `dio-4096`** (`--load-mode dio`, micro-batch 4096,
+`-ncmoe 44`).
+- Best decode: `dio-1024`, 6.680 t/s, spread 0.135.
+- Within the spread: `dio-4096` (0.075 lower, against spreads of 0.135 and 0.215) and
+  `auto-1024` (0.135 lower, equal to `dio-1024`'s spread, so it does not count).
+- Outside: `dio-experts-ram`, 0.205 lower, beyond both spreads (0.135 and 0.145).
+- Highest d8000 prefill among the three: `dio-4096`, 174.4 t/s, against 116.6 for `dio-1024`
+  and 41.4 for `auto-1024`.
+
+What each step changed, by the spread rule:
+- **`dio` against `auto`** (same placement): prefill 2.8 times as fast (116.6 against 41.4 t/s);
+  decode within the spread. Under `auto` the card prefilled at 67 W and 505 MHz; under `dio` at
+  166–177 W and about 2,365 MHz, 99% busy.
+- **Micro-batch 4096 against 1024** (both `dio`): prefill +50%, for one expert layer; decode within
+  the spread.
+- **Block 44's experts on the card against in RAM** (`dio-4096` against `dio-experts-ram`):
+  decode within the spread (0.13 lower, against spreads of 0.215 and 0.145); prefill 1.0% lower,
+  beyond both spreads. Keeping every expert in RAM frees 4,478 MiB more, 13,432 MiB in all.
+- **CPU only** (16 threads; stage 4 varies them): decode 4.775 t/s, 28.5% below `dio-1024`; prefill
+  17.1 t/s, a tenth of `dio-4096`'s; two streams 7.13 t/s aggregate. The repacked weights took
+  106.6 GiB of anonymous memory.
+- **Two streams:** every GPU cell completed every round. Aggregates were 8.76–9.09 t/s, all within
+  the spread of the best, at 4.4–4.6 t/s per stream.
+
+- **Nothing left VRAM.** Over 14,465 residency samples, VRAM-requested memory outside VRAM was
+  0 MiB in every cell and nothing was evicted. The sweep's "GTT spill" flag on `auto-1024` is GTT
+  growing from 344 to 837 MiB during the probe, with residency at zero.
+- **VRAM in use moves at micro-batch 4096.** In `dio-4096` the server's own allocation fell by
+  1.2–2.0 GiB at the start of each request and returned to 21,689 MiB (21,737 after load) during
+  prefill. That is why the sweep's after-probe reading is lower (19,702 MiB in two passes).
+  - In four of the six micro-batch 4096 passes, one or two samples of about 520 read the card's
+    total 1.9–5.7 GiB above the server's own allocation.
+  - The lowest free reading was 5,436 MiB (25,268 MiB in use, `dio-4096`'s third pass), and
+    9,685 MiB in `dio-experts-ram`.
+  - At micro-batch 1024 the allocation stayed within 24,181–24,256 MiB, and the card's total
+    within 16 MiB of it.
+- **Output:** each cell's text was identical across its three passes in all six prompt cells, and
+  `auto-1024` and `dio-1024` matched each other in all six. The micro-batch 4096 cells differed from
+  1024 in four of six (d0 list, and all three at d8000), and CPU only in all six. All read
+  coherently and none was flagged degenerate; the lowest 8-gram uniqueness was 0.974
+  (`dio-experts-ram`, d8000 list, a numbered list). One example: at d8000 prose, micro-batch 1024
+  says the log record must be durable before the data page "is modified", while 4096 and CPU only
+  say "is durable".
+- **Contract:** bare chat and `reasoning_effort` `none`, `low`, `high` and `max` all answered with
+  clean `content` and no reasoning block, in every cell.
+- **Card and CPU use:** decode ran at about 52 W and 499 MHz on about 15 cores in every GPU cell;
+  prefill used under one core. CPU only used 14–16 cores.
+- **DIMMs:** hottest 57–58 °C in the GPU cells and 60 °C in CPU only; no sample at 66 °C.
+
+**Hand check: prefill, raw `/completion` against the chat template** (12:22–12:34 ET, `dio-1024`
+loaded once, the d8000 code prompt sent alternately, three of each after a raw warm-up):
+
+| Request | Prompt tokens | Prefill, t/s |
+| --- | ---: | --- |
+| raw `/completion` | 5,792 | 143.3, 142.1, 142.0 (warm-up 143.2) |
+| chat template | 5,804 | 115.6, 115.5, 115.5 |
+
+- Raw requests prefilled as fast as in stage 2 (`f1-43`, the same placement, 143.3 t/s). So
+  `dio-1024`'s 116.6 t/s comes from the chat-template request, not from a change in the host.
+- At micro-batch 4096, stage 2's raw figure for the same placement was 188.0 t/s against 174.4
+  here. That is 7% lower, across two stages rather than alternated.
+- The text is the same and the prompt is 12 tokens longer, so prefill speed depends on the
+  request, not only on its length; the cause was not measured. Stages 1–2's prefill figures, and
+  Flash-Next's, come from raw prompts the model continued instead of answering.
+
 ## Deviations
 
 - **Stage order, changed after stage 1** (owner, 2026-10-10): MTP runs last, as stage 7,
@@ -645,5 +742,11 @@ residency sampler read over each cell's d8000 request and two-stream round. Raw 
   CT 123 had booted in 2.5 s: it reports `degraded` because AppArmor cannot load profiles in an
   unprivileged container, and under `pipefail` the script never matched that state. Fixed after
   the stage, with a mocked-test check.
+- **Stage 3:** a hand check, not in the plan, followed the sweep: `dio-1024`'s prefill was 19%
+  below stage 2's for the same placement, and raw and chat requests were alternated on one load to
+  tell a host change from a request change. It ran from a scratch script, not from the pinned
+  harness. It used the harness's `placement-probe.py` and the cell's settings.
+- **Stage 3:** the stage took 4 h against the 3.5 h estimate. Its CPU-only cells took about
+  29 min each.
 
 ## Conclusion
