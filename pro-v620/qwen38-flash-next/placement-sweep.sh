@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Sweep Qwen3.8-Flash-Next server configurations in one container and report, per cell,
-# decode/prefill by prompt class and context depth plus per-card VRAM and GTT.
+# Sweep MoE server configurations in one container and report, per cell, decode/prefill by
+# prompt class and context depth plus per-card VRAM and GTT. Qwen3.8-Flash-Next by default;
+# UNIT picks another model's unit (llamacpp-glm53f, from ../glm53-flash/).
 # Runs on the Proxmox HOST as root, from this directory.
 #
 #   VMID=120 CELLS=runs/<record>.cells ./placement-sweep.sh   # cells defined in a file
 #   VMID=123 CONFIGS="34 34:auto 40:auto 48:leave12288" DEPTHS=0,8000 ./placement-sweep.sh
 #   NCMOE_LIST="20 28 34" CTX=65536 ./placement-sweep.sh
+#   VMID=123 UNIT=llamacpp-glm53f N_BLOCKS=46 CONTRACT_EFFORTS=none,low,high,max \
+#     CELLS=../glm53-flash/runs/<record>.cells ./placement-sweep.sh
 #
 # A CELLS file holds one cell per line, `LABEL KEY=VALUE ...` with shell-quoted values, run in
 # file order (# starts a comment). Keys:
@@ -24,6 +27,10 @@
 #   DEPTHS      this cell's probe depths, replacing the global DEPTHS
 #   DEVICE      the Vulkan device a 1gpu cell runs on (default Vulkan0), to compare cards
 #               in one container; the cell's JSON records the card it loaded onto
+#   VK_DEVICES  Vulkan device indices the server may see (GGML_VK_VISIBLE_DEVICES, as
+#               vulkaninfo numbers them), e.g. one card of a two-card container: with only
+#               that card visible, it is Vulkan0 and pinned memory (none, dio) is charged
+#               to it. Needs a launcher that reads MODEL_VK_VISIBLE_DEVICES.
 # CONFIGS (NCMOE[:CACHE] entries) is the short form for cells that vary only those two.
 #
 # ⚠️ Method rules this encodes, each learned the hard way on this box:
@@ -42,6 +49,8 @@
 set -Eeuo pipefail
 
 VMID="${VMID:-120}"
+# The container's model unit. Its env file is /etc/<unit>.env, which its launcher sources.
+UNIT="${UNIT:-llamacpp-qwen38fn}"
 PORT="${PORT:-1234}"
 CTX="${CTX:-65536}"
 PARALLEL="${PARALLEL:-1}"
@@ -72,7 +81,12 @@ TENSOR_SPLIT="${TENSOR_SPLIT:-}"
 # llama-server --threads. Empty leaves whatever the env file already has. The CPU-side
 # expert FFN is memory-bound, and STREAM on eight channels peaks at 16 threads.
 THREADS="${THREADS:-}"
-# 48 MoE layers, ~1.56 GB of Q4 expert weight each, so each +1 hands ~1.56 GB back:
+# GGUF blocks, for the two-card split rule: 48 for Flash-Next, 46 for GLM-5.3-Flash
+# (45 layers plus the MTP block).
+N_BLOCKS="${N_BLOCKS:-48}"
+# Effort values the probe's --contract sends; empty uses the probe's default (Flash-Next's).
+CONTRACT_EFFORTS="${CONTRACT_EFFORTS:-}"
+# Flash-Next: 48 MoE layers, ~1.56 GB of Q4 expert weight each, so each +1 hands ~1.56 GB back:
 #   15 = minimum that fits two cards · 20 = ~8 GB spare · 28 = ~20 GB spare
 #   34 = fits one card · 48 = all experts in RAM (the no-GPU-experts control)
 NCMOE_LIST="${NCMOE_LIST:-15 20 28 34 48}"
@@ -93,11 +107,13 @@ UNPINNED="${UNPINNED:-false}"
 TRIP_FILE="${TRIP_FILE:-/root/qwen38-flash-next/THERMAL_TRIP}"
 OUT_DIR="${OUT_DIR:-/root/qwen38-flash-next/sweep-$(date -u +%Y%m%dT%H%M%SZ)}"
 
-readonly ENVFILE=/etc/llamacpp-qwen38fn.env
+readonly ENVFILE="/etc/${UNIT}.env"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 log() { printf '==> %s\n' "$*"; }
 
+[[ "$UNIT" =~ ^llamacpp-[a-z0-9-]+$ ]] || die "UNIT must name a llamacpp-* unit"
+[[ "$N_BLOCKS" =~ ^[0-9]+$ ]] || die "N_BLOCKS must be a number"
 [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"
 case "$DROP_CACHES" in true | false) ;; *) die "DROP_CACHES must be true or false" ;; esac
 [[ "$DIMM_START_MAX_C" =~ ^[0-9]+$ ]] || die "DIMM_START_MAX_C must be a whole number of °C"
@@ -157,7 +173,7 @@ if [ -n "$CELLS" ]; then
 import re, shlex, sys
 KEYS = {"MODE", "NCMOE", "CACHE", "SPLIT_MODE", "TENSOR_SPLIT", "BATCH", "UBATCH", "THREADS",
         "KV", "CTX", "PARALLEL", "LOAD_MODE", "MMPROJ_CPU", "EXTRA", "STREAMS", "DEPTHS",
-        "DEVICE"}
+        "DEVICE", "VK_DEVICES"}
 seen = set()
 for n, line in enumerate(open(sys.argv[1]), 1):
     words = shlex.split(line, comments=True)
@@ -238,6 +254,13 @@ for label in "${CELL_ORDER[@]}"; do
     [[ "$v" =~ ^Vulkan([0-9]+)$ ]] || bad "DEVICE must be VulkanN"
     [ "${BASH_REMATCH[1]}" -lt "${#CARDS[@]}" ] || bad "DEVICE ${v}: CT ${VMID} has ${#CARDS[@]} card(s)"
   fi
+  v="${CELL[$label|VK_DEVICES]:-}"
+  if [ -n "$v" ]; then
+    [[ "$v" =~ ^[0-9]+(,[0-9]+)*$ ]] || bad "VK_DEVICES must be comma-separated device indices"
+    [ "$(tr ',' '\n' <<<"$v" | wc -l)" -eq "$gpus" ] || bad "VK_DEVICES lists a different number of devices than the cell uses (${gpus})"
+    pct exec "$VMID" -- grep -qs MODEL_VK_VISIBLE_DEVICES "/usr/local/bin/${UNIT/llamacpp-/llamacpp-serve-}" \
+      || bad "VK_DEVICES needs a launcher that reads MODEL_VK_VISIBLE_DEVICES"
+  fi
   streams="${CELL[$label|STREAMS]:-}"
   if [ -n "$streams" ]; then
     [ "$streams" -le "${CELL[$label|PARALLEL]:-$PARALLEL}" ] || bad "STREAMS ${streams} needs PARALLEL of at least ${streams}"
@@ -254,7 +277,7 @@ BASE="http://${CT_IP}:${PORT}"
 log "CT ${VMID} at ${BASE}, cards ${CARDS[*]}, harness ${HARNESS_COMMIT:0:12}; ${#CELL_ORDER[@]} cells; results -> ${OUT_DIR}"
 
 # The environment block a test record pastes, taken before the sweep changes anything.
-../capture-env.sh "$VMID" llamacpp-qwen38fn >"${OUT_DIR}/environment.json" \
+../capture-env.sh "$VMID" "$UNIT" >"${OUT_DIR}/environment.json" \
   || die "capture-env.sh failed for CT ${VMID}"
 
 vram_mib()       { echo $(( $(cat "/sys/bus/pci/devices/$1/mem_info_vram_used"  2>/dev/null || echo 0) / 1048576 )); }
@@ -281,8 +304,8 @@ active_card() {
 
 # Rewrite one KEY=value in the container's env file, appending if absent.
 #
-# 🔴 The value MUST land QUOTED. llamacpp-serve-qwen38fn does
-# `set -a; source /etc/llamacpp-qwen38fn.env`, so an unquoted value containing a space is
+# 🔴 The value MUST land QUOTED. The launcher does
+# `set -a; source /etc/<unit>.env`, so an unquoted value containing a space is
 # parsed as an assignment followed by a COMMAND: writing `EXTRA_ARGS=--device Vulkan0`
 # made bash try to run `Vulkan0`, the serve script exited 127, and systemd crash-looped
 # the unit while the ONE_GPU control died on its first config.
@@ -308,7 +331,7 @@ open(path, "w").write(src)
 # restarting the service only if it was running before.
 ENV_BACKUP="${ENVFILE}.pre-sweep-$(date -u +%Y%m%dT%H%M%SZ)"
 pct exec "$VMID" -- cp -p "$ENVFILE" "$ENV_BACKUP"
-WAS_ACTIVE="$(pct exec "$VMID" -- systemctl is-active llamacpp-qwen38fn 2>/dev/null || true)"
+WAS_ACTIVE="$(pct exec "$VMID" -- systemctl is-active "$UNIT" 2>/dev/null || true)"
 DIMM_PID=""; GPU_PID=""
 cleanup() {
   [ -n "$DIMM_PID" ] && kill "$DIMM_PID" 2>/dev/null
@@ -316,13 +339,13 @@ cleanup() {
   if [ "$RESTORE" = "true" ]; then
     pct exec "$VMID" -- cp -p "$ENV_BACKUP" "$ENVFILE"
     if [ -e "$TRIP_FILE" ]; then
-      pct exec "$VMID" -- systemctl stop llamacpp-qwen38fn 2>/dev/null || true
+      pct exec "$VMID" -- systemctl stop "$UNIT" 2>/dev/null || true
       log "restored ${ENVFILE}; thermal trip in ${TRIP_FILE}, so the service stays stopped"
     elif [ "$WAS_ACTIVE" = "active" ]; then
-      pct exec "$VMID" -- systemctl restart llamacpp-qwen38fn
-      log "restored ${ENVFILE} from ${ENV_BACKUP} and restarted llamacpp-qwen38fn"
+      pct exec "$VMID" -- systemctl restart "$UNIT"
+      log "restored ${ENVFILE} from ${ENV_BACKUP} and restarted ${UNIT}"
     else
-      pct exec "$VMID" -- systemctl stop llamacpp-qwen38fn 2>/dev/null || true
+      pct exec "$VMID" -- systemctl stop "$UNIT" 2>/dev/null || true
       log "restored ${ENVFILE} from ${ENV_BACKUP}; service left stopped, as found"
     fi
   fi
@@ -335,7 +358,7 @@ LOAD_OK=false; LOAD_S=0
 start_server() {
   local label="$1" cache="${2:-}"
   [ ! -e "$TRIP_FILE" ] || die "thermal trip recorded in ${TRIP_FILE}; stopping the sweep"
-  pct exec "$VMID" -- systemctl stop llamacpp-qwen38fn 2>/dev/null || true
+  pct exec "$VMID" -- systemctl stop "$UNIT" 2>/dev/null || true
 
   # Wait for VRAM to actually drain. Starting the next config on top of the previous
   # one's buffers is how a sweep measures a spill it created itself.
@@ -367,7 +390,7 @@ start_server() {
   fi
   set_env_var MODEL_MOE_CACHE_MIB "$cache"
   # 🔴 Derive the layer split from ncmoe — a FIXED split is wrong for every other value.
-  # --n-cpu-moe N makes layers 0..N-1 light (experts on CPU) and N..47 heavy, so an even
+  # --n-cpu-moe N makes layers 0..N-1 light (experts on CPU) and the rest heavy, so an even
   # split by layer COUNT gives card 2 every heavy one: at ncmoe 20 that pinned GPU 2 at
   # 30.7 GiB and spilled 9.3 GiB to GTT for 6.6 t/s.
   # ⚠️ The `- 2` is load-bearing. Card 1 also carries the output head and a larger KV share,
@@ -375,19 +398,21 @@ start_server() {
   # ~2 layers and spills anyway — silently, at ncmoe 15/16/20. Validated where the spilling
   # was: 16 -> "30,18" (the shipped two-card config), 20 -> "32,16", 28 -> "36,12". Above
   # that range card 1 has room either way. Override with TENSOR_SPLIT= to sweep the split.
+  # The rule is Flash-Next's (N_BLOCKS 48); for another model it is only a starting point
+  # that a fit cell checks against each card's free VRAM.
   if [ "$gpus" -ge 2 ]; then
     sm="${CELL[$label|SPLIT_MODE]:-layer}"
     ts="${CELL[$label|TENSOR_SPLIT]:-${TENSOR_SPLIT:-}}"
     if [ -z "$ts" ] && [ "$sm" = layer ]; then
-      if [ "$ncmoe" -ge 48 ]; then
+      if [ "$ncmoe" -ge "$N_BLOCKS" ]; then
         # No heavy layers left to rebalance, so the -2 would hand card 2 two LIGHT layers
         # and an inter-GPU hop for nothing. Keep this case exact so the "*,0" single-GPU
         # detection below still fires.
-        c1=48
+        c1=$N_BLOCKS
       else
-        c1=$(( ncmoe + (48 - ncmoe) / 2 - 2 ))
+        c1=$(( ncmoe + (N_BLOCKS - ncmoe) / 2 - 2 ))
       fi
-      ts="${c1},$(( 48 - c1 ))"
+      ts="${c1},$(( N_BLOCKS - c1 ))"
     fi
     set_env_var MODEL_TENSOR_SPLIT "$ts"
     [ "$sm" = layer ] || dev="${dev:+$dev }-sm ${sm}"
@@ -410,13 +435,15 @@ start_server() {
   # provably-lossless case. Output hashes still get compared by the probe.
   v="${CELL[$label|KV]:-${KV_TYPE:-}}"; [ -n "$v" ] && set_env_var MODEL_KV_TYPE "$v"
   v="${CELL[$label|MMPROJ_CPU]:-${MMPROJ_CPU:-}}"; [ -n "$v" ] && set_env_var MODEL_MMPROJ_ON_CPU "$v"
-  # llamacpp-serve-qwen38fn sources the env file under `set -a`, so anything written here is
+  # The launcher sources the env file under `set -a`, so anything written here is
   # EXPORTED to llama-server. That is how upstream env knobs get through — e.g.
   # LLAMA_PLE_RESIDENT, which appears in llama.cpp #28623's description and is undocumented.
   set_env_var LLAMA_PLE_RESIDENT "${PLE_RESIDENT:-}"
   set_env_var MODEL_CONTEXT_LENGTH "${CELL[$label|CTX]:-$CTX}"
   set_env_var MODEL_PARALLEL       "${CELL[$label|PARALLEL]:-$PARALLEL}"
   set_env_var MODEL_EXPECTED_GPUS  "$gpus"
+  # Empty exposes every card; the launcher exports GGML_VK_VISIBLE_DEVICES only when set.
+  set_env_var MODEL_VK_VISIBLE_DEVICES "${CELL[$label|VK_DEVICES]:-}"
   # This is what actually carries --device into llama-server; the serve script
   # word-splits EXTRA_ARGS and appends it verbatim.
   v="${CELL[$label|EXTRA]:-}"
@@ -426,25 +453,25 @@ start_server() {
 
   if [ "$DROP_CACHES" = "true" ]; then
     # Stop first: pages a running server has mapped are not dropped.
-    pct exec "$VMID" -- systemctl stop llamacpp-qwen38fn
+    pct exec "$VMID" -- systemctl stop "$UNIT"
     sync; echo 3 >/proc/sys/vm/drop_caches
     log "page cache dropped ($(awk '/^Cached:/ { printf "%d MiB", $2 / 1024 }' /proc/meminfo) left)"
   fi
-  pct exec "$VMID" -- systemctl restart llamacpp-qwen38fn
+  pct exec "$VMID" -- systemctl restart "$UNIT"
 
-  log "waiting for /health (a 111 GB model is slow to load cold)"
+  log "waiting for /health (a 100+ GB model is slow to load cold)"
   local t=0 t0
   t0="$(date +%s)"
   LOAD_OK=false; LOAD_S=0
   until curl -fsS --max-time 5 "${BASE}/health" >/dev/null 2>&1; do
-    if ! pct exec "$VMID" -- systemctl is-active --quiet llamacpp-qwen38fn; then
-      pct exec "$VMID" -- journalctl -u llamacpp-qwen38fn --no-pager -n 40 -o cat >&2
+    if ! pct exec "$VMID" -- systemctl is-active --quiet "$UNIT"; then
+      pct exec "$VMID" -- journalctl -u "$UNIT" --no-pager -n 40 -o cat >&2
       log "🔴 ${label}: server exited while loading (cache ${cache:-none}) — cell recorded as failed"
       return 0
     fi
     sleep 1; t=$(( $(date +%s) - t0 ))
     if [ "$t" -ge "$HEALTH_TIMEOUT" ]; then
-      pct exec "$VMID" -- journalctl -u llamacpp-qwen38fn --no-pager -n 40 -o cat >&2
+      pct exec "$VMID" -- journalctl -u "$UNIT" --no-pager -n 40 -o cat >&2
       log "🔴 ${label}: not healthy after ${HEALTH_TIMEOUT}s — cell recorded as failed"
       return 0
     fi
@@ -458,7 +485,7 @@ start_server() {
 # one sizing measurement.
 cell_sig() {
   local key out=""
-  for key in MODE NCMOE SPLIT_MODE TENSOR_SPLIT BATCH UBATCH KV CTX PARALLEL MMPROJ_CPU LOAD_MODE EXTRA DEVICE; do
+  for key in MODE NCMOE SPLIT_MODE TENSOR_SPLIT BATCH UBATCH KV CTX PARALLEL MMPROJ_CPU LOAD_MODE EXTRA DEVICE VK_DEVICES; do
     out+="${key}=${CELL[$1|$key]:-}|"
   done
   echo "$out"
@@ -540,7 +567,7 @@ dimm_cooldown() {
 # A cell's settings as a JSON object, for the manifest and its per-cell JSON.
 cell_json() {
   local label="$1" key args=()
-  for key in MODE NCMOE CACHE SPLIT_MODE TENSOR_SPLIT BATCH UBATCH THREADS KV CTX PARALLEL LOAD_MODE MMPROJ_CPU EXTRA STREAMS DEPTHS DEVICE; do
+  for key in MODE NCMOE CACHE SPLIT_MODE TENSOR_SPLIT BATCH UBATCH THREADS KV CTX PARALLEL LOAD_MODE MMPROJ_CPU EXTRA STREAMS DEPTHS DEVICE VK_DEVICES; do
     [ -n "${CELL[$label|$key]+x}" ] && args+=("$key" "${CELL[$label|$key]}")
   done
   python3 -c 'import json, sys; a = sys.argv[1:]; print(json.dumps(dict(zip(a[::2], a[1::2]))))' "${args[@]}"
@@ -552,7 +579,9 @@ cat >"${OUT_DIR}/manifest.json" <<JSON
 {
  "when": "$(date -u +%FT%TZ)",
  "harness_commit": "${HARNESS_COMMIT}",
- "vmid": ${VMID}, "cards": "${CARDS[*]}",
+ "vmid": ${VMID}, "cards": "${CARDS[*]}", "unit": "${UNIT}", "n_blocks": ${N_BLOCKS},
+ "model": $(python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))["guest"]["env"].get("MODEL_ALIAS")))' "${OUT_DIR}/environment.json"),
+ "contract_efforts": "${CONTRACT_EFFORTS}",
  "ctx": ${CTX}, "parallel": ${PARALLEL}, "reps": ${REPS},
  "n_predict": ${N_PREDICT}, "conc_reps": ${CONC_REPS}, "depths": "${DEPTHS}", "probe_classes": "${PROBE_CLASSES}",
  "drop_caches": ${DROP_CACHES}, "dimm_start_max_c": ${DIMM_START_MAX_C},
@@ -601,7 +630,7 @@ for round in $(seq 1 "$REPS"); do
       start_server "$label" "$cache"
     fi
     if [ "$LOAD_OK" != true ]; then
-      pct exec "$VMID" -- journalctl -u llamacpp-qwen38fn --since "@${cell_start}" --no-pager -o cat \
+      pct exec "$VMID" -- journalctl -u "$UNIT" --since "@${cell_start}" --no-pager -o cat \
         >"${OUT_DIR}/${tag}.load.log" 2>/dev/null || true
       python3 - "${OUT_DIR}/${tag}.json" "$label" "$(cell_json "$label")" <<'PYFAIL'
 import json, sys
@@ -641,7 +670,11 @@ PYFAIL
     [ -n "$PROBE_CLASSES" ] && probe_args+=( --classes "$PROBE_CLASSES" )
     # The template-contract assertions only need running once per sweep, on the first
     # cell that loads: a cell that fails to load skips the probe.
-    if [ "$contract_done" = false ]; then probe_args+=( --contract ); contract_done=true; fi
+    if [ "$contract_done" = false ]; then
+      probe_args+=( --contract )
+      [ -n "$CONTRACT_EFFORTS" ] && probe_args+=( --efforts "$CONTRACT_EFFORTS" )
+      contract_done=true
+    fi
 
     dimm_sampler >"${OUT_DIR}/${tag}.dimm.tsv" 2>/dev/null &
     DIMM_PID=$!
@@ -673,8 +706,8 @@ PYFAIL
 
     # The cache logs its hit rate when the context is destroyed, so stop the server now
     # and collect this cell's lines.
-    pct exec "$VMID" -- systemctl stop llamacpp-qwen38fn 2>/dev/null || true
-    pct exec "$VMID" -- journalctl -u llamacpp-qwen38fn --since "@${cell_start}" --no-pager -o cat \
+    pct exec "$VMID" -- systemctl stop "$UNIT" 2>/dev/null || true
+    pct exec "$VMID" -- journalctl -u "$UNIT" --since "@${cell_start}" --no-pager -o cat \
       | grep -E 'moe_cache|MoE cache|layers, .* slots' >"${OUT_DIR}/${tag}.moecache.log" || true
 
     cards_csv="$(printf '%s\n' "${c_id[@]}" | paste -sd, -)"

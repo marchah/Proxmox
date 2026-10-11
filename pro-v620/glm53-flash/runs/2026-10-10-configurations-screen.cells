@@ -1,0 +1,28 @@
+# Stage 1 of runs/2026-10-10-configurations.md (screen), CT 123 holding 0000:83:00.0 only,
+# with REPS=1 DEPTHS=0,8000 PROBE_CLASSES=code.
+#
+# NCMOE=46 keeps every routed expert in host RAM, the MTP block's (GGUF block 45) included,
+# so each cell reads what the card holds besides experts. Each cell differs from `base` in
+# one setting. All load under `auto` except base-dio, with 16 threads, batch 4096 and the
+# projector on the CPU.
+base           MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=1024 PARALLEL=1
+# KV type and context: KV per token on the 11 DSA layers.
+base-q8        MODE=1gpu NCMOE=46 KV=q8_0 CTX=65536 UBATCH=1024 PARALLEL=1
+base-ctx128k   MODE=1gpu NCMOE=46 KV=f16 CTX=131072 UBATCH=1024 PARALLEL=1
+base-ctx256k   MODE=1gpu NCMOE=46 KV=f16 CTX=262144 UBATCH=1024 PARALLEL=1
+# Micro-batch: the compute buffer, which #29950 reports growing with context x micro-batch.
+base-ub2048    MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=2048 PARALLEL=1
+base-ub4096    MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=1
+# Block 45's experts on the card without speculation: whether the MTP block loads when MTP
+# is off.
+base-n45       MODE=1gpu NCMOE=45 KV=f16 CTX=65536 UBATCH=1024 PARALLEL=1
+# MTP at n-max 3, block 45's experts in RAM: the rest of the block and the draft context
+# (#28433).
+base-mtp3      MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=1024 PARALLEL=1 EXTRA='--spec-type draft-mtp --spec-draft-n-max 3'
+# Two slots with and without --kv-unified (#27773: several sequences need it).
+base-p2        MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=1024 PARALLEL=2 STREAMS=2 EXTRA='--kv-unified'
+base-p2-nokvu  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=1024 PARALLEL=2 STREAMS=2
+# dio with every expert pinned in host memory, about 190 GB, under the 251.8 GiB GTT limit.
+base-dio       MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=1024 PARALLEL=1 LOAD_MODE=dio
+# CPU only: the whole model in host RAM, --device none.
+cpu            MODE=cpu KV=f16 CTX=65536 UBATCH=1024 PARALLEL=1 DEPTHS=0

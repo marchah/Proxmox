@@ -110,7 +110,7 @@ def main():
     depths = sorted({c.split("/")[0] for c in cells},
                     key=lambda s: int(s.lstrip("d")))
 
-    print("# Qwen3.8-Flash-Next placement sweep\n")
+    print("# %s placement sweep\n" % (manifest.get("model") or "Qwen3.8-Flash-Next"))
     if manifest_error:
         print("⚠️ `manifest.json` is unreadable (%s), so the run header is missing.\n" % manifest_error)
     if manifest:
@@ -336,11 +336,10 @@ def main():
     # --- the template contract ----------------------------------------------------
     if contract:
         print("\n## Template contract\n")
-        print("This model's raw template resolves `reasoning_effort|default('xhigh')` and RAISES "
-              "on `\"none\"` and `\"high\"` — the two values that work on CT 123's coder. The "
-              "server runs `--reasoning off`, which stops those values reaching the template at "
-              "all. So the assertion is **a caller cannot break this server**, NOT that the "
-              "template rejects anything.\n")
+        print("The server runs `--reasoning off`. The assertion is **a caller cannot break this "
+              "server**: every effort value answers with clean `content`. Flash-Next's raw "
+              "template raises on `\"none\"` and `\"high\"`; GLM-5.3-Flash's opens `<think>` on "
+              "every turn and reads unknown values as `max`.\n")
         bc = contract.get("bare_chat", {})
         ok = bool(bc.get("ok"))
         print("- Bare chat request answers: **%s**%s" % (
@@ -350,9 +349,18 @@ def main():
         # means llama.cpp emitted no thought block at all, which is the point of --reasoning
         # off. What would be broken is a <think> tag leaking into content.
         leaked = [k for k, v in contract.items()
-                  if isinstance(v, dict) and "<think>" in (v.get("content") or "")]
-        print("- No `<think>` leaked into `content`: **%s**%s" % (
+                  if isinstance(v, dict) and ("<think>" in (v.get("content") or "")
+                                              or "</think>" in (v.get("content") or ""))]
+        print("- No think tag leaked into `content`: **%s**%s" % (
             "yes" if not leaked else "NO", "" if not leaked else " — %s" % ", ".join(leaked)))
+        # Probes from before reasoning_chars was recorded leave it out.
+        thought = {k: v["reasoning_chars"] for k, v in contract.items()
+                   if isinstance(v, dict) and v.get("reasoning_chars")}
+        if any("reasoning_chars" in v for v in contract.values() if isinstance(v, dict)):
+            print("- No reasoning block despite `--reasoning off`: **%s**%s" % (
+                "yes" if not thought else "NO",
+                "" if not thought else " — " + ", ".join(
+                    "%s %d chars" % kv for kv in sorted(thought.items()))))
         efforts = sorted(k[len("effort_"):] for k in contract if k.startswith("effort_"))
         for val in efforts:
             e = contract.get("effort_" + val, {})

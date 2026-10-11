@@ -8,6 +8,14 @@ source /etc/llamacpp-qwen38fn.env
 set +a
 export LD_LIBRARY_PATH="${LLAMACPP_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
+# Optional device filter (placement-sweep.sh's VK_DEVICES). Exported only when set:
+# ggml-vulkan reads an EMPTY GGML_VK_VISIBLE_DEVICES as "no devices".
+if [ -n "${MODEL_VK_VISIBLE_DEVICES:-}" ]; then
+  export GGML_VK_VISIBLE_DEVICES="${MODEL_VK_VISIBLE_DEVICES}"
+else
+  unset GGML_VK_VISIBLE_DEVICES
+fi
+
 # Require the configured GPU count; a missing card otherwise causes CPU fallback.
 : "${MODEL_EXPECTED_GPUS:=2}"
 devices="$("${LLAMACPP_DIR}/llama-server" --list-devices 2>/dev/null || true)"
