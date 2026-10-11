@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–3 done) · Status: running
+Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–4 done) · Status: running
 
 ## Question
 
@@ -88,10 +88,16 @@ spread rule.
   the six prompt cells. If another count wins the two-stream aggregate beyond the spread,
   the record reports both. CPU only's best count, by the same rule, is reported as CPU
   only's result: its decode and prefill against the best GPU configuration's.
-- **Stage 5, context** (timed): stages 3–4's configuration at 65536, 131072 and 262144, each
-  at its own fit. Per context: the VRAM it costs, in MiB and in expert layers, and decode
-  and prefill at each depth it holds. Stage 7 runs at the context the owner picks from
-  these results, and at 65536 without a pick.
+- **Stage 5, context** (stages 3–4's configuration, one slot):
+  - **5a, fit** (one pass): the stage 2 rule at one slot, with requested-minus-resident VRAM at
+    zero through the d8000 request and the context's deepest request.
+    - 65536 is checked at `-ncmoe 44`, and 131072 and 262144 at 44 and 46.
+    - Without MTP, 45 and 46 are the same placement, so 46 (every expert in RAM) is the step
+      back from 44.
+    - A context that does not fit at 46 is left out of 5b, and the record says so.
+  - **5b, timed:** each context at its 5a fit. Per context: the VRAM it costs, in MiB and in
+    expert layers, and decode and prefill at each depth it holds. Stage 7 runs at the context
+    the owner picks from these results, and at 65536 without a pick.
 - **Stage 6, two cards** (no speculation; `ct123-test-host.sh two-card` gives CT 123 GPU 1
   as well; context 65536, as in stages 3–4):
   - **6a, fit and split** (one pass): the stage 2 rule on each card at stage 3's
@@ -266,7 +272,8 @@ systemctl stop vram-residency
 | 2 | `fit` | `REPS=1 DEPTHS=8000 PROBE_CLASSES=code` |
 | 3 | `load` | `DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true` |
 | 4 | `threads` | `DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true` |
-| 5 | `context` | `PROBE_CLASSES=code PROBE_CHAT=true`; depths per cell |
+| 5a | `ctx-fit` | `REPS=1 PROBE_CLASSES=code PROBE_CHAT=true`; depths per cell |
+| 5b | `context` | `PROBE_CLASSES=code PROBE_CHAT=true`; depths per cell |
 | 6a | `2c-fit` | `REPS=1 DEPTHS=8000 PROBE_CLASSES=code PROBE_CHAT=true` |
 | 6b | `2c` | `DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true` |
 | 7a | `mtp-fit` | `REPS=1 DEPTHS=8000 PROBE_CLASSES=code PROBE_CHAT=true` |
@@ -281,8 +288,9 @@ systemctl stop vram-residency
   (`/v1/chat/completions`), with the same text, sampling and `cache_prompt: false`, and
   reads the same `timings` block. GLM's figures from stage 3 on are therefore not
   comparable with Flash-Next's records, which use raw `/completion`.
-- Stage 5's cells set their own depths, code class only: 0, 8000, 82000 (~59k tokens) at
-  every context, 165000 (~119k) at 131072 and 262144, and 330000 (~237k) at 262144.
+- Stage 5b's cells set their own depths, code class only: 0, 8000, 82000 (~59k tokens) at
+  every context, 165000 (~119k) at 131072 and 262144, and 330000 (~237k) at 262144. 5a's
+  cells run 8000 and the context's deepest of these.
 - `two-card` prints the Vulkan device order in CT 123; `1c-best`'s `VK_DEVICES` is GPU 2's
   index there, and its cell JSON must show `active_card` `0000:83:00.0`.
 - After `restore`, Flash-Next must load and answer with its free VRAM as deployed (about
@@ -719,6 +727,67 @@ loaded once, the d8000 code prompt sent alternately, three of each after a raw w
   request, not only on its length; the cause was not measured. Stages 1–2's prefill figures, and
   Flash-Next's, come from raw prompts the model continued instead of answering.
 
+### Stage 4, threads — 2026-10-11 12:43–18:44 ET
+
+Harness `ff349a6`, cells
+[`2026-10-10-configurations-threads.cells`](2026-10-10-configurations-threads.cells): stage 3's
+settings and three passes, on `dio-4096` (`dio`, micro-batch 4096, `-ncmoe 44`) and on CPU only.
+CT 123 has 48 of the host's 64 CPUs (32 cores). Raw data:
+`/root/glm53-flash/sweep-threads-20261011T164242Z/` and `residency-threads.jsonl` on the host.
+Figures as in stage 3; CPU cores are the container's during decode.
+
+| Cell | Threads | Decode, t/s | Prefill d8000, t/s | Two streams, aggregate t/s | CPU cores |
+| --- | ---: | --- | --- | --- | ---: |
+| `dio-4096-t16` | 16 | 6.625 [6.430–6.690] | 174.2 [174.1–174.3] | 8.87 [8.86–9.20] | 15.0 |
+| `dio-4096-t24` | 24 | 6.495 [6.465–6.535] | 174.7 [174.7–174.8] | 8.97 [8.85–9.02] | 22.7 |
+| `dio-4096-t32` | 32 | **6.635** [6.585–6.655] | 174.7 [174.4–174.7] | **9.07** [9.06–9.12] | 30.3 |
+| `cpu-t16` | 16 | 4.720 [4.690–4.740] | 17.0 [16.9–17.5] | 7.02 [6.64–7.69] | 16.0 |
+| `cpu-t24` | 24 | 4.780 [4.750–4.805] | 16.8 [16.5–16.8] | 7.26 [7.07–7.62] | 24.0 |
+| `cpu-t32` | 32 | **4.875** [4.875–4.985] | **19.2** [19.1–19.2] | 7.55 [7.44–7.70] | 32.0 |
+
+Decode per prompt cell, t/s, median of the three passes:
+
+| Cell | d0 code | d0 list | d0 prose | d8000 code | d8000 list | d8000 prose |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `dio-4096-t16` | 6.94 | 6.87 | 6.92 | 6.22 | 6.31 | 6.34 |
+| `dio-4096-t24` | 6.72 | 6.78 | 6.80 | 6.21 | 6.27 | 6.29 |
+| `dio-4096-t32` | 6.92 | 6.90 | 6.90 | 6.41 | 6.37 | 6.37 |
+| `cpu-t16` | 5.05 | 5.08 | 4.98 | 4.46 | 4.37 | 4.34 |
+| `cpu-t24` | 5.17 | 5.08 | 5.00 | 4.47 | 4.48 | 4.47 |
+| `cpu-t32` | 5.06 | 5.26 | 5.20 | 4.53 | 4.53 | 4.70 |
+
+**Stage 4 rule applied: next stages use 32 threads** (the highest median decode, 6.635 t/s).
+- Its lead over 16 threads (6.625) is within both spreads (0.070 and 0.260).
+- Its lead over 24 threads (6.495) counts: 0.140, against spreads of 0.070 and 0.070.
+- 32 threads also has the highest two-stream aggregate (9.07 t/s). Its lead over 16 threads
+  (8.87) is within 16's spread (0.34), so no other count wins and there is nothing to report
+  separately.
+- 32 threads kept 30.3 cores busy in decode, against 15.0 at 16.
+- Prefill runs on the card, on 0.4 cores, at 174.2–174.7 t/s at every count.
+
+**CPU only's result: 32 threads.**
+- Decode 4.875 t/s. That beats 16 threads (0.155, against spreads of 0.110 and 0.050) and is
+  within the spread of 24 (0.095, against 0.110).
+- Prefill 19.2 t/s, against 17.0 at 16 threads; the difference counts.
+- Two streams 7.55 t/s aggregate.
+
+Against the best GPU configuration (`dio-4096-t32`):
+- decode 26.5% lower (4.875 against 6.635 t/s);
+- prefill 9.1 times slower (19.2 against 174.7 t/s);
+- two-stream aggregate 17% lower (7.55 against 9.07 t/s).
+
+- **Nothing left VRAM:** 0 MiB outside VRAM and nothing evicted over 22,718 samples. Every
+  `dio-4096` pass loaded at 21,750 MiB in 115–116 s.
+- **Output:** each cell's text was identical across its three passes.
+  - The GPU cells gave the same text at every thread count, and the same as stage 3's `dio-4096`
+    in all six prompt cells.
+  - CPU only gave a different text per thread count in five of six prompt cells; 16 threads
+    matched stage 3's `cpu`.
+  - All read coherently; none was flagged degenerate.
+- **Contract:** clean at every effort value.
+- **DIMMs:** hottest 57–58 °C in the GPU cells and 60–63 °C in CPU only, highest at 32 threads;
+  no sample at 66 °C.
+
 ## Deviations
 
 - **Stage order, changed after stage 1** (owner, 2026-10-10): MTP runs last, as stage 7,
@@ -748,5 +817,13 @@ loaded once, the d8000 code prompt sent alternately, three of each after a raw w
   harness. It used the harness's `placement-probe.py` and the cell's settings.
 - **Stage 3:** the stage took 4 h against the 3.5 h estimate. Its CPU-only cells took about
   29 min each.
+- **Stage 4:** the stage took 6 h against the 4.5 h estimate. The CPU-only cells took 28–30 min
+  each, and three of them ran per pass.
+- **Stage 5 split into 5a (fit) and 5b (timed)**, after stage 4.
+  - The plan ran each context "at its own fit" but had no step that finds it.
+  - Stage 1 measured 128k and 256k only at micro-batch 1024. #29950 has the compute buffer
+    growing with context × micro-batch, so 4096 needs its own fit.
+  - 5a applies the stage 2 rule at one slot. Its residency check runs through each context's
+    deepest request, because the least free VRAM in stage 1's 256k cell came during prefill.
 
 ## Conclusion

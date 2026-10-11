@@ -1,0 +1,16 @@
+# Stage 5a of runs/2026-10-10-configurations.md (context fit), CT 123 holding 0000:83:00.0 only,
+# one pass: REPS=1 PROBE_CLASSES=code PROBE_CHAT=true, with vram-residency-sampler.py running.
+# Stages 3-4's configuration (dio, micro-batch 4096, 32 threads, f16 KV, --reasoning-budget 0)
+# at one slot. Per context, the smallest --n-cpu-moe that leaves at least 3,072 MiB free right
+# after load, with requested-minus-resident VRAM at zero through the d8000 request and the
+# context's deepest request.
+#
+# At 65536 and two slots, -ncmoe 44 left 8,954 MiB free (stage 2). Stage 1, at micro-batch 1024
+# with every expert in RAM, measured 128k at +1,586 MiB and 256k at +4,506 over 64k; #29950 has
+# the compute buffer growing with context x micro-batch, so 4096 may cost more. Without MTP,
+# -ncmoe 45 and 46 are the same placement: 46 (every expert in RAM) is the step back from 44.
+ctx64k-n44   MODE=1gpu NCMOE=44 KV=f16 CTX=65536  UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 DEPTHS=8000,82000
+ctx128k-n44  MODE=1gpu NCMOE=44 KV=f16 CTX=131072 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 DEPTHS=8000,165000
+ctx128k-n46  MODE=1gpu NCMOE=46 KV=f16 CTX=131072 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 DEPTHS=8000,165000
+ctx256k-n44  MODE=1gpu NCMOE=44 KV=f16 CTX=262144 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 DEPTHS=8000,330000
+ctx256k-n46  MODE=1gpu NCMOE=46 KV=f16 CTX=262144 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 DEPTHS=8000,330000
