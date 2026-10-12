@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–4 and 5a done) · Status: running
+Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–5a done) · Status: running
 
 ## Question
 
@@ -830,6 +830,28 @@ host.
   VRAM up to the timeout. Neither context's deepest request completed, so both fits stand
   unconfirmed. 5b's cells wait for the owner's choice of how to get past the timeout.
 
+**5a rerun, compute job timeout 10 s** (2026-10-11 20:38–21:46 ET). Harness `28afac9`, cells
+[`2026-10-10-configurations-ctx-fit-rerun.cells`](2026-10-10-configurations-ctx-fit-rerun.cells),
+same settings, after the host change under Deviations. Raw data:
+`/root/glm53-flash/sweep-ctx-fit-rerun-20261012T003825Z/` and `residency-ctx-fit-rerun.jsonl`
+on the host.
+
+| Cell | VRAM after load, MiB | Free | d8000 prefill / decode, t/s | Deepest request | Least free VRAM | VRAM-requested memory outside VRAM, max | Fit |
+| --- | ---: | ---: | --- | --- | ---: | --- | --- |
+| `ctx128k-n46` | 20,273 | 10,431 | 171.9 / 6.27 | 119,281 tokens: prefill 122.9 t/s (16 min), decode 4.80 t/s | 10,100 | 0 | **yes** |
+| `ctx256k-n46` | 23,240 | 7,464 | 172.6 / 6.32 | 238,520 tokens: prefill 94.9 t/s (42 min), decode 4.49 t/s | 1,767 | 2,354 MiB, 1,533 of 2,644 samples | no: memory outside VRAM |
+
+- **No timeout:** no compute ring timed out since the reboot. Both deep requests completed and
+  answered coherently, with 8-gram uniqueness 1.0.
+- **128k fits at `-ncmoe 46`,** one expert layer fewer than 64k's `-ncmoe 44`.
+- **256k does not fit on one card at micro-batch 4096.**
+  - From 10 minutes into its deep request until the end, VRAM-requested memory was outside
+    VRAM.
+  - The server's own allocation peaked at 28,179 MiB, 4,939 more than after load.
+  - `-ncmoe 46` already holds every expert in RAM, so no further step is left. 5b leaves 256k
+    out, as the plan says.
+- Junction peaked at 87 °C and memory at 72 °C in both cells; hottest DIMM 55–58 °C.
+
 ## Deviations
 
 - **Stage order, changed after stage 1** (owner, 2026-10-10): MTP runs last, as stage 7,
@@ -875,6 +897,10 @@ host.
     guest started.
   - 5a's two `-ncmoe 46` cells rerun with
     [`2026-10-10-configurations-ctx-fit-rerun.cells`](2026-10-10-configurations-ctx-fit-rerun.cells).
-    Stages 5b–7 run with the new timeout; stages 1–5a ran with the default.
+    Stages 5b–7 run with the new timeout. Stages 1–5a ran with the default, except the 5a
+    rerun.
+- **Stage 5b adds `ctx64k-n46`**, 64k at 128k's placement. 64k and 128k fit at different
+  placements (`-ncmoe 44` and 46), so without it a difference between the two contexts could
+  come from the expert layer.
 
 ## Conclusion

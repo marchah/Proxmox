@@ -1,0 +1,11 @@
+# Stage 5b of runs/2026-10-10-configurations.md (context), CT 123 holding 0000:83:00.0 only, timed:
+# three passes, PROBE_CLASSES=code PROBE_CHAT=true, depths per cell, vram-residency-sampler.py
+# running. Stages 3-4's configuration (dio, micro-batch 4096, 32 threads, f16 KV,
+# --reasoning-budget 0) at one slot, with the amdgpu compute job timeout at 10 s.
+#
+# Each context at its 5a fit: 64k at -ncmoe 44, 128k at -ncmoe 46. 256k does not fit on one card
+# at micro-batch 4096 and is left out. ctx64k-n46 runs 64k at 128k's placement, so the two
+# contexts also compare at the same placement.
+ctx64k-n44   MODE=1gpu NCMOE=44 KV=f16 CTX=65536  UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 DEPTHS=0,8000,82000
+ctx64k-n46   MODE=1gpu NCMOE=46 KV=f16 CTX=65536  UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 DEPTHS=0,8000,82000
+ctx128k-n46  MODE=1gpu NCMOE=46 KV=f16 CTX=131072 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 DEPTHS=0,8000,82000,165000
