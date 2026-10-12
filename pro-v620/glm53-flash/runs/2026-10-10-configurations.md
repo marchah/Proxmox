@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–5 and 6a done) · Status: running
+Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–6 done) · Status: running
 
 ## Question
 
@@ -977,6 +977,105 @@ measured VRAM: at 39,7, GPU 1 holds blocks 0–39 and GPU 2 blocks 40–44.
 - **The sweep's flag:** "possible spill" fired on every cell, because GPU 1's GTT grew 260 MiB
   during each probe. Requested-minus-resident VRAM read zero in the cells marked 0.
 - **Heat:** hottest DIMM 52–54 °C. Junction peaked at 72–77 °C on GPU 1 and 54–61 °C on GPU 2.
+
+### Stage 6b, two cards timed — 2026-10-12 12:44–14:20 ET
+
+Harness `004ebe6`, cells
+[`2026-10-10-configurations-2c.cells`](2026-10-10-configurations-2c.cells): three passes,
+`DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true`, every prompt class. Batch and micro-batch 4096,
+32 threads, f16 KV, context 65536, two slots, compute job timeout 10 s. A residency sampler ran
+on each card. Raw data on the host: `/root/glm53-flash/sweep-2c-20261012T164416Z/` and
+`residency-2c-gpu{1,2}.jsonl`. Figures as in stage 3.
+
+`1c-best` runs stage 4's `dio-4096-t32` with the same server command line, with only GPU 2
+visible. Stage 4's row is repeated for comparison.
+
+| Cell | Cards, `-ncmoe`, load mode | Expert layers, GPU 1 + GPU 2 | VRAM after load, MiB, GPU 1 / GPU 2 | Least free, MiB, GPU 1 / GPU 2 | Load, s | Decode, t/s | Prefill d8000, t/s | Two streams, aggregate t/s |
+| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |
+| `2c-auto` | both, 38 at 39,7, `auto` | 2 + 5 | 23,987 / 25,465 | 6,714 / 5,206 | 30–32 | **6.745** [6.600–6.835] | 98.3 [98.2–98.4] | 9.39 [9.35–9.44] |
+| `2c-dio` | both, 38 at 39,7, `dio` | 2 + 5 | 23,988 / 25,465 | 6,713 / 5,124 | 104–105 | 6.720 [6.670–6.785] | **187.9** [187.8–188.0] | **9.43** [9.33–9.51] |
+| `1c-best` | GPU 2, 44, `dio` | 0 + 1 | 16 / 21,750 | — / 8,951 | 112 | 6.625 [6.610–6.640] | 174.8 [174.5–174.9] | 9.04 [9.04–9.07] |
+| stage 4 `dio-4096-t32` | GPU 2, 44, `dio` | 1 | 21,750 | — | 115–116 | 6.635 [6.585–6.655] | 174.7 [174.4–174.7] | 9.07 [9.06–9.12] |
+
+Decode per prompt cell, t/s, median of the three passes:
+
+| Cell | d0 code | d0 list | d0 prose | d8000 code | d8000 list | d8000 prose |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `2c-auto` | 6.98 | 7.06 | 7.09 | 6.50 | 6.52 | 6.53 |
+| `2c-dio` | 7.04 | 7.09 | 7.04 | 6.41 | 6.50 | 6.46 |
+| `1c-best` | 6.91 | 6.83 | 6.86 | 6.38 | 6.31 | 6.43 |
+
+**Stage 3 rule applied to the two-card cells: `2c-dio`.**
+- Best decode: `2c-auto`, 6.745 t/s, spread 0.235. `2c-dio` is 0.025 lower, within both spreads.
+- Of the two, `2c-dio` has the higher d8000 prefill: 187.9 t/s against 98.3.
+
+**`1c-best` stands in for the one-card results.** Against stage 4's `dio-4096-t32`:
+- decode 0.010 t/s lower, against spreads of 0.030 and 0.070;
+- prefill 0.1 t/s higher, against 0.38 and 0.30;
+- two streams 0.03 t/s lower, against 0.03 and 0.06;
+- the same VRAM after load (21,750 MiB) and the same text in all six prompt cells.
+
+The two-card container left GPU 1 at 16 MiB. The sweep recorded `0000:83:00.0` as the active
+card in every pass.
+
+**What the second card adds** (`2c-dio` against `1c-best`):
+- **Single-stream decode:** 6.720 against 6.625 t/s (+1.4%), within `2c-dio`'s spread (0.115), so
+  it does not count.
+  - Per prompt cell, two cards were 0.13–0.26 t/s higher at d0 and 0.03–0.19 at d8000.
+  - Only d0 list's difference (0.26) is beyond both cells' spreads (0.25 and 0.13).
+- **Two streams:** 9.43 against 9.04 t/s aggregate (+4.3%), beyond both spreads (0.18 and 0.03).
+  Per stream, 4.67–4.75 against 4.52–4.53 t/s.
+- **d8000 prefill:** 187.9 against 174.8 t/s (+7.5%), beyond both spreads (0.17 and 0.38).
+- **Expert layers on the cards:** seven (blocks 38–39 on GPU 1, 40–44 on GPU 2) against one.
+  - Under `dio`, the pinned GTT fell by 25,056 MiB (174,376 to 149,320), exactly six of the
+    4,176 MiB expert layers.
+  - Decode used 26.1–26.2 CPU cores, against 30.3 on one card.
+- **VRAM:** the two-card cells hold 49,452–49,453 MiB across both cards after load, against
+  21,750 on one. They leave GPU 1 6,713 MiB free at the least.
+- **The prefill runs on different cards.** Two-card prefill runs on GPU 1 at 2,468–2,470 MHz
+  and 180–184 W, with GPU 2 at 6–7 W. One card's runs on GPU 2 at 2,354–2,359 MHz and 178–179 W.
+  - The [card A/B record](../../runs/2026-10-08-card-ab.md) measured `83:00.0` 3.4–4.8% slower
+    in prefill and 1.1–1.3% in decode, on a model held entirely on the card.
+  - Part of the prefill difference may therefore come from the card rather than from the second
+    card. This stage did not separate the two.
+- Whether GPU 1 goes to GLM stays the owner's decision, and with it whether stage 7 runs on two
+  cards.
+
+**`dio` against `auto` on two cards** (same placement):
+- `dio` prefills 1.91 times as fast: 187.9 against 98.3 t/s.
+  - Under `auto`, GPU 1 prefilled at 86–93 W and 509–549 MHz, 53–54% busy.
+  - Under `dio`, it prefilled at 180–184 W and about 2,470 MHz, 99% busy.
+- Decode is within the spread (0.025 apart), and so are two streams (0.04 apart, against 0.09 and
+  0.18).
+- `auto` loads in 30–32 s against 104–105 s. GPU 1's GTT after load is 1,329 MiB under `auto`
+  and 149,320 under `dio`, which pins the experts held in RAM.
+
+- **Nothing left VRAM:** 0 MiB outside VRAM and nothing evicted on either card, over
+  5,797 samples per card.
+  - The cards' totals matched the server's allocation within 16 MiB, except in single samples:
+    six on GPU 1 and three on GPU 2 across the stage. In those, the card's total read 1.9–6.7 GiB
+    above the server's allocation while the server freed and reallocated its buffers, as in 5b.
+    The least-free figures leave them out.
+  - In the two-card cells, GPU 2's allocation grew by 24–115 MiB during requests, and GPU 1's by
+    2 MiB.
+- **The sweep's flag:** "possible spill" fired on both two-card cells, because GPU 1's GTT grew
+  during the probe: by 684 MiB under `auto` and 260 under `dio`. Residency read zero.
+- **No compute ring timed out.**
+- **Output:**
+  - Each cell gave the same text in all three passes, in all six prompt cells.
+  - `2c-auto` and `2c-dio` matched each other in all six. Their d8000 code text is 6a's.
+  - Two-card and one-card text matched at d0 code and d0 prose, and differed at d0 list and
+    all three d8000 cells.
+  - None was flagged degenerate; 8-gram uniqueness was 1.0 throughout.
+- **Two streams:** all 54 replies (nine rounds of two streams per cell) ran to the 256-token
+  limit and none was flagged degenerate. Each stream's text varied between rounds in every cell,
+  with 2–4 distinct texts over nine rounds. Stage 4's cell had 2–3.
+- **Contract:** run once, on `2c-auto`'s first pass; clean at every effort value.
+- **Heat:**
+  - Hottest DIMM 56–57 °C on two cards and 58 °C on one; no sample reached 66 °C.
+  - On two cards, GPU 1's junction peaked at 76–77 °C under `auto` and 80–81 °C under `dio`;
+    GPU 2's peaked at 59–64 °C.
+  - In `1c-best`, GPU 2's junction peaked at 79–80 °C.
 
 ## Deviations
 
