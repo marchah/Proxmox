@@ -1,0 +1,24 @@
+# Stage 7a of runs/2026-10-10-configurations.md (MTP fit), CT 123 holding 0000:83:00.0 only
+# (ct123-test-host.sh one-card), one pass: REPS=1 DEPTHS=8000 PROBE_CLASSES=code
+# PROBE_CHAT=true, a residency sampler on the card.
+#
+# The owner's choices after stage 6 (2026-10-12): one card, context 65536. The base is stages
+# 3-5's configuration: dio, batch and micro-batch 4096, 32 threads, f16 KV, two slots, which
+# loads at 21,750 MiB with -ncmoe 44 (stage 4). MTP at n-max 8, the scan's longest draft.
+#
+# Block 45 is the MTP block; its experts take 4,176 MiB, block 44's 4,482. --n-cpu-moe N puts
+# the experts of blocks 0..N-1 in RAM, so block 45's experts are on the card at any N <= 45,
+# and only an --override-tensor rule keeps them in RAM while block 44's stay on the card.
+# Stage 1's base-mtp3 (micro-batch 1024, one slot, n-max 3) put the head without its experts
+# and its draft context at 1,206 MiB.
+#
+# Block 45's experts on the card, the smallest -ncmoe first:
+#   m8-n44: blocks 44 and 45 on the card; about 27,100 MiB plus the draft context's growth at
+#           micro-batch 4096 and n-max 8, so it may miss the margin.
+#   m8-n45: block 45 on the card, block 44 in RAM; about 22,650 MiB plus that growth.
+# Block 45's experts in RAM:
+#   m8-n44-r45: block 44 on the card; about 22,950 MiB plus that growth. -ncmoe 46 is the step
+#               back if it fails.
+m8-n44      MODE=1gpu NCMOE=44 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 8'
+m8-n45      MODE=1gpu NCMOE=45 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 8'
+m8-n44-r45  MODE=1gpu NCMOE=44 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 8 -ot blk\.45\.ffn_(up|gate|down)_exps=CPU'
