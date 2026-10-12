@@ -96,6 +96,9 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   Confirm physical fan pairing after rewiring. The BMC manages CPU/DIMM cooling; its
   curve reaches 100% at 58 °C because the DIMMs cap memory bandwidth to a third at
   66 °C. Even at full fan speed, sustained full-bandwidth load leaves about 1 °C. See the [memory bandwidth notes](pro-v620/qwen38-flash-next/README.md#dimm-thermal-throttle).
+- `pro-v620/amdgpu-lockup-timeout.sh` sets amdgpu's compute job timeout to 10 s (default
+  2 s, after which the ring resets and Vulkan returns `ErrorDeviceLost`). GLM-5.3-Flash
+  prompts past about 65k tokens need it; it applies after a host reboot.
 - [gpu-thermal-watchdog/](pro-v620/gpu-thermal-watchdog/README.md) stops the mapped
   service at 102 °C junction / 101 °C memory and leaves it stopped. A trip warrants
   checking cooling before restarting. Keep its map aligned with the owning units.

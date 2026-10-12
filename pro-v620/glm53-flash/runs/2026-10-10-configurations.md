@@ -867,5 +867,14 @@ host.
     growing with context × micro-batch, so 4096 needs its own fit.
   - 5a applies the stage 2 rule at one slot. Its residency check runs through each context's
     deepest request, because the least free VRAM in stage 1's 256k cell came during prefill.
+- **Host change after 5a: amdgpu compute job timeout 10 s** (owner, 2026-10-11).
+  - 5a's requests deeper than 64k hit amdgpu's 2,000 ms job timeout (see 5a).
+  - `amdgpu-lockup-timeout.sh` sets `lockup_timeout=2000,10000,2000,2000` (GFX, compute, SDMA,
+    video), and the host was rebooted to apply it. Before the reboot, the `onboot` flags of
+    CT 120, 121 and 140 and VM 300 were turned off, and restored afterwards, so that no other
+    guest started.
+  - 5a's two `-ncmoe 46` cells rerun with
+    [`2026-10-10-configurations-ctx-fit-rerun.cells`](2026-10-10-configurations-ctx-fit-rerun.cells).
+    Stages 5b–7 run with the new timeout; stages 1–5a ran with the default.
 
 ## Conclusion

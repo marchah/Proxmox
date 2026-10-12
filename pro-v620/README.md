@@ -209,6 +209,15 @@ see [undervolt/README.md](undervolt/README.md) for installation and measured pow
 savings. After a driver rebind or reset, reapply the offset with
 `systemctl restart gpu-undervolt` and verify `pp_od_clk_voltage`.
 
+amdgpu treats any GPU job longer than `lockup_timeout` as a hang. It resets the ring, and
+llama-server fails the request with `ErrorDeviceLost`. The default is 2,000 ms, and
+GLM-5.3-Flash ran past it on prompts longer than about 65k tokens at micro-batch 4096
+([stage 5a](glm53-flash/runs/2026-10-10-configurations.md)). `amdgpu-lockup-timeout.sh`
+raises the compute timeout to 10 s (`2000,10000,2000,2000`, GFX, compute, SDMA, video)
+through `/etc/modprobe.d/amdgpu-lockup-timeout.conf`. It applies after a reboot; check
+`/sys/module/amdgpu/parameters/lockup_timeout`. The host log reports a timeout as `ring
+comp_<n> timeout`.
+
 ## Requirements
 
 - Proxmox host with `pct`, `pveam`, and an available Ubuntu 24.04 template.
