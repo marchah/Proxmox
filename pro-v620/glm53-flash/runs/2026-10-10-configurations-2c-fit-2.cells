@@ -1,0 +1,23 @@
+# Stage 6a of runs/2026-10-10-configurations.md (two-card fit and split), round 2, same setup and
+# settings as round 1 (2026-10-10-configurations-2c-fit.cells): REPS=1 DEPTHS=8000
+# PROBE_CLASSES=code PROBE_CHAT=true, a residency sampler on each card. Vulkan0 is GPU 1
+# (0000:03:00.0), Vulkan1 GPU 2 (0000:83:00.0).
+#
+# Round 1 (sweep-2c-fit-20261012T161210Z), free VRAM after load, GPU 1 / GPU 2:
+#   -ncmoe 37 at 39,7: 2,539 / 5,239, GPU 1 had 1,584-1,890 MiB outside VRAM from the d8000 request
+#   -ncmoe 38 at 40,6: 2,359 / 9,594, GPU 1 had 1,890 MiB outside VRAM
+#   -ncmoe 39 at 40,6: 6,536 / 9,594, nothing outside VRAM
+#   -ncmoe 40 at 41,5: 6,357 / 13,950, nothing outside VRAM
+# GPU 1 carries about 15.8 GiB besides its experts and the per-request buffers; GPU 2 about 4.2 GiB,
+# and its allocation grew by about 100 MiB during requests.
+#
+# 2c-n38-s39: -ncmoe 38 moved one block towards GPU 2, which had more free. Expected about 6,700
+#   free on GPU 1 (round 1's -ncmoe 37 at 39,7 less block 37's experts) and 5,239 on GPU 2 (the
+#   same blocks as -ncmoe 37 at 39,7).
+# 2c-n38-tensor: the plan's -sm tensor cell at the expected fit, with an even split.
+# 2c-n37-s38: added as a margin test (Deviations). -ncmoe 37 at 39,7 put memory outside VRAM on
+#   GPU 1; one block to GPU 2 leaves GPU 2 an expected 700-900 MiB free, under the margin. It tests
+#   whether GPU 2, whose allocation barely grows during requests, needs the 3,072 MiB margin.
+2c-n38-s39     MODE=2gpu NCMOE=38 TENSOR_SPLIT=39,7 KV=f16 CTX=65536 BATCH=4096 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32
+2c-n38-tensor  MODE=2gpu NCMOE=38 SPLIT_MODE=tensor KV=f16 CTX=65536 BATCH=4096 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32
+2c-n37-s38     MODE=2gpu NCMOE=37 TENSOR_SPLIT=38,8 KV=f16 CTX=65536 BATCH=4096 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32

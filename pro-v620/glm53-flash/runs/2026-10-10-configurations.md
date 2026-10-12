@@ -983,5 +983,9 @@ Prefill, t/s, and prompt time:
     reported as margin-only, so the owner can choose it. Stage 2's `f1-42` (2,329 MiB free) was
     one. As on Flash-Next, a clean probe is not the whole test: the usage test is where such a
     placement would show buffers outside VRAM.
+- **Stage 6a round 2 adds `2c-n37-s38`,** a margin test. In round 1, the memory that went
+  outside VRAM was on GPU 1, and GPU 2's allocation grew by only about 100 MiB during requests.
+  `-ncmoe 37` at split 38,8 leaves GPU 2 an expected 700–900 MiB free. It tests whether GPU 2
+  needs the margin; it cannot be the fit, which still meets the margin.
 
 ## Conclusion
