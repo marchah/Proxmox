@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–5 done) · Status: running
+Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–5 and 6a done) · Status: running
 
 ## Question
 
@@ -920,6 +920,64 @@ Prefill, t/s, and prompt time:
   - Prefill drew 213–220 W of the 250 W cap.
   - Hottest DIMM 53–56 °C; no sample reached 66 °C.
 
+### Stage 6a, two-card fit and split — 2026-10-12 12:12–12:41 ET
+
+`ct123-test-host.sh two-card` gave CT 123 both cards at 12:11 ET. Vulkan0 is GPU 1 (`03:00.0`)
+and Vulkan1 is GPU 2 (`83:00.0`).
+
+Two rounds:
+- Round 1: harness `2ca751c`, cells
+  [`2026-10-10-configurations-2c-fit.cells`](2026-10-10-configurations-2c-fit.cells), at the
+  sweep's split.
+- Round 2: harness `de875ff`, cells
+  [`2026-10-10-configurations-2c-fit-2.cells`](2026-10-10-configurations-2c-fit-2.cells), after
+  round 1.
+
+Each round was one pass, `REPS=1 DEPTHS=8000 PROBE_CLASSES=code PROBE_CHAT=true`: `dio`, batch
+and micro-batch 4096, 32 threads, f16 KV, context 65536, two slots. A residency sampler ran on
+each card. Raw data on the host: `/root/glm53-flash/sweep-2c-fit-20261012T161210Z/`,
+`sweep-2c-fit-2-20261012T163210Z/` and `residency-2c-fit-gpu{1,2}.jsonl`.
+
+The split is llama.cpp's `--tensor-split` value. The blocks each card holds follow from the
+measured VRAM: at 39,7, GPU 1 holds blocks 0–39 and GPU 2 blocks 40–44.
+
+| Cell | `-ncmoe` | Split | Expert layers, GPU 1 + GPU 2 | VRAM after load, MiB, GPU 1 / GPU 2 | Least free, MiB, GPU 1 / GPU 2 | VRAM-requested memory outside VRAM, max | Fit |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `2c-n37` | 37 | 39,7 | 3 + 5 | 28,165 / 25,465 | 2,537 / 5,124 | GPU 1: 1,890 MiB, 137 of 154 samples | no: under 3,072 free, memory outside VRAM |
+| `2c-n38` | 38 | 40,6 | 3 + 4 | 28,345 / 21,110 | 2,358 / 9,480 | GPU 1: 1,890 MiB, 141 of 150 samples | no: under 3,072 free, memory outside VRAM |
+| `2c-n39` | 39 | 40,6 | 2 + 4 | 24,168 / 21,110 | 6,534 / 9,592 | 0 | yes |
+| `2c-n40` | 40 | 41,5 | 2 + 3 | 24,347 / 16,754 | 6,356 / 13,947 | 0 | yes |
+| `2c-n38-s39` | 38 | 39,7 | 2 + 5 | 23,988 / 25,465 | 6,713 / 5,235 | 0 | **yes: the fit** |
+| `2c-n38-tensor` | 38 | `-sm tensor`, even | — | did not load | — | — | no |
+| `2c-n37-s38` | 37 | 38,8 | 2 + 6 | 23,717 / 29,513 | 6,987 / 1,076 | GPU 2: 1,023 MiB, 120 of 140 samples | no: margin test (Deviations) |
+
+- **The fit is `-ncmoe 38` at split 39,7**, with seven expert layers on the cards (blocks 38–44)
+  against one on one card. The plan estimated five more; the measurement is six.
+  - The sweep's split, 40,6, left GPU 1 short, and one block moved to GPU 2.
+  - `-ncmoe 37` has no layer split that fits: at 39,7 GPU 1 runs short, and at 38,8 GPU 2 does.
+- **The cards carry unequal loads besides their experts.**
+  - GPU 1 holds 15,365–15,995 MiB besides its experts; GPU 2 holds 3,920–4,279 MiB.
+  - GPU 1 holds every block whose experts are in RAM, and it does the prefill: median power
+    171–181 W against 6–7 W on GPU 2. In decode, GPU 1 drew 52–53 W and GPU 2 25–29 W.
+- **Every placement under the margin put memory outside VRAM:**
+  - **GPU 1** at 2,358–2,537 MiB free: 1,584–1,890 MiB, from the d8000 request on. d8000
+    prefill fell to 140.7–144.2 t/s, against 181.5–185.5 t/s in the cells without.
+  - **GPU 2** at 1,076 MiB least free: 1,023 MiB, from 12 seconds into the d8000 request.
+    Prefill was 180.7 t/s.
+  - Nothing went outside VRAM on either card with 5,235 MiB or more free.
+- **`-sm tensor` does not load** on b11505: `LLAMA_SPLIT_MODE_TENSOR not implemented for
+  architecture 'glm5-next'`. It does not join 6b.
+- **For orientation only** (one pass, so not compared): at the fit, d8000 prefill was 185.5 t/s,
+  d8000 decode 6.51 t/s and two streams 9.39 t/s aggregate. Stage 4's one-card configuration
+  gave 174.7, 6.41 and 9.07.
+- **Output:** the d8000 text was the same in every two-card cell that loaded. It matches the
+  one-card text for its first ~500 characters, then differs, and it reads coherently. Two
+  streams completed in every cell.
+- **Contract:** clean at every effort value.
+- **The sweep's flag:** "possible spill" fired on every cell, because GPU 1's GTT grew 260 MiB
+  during each probe. Requested-minus-resident VRAM read zero in the cells marked 0.
+- **Heat:** hottest DIMM 52–54 °C. Junction peaked at 72–77 °C on GPU 1 and 54–61 °C on GPU 2.
+
 ## Deviations
 
 - **Stage order, changed after stage 1** (owner, 2026-10-10): MTP runs last, as stage 7,
@@ -987,5 +1045,9 @@ Prefill, t/s, and prompt time:
   outside VRAM was on GPU 1, and GPU 2's allocation grew by only about 100 MiB during requests.
   `-ncmoe 37` at split 38,8 leaves GPU 2 an expected 700–900 MiB free. It tests whether GPU 2
   needs the margin; it cannot be the fit, which still meets the margin.
+- **Stage 6a tested the margin on two cards.** Every placement under it put memory outside VRAM:
+  GPU 1 at 2.4–2.5 GiB free, and GPU 2 at 1.1 GiB. One card at micro-batch 1024 kept everything
+  in VRAM with 2.3 GiB free (stage 2's `f1-42`). The headroom needed depends on the
+  configuration, so the margin stays in the rule as before.
 
 ## Conclusion
