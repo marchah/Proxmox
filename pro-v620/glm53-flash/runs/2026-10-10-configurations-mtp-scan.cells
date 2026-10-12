@@ -1,0 +1,20 @@
+# Stage 7b of runs/2026-10-10-configurations.md (MTP draft-length scan), CT 123 holding
+# 0000:83:00.0 only, one pass: REPS=1 DEPTHS=0,8000 PROBE_CHAT=true, every prompt class, two
+# streams, a residency sampler on the card.
+#
+# 7a's fit: -ncmoe 46 (every expert in RAM) at n-max 8, 8,573 MiB free after load and 8,229 at
+# the least. Block 45's experts on the card have no fit at n-max 8, so there is no placement
+# comparison (Deviations). Configuration otherwise as 7a: dio, batch and micro-batch 4096,
+# 32 threads, f16 KV, context 65536, two slots.
+#
+# n-max 1 to 8, run out of order so that drift over the run does not follow length. The scan
+# has gone far enough once decode at both stream counts is at least 10% below its best
+# length's; 7a's n-max 8 decoded about half as fast as without speculation.
+m-n3  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 3'
+m-n7  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 7'
+m-n1  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 1'
+m-n5  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 5'
+m-n2  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2'
+m-n8  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 8'
+m-n6  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 6'
+m-n4  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 4'

@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–6 done) · Status: running
+Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–6 and 7a done) · Status: running
 
 ## Question
 
@@ -1077,6 +1077,68 @@ card in every pass.
     GPU 2's peaked at 59–64 °C.
   - In `1c-best`, GPU 2's junction peaked at 79–80 °C.
 
+### Stage 7a, MTP fit — 2026-10-12 15:34–16:01 ET
+
+The owner chose one card and context 65536 after stage 6. `ct123-test-host.sh one-card` took
+GPU 1 back from CT 123 at 15:32 ET. CT 120 stayed stopped, and `one-card` put its autostart back.
+
+Two rounds:
+- Round 1: harness `cd24986`, cells
+  [`2026-10-10-configurations-mtp-fit.cells`](2026-10-10-configurations-mtp-fit.cells).
+- Round 2: harness `07dc6ee`, cells
+  [`2026-10-10-configurations-mtp-fit-2.cells`](2026-10-10-configurations-mtp-fit-2.cells).
+
+Each round ran one pass, `REPS=1 DEPTHS=8000 PROBE_CLASSES=code PROBE_CHAT=true`, with stages
+3–5's configuration: `dio`, batch and micro-batch 4096, 32 threads, f16 KV, two slots. MTP ran
+at n-max 8 (`--spec-type draft-mtp --spec-draft-n-max 8`). Raw data on the host:
+`/root/glm53-flash/sweep-mtp-fit-20261012T193444Z/`, `sweep-mtp-fit-2-20261012T195513Z/` and
+`residency-mtp-fit.jsonl`.
+
+`--n-cpu-moe N` puts the experts of blocks 0 to N−1 in RAM. `m8-n44-r45` keeps block 45's
+experts in RAM with `-ot blk\.45\.ffn_(up|gate|down)_exps=CPU`.
+
+| Cell | `-ncmoe` | Expert layers on the card | VRAM after load, MiB | Free | VRAM-requested memory outside VRAM, max | d8000 prefill / decode, t/s | Fit |
+| --- | --- | --- | ---: | ---: | --- | --- | --- |
+| `m8-n44` | 44 | blocks 44 and 45 | 29,769 | 935 | 3,863 MiB, 254 of 261 samples | 124.2 / 3.40 | no: under 3,072 free, memory outside VRAM |
+| `m8-n45` | 45 | block 45 | 26,307 | 4,397 | 1,890 MiB, 203 of 225 samples | 156.9 / 3.62 | no: memory outside VRAM |
+| `m8-n44-r45` | 44, block 45 in RAM | block 44 | 26,613 | 4,091 | 1,890 MiB, 215 of 237 samples | 158.0 / 3.19 | no: memory outside VRAM |
+| `m8-n46` | 46 | none | 22,131 | 8,573 | 0 | 168.9 / 3.20 | **yes** |
+
+- **Block 45's experts on the card have no fit at n-max 8.**
+  - At `-ncmoe 44`, the server requested 30,774 MiB at load, and 1,021 MiB of it stayed outside
+    VRAM from the start.
+  - At `-ncmoe 45`, with only block 45's experts on the card, 4,397 MiB was free after load.
+    From the d8000 request on, 1,584–1,890 MiB was still outside VRAM.
+  - No placement with block 45's experts on the card holds fewer experts than `-ncmoe 45`.
+- **With block 45's experts in RAM, the fit is `-ncmoe 46`:** every expert in RAM.
+  - `-ncmoe 44` with block 45 overridden to RAM left 4,091 MiB free and put the same
+    1,584–1,890 MiB outside VRAM.
+  - `-ncmoe 46` left 8,573 MiB free after load and 8,229 MiB at the least, with nothing outside
+    VRAM.
+- **What MTP takes in VRAM at n-max 8:** 4,859 MiB for the head without its experts and its
+  draft context. That is `m8-n46` against stage 3's `dio-experts-ram` (17,272 MiB, the same
+  placement without MTP).
+  - Stage 1's `base-mtp3` measured 1,206 MiB at micro-batch 1024, one slot and n-max 3.
+  - Block 45's experts add 4,176 MiB and block 44's 4,482. The cells' loads are `m8-n46` plus
+    those figures, and the server's request at `-ncmoe 44` was within 15 MiB of their sum.
+- **Free VRAM at micro-batch 4096 on one card:** every cell with 4.1–4.8 GiB free after load has
+  put memory outside VRAM: here, and stage 2's `f2-43`. Cells with 7.4 GiB or more stayed clean
+  through the ~5.8k-token request. In both cells here the margin was met, and the residency
+  check did the rejecting.
+- **Decode at n-max 8 is about half of decode without speculation.**
+  - d8000 code decode was 3.19–3.62 t/s in all four cells, 3.20 in `m8-n46` with nothing
+    outside VRAM.
+  - Without MTP, d8000 code decode was 6.41 t/s for stage 4's `dio-4096-t32` and 6.01 for stage
+    3's `dio-experts-ram` (16 threads).
+  - Draft acceptance was 24.6–28.8% at d8000 and 27.5–29.6% at two streams.
+  - Two streams gave 5.64–6.07 t/s aggregate, against stage 4's 9.07.
+  - One pass, so these figures are for orientation; 7b scans the draft length.
+- **Output:** each cell's d8000 code text differs from the others' and from stage 4's text
+  without MTP; the differences start within the first ~200 characters. All read coherently,
+  with 8-gram uniqueness 1.0. Two streams completed in every cell.
+- **Contract:** clean at every effort value, with MTP on.
+- **Heat:** junction peaked at 72–74 °C in prefill; hottest DIMM 55–56 °C.
+
 ## Deviations
 
 - **Stage order, changed after stage 1** (owner, 2026-10-10): MTP runs last, as stage 7,
@@ -1148,5 +1210,8 @@ card in every pass.
   GPU 1 at 2.4–2.5 GiB free, and GPU 2 at 1.1 GiB. One card at micro-batch 1024 kept everything
   in VRAM with 2.3 GiB free (stage 2's `f1-42`). The headroom needed depends on the
   configuration, so the margin stays in the rule as before.
+- **Stage 7b has no block-placement comparison.** The plan compared block 45's experts on the
+  card and in RAM at n-max 3, each at its n-max 8 fit. Block 45's experts on the card have no
+  fit at n-max 8 (7a), so the scan runs at the one fit, `-ncmoe 46`.
 
 ## Conclusion
