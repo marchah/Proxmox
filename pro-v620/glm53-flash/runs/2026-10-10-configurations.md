@@ -970,5 +970,18 @@ Prefill, t/s, and prompt time:
 - **Stage 5b adds `ctx64k-n46`**, 64k at 128k's placement. 64k and 128k fit at different
   placements (`-ncmoe 44` and 46), so without it a difference between the two contexts could
   come from the expert layer.
+- **The 3,072 MiB margin is provisional** (owner, 2026-10-12, during stage 6a). It stays in the
+  fit rule, and each stage's fit still meets it, but it is not a hard limit until a test shows
+  GLM putting memory outside VRAM because less was free.
+  - The margin comes from Flash-Next, not from GLM ([prefill-slowdown
+    record](../../qwen38-flash-next/runs/2026-10-10-prefill-slowdown.md)). There, `-ncmoe 37`
+    kept everything in VRAM with 3,274 MiB free. `-ncmoe 36`, with about 1,800 MiB free, was
+    clean through the sweep's probe but put a 1,024 MiB buffer in GTT during the usage batch.
+  - On GLM, the residency check has done the rejecting: stage 2's `f2-43` put 1,890 MiB outside
+    VRAM with 4,777 MiB free.
+  - A placement that misses only the margin, with nothing outside VRAM through its probe, is
+    reported as margin-only, so the owner can choose it. Stage 2's `f1-42` (2,329 MiB free) was
+    one. As on Flash-Next, a clean probe is not the whole test: the usage test is where such a
+    placement would show buffers outside VRAM.
 
 ## Conclusion
