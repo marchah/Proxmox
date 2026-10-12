@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–4 done) · Status: running
+Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–4 and 5a done) · Status: running
 
 ## Question
 
@@ -787,6 +787,48 @@ Against the best GPU configuration (`dio-4096-t32`):
 - **Contract:** clean at every effort value.
 - **DIMMs:** hottest 57–58 °C in the GPU cells and 60–63 °C in CPU only, highest at 32 threads;
   no sample at 66 °C.
+
+### Stage 5a, context fit — 2026-10-11 19:13–20:16 ET
+
+Harness `8bb6a89`, cells
+[`2026-10-10-configurations-ctx-fit.cells`](2026-10-10-configurations-ctx-fit.cells): one pass,
+`REPS=1 PROBE_CLASSES=code PROBE_CHAT=true`, `dio`, micro-batch 4096, 32 threads, one slot. Raw
+data: `/root/glm53-flash/sweep-ctx-fit-20261011T231324Z/` and `residency-ctx-fit.jsonl` on the
+host.
+
+| Cell | Context | `-ncmoe` | VRAM after load, MiB | Free | VRAM-requested memory outside VRAM, max | d8000 prefill / decode, t/s | Deepest request | Fit |
+| --- | ---: | --- | ---: | ---: | --- | --- | --- | --- |
+| `ctx64k-n44` | 65536 | 44 | 22,434 | 8,270 | 0 | 174.8 / 6.41 | 59,296 tokens: prefill 146.3, decode 5.61 | **yes** |
+| `ctx128k-n44` | 131072 | 44 | 24,755 | 5,949 | 1,890 MiB, 79 of 612 samples | 174.3 / 6.43 | GPU job timeout after 9:01 | no: memory outside VRAM |
+| `ctx128k-n46` | 131072 | 46 | 20,273 | 10,431 | 0 until the timeout | 171.8 / 6.29 | GPU job timeout after 9:00 | not completed |
+| `ctx256k-n44` | 262144 | 44 | 27,722 | 2,982 | 1,890 MiB, 513 of 658 samples | 133.0 / 6.38 | GPU job timeout after 9:35 | no: under 3,072 free, memory outside VRAM |
+| `ctx256k-n46` | 262144 | 46 | 23,240 | 7,464 | 0 until the timeout | 172.6 / 6.29 | GPU job timeout after 9:00 | not completed |
+
+- **64k fits at `-ncmoe 44`** through a 59,296-token request. Prefill there averaged 146.3 t/s,
+  16% below the ~5.8k request's, and the card reached 87 °C junction, against 76–78 °C in the
+  other cells' ~5.8k prefills.
+- **`-ncmoe 44` fails at 128k and 256k.**
+  - At 128k, 1,890 MiB of VRAM-requested memory went outside VRAM from 6.5 minutes into the deep
+    request until its end.
+  - At 256k, the load left 2,982 MiB free, and memory was outside VRAM from the ~5.8k request
+    on. That request prefilled at 133.0 t/s, against 172.6 at `-ncmoe 46`.
+- **Every request deeper than 64k failed** with HTTP 500, at both placements of both contexts,
+  after 9:00–9:35 of prefill.
+  - llama-server logged `decode() failed: vk::Queue::submit: ErrorDeviceLost`.
+  - For each failure, the host kernel logged `ring comp_1.x timeout` on `0000:83:00.0`, reset that
+    compute ring, and reported "device wedged, but recovered through reset". There were four
+    resets. Each later cell loaded and answered normally, and the card read idle afterwards.
+- **The cause is amdgpu's job timeout:** `amdgpu.lockup_timeout` is at its default of 2,000 ms
+  (`modinfo amdgpu`; the kernel command line does not set it), and a GPU job longer than that is
+  treated as a hang.
+  - llama.cpp #26447 (open) reports the same failure on other AMD GPUs past about 50k tokens. The
+    Vulkan backend's maintainer says there that a single large operation can exceed the timeout
+    and cannot be split further. Raising the timeout was the workaround reported there.
+  - From the 64k cell's prefill rate, nine minutes is past about 65k tokens. Which operation ran
+    long was not identified, and how the limit depends on micro-batch was not measured.
+- **What 5a leaves open:** at 128k and 256k, `-ncmoe 46` met the load rule with nothing outside
+  VRAM up to the timeout. Neither context's deepest request completed, so both fits stand
+  unconfirmed. 5b's cells wait for the owner's choice of how to get past the timeout.
 
 ## Deviations
 
