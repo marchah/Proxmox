@@ -1,0 +1,20 @@
+# Stage 6a of runs/2026-10-10-configurations.md (two-card fit and split), round 1, CT 123 holding
+# 0000:03:00.0 and 0000:83:00.0 (ct123-test-host.sh two-card), one pass: REPS=1 DEPTHS=8000
+# PROBE_CLASSES=code PROBE_CHAT=true, with vram-residency-sampler.py running on each card.
+# Stages 3-4's configuration (dio, micro-batch 4096, 32 threads, f16 KV, --reasoning-budget 0),
+# context 65536 and two slots, as in stages 3-4. The compute job timeout is 10 s.
+#
+# The stage 2 rule on each card: at least 3,072 MiB free right after load, and requested-minus-
+# resident VRAM at zero through the d8000 request and the two-stream round. MODE=2gpu defaults to
+# batch 1024/256, so BATCH and UBATCH are set. dio's pinned experts are charged to Vulkan0 (GPU 1)
+# as GTT, so they do not count against either card's VRAM.
+#
+# This round uses the sweep's layer split for N_BLOCKS 46, ncmoe + (46 - ncmoe)/2 - 2 blocks on
+# card 1: 37 -> 39,7; 38 and 39 -> 40,6; 40 -> 41,5. Blocks N..44 hold their experts on a card:
+# 4,176 MiB each, 4,482 for block 44. On one card, 64k at -ncmoe 44 used 21,750 MiB, 17,268 of it
+# outside block 44's experts, and GPU 1 adds 30,704 MiB, so 37-40 brackets the fit. Later rounds
+# move the split one block at a time towards the card with more VRAM free, each in its own file.
+2c-n37  MODE=2gpu NCMOE=37 KV=f16 CTX=65536 BATCH=4096 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32
+2c-n38  MODE=2gpu NCMOE=38 KV=f16 CTX=65536 BATCH=4096 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32
+2c-n39  MODE=2gpu NCMOE=39 KV=f16 CTX=65536 BATCH=4096 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32
+2c-n40  MODE=2gpu NCMOE=40 KV=f16 CTX=65536 BATCH=4096 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32
