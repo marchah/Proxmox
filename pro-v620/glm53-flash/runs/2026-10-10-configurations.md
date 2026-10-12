@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–6 and 7a done) · Status: running
+Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–6, 7a and 7b done) · Status: running
 
 ## Question
 
@@ -1138,6 +1138,101 @@ experts in RAM with `-ot blk\.45\.ffn_(up|gate|down)_exps=CPU`.
   with 8-gram uniqueness 1.0. Two streams completed in every cell.
 - **Contract:** clean at every effort value, with MTP on.
 - **Heat:** junction peaked at 72–74 °C in prefill; hottest DIMM 55–56 °C.
+
+### Stage 7b, MTP draft-length scan — 2026-10-12 16:04–17:26 ET
+
+Harness `e34917a`, cells
+[`2026-10-10-configurations-mtp-scan.cells`](2026-10-10-configurations-mtp-scan.cells): one
+pass, `REPS=1 DEPTHS=0,8000 PROBE_CHAT=true`, every prompt class, two streams. 7a's fit,
+`-ncmoe 46` (every expert in RAM), with `dio`, batch and micro-batch 4096, 32 threads, f16 KV,
+context 65536, two slots and compute job timeout 10 s. The lengths ran in the order 3, 7, 1,
+5, 2, 8, 6, 4. Raw data on the host: `/root/glm53-flash/sweep-mtp-scan-20261012T200414Z/` and
+`residency-mtp-scan.jsonl`.
+
+Decode is the median of the six prompt cells, and prefill the d8000 requests' median. Stage
+4's `dio-4096-t32` (`-ncmoe 44`, no speculation, same card, three passes) is shown for
+orientation; one-pass figures are not compared by the spread rule.
+
+| n-max | VRAM after load, MiB | Least free, MiB | Decode, t/s | d8000 prefill, t/s | Two streams, aggregate t/s | Acceptance at two streams |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 19,911 | 10,254 | 7.82 | 169.4 | 11.71 | 89.9% |
+| **2** | 20,202 | 9,957 | **8.47** | 169.9 | **12.34** | 74.1% |
+| 3 | 20,493 | 9,663 | 6.94 | 169.9 | 12.01 | 65.0% |
+| 4 | 21,135 | 9,386 | 6.60 | 169.8 | 7.42 | 54.8% |
+| 5 | 21,434 | 9,096 | 6.20 | 170.0 | 7.32 | 47.4% |
+| 6 | 21,733 | 8,803 | 5.52 | 169.7 | 7.03 | 39.7% |
+| 7 | 21,840 | 8,512 | 4.97 | 169.8 | 7.14 | 36.4% |
+| 8 | 22,131 | 8,220 | 3.14 | 169.1 | 6.12 | 29.7% |
+| stage 4 `dio-4096-t32` | 21,750 | — | 6.635 | 174.7 | 9.07 | — |
+
+Decode per prompt cell, t/s, with draft acceptance:
+
+| n-max | d0 code | d0 list | d0 prose | d8000 code | d8000 list | d8000 prose |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 8.65 (90%) | 7.47 (65%) | 7.75 (71%) | 7.97 (86%) | 6.81 (57%) | 7.89 (82%) |
+| 2 | 9.30 (73%) | 7.03 (47%) | 8.50 (63%) | 8.56 (73%) | 6.31 (40%) | 8.44 (70%) |
+| 3 | 8.98 (64%) | 6.02 (30%) | 7.85 (50%) | 7.29 (57%) | 5.38 (31%) | 6.59 (46%) |
+| 4 | 8.49 (54%) | 5.31 (24%) | 7.18 (41%) | 7.03 (47%) | 4.72 (24%) | 6.18 (37%) |
+| 5 | 7.75 (44%) | 4.82 (20%) | 6.74 (35%) | 6.67 (41%) | 4.19 (18%) | 5.74 (32%) |
+| 6 | 6.82 (37%) | 4.32 (16%) | 5.91 (29%) | 6.09 (35%) | 3.90 (16%) | 5.12 (27%) |
+| 7 | 6.02 (29%) | 4.11 (15%) | 5.34 (24%) | 5.06 (26%) | 3.91 (17%) | 4.87 (24%) |
+| 8 | 3.44 (27%) | 2.34 (14%) | 3.19 (23%) | 3.13 (25%) | 2.00 (11%) | 3.15 (25%) |
+| stage 4 `dio-4096-t32` | 6.92 | 6.90 | 6.90 | 6.41 | 6.37 | 6.37 |
+
+- **Best length: n-max 2, at one stream and at two.**
+  - n-max 4 to 8 are more than 10% below it at both stream counts (n-max 4: 22% and 40%), so
+    the scan has gone far enough.
+  - n-max 1 is 7.7% below at one stream and 5.1% at two. n-max 3 is 18.1% and 2.7% below.
+  - 7c times n-max 1, 2 and 3.
+- **Against stage 4's best configuration without speculation**, n-max 2 decoded 28% faster at
+  one stream and 36% faster at two. Its d8000 prefill was 2.7% lower.
+  - It led in five of the six prompt cells. In d8000 list it was 6.31 t/s at 40% acceptance,
+    against stage 4's 6.37.
+  - The placements differ: here every expert is in RAM, and in stage 4 block 44's are on the
+    card. 7c's control runs `-ncmoe 46` without speculation.
+- **Acceptance falls with length in every class.** List is accepted least at every length: at
+  n-max 2, 40–47%, against 63–73% for code and prose.
+- **Two drops, where a step checks more than 8 tokens** (n-max plus one per stream).
+  - Two streams: 11.71–12.34 t/s aggregate at n-max 1–3, then 7.03–7.42 at 4–7 and 6.12 at 8.
+    At n-max 4, two streams check 10 tokens per step.
+  - One stream: decode falls gradually from n-max 2 to 7, then from 4.97 to 3.14 t/s at 8,
+    while acceptance falls by at most 6 points in any prompt cell. At n-max 8, one stream
+    checks 9 tokens.
+  - In those phases the container used 20–23 CPU cores, against 28–31 in the others, and
+    GPU busy rose to 50–66%, from 39–45%.
+  - Flash-Next's head dropped at the same two points ([MTP record](../../qwen38-flash-next/runs/2026-10-09-mtp.md)).
+- **VRAM:** load grew by about 317 MiB per draft token, from 19,911 MiB at n-max 1 to 22,131 at
+  8. n-max 8 reproduced 7a's `m8-n46` load exactly.
+  - Nothing went outside VRAM at any length. The least free was 8,220–10,254 MiB.
+  - Excluded as read races: one or two samples per cell that read the card total 1.9–4.8 GiB
+    above the server's request, or caught the previous server unloading.
+  - At n-max 1 and 3, VRAM after the probe read 1.4–1.5 GiB below VRAM after load. The server's
+    request moves with requests (18.4–20.4 GiB at n-max 1), and the card total follows it. The
+    after-probe reading fell between requests.
+- **Block 45's experts on the card at a short draft were not tested.** The fit was set at n-max
+  8. At n-max 1–3, adding block 45's 4,176 MiB to these loads would leave an expected 6.0–6.6
+  GiB free after load. That lies between the 4.1–4.8 GiB at which cells have put memory outside
+  VRAM and the 7.4 GiB at which cells have stayed clean.
+- **Prefill:** 169.1–170.0 t/s at d8000 at every length.
+- **Output:**
+  - n-max 8's d8000 code text is identical to 7a's `m8-n46` text, from a separate load of the
+    same configuration.
+  - The text changes with draft length, and no length's text matches stage 4's without MTP in
+    any prompt cell. Some lengths share a text:
+    - n-max 1 and 2 at d0 code;
+    - n-max 3 to 6 at d0 code and d0 list;
+    - n-max 3, 4 and 6 at d0 prose;
+    - n-max 3 and 4 at d8000 code and list;
+    - n-max 5 and 6 at d8000 code and prose.
+  - Every text reads coherently. 7c compares each length's text with its control's.
+  - Only d0 list stopped before the 256-token limit: at n-max 1–7, after 20 items (202–248
+    tokens).
+  - At n-max 8, the d0 list reply listed 21 items, then wrote "Wait, that's 21. Let me fix that.
+    Here are exactly 20:" and started the list again. That reply's 8-gram uniqueness is 0.976.
+    Every other reply's is 1.0.
+  - Two streams completed in every cell; all replies reached the limit.
+- **Contract:** clean at every effort value, at n-max 3, the first cell.
+- **Heat:** junction peaked at 77–81 °C in prefill; hottest DIMM 57–58 °C.
 
 ## Deviations
 
