@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–5a done) · Status: running
+Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–5 done) · Status: running
 
 ## Question
 
@@ -851,6 +851,74 @@ on the host.
   - `-ncmoe 46` already holds every expert in RAM, so no further step is left. 5b leaves 256k
     out, as the plan says.
 - Junction peaked at 87 °C and memory at 72 °C in both cells; hottest DIMM 55–58 °C.
+
+### Stage 5b, context timed — 2026-10-12 08:06–10:43 ET
+
+Harness `b58bfc0`, cells
+[`2026-10-10-configurations-context.cells`](2026-10-10-configurations-context.cells): three
+passes, `PROBE_CLASSES=code PROBE_CHAT=true`, `dio`, micro-batch 4096, 32 threads, one slot,
+compute job timeout 10 s. 256k is left out (5a). Raw data:
+`/root/glm53-flash/sweep-context-20261012T120620Z/` and `residency-context.jsonl` on the host.
+Figures are the median of the three passes [range]; prefill is the average over the whole
+prompt. `SUMMARY.md`'s header lists the sweep's default depths (`0,8000,32000`); each cell ran
+the depths below.
+
+| Cell | Context | `-ncmoe` | Expert layers on the card | VRAM after load, MiB | VRAM peak, MiB | Least free, MiB | VRAM-requested memory outside VRAM |
+| --- | ---: | --- | --- | ---: | ---: | ---: | --- |
+| `ctx64k-n44` | 65536 | 44 | 1 (block 44, 4,482 MiB) | 22,434 | 22,438 | 8,266 | 0 |
+| `ctx64k-n46` | 65536 | 46 | 0 | 17,952 | 17,958 | 12,746 | 0 |
+| `ctx128k-n46` | 131072 | 46 | 0 | 20,273 | 20,604 | 10,100 | 0 |
+
+Decode, t/s, by prompt length:
+
+| Cell | d0 (42 tokens) | d8000 (5,804) | d82000 (59,296) | d165000 (119,281) |
+| --- | --- | --- | --- | --- |
+| `ctx64k-n44` | 6.77 [6.71–6.86] | 6.27 [6.25–6.35] | **5.62** [5.49–5.65] | — |
+| `ctx64k-n46` | 6.83 [6.74–6.84] | 6.32 [6.21–6.37] | 5.44 [5.40–5.47] | — |
+| `ctx128k-n46` | 6.82 [6.76–6.84] | 6.22 [6.18–6.25] | 5.48 [5.32–5.51] | 4.84 [4.72–4.84] |
+
+Prefill, t/s, and prompt time:
+
+| Cell | d8000 (5,804 tokens) | d82000 (59,296) | d165000 (119,281) |
+| --- | --- | --- | --- |
+| `ctx64k-n44` | **174.5** [174.5–174.8], 33 s | **146.4** [146.4–146.6], 6.8 min | — |
+| `ctx64k-n46` | 173.1 [171.4–173.1], 34 s | 145.4 [145.4–146.0], 6.8 min | — |
+| `ctx128k-n46` | 172.7 [172.7–173.2], 34 s | 145.2 [145.2–145.3], 6.8 min | 123.1 [123.0–123.2], 16.2 min |
+
+- **What 128k costs:**
+  - **VRAM:** at the same placement, 128k loads 2,321 MiB above 64k (20,273 against 17,952). During
+    the 119,281-token request it grew another 331 MiB; 64k's stayed at its load figure.
+  - **Expert layers:** one. 64k fits with block 44's experts on the card; 128k fits only with every
+    expert in RAM. 5a's `ctx128k-n44` put 1,890 MiB outside VRAM during its deep request.
+- **Context size alone:** 64k and 128k at `-ncmoe 46` are within each other's spread in decode
+  and prefill at every shared depth.
+- **Block 44 on the card** (64k at `-ncmoe 44` against 46):
+  - Prefill is faster at 59,296 tokens: 146.4 against 145.4 t/s (+0.7%), beyond both spreads
+    (0.22 and 0.57). At 5,804 tokens it is within `ctx64k-n46`'s spread (1.69, one pass at 171.4).
+  - Decode is faster at 59,296 tokens: 5.62 against 5.44 t/s (+3.3%), beyond both spreads
+    (0.16 and 0.07). At 42 and 5,804 tokens it is within the spread.
+  - Against `ctx128k-n46`, 64k at `-ncmoe 44` prefills faster at both depths (+1.0% and +0.8%,
+    beyond both spreads). Its decode is within the spread at every depth: the 59,296-token
+    difference is 0.15 t/s, against `ctx128k-n46`'s 0.20.
+- **Depth at 128k:**
+  - Decode falls 29%, from 6.82 t/s on a 42-token prompt to 4.84 at 119,281 tokens. From 5,804
+    tokens to 119,281 it falls 22%.
+  - Average prefill falls 29% from 5,804 tokens to 119,281.
+  - The 119,281-token prompt took 16.1–16.2 minutes before the first token.
+- **Nothing left VRAM:** 0 MiB outside VRAM and nothing evicted over 9,459 samples.
+  - The card's total matched the server's own allocation within 16 MiB. The exceptions were
+    single samples: one to five per deep prompt, plus some during loads and unloads.
+  - In those samples, either the card's total read up to 8.4 GiB high or the server's read low,
+    while the server freed and reallocated its buffers. The next sample matched again, so the
+    peaks above leave them out.
+- **Output:** each depth gave the same text in every cell and every pass, and the same as
+  stage 5a's at that depth. None was flagged degenerate; 8-gram uniqueness was 1.0 throughout.
+- **Contract:** clean at every effort value.
+- **Heat:**
+  - Junction peaked at 85–89 °C during the deep prompts, and memory at 70–72 °C. The 89 °C was
+    `ctx64k-n44`, pass 3.
+  - Prefill drew 213–220 W of the 250 W cap.
+  - Hottest DIMM 53–56 °C; no sample reached 66 °C.
 
 ## Deviations
 
