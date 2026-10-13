@@ -59,6 +59,22 @@ def post(url, body, timeout=3600):
         return json.loads(r.read())
 
 
+def context_prefixes(base, text, depths):
+    """{depth: the first `depth` tokens of text}, cut with the server's own tokenizer.
+
+    One /tokenize call covers the deepest depth; each depth is /detokenize of a prefix of
+    those tokens, so a shallower context is a prefix of a deeper one.
+    """
+    want = [d for d in depths if d]
+    if not want:
+        return {}
+    # ~6 chars per token is more than any tokenizer here packs, so the slice holds enough.
+    tokens = post(base + "/tokenize", {"content": text[:max(want) * 6]})["tokens"]
+    if len(tokens) < max(want):
+        raise SystemExit("the context file holds %d tokens; --depths needs %d" % (len(tokens), max(want)))
+    return {d: post(base + "/detokenize", {"tokens": tokens[:d]})["content"] for d in want}
+
+
 def contract_check(base, efforts):
     """The template traps, asserted rather than assumed."""
     out = {}
@@ -215,8 +231,9 @@ def main():
     ap.add_argument("--depths", default="0",
                     help="comma-separated approximate prompt-token depths, e.g. 0,8000,32000")
     ap.add_argument("--context-file", default="",
-                    help="text for the depth context instead of the built-in filler; each "
-                         "depth takes a prefix, so a shallower context is a prefix of a deeper one")
+                    help="text for the depth context instead of the built-in filler: each "
+                         "depth is that many tokens of it, cut with the server's tokenizer, so a "
+                         "shallower context is a prefix of a deeper one")
     ap.add_argument("--cache", action="store_true",
                     help="cache_prompt on; depths run deepest first so shallower prompts reuse "
                          "the deeper context, and only rows with an uncached prompt count as prefill")
@@ -263,6 +280,7 @@ def main():
         # Deepest first: its context is prefilled cold, and every shallower context is a
         # prefix of it, so later requests reuse the cache instead of prefilling again.
         depths = sorted(depths, reverse=True)
+    prefixes = context_prefixes(a.base, context, depths) if context else {}
     want = [c.strip() for c in a.classes.split(",") if c.strip()] or list(PROMPTS)
     unknown = [c for c in want if c not in PROMPTS]
     if unknown:
@@ -272,9 +290,9 @@ def main():
         if not depth:
             pad = ""
         elif context:
-            # ~4 chars/token is close enough; the measured prompt_n is what gets reported.
-            pad = "<documents>\n%s\n</documents>\n\n" % context[:depth * 4]
+            pad = "<documents>\n%s\n</documents>\n\n" % prefixes[depth]
         else:
+            # ~4 chars/token is close enough; the measured prompt_n is what gets reported.
             pad = FILLER * max(0, (depth * 4) // len(FILLER))
         for cls, p in ((c, PROMPTS[c]) for c in want):
             for n_predict in n_predicts:

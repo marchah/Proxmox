@@ -33,6 +33,15 @@ def row(rate=14):
             "accept_pct": None}
 
 
+def char_tokenizer(url, body, *args):
+    """/tokenize and /detokenize at one token per character."""
+    if url.endswith("/tokenize"):
+        return {"tokens": [ord(c) for c in body["content"]]}
+    if url.endswith("/detokenize"):
+        return {"content": "".join(chr(t) for t in body["tokens"])}
+    raise AssertionError("unexpected request to " + url)
+
+
 def run_probe(*args):
     out = io.StringIO()
     with patch.object(sys, "argv", ["probe", "http://unused", *args]), \
@@ -90,7 +99,8 @@ class ProbeTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".txt") as ctx:
             ctx.write("".join("line %05d of the repository text\n" % i for i in range(20000)))
             ctx.flush()
-            with patch.object(probe, "one", side_effect=record):
+            with patch.object(probe, "one", side_effect=record), \
+                    patch.object(probe, "post", side_effect=char_tokenizer):
                 status, data = run_probe("--reps", "1", "--classes", "code", "--cache",
                                          "--depths", "8000,32000", "--context-file", ctx.name)
         self.assertEqual(status, 0)
@@ -99,6 +109,15 @@ class ProbeTests(unittest.TestCase):
         self.assertGreater(len(deep), len(shallow))
         self.assertTrue(deep.startswith(shallow))
         self.assertEqual([r["depth_target"] for r in data["rows"]], [32000, 8000])
+        self.assertEqual(len(shallow) - len("<documents>\n"), 8000)
+
+    def test_context_shorter_than_depth_stops_the_probe(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".txt") as ctx:
+            ctx.write("short text")
+            ctx.flush()
+            with patch.object(probe, "post", side_effect=char_tokenizer), \
+                    self.assertRaises(SystemExit):
+                run_probe("--reps", "1", "--depths", "8000", "--context-file", ctx.name)
 
     def test_n_predict_list_gives_one_key_per_length(self):
         with patch.object(probe, "one", side_effect=[row(), row()]):
@@ -148,6 +167,7 @@ class ProbeTests(unittest.TestCase):
             ctx.flush()
             out = io.StringIO()
             with patch.object(turns, "request", side_effect=responder), \
+                    patch.object(turns, "post", side_effect=char_tokenizer), \
                     patch.object(sys, "argv", ["turns", "http://unused", "--context-file", ctx.name,
                                                "--depth", "2000", "--sizes", "32,256", *args]), \
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):

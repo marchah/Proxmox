@@ -196,8 +196,9 @@ Settings for longer tasks:
   for example `ENV="GGML_OP_OFFLOAD_MIN_BATCH=256"`. A name that some cell sets is deleted
   from the env file for every cell that does not set it. So when a variable the env file
   already has varies, such as `LLAMACPP_DIR` for a build A/B, every cell sets it.
-- **`CONTEXT_FILE`** makes the probe's depth context a prefix of a text file instead of the
-  built-in filler. A shallower context is then a prefix of a deeper one.
+- **`CONTEXT_FILE`** makes the probe's depth context the first `DEPTH` tokens of a text file,
+  cut with the server's tokenizer, instead of the built-in filler. A shallower context is
+  then a prefix of a deeper one, and a depth is an exact token count.
 - **`PROBE_ARGS`** passes more probe arguments:
   - `--n-predict 256,640,1024` runs every prompt at each length.
   - `--cache` reuses the deepest context through the prompt cache. Depths run deepest first,

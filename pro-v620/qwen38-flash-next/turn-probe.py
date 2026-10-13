@@ -7,8 +7,9 @@ key TURNS):
     ./turn-probe.py http://<ct>:1234 --chat --context-file corpus.txt --depth 30000 \\
         --sizes 32,64,128,256,512,1024,2048 --reps 3
 
-Every request sends the same context (a --depth-token prefix of --context-file), then a
-chunk of SIZE tokens the server has not seen, then a one-line instruction. The prompt
+Every request sends the same context (the first --depth tokens of --context-file), then a
+chunk of SIZE tokens the server has not seen, then a one-line instruction. Context and
+chunks are cut with the server's own tokenizer (/tokenize, /detokenize). The prompt
 cache serves the context, so prompt_n is the new tokens and prompt_ms their prefill: the
 cost one agent turn pays, which on a model with experts in host RAM is not proportional to
 its size. A first request fills the cache with the context alone. Sizes then run
@@ -92,14 +93,16 @@ def main():
         ap.error("--depth, --sizes and --reps must be positive")
 
     text = pathlib.Path(a.context_file).read_text(errors="replace")
-    # ~4 chars per token is close enough; the measured prompt_n is what gets reported.
-    context = text[:a.depth * 4]
-    rest = text[a.depth * 4:] or text
-    if len(context) < a.depth * 4:
-        sys.exit("%s holds %d chars, fewer than --depth %d needs" % (a.context_file, len(text), a.depth))
-
     result = {"base": a.base, "depth_target": a.depth, "sizes": sizes, "reps": a.reps,
               "chat": a.chat, "context_file": a.context_file}
+    # ~6 chars per token is more than any tokenizer here packs, so the slice holds enough.
+    tokens = post(a.base + "/tokenize",
+                  {"content": text[:(a.depth + sum(sizes) * a.reps) * 6]})["tokens"]
+    if len(tokens) < a.depth + max(sizes):
+        sys.exit("%s holds %d tokens; --depth and the largest size need %d"
+                 % (a.context_file, len(tokens), a.depth + max(sizes)))
+    context = post(a.base + "/detokenize", {"tokens": tokens[:a.depth]})["content"]
+    rest = tokens[a.depth:]
     try:
         prime = request(a.base, "<documents>\n" + context + INSTRUCTION, a.n_predict, a.chat)
     except Exception as e:
@@ -113,11 +116,10 @@ def main():
     for rep in range(a.reps):
         shift = rep % len(sizes)
         for size in sizes[shift:] + sizes[:shift]:
-            want = size * 4
-            if offset + want > len(rest):
+            if offset + size > len(rest):
                 offset = 0
-            chunk = rest[offset:offset + want]
-            offset += want
+            chunk = post(a.base + "/detokenize", {"tokens": rest[offset:offset + size]})["content"]
+            offset += size
             try:
                 m = request(a.base, "<documents>\n" + context + chunk + INSTRUCTION,
                             a.n_predict, a.chat)
