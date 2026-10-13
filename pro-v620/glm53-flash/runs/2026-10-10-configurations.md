@@ -1543,6 +1543,11 @@ configuration.**
   - **Stages 5b, 7b and 7c left the brief VRAM rises unexplained or called them read races.**
     The findings record traced rises of the same sizes to compute-buffer swaps. Those passages
     now point there.
+- **Corrected after the owner's review of PR #101** (2026-10-13):
+  - **Contract results now name the one cell each sweep checked.** Stage 3 said "in every
+    cell", and the harness ran the contract once per sweep.
+  - **The Conclusion scopes the MTP fit** to n-max 8, micro-batch 4096 and two slots. It also
+    says n-max 2 was not retuned at one 64k slot.
 
 ## Conclusion
 
