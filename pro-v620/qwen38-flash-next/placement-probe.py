@@ -26,7 +26,7 @@ use it from stage 3 on, because GLM continued the raw d8000 filler instead of an
      the prompt gets accepted, so each row records draft_n and draft_n_accepted. Without
      it, draft_n is absent and tok/s is a plain bandwidth number.
 """
-import argparse, hashlib, json, math, statistics, sys, time, urllib.error, urllib.request
+import argparse, hashlib, json, math, pathlib, statistics, sys, time, urllib.error, urllib.request
 
 # Three classes, because a speculative-free bandwidth number still moves with how much
 # the tokenizer packs per token. Named in the output so a range is never quoted bare.
@@ -127,20 +127,28 @@ def contract_check(base, efforts):
     return out
 
 
-def one(base, prompt, n_predict, chat=False):
-    # ⚠️ cache_prompt false: without it, a repeated identical request reports prompt_n ~4 and
-    # every config looks the same — you measure cache hits, not the model.
+def one(base, prompt, n_predict, chat=False, cache=False, sampling="greedy", seed=None):
+    # ⚠️ cache_prompt false by default: without it, a repeated identical request reports
+    # prompt_n ~4 and every config looks the same — you measure cache hits, not the model.
+    # --cache turns it on deliberately, to reuse a deep shared context; rows then carry
+    # cache_n and only cold rows count towards prefill.
     if chat:
         # The same text as one user turn through the chat template. GLM-5.3-Flash reads the
         # raw depth prompt (filler, then the instruction) as a document and continues the
         # filler; as a question it answers. llama-server returns the same timings block.
         body = {"messages": [{"role": "user", "content": prompt}], "max_tokens": n_predict,
-                "temperature": 0, "top_k": 1, "cache_prompt": False, "stream": False}
+                "cache_prompt": cache, "stream": False}
         path = "/v1/chat/completions"
     else:
-        body = {"prompt": prompt, "n_predict": n_predict, "temperature": 0, "top_k": 1,
-                "cache_prompt": False, "stream": False}
+        body = {"prompt": prompt, "n_predict": n_predict, "cache_prompt": cache, "stream": False}
         path = "/completion"
+    # greedy pins the target's choices; server sends no sampler settings, so the server's
+    # defaults (the GGUF's generation_config, where present) apply, as for a client that
+    # sets none. A fixed seed keeps server sampling repeatable.
+    if sampling == "greedy":
+        body.update(temperature=0, top_k=1)
+    if seed is not None:
+        body["seed"] = seed
     t0 = time.time()
     r = post(base + path, body)
     wall = time.time() - t0
@@ -173,6 +181,8 @@ def one(base, prompt, n_predict, chat=False):
         "prompt_ms": tm.get("prompt_ms"),
         "predicted_ms": tm.get("predicted_ms"),
         "prompt_n": tm.get("prompt_n"),
+        # Tokens the prompt cache served; 0 or absent with cache_prompt off.
+        "cache_n": tm.get("cache_n"),
         "prefill_tps": tm.get("prompt_per_second"),
         "predicted_n": tm.get("predicted_n"),
         "decode_tps": tm.get("predicted_per_second"),
@@ -200,9 +210,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("base")
     ap.add_argument("--reps", type=int, default=3)
-    ap.add_argument("--n-predict", type=int, default=256)
+    ap.add_argument("--n-predict", default="256",
+                    help="tokens to generate, or a comma-separated list run per prompt")
     ap.add_argument("--depths", default="0",
                     help="comma-separated approximate prompt-token depths, e.g. 0,8000,32000")
+    ap.add_argument("--context-file", default="",
+                    help="text for the depth context instead of the built-in filler; each "
+                         "depth takes a prefix, so a shallower context is a prefix of a deeper one")
+    ap.add_argument("--cache", action="store_true",
+                    help="cache_prompt on; depths run deepest first so shallower prompts reuse "
+                         "the deeper context, and only rows with an uncached prompt count as prefill")
+    ap.add_argument("--sampling", choices=("greedy", "server"), default="greedy",
+                    help="greedy (temperature 0, top-k 1) or server: send no sampler settings")
+    ap.add_argument("--seed", type=int, default=None, help="request seed, for server sampling")
     ap.add_argument("--contract", action="store_true")
     ap.add_argument("--chat", action="store_true",
                     help="send the throughput prompts through /v1/chat/completions")
@@ -218,33 +238,55 @@ def main():
     ap.add_argument("--classes", default="",
                     help="comma-separated subset of %s (default: all)" % ",".join(PROMPTS))
     a = ap.parse_args()
-    if a.reps < 1 or a.n_predict < 1:
+    try:
+        n_predicts = [int(n) for n in str(a.n_predict).split(",") if n.strip()]
+    except ValueError:
+        ap.error("--n-predict takes integers")
+    if a.reps < 1 or not n_predicts or min(n_predicts) < 1:
         ap.error("--reps and --n-predict must be positive")
+    context = pathlib.Path(a.context_file).read_text(errors="replace") if a.context_file else ""
 
-    result = {"base": a.base, "reps": a.reps, "n_predict": a.n_predict,
-              "classes": a.classes or "all", "chat": a.chat}
+    result = {"base": a.base, "reps": a.reps,
+              "n_predict": n_predicts[0] if len(n_predicts) == 1 else n_predicts,
+              "classes": a.classes or "all", "chat": a.chat, "cache": a.cache,
+              "sampling": a.sampling, "seed": a.seed}
+    if a.context_file:
+        result["context_file"] = {"path": a.context_file, "chars": len(context),
+                                  "sha256": hashlib.sha256(context.encode()).hexdigest()}
     if a.contract:
         result["contract"] = contract_check(
             a.base, [e.strip() for e in a.efforts.split(",") if e.strip()])
 
     rows = []
-    for depth in [int(d) for d in a.depths.split(",")]:
-        # ~4 chars/token is close enough; the measured prompt_n is what gets reported.
-        pad = FILLER * max(0, (depth * 4) // len(FILLER)) if depth else ""
-        want = [c.strip() for c in a.classes.split(",") if c.strip()] or list(PROMPTS)
-        unknown = [c for c in want if c not in PROMPTS]
-        if unknown:
-            raise SystemExit("unknown prompt class(es) %s; have %s"
-                             % (",".join(unknown), ",".join(PROMPTS)))
+    depths = [int(d) for d in a.depths.split(",")]
+    if a.cache:
+        # Deepest first: its context is prefilled cold, and every shallower context is a
+        # prefix of it, so later requests reuse the cache instead of prefilling again.
+        depths = sorted(depths, reverse=True)
+    want = [c.strip() for c in a.classes.split(",") if c.strip()] or list(PROMPTS)
+    unknown = [c for c in want if c not in PROMPTS]
+    if unknown:
+        raise SystemExit("unknown prompt class(es) %s; have %s"
+                         % (",".join(unknown), ",".join(PROMPTS)))
+    for depth in depths:
+        if not depth:
+            pad = ""
+        elif context:
+            # ~4 chars/token is close enough; the measured prompt_n is what gets reported.
+            pad = "<documents>\n%s\n</documents>\n\n" % context[:depth * 4]
+        else:
+            pad = FILLER * max(0, (depth * 4) // len(FILLER))
         for cls, p in ((c, PROMPTS[c]) for c in want):
-            for rep in range(a.reps):
-                try:
-                    m = one(a.base, pad + p, a.n_predict, a.chat)
-                except Exception as e:
-                    m = {"error": repr(e)[:200]}
-                m.update({"class": cls, "depth_target": depth, "rep": rep})
-                rows.append(m)
-                print(json.dumps(m), file=sys.stderr)
+            for n_predict in n_predicts:
+                for rep in range(a.reps):
+                    try:
+                        m = one(a.base, pad + p, n_predict, a.chat, a.cache, a.sampling, a.seed)
+                    except Exception as e:
+                        m = {"error": repr(e)[:200]}
+                    m.update({"class": cls, "depth_target": depth, "rep": rep,
+                              "n_predict": n_predict})
+                    rows.append(m)
+                    print(json.dumps(m), file=sys.stderr)
     result["rows"] = rows
 
     # Aggregate per (depth, class) — the median of reps, because one rep per cell has
@@ -254,10 +296,15 @@ def main():
         if r.get("error") or r.get("decode_tps") is None:
             continue
         k = "d%d/%s" % (r["depth_target"], r["class"])
+        if len(n_predicts) > 1:
+            k += "/n%d" % r["n_predict"]
+        total = (r.get("prompt_n") or 0) + (r.get("cache_n") or 0)
         agg.setdefault(k, {"decode": [], "prefill": [], "accept": [], "sha": set(),
-                           "degen": False, "prompt_n": r.get("prompt_n")})
+                           "degen": False, "prompt_n": total or r.get("prompt_n")})
         agg[k]["decode"].append(r["decode_tps"])
-        if r.get("prefill_tps"):
+        # A row whose prompt the cache mostly served measures the cache, not prefill.
+        cold = not r.get("cache_n") or (r.get("prompt_n") or 0) >= 0.9 * total
+        if r.get("prefill_tps") and cold:
             agg[k]["prefill"].append(r["prefill_tps"])
         if r.get("accept_pct") is not None:
             agg[k]["accept"].append(r["accept_pct"])
@@ -294,7 +341,11 @@ def main():
         v.get("ok", v.get("harmless", False)) and not v.get("think_leaked_into_content")
         and not v.get("reasoning_chars") for v in result["contract"].values()
     ) if a.contract else None
-    result["probe_ok"] = (result["all_reps_agree"] and not result["any_degenerate"]
+    # Under server sampling, reps that differ are reported, not failed: a seeded sampler
+    # repeats on one load, but that is what the field shows rather than what it assumes.
+    agree_ok = result["all_reps_agree"] or (
+        a.sampling == "server" and bool(agg) and not result["failed_requests"])
+    result["probe_ok"] = (agree_ok and not result["any_degenerate"]
                           and result["contract_ok"] is not False)
     print(json.dumps(result, indent=1))
     return 0 if result["probe_ok"] else 1
