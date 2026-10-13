@@ -13,7 +13,8 @@ MODEL    ?=
 PARALLEL ?=
 RUNTIME  ?= llamacpp
 # SUITE=full adds the agent-session and document-ingestion workloads to the batch;
-# SUITE=short is the regression items only. AGENT=false or INGEST=false drops one.
+# SUITE=short is the regression items only, SUITE=workloads the workloads only.
+# AGENT=false or INGEST=false drops one workload.
 SUITE    ?= full
 AGENT    ?= true
 INGEST   ?= true
@@ -39,7 +40,7 @@ check: ## Syntax-check the playbook
 smoke: ## Plumbing test: push suite + reload model, run NO benchmarks (GPU, PARALLEL overridable)
 	ansible-playbook $(PLAYBOOK) $(TARGET) -e '{"benchmarks": []}'
 
-bench: ## Run the batch (GPU=1|2, MODEL, SUITE=full|short, AGENT/INGEST=false, PARALLEL, ALLOW_DIRTY)
+bench: ## Run the batch (GPU=1|2, MODEL, SUITE=full|short|workloads, AGENT/INGEST=false, PARALLEL, ALLOW_DIRTY)
 	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) $(TARGET) $(SELECT)
 
 context-sweep: ## Run the context-length sweep on top of the batch (same flags as bench)

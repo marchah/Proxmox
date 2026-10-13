@@ -8,6 +8,12 @@ prompt sets no length; --max-tokens caps the reply. Depths run interleaved, --re
 rep starting at the next depth. A given depth sends the same text every time, so greedy output should repeat; the
 summary records whether it did, and whether the note has the three requested sections.
 
+--prompt concise asks for the same three sections with an overall word limit and limits per
+sentence and bullet. Every row carries a quality check: the counts of summary sentences, key
+facts and open questions against 5, 8 and 3, word counts, and how many key facts hold a
+backticked name or a word with a digit that appears verbatim in the documents. A fact
+without one is listed for reading by hand; it is not judged wrong.
+
 Writes ingest-requests.jsonl (one row per request, with the note's full text) and
 ingest-summary.json.
 """
@@ -19,6 +25,7 @@ import collections
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -50,13 +57,62 @@ INGEST_TASK = (
     "## Key facts\nEight bullet points, each with a concrete value or name from the documents.\n\n"
     "## Open questions\nThree bullet points."
 )
+CONCISE_TASK = (
+    "Write a knowledge-base note about the documents above, in Markdown, with exactly these "
+    "sections. Keep the whole note under 400 words.\n\n"
+    "## Summary\nFive sentences, each under 30 words.\n\n"
+    "## Key facts\nEight bullet points, each under 25 words and each with a concrete value or "
+    "name from the documents.\n\n"
+    "## Open questions\nThree bullet points, each under 25 words."
+)
+TASKS = {"standard": INGEST_TASK, "concise": CONCISE_TASK}
 SECTIONS = ("## Summary", "## Key facts", "## Open questions")
+EXPECTED_COUNTS = (5, 8, 3)
+BULLET = re.compile(r"(?m)^\s*(?:[-*+]|\d+[.)])\s+(.*\S)")
+# A backticked name, or a whitespace-separated word holding a digit (a version, an ID, a size).
+CONCRETE = re.compile(r"`([^`\n]{2,})`|(\S*\d\S*)")
 # Chat-template tokens around the two messages, beyond their text.
 TEMPLATE_TOKENS = 16
 
 
-def user_message(documents: str) -> str:
-    return f"<documents>\n{documents}\n</documents>\n\n{INGEST_TASK}"
+def user_message(documents: str, task: str = INGEST_TASK) -> str:
+    return f"<documents>\n{documents}\n</documents>\n\n{task}"
+
+
+def section(text: str, heading: str) -> str | None:
+    """The text under a heading line, up to the next Markdown heading; None if absent."""
+    match = re.search(r"(?m)^" + re.escape(heading) + r"[ \t]*$", text)
+    if not match:
+        return None
+    rest = text[match.end():]
+    following = re.search(r"(?m)^#{1,6} ", rest)
+    return rest[:following.start()] if following else rest
+
+
+def note_quality(output: str, documents: str) -> dict[str, Any]:
+    """Structure and source checks for one note. Sentence splitting is approximate."""
+    summary, facts, questions = (section(output, heading) for heading in SECTIONS)
+    flat = " ".join((summary or "").split())
+    sentences = [part for part in re.split(r"(?<=[.!?])\s+", flat) if part.strip()]
+    fact_items = BULLET.findall(facts or "")
+    question_items = BULLET.findall(questions or "")
+    sourced = []
+    for item in fact_items:
+        tokens = [ticked or word.strip(".,;:()[]\"'") for ticked, word in CONCRETE.findall(item)]
+        sourced.append(any(token and (token in documents or token.replace(",", "") in documents)
+                           for token in tokens))
+    counts = (len(sentences), len(fact_items), len(question_items))
+    return {
+        "summary_sentences": counts[0],
+        "key_facts": counts[1],
+        "open_questions": counts[2],
+        "format_ok": counts == EXPECTED_COUNTS,
+        "words": len(output.split()),
+        "max_sentence_words": max((len(part.split()) for part in sentences), default=0),
+        "max_bullet_words": max((len(item.split()) for item in fact_items + question_items), default=0),
+        "facts_with_source_value": sum(sourced),
+        "facts_without_source_value": [item for item, ok in zip(fact_items, sourced) if not ok],
+    }
 
 
 def depth_label(depth: int) -> str:
@@ -72,6 +128,8 @@ def main() -> int:
                         help="prompt sizes in tokens (default: 8192 16384 32768 49152)")
     parser.add_argument("--reps", type=int, default=3)
     parser.add_argument("--max-tokens", type=int, default=640)
+    parser.add_argument("--prompt", choices=sorted(TASKS), default="standard",
+                        help="standard, or concise: the same sections with word limits")
     parser.add_argument("--timeout", type=float, default=3600.0)
     args = parser.parse_args()
     if not args.base_url:
@@ -90,7 +148,8 @@ def main() -> int:
         )
         return 2
 
-    frame = INGEST_SYSTEM + user_message("")
+    task = TASKS[args.prompt]
+    frame = INGEST_SYSTEM + user_message("", task)
     overhead = (count_tokens(args.base_url, frame) or len(frame) // 4) + TEMPLATE_TOKENS
     text = long_text()
     documents = {depth: take_tokens(args.base_url, text, depth - overhead) for depth in args.depths}
@@ -113,7 +172,7 @@ def main() -> int:
                     "model": args.model,
                     "messages": [
                         {"role": "system", "content": INGEST_SYSTEM},
-                        {"role": "user", "content": user_message(documents[depth])},
+                        {"role": "user", "content": user_message(documents[depth], task)},
                     ],
                     "max_tokens": args.max_tokens,
                     "temperature": 0,
@@ -141,6 +200,7 @@ def main() -> int:
                         sections_ok=all(section in output for section in SECTIONS),
                         content_sha=hashlib.sha256(output.encode("utf-8")).hexdigest()[:16],
                         output=output,
+                        quality=note_quality(output, documents[depth]),
                         reasoning=message.get("reasoning_content") or "",
                     )
                     if not output.strip():
@@ -179,6 +239,9 @@ def main() -> int:
             "draft_acceptance": acceptance([row["draft_n"] for row in group], [row["draft_accepted"] for row in group]),
             "finish_reasons": dict(collections.Counter(row["finish"] for row in group)),
             "sections_ok": sum(1 for row in group if row["sections_ok"]),
+            "format_ok": sum(1 for row in group if row["quality"]["format_ok"]),
+            "words": spread([row["quality"]["words"] for row in group]),
+            "facts_with_source_value": spread([row["quality"]["facts_with_source_value"] for row in group]),
             "repeatable": len(group) == args.reps and len(shas) == 1,
         })
     output_tokens = sum(row.get("predicted_n") or 0 for row in ok)
@@ -193,6 +256,7 @@ def main() -> int:
         "depths": args.depths,
         "reps": args.reps,
         "max_tokens": args.max_tokens,
+        "prompt": args.prompt,
         "record_count": len(rows),
         "ok_count": len(ok),
         "error_count": len(rows) - len(ok),

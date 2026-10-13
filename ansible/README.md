@@ -69,7 +69,7 @@ Useful extra vars: `gpu` (`1` or `2`), `model` (`glm53f` on GPU 2), `parallel` (
 GPU 1 and 1 on GPU 2), `restore_parallel` (what the server is reloaded to when the run
 finishes: 2 on CT 120 and 1 on CT 123, the operational `--parallel`; decoupled from
 `parallel` so a benchmark never leaves prod downgraded; the workloads item also runs at
-it), `agent_depth` (where agent sessions stop; 56000 on GPU 2), `suite` (`full` or `short`), `run_agent_sessions` and
+it), `agent_depth` (where agent sessions stop; 56000 on GPU 2), `suite` (`full`, `short` or `workloads`), `run_agent_sessions` and
 `run_doc_ingest` (drop one workload), `reload_model=false` (skip the model reload),
 `runtime_label=<name>` (force a separate results folder), or override the `benchmarks`
 list. An item is a command string, or `{cmd, parallel}` to reload CT 120 at its own slot

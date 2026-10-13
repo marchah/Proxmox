@@ -190,6 +190,25 @@ VMID=123 CELLS=runs/2026-10-08-threads-concurrency.cells DEPTHS="0,8000" ./place
 VMID=123 CONFIGS="34 40 48" ./placement-sweep.sh
 ```
 
+Settings for longer tasks:
+
+- **`ENV`, a cell key,** exports `NAME=VALUE` pairs to llama-server through the env file,
+  for example `ENV="GGML_OP_OFFLOAD_MIN_BATCH=256"`. A name that some cell sets is deleted
+  from the env file for every cell that does not set it. So when a variable the env file
+  already has varies, such as `LLAMACPP_DIR` for a build A/B, every cell sets it.
+- **`CONTEXT_FILE`** makes the probe's depth context a prefix of a text file instead of the
+  built-in filler. A shallower context is then a prefix of a deeper one.
+- **`PROBE_ARGS`** passes more probe arguments:
+  - `--n-predict 256,640,1024` runs every prompt at each length.
+  - `--cache` reuses the deepest context through the prompt cache. Depths run deepest first,
+    and only rows the cache did not serve count as prefill.
+  - `--sampling server --seed N` sends no sampler settings, so the server's defaults apply,
+    as for a client that sets none.
+- **`TURNS`, a cell key,** runs `turn-probe.py` after the main probe: `true`, or a list of
+  chunk sizes. It needs `CONTEXT_FILE`. With `TURN_DEPTH` tokens of the file cached, it
+  appends chunks of new text and times only their prefill, the cost one agent turn pays.
+  `SUMMARY.md` gives the median time per size and a fit of fixed cost plus cost per token.
+
 `PROBE_CLASSES` limits the prompt classes, and `DROP_CACHES=true` drops the host page
 cache before every load, for cold loads. `CONC_REPS` sets the concurrency probe's rounds
 per pass (default 1); its medians and acceptance come only from rounds in which every

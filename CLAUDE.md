@@ -130,7 +130,7 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   (`MODEL=glm53f` runs GLM-5.3-Flash there, after `glm53-flash/` sets CT 123 up). It
   ends with the agent-session and document-ingestion workloads, run at the server's
   operational slots on real repository text; `SUITE=short` runs only the regression
-  items. See `bench-runner/BENCHMARKS.md`.
+  items, `SUITE=workloads` only the workloads. See `bench-runner/BENCHMARKS.md`.
 - Wrappers in `/usr/local/bin` need a login shell through `pct exec`:
   `pct exec 200 -- bash -lc 'llm-bench-baseline'`.
 

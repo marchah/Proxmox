@@ -52,6 +52,7 @@ pct exec 123 -- journalctl -u glm53f-dl --no-pager -n 20
 VMID=123 ENV_FILE=glm53f-bench.env ./install.sh   # after one-card: the best configuration
 ./ct123-test-host.sh restore         # Flash-Next back on GPU 2; CT 120's autostart restored
 ./ct123-test-host.sh status
+VMID=123 ./install-llamacpp-release.sh   # another pinned release beside b11505, for a build A/B
 ```
 
 - `install.sh` installs the `llamacpp-glm53f` unit without enabling it. The unit conflicts
@@ -69,6 +70,13 @@ VMID=123 ENV_FILE=glm53f-bench.env ./install.sh   # after one-card: the best con
 - `MODEL_VK_VISIBLE_DEVICES` limits the cards llama-server sees (`GGML_VK_VISIBLE_DEVICES`,
   by vulkaninfo's index). The launcher exports it only when set: an empty value hides
   every card.
+- `install-llamacpp-release.sh` unpacks a pinned Vulkan release to
+  `/opt/llamacpp/llama-<tag>/` after checking its SHA-256. It leaves
+  `/opt/llamacpp/current` and every env file alone, so a sweep cell picks the build with
+  `ENV="LLAMACPP_DIR=..."`.
+- The env file's variables reach llama-server, because the launcher sources it with
+  `set -a`. `GGML_OP_OFFLOAD_MIN_BATCH` (default 32) is the batch size from which Vulkan
+  computes RAM-resident experts on the card; it must never be set empty, which reads as 0.
 
 ## llama.cpp support
 
