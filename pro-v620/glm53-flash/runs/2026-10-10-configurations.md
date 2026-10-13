@@ -1598,8 +1598,12 @@ tokens, unless noted.
   - `dio` prefilled 1.91 times as fast as `auto`.
   - `-sm tensor` does not load for glm5-next.
 - **MTP** (one card, 64k, the owner's choice after stage 6):
-  - The MTP block fits only with every expert in RAM (`-ncmoe 46`).
-  - The best draft length is n-max 2, at one stream and at two. Acceptance per prompt cell is
+  - At n-max 8, micro-batch 4096 and two 32k slots, the MTP block fits only with every expert in
+    RAM (`-ncmoe 46`). Block 45's experts on the card at a shorter draft, or at one 64k slot,
+    were not tested.
+  - The best draft length is n-max 2, at one stream and at two.
+    - It was chosen at two 32k slots with timed prompts of about 5.8k tokens.
+    - It was not retuned at the one 64k slot the batch used, nor for deep single-slot tasks. Acceptance per prompt cell is
     63–73% for code and prose, 40–47% for list, and 74–78% at two streams.
   - Against the best configuration without it (stage 4's): decode +29.5% (8.410 against 6.495
     t/s) and two streams +33.3%. d8000 prefill is 2.9% lower, within 10% in every class.
