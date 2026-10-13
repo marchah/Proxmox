@@ -516,6 +516,76 @@ Both servers answered a text request after the image request.
 Stage 1's control cell is the baseline rerun on b11583. Stage 5's control reruns on b11583
 too, since the bench ran on b11505.
 
+### Stage 1, op-offload threshold — 2026-10-13 13:51–18:12 ET
+
+Harness `aee7e6fae37a`, cells [`-offload.cells`](2026-10-13-long-tasks-offload.cells), three
+passes, b11583. This is the rerun after the turn-probe fix; see Deviations. Raw data on the
+host: `/root/glm53-flash/sweep-106-offload-20261013T175150Z/`, `residency-106-offload.jsonl`
+and `trace-106-offload.txt`. The last two also hold the stopped first attempt's samples; the
+figures below use each cell's own time windows.
+
+**Turn prefill on a 30,023-token cached context**, seconds, median of three passes:
+
+| New tokens | 41 | 73 | 137 | 264 | 521 | 1,033 | 2,056 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `thr32` (control) | 4.38 | 5.67 | 7.21 | 8.77 | 10.46 | 13.08 | 18.70 |
+| `thr128` | **2.34** | **3.12** | 7.22 | 8.78 | 10.43 | 13.08 | 18.71 |
+| `thr256` | **2.33** | **3.06** | **4.51** | 8.77 | 10.46 | 13.08 | 18.70 |
+| `thr512` | **2.36** | **3.07** | **4.50** | **7.41** | 10.44 | 13.08 | 18.70 |
+| `thr1024` | **2.32** | **3.05** | **4.53** | **7.43** | *13.70* | 13.07 | 18.68 |
+
+Bold: the turn ran on the CPU, below the threshold. Italic: on the CPU and slower than on
+the card.
+
+- **The cache served the whole context on every turn** (cache_n 30,025 of 30,023). Each
+  turn prefilled its chunk plus 8–9 template tokens. No turn failed.
+- **The two paths:**
+  - Below the threshold, prefill takes about 1.3 s plus 23 ms per token. On the card it
+    rises steeply to about 8.8 s at 264 tokens, then gains about 6.5 ms per token.
+  - The two cross at about 340 new tokens. A threshold between 256 and 512 was not
+    measured.
+- **Cold short prompts are not affected.** The d0 prompts (31–42 tokens, no context) took
+  2.5–2.8 s at every threshold, on either path. The card's extra cost for a short batch
+  appears only on top of a deep context; its cause was not measured.
+
+**Estimated batch prefill** (the bench's 186 warm agent turns priced by these turn times) and
+the checks:
+
+| Cell | Warm-turn prefill, s | `hermes` / `coding` | Decode d0 / d8000, t/s | d8000 prefill, t/s |
+| --- | ---: | --- | --- | ---: |
+| `thr32` | 2,999 [2,992–3,019] | 1,746 / 1,253 | 8.73 [8.68–8.83] / 7.78 [7.77–7.89] | 179.7 |
+| `thr128` | 2,957 [2,955–2,959] | 1,737 / 1,220 | 8.74 / 7.82 | 179.9 |
+| `thr256` | 2,864 [2,862–2,865] | 1,647 / 1,218 | 8.61 / 7.78 | 180.2 |
+| **`thr512`** | **2,821 [2,821–2,835]** | **1,603 / 1,219** | 8.64 [8.58–8.64] / 7.76 [7.69–7.96] | 180.0 |
+| `thr1024` | 2,878 [2,870–2,879] | 1,661 / 1,217 | 8.73 / 7.72 | 180.1 |
+
+- **The saving is 178 s over the bench's six sessions (−5.9%), most of it in `hermes`.**
+  `hermes` turns have a median of 349 new tokens, where the paths are close. `coding` turns
+  have a median of about 3,900, always above the threshold.
+- **Per session**, that is about 48 s of a `hermes` session's 1,700 s, about 3%.
+- **The estimate tracks the bench.** For `thr32` it is within 4% of the bench's measured
+  `hermes` prefill (1,746 against 1,815 s, on b11505) and 7% of its `coding` prefill (1,253
+  against 1,346 s).
+- **Output and checks, every cell:**
+  - The text in every prompt cell is identical to `thr32`'s and the same in every pass.
+  - The contract was clean on every load: fifteen.
+  - No request failed and no text was degenerate.
+- **VRAM:** nothing was outside VRAM, and no VRAM allocation failed in the trace.
+  - Steady least free was 9,593–9,789 MiB.
+  - Compute-buffer swaps fell with the threshold: 105 at 32, 88 at 128, 78 at 256, 69 at
+    512 and 61 at 1024, over three passes.
+  - The sampler caught swaps at 3,132–4,681 MiB free.
+- **Card, per phase:**
+  - Prefill 173–190 W at 2,355–2,366 MHz, 99% busy, on 0.4 cores.
+  - Decode 52 W at 499 MHz, 43–46% busy, on 29.8 cores.
+  - The turn probe's span is dominated by its 30k prime: 171–174 W.
+  - Junction peaked at 81–85 °C; the hottest DIMM reached 55–58 °C.
+
+**Stage 1's winner is `thr512`** (`GGML_OP_OFFLOAD_MIN_BATCH=512`). It has the lowest estimate,
+beyond both spreads. Its decode at d0 (8.64 against 8.73) and d8000 (7.76 against 7.78) is
+within the control's spread (0.15 and 0.12), and so is its d8000 prefill. Stages 2–6 run with
+it. Stage 5 checks it on real sessions.
+
 ## Deviations
 
 - **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
