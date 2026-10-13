@@ -197,6 +197,23 @@ class ProbeTests(unittest.TestCase):
         # The prime prefills cold, whatever an earlier probe left in the slot; turns reuse it.
         self.assertEqual(caches, [False, True, True, True, True])
 
+    def test_turn_request_bodies_carry_the_cache_flag(self):
+        bodies = []
+
+        def capture(url, body):
+            bodies.append((url, body))
+            return {"choices": [{"message": {"content": "OK"}}], "content": "OK", "timings": {}}
+
+        with patch.object(turns, "post", side_effect=capture):
+            # The prime in a chat-mode sweep, the same through /completion, then a turn.
+            turns.request("http://unused", "p", 8, chat=True, cache=False)
+            turns.request("http://unused", "p", 8, chat=False, cache=False)
+            turns.request("http://unused", "p", 8, chat=True)
+        self.assertEqual([url.rsplit("/", 1)[-1] for url, _ in bodies],
+                         ["completions", "completion", "completions"])
+        self.assertEqual([b["cache_prompt"] for _, b in bodies], [False, False, True])
+        self.assertTrue(all((b["temperature"], b["top_k"]) == (0, 1) for _, b in bodies))
+
     def test_turn_cache_miss_fails_the_probe(self):
         def responder(base, prompt, n_predict, chat, cache=True):
             return {"prompt_n": 2000, "cache_n": 0, "prompt_ms": 30000.0, "prefill_tps": 66.0}
