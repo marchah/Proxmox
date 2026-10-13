@@ -604,7 +604,6 @@ cat >"${OUT_DIR}/manifest.json" <<JSON
 }
 JSON
 
-contract_done=false
 # Round-robin, so thermal or cache drift spreads across cells instead of favouring
 # whichever ran first.
 for round in $(seq 1 "$REPS"); do
@@ -674,13 +673,10 @@ PYFAIL
 
     probe_args=( "$BASE" --reps 1 --n-predict "$N_PREDICT" --depths "${CELL[$label|DEPTHS]:-$DEPTHS}" "${CHAT_ARGS[@]}" )
     [ -n "$PROBE_CLASSES" ] && probe_args+=( --classes "$PROBE_CLASSES" )
-    # The template-contract assertions only need running once per sweep, on the first
-    # cell that loads: a cell that fails to load skips the probe.
-    if [ "$contract_done" = false ]; then
-      probe_args+=( --contract )
-      [ -n "$CONTRACT_EFFORTS" ] && probe_args+=( --efforts "$CONTRACT_EFFORTS" )
-      contract_done=true
-    fi
+    # KV type, placement and speculation can change chat output. Check each load,
+    # including later passes; one successful control cannot qualify another cell.
+    probe_args+=( --contract )
+    [ -n "$CONTRACT_EFFORTS" ] && probe_args+=( --efforts "$CONTRACT_EFFORTS" )
 
     dimm_sampler >"${OUT_DIR}/${tag}.dimm.tsv" 2>/dev/null &
     DIMM_PID=$!

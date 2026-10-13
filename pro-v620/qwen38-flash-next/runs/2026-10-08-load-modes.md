@@ -306,7 +306,8 @@ Pass-to-pass spread within a prompt cell reached 3.5 t/s.
 
 **Output gate:** no degenerate output; every cell produced identical text in all three
 passes of every prompt, and `none` and `dio` produced the same text as `auto` in all six
-prompt cells. All seven template-contract checks passed.
+prompt cells. Template-contract checks passed on the first loaded cell only;
+the other cells were not checked.
 
 **Spill check:** the sweep flagged `none` and `dio` in every pass, because GTT exceeded
 1.5 GiB. That GTT held the CPU-resident weights: 52,821 MiB at load against the 51,950

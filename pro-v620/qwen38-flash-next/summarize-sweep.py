@@ -14,6 +14,17 @@ def med(xs):
     return round(statistics.median(xs), 1) if xs else None
 
 
+def contract_failures(contract):
+    """Check every response, including older probes without contract_ok."""
+    failed = []
+    for name, check in contract.items():
+        content = check.get("content") or ""
+        leaked = check.get("think_leaked_into_content", "<think>" in content or "</think>" in content)
+        if not check.get("ok", check.get("harmless", False)) or leaked or check.get("reasoning_chars"):
+            failed.append(name)
+    return failed
+
+
 def main():
     d = pathlib.Path(sys.argv[1])
     manifest, manifest_error = {}, None
@@ -27,7 +38,6 @@ def main():
     # Group the per-round files by cell: its label, or for sweeps that predate labels its
     # placement plus cache spec.
     by, prompt_tokens = {}, {}
-    contract = None
     for f in sorted(d.glob("*-r*.json")):
         try:
             j = json.loads(f.read_text())
@@ -45,11 +55,17 @@ def main():
                                 "disagree": False, "errors": 0, "cache_mib": [],
                                 "hit": [], "dimm": [], "capped": 0, "cache_inactive": 0,
                                 "shas": {}, "load_failed": 0, "load_s": [], "gpus": None,
-                                "cell": pl.get("cell"), "conc": [], "mem": [], "util": []})
+                                "cell": pl.get("cell"), "conc": [], "mem": [], "util": [],
+                                "contracts": [], "loaded_passes": 0})
         if pl.get("load_failed"):
             g["load_failed"] += 1
             continue
-        if j.get("error"):
+        g["loaded_passes"] += 1
+        # Legacy probes keep exceptions only in rows; new probes also count them.
+        # Count once, and do not let an all-failed request set look like an output pass.
+        g["errors"] += max(sum(bool(r.get("error")) for r in j.get("rows", [])),
+                           j.get("failed_requests") or 0, int(bool(j.get("error"))))
+        if not j.get("summary") and not j.get("error") and not j.get("rows"):
             g["errors"] += 1
         if pl.get("load_s") is not None:
             g["load_s"].append(pl["load_s"])
@@ -91,8 +107,8 @@ def main():
                 g["prefill"].setdefault(k, []).append(v["prefill_tps_median"])
             if v.get("accept_pct_median") is not None:
                 g["accept"].setdefault(k, []).append(v["accept_pct_median"])
-        if contract is None and j.get("contract"):
-            contract = j["contract"]
+        if j.get("contract"):
+            g["contracts"].append((f.name, contract_failures(j["contract"])))
 
     if not by:
         print("No parsable sweep results in %s" % d)
@@ -192,6 +208,12 @@ def main():
             flags.append("⚠️ reps disagree" + (" (%s)" % ", ".join(split) if split else ""))
         if g["errors"]:
             flags.append("🔴 %d probe error(s)" % g["errors"])
+        contract_failed = sum(bool(failed) for _, failed in g["contracts"])
+        if contract_failed:
+            flags.append("🔴 chat contract failed in %d pass(es)" % contract_failed)
+        if len(g["contracts"]) < g["loaded_passes"]:
+            flags.append("⚠️ chat contract not checked in %d pass(es)" % (
+                g["loaded_passes"] - len(g["contracts"])))
         if g["load_failed"]:
             flags.append("🔴 load failed in %d run(s)" % g["load_failed"])
         if g["cache_inactive"]:
@@ -207,7 +229,11 @@ def main():
             " | ".join("%.1f" % v if v else "—" for v in cellvals),
             ", ".join(flags) or "ok"))
         overall = [v for v in cellvals if v]
-        if overall:
+        # Keep failed/invalid measurements visible above, but do not choose one as
+        # the fastest reference or quote its performance trade as a usable option.
+        invalid = (g["errors"] or g["load_failed"] or g["spill"] or g["degen"]
+                   or g["disagree"] or split or g["capped"] or g["cache_inactive"] or contract_failed)
+        if overall and not invalid:
             rows_for_tradeoff.append((label(key), free / 1024, med(overall)))
 
     # --- what it decides ----------------------------------------------------------
@@ -266,8 +292,10 @@ def main():
     # --- concurrency --------------------------------------------------------------
     if any(by[k]["conc"] for k in keys):
         print("\n## Concurrency\n")
-        print("Medians across passes. Per-stream is what one user sees; aggregate is the "
-              "box's throughput; wall aggregate includes the slowest stream's tail.\n")
+        print("Medians across passes, conditional on every stream completing with valid output. "
+              "Per-stream is what one user sees; wall aggregate includes the slowest stream's "
+              "tail. Failed rounds remain in the flags; these rates do not establish serving "
+              "reliability.\n")
         print("| cell | streams | slots | ctx/slot | per-stream t/s | aggregate t/s | wall aggregate t/s | flags |")
         print("|---|---:|---:|---:|---:|---:|---:|---|")
         for key in keys:
@@ -344,46 +372,21 @@ def main():
                     "%.1f" % statistics.median(cores) if cores else "—"))
 
     # --- the template contract ----------------------------------------------------
-    if contract:
-        print("\n## Template contract\n")
-        print("The server runs `--reasoning off`. The assertion is **a caller cannot break this "
-              "server**: every effort value answers with clean `content`. Flash-Next's raw "
-              "template raises on `\"none\"` and `\"high\"`; GLM-5.3-Flash's opens `<think>` on "
-              "every turn and reads unknown values as `max`.\n")
-        bc = contract.get("bare_chat", {})
-        ok = bool(bc.get("ok"))
-        print("- Bare chat request answers: **%s**%s" % (
-            "yes" if ok else "NO — server is up but useless",
-            "" if ok else " — `%s`" % bc.get("error", bc.get("content", ""))))
-        # `content` must be clean. reasoning_content being absent is NOT a failure — it only
-        # means llama.cpp emitted no thought block at all, which is the point of --reasoning
-        # off. What would be broken is a <think> tag leaking into content.
-        # The probe flags a leak on the whole reply and stores only its first 40-80
-        # characters; GLM-5.3-Flash's </think> follows the reasoning, past that prefix. Probe
-        # output without the flag falls back to scanning the prefix.
-        def leaked_tag(v):
-            if "think_leaked_into_content" in v:
-                return bool(v["think_leaked_into_content"])
-            c = v.get("content") or ""
-            return "<think>" in c or "</think>" in c
-        leaked = [k for k, v in contract.items() if isinstance(v, dict) and leaked_tag(v)]
-        print("- No think tag leaked into `content`: **%s**%s" % (
-            "yes" if not leaked else "NO", "" if not leaked else " — %s" % ", ".join(leaked)))
-        # Probes from before reasoning_chars was recorded leave it out.
-        thought = {k: v["reasoning_chars"] for k, v in contract.items()
-                   if isinstance(v, dict) and v.get("reasoning_chars")}
-        if any("reasoning_chars" in v for v in contract.values() if isinstance(v, dict)):
-            print("- No reasoning block despite `--reasoning off`: **%s**%s" % (
-                "yes" if not thought else "NO",
-                "" if not thought else " — " + ", ".join(
-                    "%s %d chars" % kv for kv in sorted(thought.items()))))
-        efforts = sorted(k[len("effort_"):] for k in contract if k.startswith("effort_"))
-        for val in efforts:
-            e = contract.get("effort_" + val, {})
-            h = bool(e.get("harmless"))
-            print("- `reasoning_effort: \"%s\"` handled safely: **%s**%s" % (
-                val, "yes" if h else "NO",
-                "" if h else " — %s" % (e.get("note") or e.get("error") or e.get("http", ""))))
+    print("\n## Template contract\n")
+    print("Coverage is per cell and loaded pass. A pass succeeds only when bare chat and "
+          "every effort return non-empty, clean content with no reasoning block. Older "
+          "sweeps checked only their first loaded cell; untested cells remain unverified.\n")
+    print("| cell | loaded passes checked | passed | failures |")
+    print("|---|---:|---:|---|")
+    for key in keys:
+        g = by[key]
+        checked = len(g["contracts"])
+        passed = sum(not failed for _, failed in g["contracts"])
+        failures = "; ".join("`%s`: %s" % (name, ", ".join(failed))
+                             for name, failed in g["contracts"] if failed)
+        print("| %s | %d/%d | %d | %s |" % (
+            label(key), checked, g["loaded_passes"], passed,
+            failures or ("none" if checked else "not checked")))
 
     print("\n---\n*Generated by `summarize-sweep.py` from `%s`.*" % d)
 

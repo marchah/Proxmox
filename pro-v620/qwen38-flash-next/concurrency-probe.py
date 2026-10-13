@@ -33,6 +33,7 @@ import argparse
 import concurrent.futures as cf
 import hashlib
 import json
+import math
 import statistics as st
 import sys
 import time
@@ -92,7 +93,7 @@ def one(base: str, prompt: str, n_predict: int, chat: bool = False) -> dict:
     words = content.split()
     shingles = {" ".join(words[j:j + 8]) for j in range(max(0, len(words) - 7))}
     uniq = round(len(shingles) / max(1, len(words) - 7), 3)
-    return {
+    row = {
         "wall_s": round(wall, 2),
         "prompt_n": tm.get("prompt_n"),
         "prefill_tps": tm.get("prompt_per_second"),
@@ -106,6 +107,11 @@ def one(base: str, prompt: str, n_predict: int, chat: bool = False) -> dict:
         "content_sha": hashlib.sha256(content.encode()).hexdigest()[:12],
         "stop": stop,
     }
+    if not content.strip():
+        row["error"] = "empty completion"
+    elif not isinstance(row["decode_tps"], (int, float)) or not math.isfinite(row["decode_tps"]) or row["decode_tps"] <= 0:
+        row["error"] = "missing or invalid decode timing"
+    return row
 
 
 def server_props(base: str) -> dict:
@@ -134,6 +140,8 @@ def main() -> int:
     ap.add_argument("--depth", type=int, default=0,
                     help="approximate prompt-token depth to pad every stream to")
     a = ap.parse_args()
+    if a.streams < 1 or a.reps < 1 or a.n_predict < 1:
+        ap.error("streams, --reps and --n-predict must be positive")
 
     result: dict = {"base": a.base, "streams": a.streams, "reps": a.reps,
                     "n_predict": a.n_predict, "depth_target": a.depth, "chat": a.chat}
@@ -167,7 +175,7 @@ def main() -> int:
                 rows.append(m)
         wall = time.time() - t0
 
-        ok = [r for r in rows if r.get("decode_tps")]
+        ok = [r for r in rows if not r.get("error") and r.get("decode_tps") and not r.get("degenerate")]
         tokens = sum(r.get("predicted_n") or 0 for r in ok)
         rounds.append({
             "rep": rep,
@@ -198,12 +206,13 @@ def main() -> int:
     result["wall_aggregate_tps"] = round(st.median([r["wall_aggregate_tps"] for r in good]), 2) if good else 0.0
     result["any_degenerate"] = any(r["any_degenerate"] for r in rounds)
     result["total_failed"] = sum(r["failed"] for r in rounds)
-    # Draft acceptance over every completed stream: accepted / drafted tokens.
-    drafted = sum(r.get("draft_n") or 0 for rd in rounds for r in rd["rows"])
-    accepted = sum(r.get("draft_n_accepted") or 0 for rd in rounds for r in rd["rows"])
+    # Match the acceptance population to the complete rounds used for speed.
+    drafted = sum(r.get("draft_n") or 0 for rd in good for r in rd["rows"])
+    accepted = sum(r.get("draft_n_accepted") or 0 for rd in good for r in rd["rows"])
     result["accept_pct"] = round(100.0 * accepted / drafted, 1) if drafted else None
+    result["probe_ok"] = not result["total_failed"] and not result["any_degenerate"] and not result.get("slot_warning")
     print(json.dumps(result, indent=1))
-    return 0
+    return 0 if result["probe_ok"] else 1
 
 
 if __name__ == "__main__":
