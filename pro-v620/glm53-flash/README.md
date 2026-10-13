@@ -75,7 +75,7 @@ VMID=123 ENV_FILE=glm53f-bench.env ./install.sh   # after one-card: the best con
 - Architecture: #27773, merged 2026-09-30. MTP: #29928, merged 2026-10-07. b11505
   contains both.
 - #27773 notes that several sequences need `--kv-unified`. Two slots worked without it on
-  b11505 ([test record](runs/2026-10-10-configurations.md#stage-1-screen--2026-10-10-2123-2220-et)).
+  b11505 ([test record](runs/2026-10-10-configurations.md#stage-1-screen--2026-10-10-21232220-et)).
 - Open issues, checked 2026-10-10:
   - #30204: with `--spec-type draft-mtp` on Vulkan, every request that contains an image
     fails with HTTP 500.
