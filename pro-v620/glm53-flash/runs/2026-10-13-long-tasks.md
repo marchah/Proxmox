@@ -520,5 +520,22 @@ too, since the bench ran on b11505.
 
 - **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
   the d0 and d8000 cells, as in the configurations record, and that is what was applied.
+- **Stage 1's first attempt (13:24–13:45 ET) was stopped after one cell.**
+  - **What went wrong:** the turn probe appended each chunk inside the context's user
+    message. GLM's linear-attention layers resume only from a context checkpoint, which
+    llama-server places at user-message starts and about one micro-batch (~4,100 tokens)
+    before a prompt's end.
+  - **Effect:** every turn re-prefilled 2,000–4,100 tokens of context before its chunk. The
+    cache served 25,927, then 27,976, of the 30,023 context tokens. Every request was then
+    above every threshold under test.
+  - The probe flagged the cell's first rep (7 uncached requests). Its later reps were wrong
+    in the same way.
+  - **Fix (`9ae99d3`):** the probe sends each chunk as its own user message, after the
+    context and a fixed assistant reply, as an agent session does.
+  - **Live check before the rerun (13:50–13:51 ET, 8k context, scratch run):** the cache
+    served 8,026 of 8,024 context tokens. A 41-token turn prefilled in 4.45–4.49 s, a
+    265-token one in 8.3–8.4 s.
+  - The stage restarts from scratch at that commit. The first attempt's data stays on the
+    host in `sweep-106-offload-20261013T172410Z/` and is not used.
 
 ## Conclusion
