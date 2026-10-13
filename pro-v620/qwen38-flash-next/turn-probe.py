@@ -8,14 +8,23 @@ key TURNS):
         --sizes 32,64,128,256,512,1024,2048 --reps 3
 
 Every request sends the same context (the first --depth tokens of --context-file), then a
-chunk of SIZE tokens the server has not seen, then a one-line instruction. Context and
-chunks are cut with the server's own tokenizer (/tokenize, /detokenize). The prompt
-cache serves the context, so prompt_n is the new tokens and prompt_ms their prefill: the
-cost one agent turn pays, which on a model with experts in host RAM is not proportional to
-its size. A first request prefills the context alone, cold (cache_prompt off, so nothing an
-earlier probe left in the slot is reused), and leaves it in the slot. Sizes then run
-interleaved, rotating their order each rep, and each chunk is a different slice of the
-text so that no chunk is ever served from the cache.
+chunk of SIZE tokens the server has not seen. Context and chunks are cut with the server's
+own tokenizer (/tokenize, /detokenize). The prompt cache serves the context, so prompt_n is
+the new tokens and prompt_ms their prefill: the cost one agent turn pays, which on a model
+with experts in host RAM is not proportional to its size. A first request prefills the
+context alone, cold (cache_prompt off, so nothing an earlier probe left in the slot is
+reused), and leaves it in the slot. Sizes then run interleaved, rotating their order each
+rep, and each chunk is a different slice of the text so that no chunk is ever served from
+the cache.
+
+With --chat, the context is one user message, then a fixed assistant reply, and each chunk
+is a new user message, as in an agent session. A model with recurrent or sliding-window
+layers (GLM-5.3-Flash's linear-attention layers) can resume only from a context checkpoint,
+and llama-server places those at user-message starts and just before a prompt's end. A
+chunk in its own user message is resumed exactly where it starts; appended inside the
+context's message, it would resume about one micro-batch earlier and time that again. The
+raw /completion mode appends the chunk to the context, so it measures turns only on a
+model without such layers.
 
 The JSON on stdout has every row, the median per size and a straight-line fit
 prompt_s = fixed + per_token * prompt_n over all rows. One row per request also goes to
@@ -30,7 +39,7 @@ import sys
 import time
 import urllib.request
 
-INSTRUCTION = "\n</documents>\n\nReply with exactly: OK"
+INSTRUCTION = "Reply with exactly: OK"
 
 
 def post(url, body, timeout=3600):
@@ -40,14 +49,26 @@ def post(url, body, timeout=3600):
         return json.loads(r.read())
 
 
-def request(base, prompt, n_predict, chat, cache=True):
+def payload(context, chunk, chat):
+    """The chat messages, or the raw prompt, for the context and an optional new chunk."""
+    documents = "<documents>\n%s\n</documents>\n\n%s" % (context, INSTRUCTION)
+    if not chat:
+        return "<documents>\n%s%s\n</documents>\n\n%s" % (context, chunk or "", INSTRUCTION)
+    messages = [{"role": "user", "content": documents}]
+    if chunk is not None:
+        messages += [{"role": "assistant", "content": "OK"},
+                     {"role": "user", "content": "%s\n\n%s" % (chunk, INSTRUCTION)}]
+    return messages
+
+
+def request(base, context, chunk, n_predict, chat, cache=True):
     if chat:
-        body = {"messages": [{"role": "user", "content": prompt}], "max_tokens": n_predict,
+        body = {"messages": payload(context, chunk, True), "max_tokens": n_predict,
                 "temperature": 0, "top_k": 1, "cache_prompt": cache, "stream": False}
         path = "/v1/chat/completions"
     else:
-        body = {"prompt": prompt, "n_predict": n_predict, "temperature": 0, "top_k": 1,
-                "cache_prompt": cache, "stream": False}
+        body = {"prompt": payload(context, chunk, False), "n_predict": n_predict, "temperature": 0,
+                "top_k": 1, "cache_prompt": cache, "stream": False}
         path = "/completion"
     t0 = time.time()
     r = post(base + path, body)
@@ -108,8 +129,7 @@ def main():
         # cache_prompt off: llama-server keeps a slot's tokens after every request, so a
         # cached prime would reuse whatever prefix the previous probe left and time less
         # than the full context. Off, it prefills all of it, and the turns reuse it.
-        prime = request(a.base, "<documents>\n" + context + INSTRUCTION, a.n_predict, a.chat,
-                        cache=False)
+        prime = request(a.base, context, None, a.n_predict, a.chat, cache=False)
     except Exception as e:
         result.update(error="priming request failed: %r" % (e,), probe_ok=False)
         print(json.dumps(result, indent=1))
@@ -126,8 +146,7 @@ def main():
             chunk = post(a.base + "/detokenize", {"tokens": rest[offset:offset + size]})["content"]
             offset += size
             try:
-                m = request(a.base, "<documents>\n" + context + chunk + INSTRUCTION,
-                            a.n_predict, a.chat)
+                m = request(a.base, context, chunk, a.n_predict, a.chat)
             except Exception as e:
                 m = {"error": repr(e)[:200]}
             m.update(size_target=size, rep=rep)

@@ -180,20 +180,22 @@ class ProbeTests(unittest.TestCase):
         self.assertIsNone(turns.fit([(100, 7.0), (100, 7.2)]))
 
     def test_turn_chunks_rotate_and_never_repeat(self):
-        prompts, caches = [], []
+        contexts, chunks, caches = [], [], []
 
-        def responder(base, prompt, n_predict, chat, cache=True):
-            prompts.append(prompt)
+        def responder(base, context, chunk, n_predict, chat, cache=True):
+            contexts.append(context)
+            chunks.append(chunk)
             caches.append(cache)
-            new = 2000 if len(prompts) == 1 else 40
-            return {"prompt_n": new, "cache_n": 0 if len(prompts) == 1 else 2000,
+            new = 2000 if len(chunks) == 1 else 40
+            return {"prompt_n": new, "cache_n": 0 if len(chunks) == 1 else 2000,
                     "prompt_ms": 7000.0, "prefill_tps": 5.0}
 
         status, data = self.run_turns(responder, "--reps", "2")
         self.assertEqual(status, 0)
         self.assertEqual([r["size_target"] for r in data["rows"]], [32, 256, 256, 32])
-        self.assertEqual(len(set(prompts)), len(prompts))
-        self.assertTrue(all(p.startswith(prompts[0].split("\n</documents>")[0]) for p in prompts))
+        self.assertIsNone(chunks[0])
+        self.assertEqual(len(set(chunks[1:])), len(chunks) - 1)
+        self.assertEqual(len(set(contexts)), 1)
         # The prime prefills cold, whatever an earlier probe left in the slot; turns reuse it.
         self.assertEqual(caches, [False, True, True, True, True])
 
@@ -205,17 +207,26 @@ class ProbeTests(unittest.TestCase):
             return {"choices": [{"message": {"content": "OK"}}], "content": "OK", "timings": {}}
 
         with patch.object(turns, "post", side_effect=capture):
-            # The prime in a chat-mode sweep, the same through /completion, then a turn.
-            turns.request("http://unused", "p", 8, chat=True, cache=False)
-            turns.request("http://unused", "p", 8, chat=False, cache=False)
-            turns.request("http://unused", "p", 8, chat=True)
+            # The prime in a chat-mode sweep, a turn through /completion, then a chat turn.
+            turns.request("http://unused", "CTX", None, 8, chat=True, cache=False)
+            turns.request("http://unused", "CTX", "NEW", 8, chat=False, cache=False)
+            turns.request("http://unused", "CTX", "NEW", 8, chat=True)
         self.assertEqual([url.rsplit("/", 1)[-1] for url, _ in bodies],
                          ["completions", "completion", "completions"])
         self.assertEqual([b["cache_prompt"] for _, b in bodies], [False, False, True])
+        prime, raw, turn = (b for _, b in bodies)
+        self.assertEqual([m["role"] for m in prime["messages"]], ["user"])
+        self.assertIn("CTX", raw["prompt"])
+        self.assertIn("NEW", raw["prompt"])
+        # A chat turn's chunk is its own user message after the context's, where a
+        # checkpointed model can resume.
+        self.assertEqual([m["role"] for m in turn["messages"]], ["user", "assistant", "user"])
+        self.assertEqual(turn["messages"][0], prime["messages"][0])
+        self.assertTrue(turn["messages"][2]["content"].startswith("NEW"))
         self.assertTrue(all((b["temperature"], b["top_k"]) == (0, 1) for _, b in bodies))
 
     def test_turn_cache_miss_fails_the_probe(self):
-        def responder(base, prompt, n_predict, chat, cache=True):
+        def responder(base, context, chunk, n_predict, chat, cache=True):
             return {"prompt_n": 2000, "cache_n": 0, "prompt_ms": 30000.0, "prefill_tps": 66.0}
 
         status, data = self.run_turns(responder, "--reps", "1")
