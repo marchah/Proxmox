@@ -583,7 +583,8 @@ chat template as a user turn, the same prompt (5,804 tokens) was answered: a Typ
 with JSDoc. So long-context attention works on this build, and the flag comes from the probe's
 prompt shape on this model. The d0 replies are coherent.
 
-**Contract** (bare chat and `reasoning_effort` `none`, `low`, `high`, `max`):
+**Contract** on `base`, the one cell the sweep checked (bare chat and `reasoning_effort` `none`,
+`low`, `high`, `max`):
 
 | Server flags | Bare chat | `none` | `low` | `high` | `max` |
 | --- | --- | --- | --- | --- | --- |
@@ -710,7 +711,9 @@ What each step changed, by the spread rule:
   says the log record must be durable before the data page "is modified", while 4096 and CPU only
   say "is durable".
 - **Contract:** bare chat and `reasoning_effort` `none`, `low`, `high` and `max` all answered with
-  clean `content` and no reasoning block, in every cell.
+  clean `content` and no reasoning block, on `auto-1024`'s first pass.
+  - The harness ran the contract once per sweep, on the first cell that loaded, so the other
+    cells were not checked.
 - **Card and CPU use:** decode ran at about 52 W and 499 MHz on about 15 cores in every GPU cell;
   prefill used under one core. CPU only used 14–16 cores.
 - **DIMMs:** hottest 57–58 °C in the GPU cells and 60 °C in CPU only; no sample at 66 °C.
@@ -795,7 +798,8 @@ Against the best GPU configuration (`dio-4096-t32`):
   - CPU only gave a different text per thread count in five of six prompt cells; 16 threads
     matched stage 3's `cpu`.
   - All read coherently; none was flagged degenerate.
-- **Contract:** clean at every effort value.
+- **Contract:** clean at every effort value on `dio-4096-t16`'s first pass, the one cell the sweep
+  checked.
 - **DIMMs:** hottest 57–58 °C in the GPU cells and 60–63 °C in CPU only, highest at 32 threads;
   no sample at 66 °C.
 
@@ -926,7 +930,8 @@ Prefill, t/s, and prompt time:
   - The next sample matched again, so the peaks above leave them out.
 - **Output:** each depth gave the same text in every cell and every pass, and the same as
   stage 5a's at that depth. None was flagged degenerate; 8-gram uniqueness was 1.0 throughout.
-- **Contract:** clean at every effort value.
+- **Contract:** clean at every effort value on `ctx64k-n44`'s first pass, the one cell the sweep
+  checked.
 - **Heat:**
   - Junction peaked at 85–89 °C during the deep prompts, and memory at 70–72 °C. The 89 °C was
     `ctx64k-n44`, pass 3.
@@ -986,7 +991,8 @@ measured VRAM: at 39,7, GPU 1 holds blocks 0–39 and GPU 2 blocks 40–44.
 - **Output:** the d8000 text was the same in every two-card cell that loaded. It matches the
   one-card text for its first ~500 characters, then differs, and it reads coherently. Two
   streams completed in every cell.
-- **Contract:** clean at every effort value.
+- **Contract:** clean at every effort value on the first pass of `2c-n37` (round 1) and
+  `2c-n38-s39` (round 2), the one cell each sweep checked.
 - **The sweep's flag:** "possible spill" fired on every cell, because GPU 1's GTT grew 260 MiB
   during each probe. Requested-minus-resident VRAM read zero in the cells marked 0.
 - **Heat:** hottest DIMM 52–54 °C. Junction peaked at 72–77 °C on GPU 1 and 54–61 °C on GPU 2.
@@ -1149,7 +1155,8 @@ experts in RAM with `-ot blk\.45\.ffn_(up|gate|down)_exps=CPU`.
 - **Output:** each cell's d8000 code text differs from the others' and from stage 4's text
   without MTP; the differences start within the first ~200 characters. All read coherently,
   with 8-gram uniqueness 1.0. Two streams completed in every cell.
-- **Contract:** clean at every effort value, with MTP on.
+- **Contract:** clean at every effort value, with MTP on, on the first pass of `m8-n44` and of
+  `m8-n46`, the one cell each sweep checked.
 - **Card and CPU, per phase** (`SUMMARY.md` medians, all four cells):
   - prefill 146–175 W at 2,356–2,382 MHz, 99% busy;
   - decode 46 W at 528–538 MHz, 64–69% busy, on 18.8–20.1 cores;
@@ -1551,6 +1558,9 @@ tokens, unless noted.
     reasoning block, and no think tag reached `content`.
   - Tool calls work streamed and not.
   - Image requests work without MTP and fail with HTTP 500 under MTP (#30204).
+  - **The contract was checked on one cell per sweep:** its first load, named in each stage.
+    Other KV types, placements and draft lengths were not each checked. From PR #103,
+    `placement-sweep.sh` runs it after every cell load.
 - **What the card holds** (stage 1: context 65536, micro-batch 1024, one slot):
   - Every routed expert in RAM: 15,461 MiB at load.
   - q8_0 KV saves 577 MiB.
