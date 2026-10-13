@@ -213,6 +213,19 @@ systemd-run --unit=vram-residency --collect /usr/bin/python3 "$PWD/vram-residenc
   --pci 0000:83:00.0 --output /root/qwen38-flash-next/residency.jsonl
 ```
 
+`vram-release-trace.sh` runs on the host as root and logs the kernel's VRAM allocations
+and frees of at least 16 MiB, with the task behind each one. It probes the VRAM manager,
+the release of buffer objects and the driver's VRAM fills and clears, and it adds the
+driver's own create and move tracepoints. The trace shows when a freed buffer's VRAM
+returns to the card, relative to the process's next allocations. `--check` defines the
+probes and removes them again, without tracing anything.
+
+```bash
+systemd-run --unit=vram-release-trace --collect "$PWD/vram-release-trace.sh" \
+  /root/qwen38-flash-next/trace.txt
+systemctl stop vram-release-trace        # removes the probes and the tracefs instance
+```
+
 These experiments restart model servers. Check their container/device settings
 before use. The B550 harness in `../gpu-ab-bench/` contains old PCI addresses;
 this directory's guard targets the ROMED8-2T.
