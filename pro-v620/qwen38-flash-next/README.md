@@ -207,10 +207,27 @@ and the placement of each of its buffers. Requested minus resident VRAM is memor
 process asked to have in VRAM that sits elsewhere, including a buffer created in GTT
 because VRAM was full; `amd-evicted-vram` counts only memory moved out after it was
 created. `residency-summary.py` matches each request's prefill to those samples.
+The card's VRAM reads 16 MiB above the server's own at rest. A single sample above that by
+about a compute buffer's size is llama.cpp swapping its compute buffer: the freed buffer
+stays counted until the driver has wiped it. That takes up to 0.2 s on GLM-5.3-Flash and
+36 ms on Flash-Next ([GLM findings record](../glm53-flash/runs/2026-10-13-findings.md)).
 
 ```bash
 systemd-run --unit=vram-residency --collect /usr/bin/python3 "$PWD/vram-residency-sampler.py" \
   --pci 0000:83:00.0 --output /root/qwen38-flash-next/residency.jsonl
+```
+
+`vram-release-trace.sh` runs on the host as root and logs the kernel's VRAM allocations
+and frees of at least 16 MiB, with the task behind each one. It probes the VRAM manager,
+the release of buffer objects and the driver's VRAM fills and clears, and it adds the
+driver's own create and move tracepoints. The trace shows when a freed buffer's VRAM
+returns to the card, relative to the process's next allocations. `--check` defines the
+probes and removes them again, without tracing anything.
+
+```bash
+systemd-run --unit=vram-release-trace --collect "$PWD/vram-release-trace.sh" \
+  /root/qwen38-flash-next/trace.txt
+systemctl stop vram-release-trace        # removes the probes and the tracefs instance
 ```
 
 These experiments restart model servers. Check their container/device settings

@@ -264,7 +264,9 @@ the same text every time, so greedy output should repeat. `ingest-summary.json` 
 entry per depth in `by_depth`: prompt tokens, prefill rate and time (the time to first
 token), decode rate, output tokens, draft acceptance, finish reasons, notes with all three
 sections (`sections_ok`) and whether every rep returned the same text (`repeatable`). A
-request the cache served in part counts as an error (`warm_cache`).
+request the cache served in part counts as an error (`warm_cache`). Each row of
+`ingest-requests.jsonl` keeps the note's full text (`output`) and any reasoning text the
+server returned separately (`reasoning`).
 
 ### Running them
 
@@ -293,17 +295,24 @@ through the container that serves it:
 | --- | --- | --- | --- | --- | --- | --- |
 | `1` (default) | CT 120 | Qwen3.6-35B-A3B | 4 × 64k | 2 × 128k | Each preset's | `pro-v620/results/llamacpp/` |
 | `2` | CT 123 | Qwen3.8-Flash-Next | 1 × 64k | 1 × 64k | 56k | `pro-v620/results/llamacpp-gpu2/` |
+| `2`, `MODEL=glm53f` | CT 123 | GLM-5.3-Flash, not deployed | 1 × 64k | 1 × 64k | 56k | `pro-v620/results/llamacpp-gpu2-glm53f/` |
 
 One 64k slot holds neither agent preset's full depth, so GPU 2's sessions stop at 56k.
+`MODEL` runs a model that is not deployed in the GPU's container, for a usage test; the
+`models` map in `ansible/benchmark.yml` holds its unit, helper and slot layout, and its
+directory's README says how to set the container up and restore it.
+
 Before changing anything, the batch checks that the container is serving its model and
-has its reload helper. It stops if the two-card cutover is active, or if CT 123 lacks
-`llamacpp-qwen38fn-reload`; install that from `pro-v620/qwen38-flash-next/` with
-`VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh`.
+has its reload helper. It stops if the two-card cutover is active, or if CT 123 lacks the
+helper: `llamacpp-qwen38fn-reload` installs from `pro-v620/qwen38-flash-next/` with
+`VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh`, and `llamacpp-glm53f-reload` from
+`pro-v620/glm53-flash/`.
 
 | Command | Runs |
 | --- | --- |
 | `make bench` | GPU 1: regression items, agent sessions, document ingestion |
 | `make bench GPU=2` | The same on GPU 2 |
+| `make bench GPU=2 MODEL=glm53f` | The same on GPU 2 with GLM-5.3-Flash in Flash-Next's place |
 | `make bench SUITE=short` | Regression items only |
 | `make bench INGEST=false` | Regression items and agent sessions |
 | `make bench AGENT=false` | Regression items and document ingestion |

@@ -60,7 +60,27 @@
         # One 64k slot holds neither agent preset's full depth (hermes 64k and coding
         # 124k, plus a turn and its reply), so sessions stop at 56k.
         agent_depth: 56000
-    gpu_config: "{{ gpus[gpu | string] }}"
+        helper_install: "from pro-v620/qwen38-flash-next/ on the host: VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh"
+    # model= runs another model in the GPU's container, for a usage test of a model that is
+    # not deployed there (pro-v620/TEST-RECORDS.md). Its entry overrides the GPU's.
+    model: ""
+    models:
+      glm53f:
+        # GLM-5.3-Flash on CT 123 in Flash-Next's place: ct123-test-host.sh one-card, then
+        # install.sh with glm53f-bench.env (pro-v620/glm53-flash/). The batch restores it at
+        # one slot; ct123-test-host.sh restore puts Flash-Next back.
+        gpu: "2"
+        service: llamacpp-glm53f
+        model_key: glm-5.3-flash
+        context: 65536
+        parallel: 1
+        restore_parallel: 1
+        reload_helper: /usr/local/bin/llamacpp-glm53f-reload
+        version_cmd: '. /etc/llamacpp-glm53f.env && LD_LIBRARY_PATH="${LLAMACPP_DIR}" "${LLAMACPP_DIR}/llama-server" --version 2>&1'
+        results_label: llamacpp-gpu2-glm53f
+        agent_depth: 56000
+        helper_install: "from pro-v620/glm53-flash/ on the host: VMID=123 ENV_FILE=glm53f-bench.env ./install.sh"
+    gpu_config: "{{ gpus[gpu | string] | combine(models[model] if model else {}) }}"
     gpu_vmid: "{{ gpu_config.vmid }}"
     # Served model id (== llama-server --alias). The bench-runner also auto-detects it
     # from /v1/models, but the reload/label/telemetry paths use it.
@@ -133,7 +153,11 @@
         that:
           - (gpu | string) in gpus
           - suite in ['short', 'full']
-        fail_msg: "gpu must be one of {{ gpus | list | join(', ') }} and suite 'short' or 'full' (got gpu={{ gpu }}, suite={{ suite }})"
+          - not model or (model in models and models[model].gpu == (gpu | string))
+        fail_msg: >-
+          gpu must be one of {{ gpus | list | join(', ') }}, suite 'short' or 'full', and model
+          empty or one of {{ models | list | join(', ') }} on its own GPU
+          (got gpu={{ gpu }}, suite={{ suite }}, model={{ model }})
 
     # Nothing is changed before these pass. With the two-card cutover active, CT 120
     # serves llamacpp-qwen38fn and CT 123 is stopped: reloading CT 120's llamacpp unit
@@ -165,8 +189,8 @@
       ansible.builtin.fail:
         msg: >-
           CT {{ gpu_vmid }} has no {{ gpu_config.reload_helper }}.
-          {{ 'Install it from pro-v620/qwen38-flash-next/ on the host: VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh'
-             if (gpu | string) == '2' else 'Reprovision the container or install the helper.' }}
+          {{ 'Install it ' ~ gpu_config.helper_install if gpu_config.helper_install is defined
+             else 'Reprovision the container or install the helper.' }}
       when: gpu_helper.rc is defined and gpu_helper.rc != 0
 
     - name: Capture the local source commit (controller)

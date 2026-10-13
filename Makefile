@@ -7,6 +7,9 @@ SECRETS  := ansible/secrets.yml
 # GPU=1 benchmarks CT 120 (0000:03:00.0), GPU=2 CT 123 (0000:83:00.0). PARALLEL
 # defaults per GPU in ansible/benchmark.yml (GPU 1: 4, GPU 2: 1).
 GPU      ?= 1
+# MODEL runs a model that is not deployed in the GPU's container, e.g. MODEL=glm53f with
+# GPU=2 (GLM-5.3-Flash on CT 123, set up per pro-v620/glm53-flash/README.md).
+MODEL    ?=
 PARALLEL ?=
 RUNTIME  ?= llamacpp
 # SUITE=full adds the agent-session and document-ingestion workloads to the batch;
@@ -18,7 +21,7 @@ INGEST   ?= true
 # scratch run no test record will cite (pro-v620/TEST-RECORDS.md).
 ALLOW_DIRTY ?= false
 SELECT   := -e suite=$(SUITE) -e run_agent_sessions=$(AGENT) -e run_doc_ingest=$(INGEST)
-TARGET   := -e gpu=$(GPU) $(if $(PARALLEL),-e parallel=$(PARALLEL)) -e runtime=$(RUNTIME) -e allow_dirty=$(ALLOW_DIRTY)
+TARGET   := -e gpu=$(GPU) $(if $(MODEL),-e model=$(MODEL)) $(if $(PARALLEL),-e parallel=$(PARALLEL)) -e runtime=$(RUNTIME) -e allow_dirty=$(ALLOW_DIRTY)
 
 .DEFAULT_GOAL := help
 .PHONY: help ping check smoke bench context-sweep
@@ -36,7 +39,7 @@ check: ## Syntax-check the playbook
 smoke: ## Plumbing test: push suite + reload model, run NO benchmarks (GPU, PARALLEL overridable)
 	ansible-playbook $(PLAYBOOK) $(TARGET) -e '{"benchmarks": []}'
 
-bench: ## Run the batch (GPU=1|2, SUITE=full|short, AGENT/INGEST=false, PARALLEL, ALLOW_DIRTY)
+bench: ## Run the batch (GPU=1|2, MODEL, SUITE=full|short, AGENT/INGEST=false, PARALLEL, ALLOW_DIRTY)
 	ansible-playbook $(PLAYBOOK) -e @$(SECRETS) $(TARGET) $(SELECT)
 
 context-sweep: ## Run the context-length sweep on top of the batch (same flags as bench)

@@ -4,7 +4,9 @@ Drives the LLM-runtime benchmark batch on the Proxmox host from this machine.
 `gpu` picks the V620 to benchmark through the container that serves it: GPU 1 is
 CT 120 (Qwen3.6-35B-A3B, the default), GPU 2 is CT 123 (Qwen3.8-Flash-Next). Both run
 llama.cpp; the `gpus` map in `benchmark.yml` holds each one's model, context, slot
-counts, reload helper and results folder. It:
+counts, reload helper and results folder. `model` runs a model that is not deployed in
+that container instead, for a usage test: its entry in the `models` map overrides the
+GPU's (`glm53f`: GLM-5.3-Flash on GPU 2). It:
 
 1. pushes the local `bench-runner/` suite to the host (latest, incl. uncommitted),
 2. provisions CT 200 if it is missing (idempotent), or starts it if it is stopped and
@@ -46,6 +48,7 @@ make check           # syntax-check the playbook
 make smoke           # plumbing test (push + reload and restore, no benchmarks)
 make bench           # full batch on GPU 1, --parallel 4 (benchmark default; CT 120 ships --parallel 2)
 make bench GPU=2     # the same on GPU 2 (CT 123, one 64k slot); runs for hours
+make bench GPU=2 MODEL=glm53f  # GLM-5.3-Flash on GPU 2; set CT 123 up first (pro-v620/glm53-flash/)
 make bench SUITE=short  # regression items only: no agent sessions or document ingestion
 make bench INGEST=false # skip document ingestion (AGENT=false skips the agent sessions)
 make bench PARALLEL=1 # single-slot run
@@ -62,7 +65,7 @@ ansible-playbook ansible/benchmark.yml -e @ansible/secrets.yml
 ansible-playbook ansible/benchmark.yml -e @ansible/secrets.yml -e parallel=1
 ```
 
-Useful extra vars: `gpu` (`1` or `2`), `parallel` (benchmark concurrency, default 4 on
+Useful extra vars: `gpu` (`1` or `2`), `model` (`glm53f` on GPU 2), `parallel` (benchmark concurrency, default 4 on
 GPU 1 and 1 on GPU 2), `restore_parallel` (what the server is reloaded to when the run
 finishes: 2 on CT 120 and 1 on CT 123, the operational `--parallel`; decoupled from
 `parallel` so a benchmark never leaves prod downgraded; the workloads item also runs at
