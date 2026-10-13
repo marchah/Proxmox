@@ -63,7 +63,8 @@ rather than on a Cartesian product.
      from the trace.
 
    2048 is kept only if its estimated batch time (prefill plus decode, priced as in stage 1)
-   is lower. Its VRAM result goes to stage 3 either way.
+   is lower. Its VRAM result goes to stage 3 either way. The turn probe's prime prefills its
+   30k context cold (`cache_prompt` off), so its prefill is a cold 30k figure.
 3. **Placement.** At n-max 2 and one 64k slot, compare `-ncmoe 46` (the control), `-ncmoe 45`
    (block 45's experts on the card) and `-ncmoe 44` with block 45's experts in RAM (block 44's
    on the card). Micro-batch 4096 first; a placement that fails moves to 2048, then 1024.
@@ -84,13 +85,17 @@ rather than on a Cartesian product.
    0.3 and 0.5: 12 cells.
    - **Prompts:** code, list and prose at 8k, 32k and 48k tokens of the pinned corpus, with
      outputs of 256, 640 and 1,024 tokens.
-   - **Screen:** one pass over all 12 cells.
+   - **Screen:** one pass over all 12 cells and a no-speculation cell at the same placement
+     (`nospec`), the correctness control CLAUDE.md requires when a drafter is tested.
    - **Retained cells:** the three with the lowest summed decode time over all 27 requests,
      plus n-max 2 at p-min 0 (the control). They get two more interleaved passes, three in
      all. A cell with a failed, empty or degenerate reply is not retained.
    - **Winner:** the lowest summed request time over the three passes. Also reported:
-     acceptance, draft tokens wasted (drafted minus accepted), and whether each text matches
-     the control's.
+     - acceptance, and draft tokens wasted (drafted minus accepted);
+     - whether each text matches the n-max 2 control's;
+     - whether each text matches `nospec`'s. Batched verification can change the text, as
+       in the configurations record's stage 7c, so a text that differs is read for
+       coherence, not failed.
    - **Model's own sampling:** the winner, the runner-up and the control run again for
      three passes with `--sampling server --seed 1234`. If the order changes, the record
      says so.
@@ -129,8 +134,8 @@ rather than on a Cartesian product.
 - **Two GPUs and CPU only:** left out. The owner chose one card, and #106 tunes that layout.
 - **Optimized:** the placement and micro-batch stages measure the room left on the card.
 - **Speculative decoding:** MTP throughout. Stage 4 tunes it; the issue rules out another
-  full workload without MTP. A cell without speculation runs only where a stage needs a
-  correctness control.
+  full workload without MTP. A cell without speculation runs only as a correctness
+  control: stage 4's `nospec`, one screen pass.
 - **Cut from #106 (owner, 2026-10-13):**
   - **The MoE cache with `dio`.** Including swaps the batch had about 1 GiB free, so a cache
     would hold under one expert layer of 46.
@@ -152,7 +157,10 @@ rather than on a Cartesian product.
 
 - **Stages 0–5:** the batch's configuration on the stage's build is the control cell. It
   runs interleaved with the other cells, at least three passes each, in every timed stage.
-- **Stage 4:** n-max 2 at p-min 0 is the control, and every MTP text is compared with it.
+- **Stage 4:** n-max 2 at p-min 0 is the speed control. `nospec`, the same placement
+  without speculation, is the correctness control. Every MTP text is compared with both.
+  Under server sampling no text is compared: MTP changes how the sampler's random draws are
+  consumed, so texts may differ by design.
 - **Stage 6:** the control and the winner run the same workload suite.
 - **Stage 7:** the unchanged prompt.
 
@@ -204,7 +212,7 @@ systemctl stop vram-release-trace vram-residency
 | 1 offload | thresholds 32 (control), 128, 256, 512, 1024 via `ENV` | 3 | `DEPTHS=0,8000`, `TURNS` | ~4 h |
 | 2 micro-batch | 4096 (control), 2048 | 3 | `DEPTHS=0,8000`, `TURNS` | ~2 h |
 | 3 placement | 46 (control), 45, 44 with `-ot blk\.45\.ffn_(up\|gate\|down)_exps=CPU`, at the micro-batch the fit needs | 1 fit, then 3 timed | fit: `DEPTHS=0,8000,48000`, `TURNS`; timed: `DEPTHS=0,8000`, `TURNS` | ~3–4 h |
-| 4 MTP | n-max 1/2/3 × p-min 0/0.2/0.3/0.5 | 1 screen; 2 more for the retained 4; 3 under server sampling for 3 | `DEPTHS=8000,32000,48000`, `PROBE_ARGS="--n-predict 256,640,1024 --cache"` | screen ~9 h, retained ~6 h, sampling ~7 h |
+| 4 MTP | n-max 1/2/3 × p-min 0/0.2/0.3/0.5, plus `nospec` in the screen | 1 screen; 2 more for the retained 4; 3 under server sampling for 3 | `DEPTHS=8000,32000,48000`, `PROBE_ARGS="--n-predict 256,640,1024 --cache"` | screen ~10 h, retained ~6 h, sampling ~7 h |
 | 5 CPU | 16/24/32 threads, 32 + `--poll 0`, 32 pinned (+ 20/28) | 3 | `DEPTHS=0,8000`, `TURNS` | ~4–6 h |
 
 - **Stage 4's prompts share the corpus prefix.** With `--cache`, each cell prefills the 48k
@@ -216,7 +224,7 @@ systemctl stop vram-release-trace vram-residency
 - **Stage 7:** from CT 200, as in the findings record. `benchmark-doc-ingest.py --depths
   8192 49152 --max-tokens 2048 --reps 1` runs six times, alternating `--prompt standard` and
   `--prompt concise`; about 1.2 h.
-- **Expected duration: about 45 h of runs**, over several days. Each stage's results are
+- **Expected duration: about 46 h of runs**, over several days. Each stage's results are
   appended when it ends. The owner can stop the campaign after any stage.
 - **Raw data:**
   - on the host: `/root/glm53-flash/sweep-106-<stage>-<ts>/`, `residency-106-<stage>.jsonl`
