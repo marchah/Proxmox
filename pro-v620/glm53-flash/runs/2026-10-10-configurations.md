@@ -919,9 +919,11 @@ Prefill, t/s, and prompt time:
 - **Nothing left VRAM:** 0 MiB outside VRAM and nothing evicted over 9,459 samples.
   - The card's total matched the server's own allocation within 16 MiB. The exceptions were
     single samples: one to five per deep prompt, plus some during loads and unloads.
-  - In those samples, either the card's total read up to 8.4 GiB high or the server's read low,
-    while the server freed and reallocated its buffers. The next sample matched again, so the
-    peaks above leave them out.
+  - In those samples the card's total read up to 8.4 GiB above the server's own allocation,
+    while the server freed and reallocated its compute buffer.
+  - The card keeps counting a freed buffer until the driver has wiped it, for up to 0.2 s
+    ([findings record](2026-10-13-findings.md)).
+  - The next sample matched again, so the peaks above leave them out.
 - **Output:** each depth gave the same text in every cell and every pass, and the same as
   stage 5a's at that depth. None was flagged degenerate; 8-gram uniqueness was 1.0 throughout.
 - **Contract:** clean at every effort value.
@@ -1225,8 +1227,10 @@ Decode per prompt cell, t/s, with draft acceptance:
 - **VRAM:** load grew by about 317 MiB per draft token, from 19,911 MiB at n-max 1 to 22,131 at
   8. n-max 8 reproduced 7a's `m8-n46` load exactly.
   - Nothing went outside VRAM at any length. The least free was 8,220–10,254 MiB.
-  - Excluded as read races: one or two samples per cell that read the card total 1.9–4.8 GiB
-    above the server's request, or caught the previous server unloading.
+  - Left out of the least-free figures: one or two samples per cell that read the card total
+    1.9–4.8 GiB above the server's request. They match, in size and in lasting one sample,
+    the compute-buffer swaps the [findings record](2026-10-13-findings.md) traced, or caught the
+    previous server unloading.
   - At n-max 1 and 3, VRAM after the probe read 1.4–1.5 GiB below VRAM after load. The server's
     request moves with requests (18.4–20.4 GiB at n-max 1), and the card total follows it. The
     after-probe reading fell between requests.
@@ -1343,9 +1347,12 @@ every phase at 499 MHz except prefill):
   4's. Decode used 30.3–30.4 CPU cores and 52 W on the card in both.
 - Cause not measured. 7c's comparisons are among its own interleaved cells.
 
-**Residency:** nothing went outside VRAM in 9,571 samples. Up to two single samples per pass read
-the card total 1.3–6.7 GiB above the server's request, or caught a server unloading; they were
-excluded as read races.
+**Residency:** nothing went outside VRAM in 9,571 samples.
+
+- Up to two single samples per pass read the card total 1.3–6.7 GiB above the server's request.
+- They match, in size and in lasting one sample, the compute-buffer swaps the
+  [findings record](2026-10-13-findings.md) traced, or caught a server unloading.
+- They were excluded.
 
 **Output:**
 - Every cell gave the same text in every pass.
@@ -1526,6 +1533,9 @@ configuration.**
     compute-buffer swap as a peak above the load reading.
   - **Stages 4 and 7 lacked the per-phase card figures** the plan asks for. They are now
     added from each sweep's `SUMMARY.md` on the host.
+  - **Stages 5b, 7b and 7c left the brief VRAM rises unexplained or called them read races.**
+    The findings record traced rises of the same sizes to compute-buffer swaps. Those passages
+    now point there.
 
 ## Conclusion
 
