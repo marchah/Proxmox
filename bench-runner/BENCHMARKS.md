@@ -265,8 +265,9 @@ characters of the reply.
 ### Document ingestion
 
 `benchmark-doc-ingest.py` (target `doc-ingest/`) fills the prompt with documents to 8k,
-16k, 32k and 48k tokens, with the prompt cache off, and asks for a ~500-token note with
-three sections. Depths run interleaved and each rep starts at the next depth. A depth sends
+16k, 32k and 48k tokens, with the prompt cache off, and asks for a note in three sections:
+five summary sentences, eight key facts and three open questions. The prompt sets no length;
+replies are capped at 640 tokens (`--max-tokens`). Depths run interleaved and each rep starts at the next depth. A depth sends
 the same text every time, so greedy output should repeat. `ingest-summary.json` has one
 entry per depth in `by_depth`: prompt tokens, prefill rate and time (the time to first
 token), decode rate, output tokens, draft acceptance, finish reasons, notes with all three

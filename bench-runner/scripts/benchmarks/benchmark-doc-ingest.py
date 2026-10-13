@@ -3,8 +3,9 @@
 
 Each request sends documents (this repository's Markdown at a pinned commit, then its code)
 filling the prompt to --depths tokens, with the prompt cache off, and asks for a structured
-note of about 500 tokens. Depths run interleaved, --reps times, each rep starting at the next
-depth. A given depth sends the same text every time, so greedy output should repeat; the
+note in three sections: five summary sentences, eight key facts and three open questions. The
+prompt sets no length; --max-tokens caps the reply. Depths run interleaved, --reps times, each
+rep starting at the next depth. A given depth sends the same text every time, so greedy output should repeat; the
 summary records whether it did, and whether the note has the three requested sections.
 
 Writes ingest-requests.jsonl (one row per request, with the note's full text) and
