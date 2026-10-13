@@ -180,10 +180,11 @@ class ProbeTests(unittest.TestCase):
         self.assertIsNone(turns.fit([(100, 7.0), (100, 7.2)]))
 
     def test_turn_chunks_rotate_and_never_repeat(self):
-        prompts = []
+        prompts, caches = [], []
 
-        def responder(base, prompt, n_predict, chat):
+        def responder(base, prompt, n_predict, chat, cache=True):
             prompts.append(prompt)
+            caches.append(cache)
             new = 2000 if len(prompts) == 1 else 40
             return {"prompt_n": new, "cache_n": 0 if len(prompts) == 1 else 2000,
                     "prompt_ms": 7000.0, "prefill_tps": 5.0}
@@ -193,9 +194,11 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual([r["size_target"] for r in data["rows"]], [32, 256, 256, 32])
         self.assertEqual(len(set(prompts)), len(prompts))
         self.assertTrue(all(p.startswith(prompts[0].split("\n</documents>")[0]) for p in prompts))
+        # The prime prefills cold, whatever an earlier probe left in the slot; turns reuse it.
+        self.assertEqual(caches, [False, True, True, True, True])
 
     def test_turn_cache_miss_fails_the_probe(self):
-        def responder(base, prompt, n_predict, chat):
+        def responder(base, prompt, n_predict, chat, cache=True):
             return {"prompt_n": 2000, "cache_n": 0, "prompt_ms": 30000.0, "prefill_tps": 66.0}
 
         status, data = self.run_turns(responder, "--reps", "1")

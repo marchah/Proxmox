@@ -12,7 +12,8 @@ chunk of SIZE tokens the server has not seen, then a one-line instruction. Conte
 chunks are cut with the server's own tokenizer (/tokenize, /detokenize). The prompt
 cache serves the context, so prompt_n is the new tokens and prompt_ms their prefill: the
 cost one agent turn pays, which on a model with experts in host RAM is not proportional to
-its size. A first request fills the cache with the context alone. Sizes then run
+its size. A first request prefills the context alone, cold (cache_prompt off, so nothing an
+earlier probe left in the slot is reused), and leaves it in the slot. Sizes then run
 interleaved, rotating their order each rep, and each chunk is a different slice of the
 text so that no chunk is ever served from the cache.
 
@@ -39,14 +40,14 @@ def post(url, body, timeout=3600):
         return json.loads(r.read())
 
 
-def request(base, prompt, n_predict, chat):
+def request(base, prompt, n_predict, chat, cache=True):
     if chat:
         body = {"messages": [{"role": "user", "content": prompt}], "max_tokens": n_predict,
-                "temperature": 0, "top_k": 1, "cache_prompt": True, "stream": False}
+                "temperature": 0, "top_k": 1, "cache_prompt": cache, "stream": False}
         path = "/v1/chat/completions"
     else:
         body = {"prompt": prompt, "n_predict": n_predict, "temperature": 0, "top_k": 1,
-                "cache_prompt": True, "stream": False}
+                "cache_prompt": cache, "stream": False}
         path = "/completion"
     t0 = time.time()
     r = post(base + path, body)
@@ -104,7 +105,11 @@ def main():
     context = post(a.base + "/detokenize", {"tokens": tokens[:a.depth]})["content"]
     rest = tokens[a.depth:]
     try:
-        prime = request(a.base, "<documents>\n" + context + INSTRUCTION, a.n_predict, a.chat)
+        # cache_prompt off: llama-server keeps a slot's tokens after every request, so a
+        # cached prime would reuse whatever prefix the previous probe left and time less
+        # than the full context. Off, it prefills all of it, and the turns reuse it.
+        prime = request(a.base, "<documents>\n" + context + INSTRUCTION, a.n_predict, a.chat,
+                        cache=False)
     except Exception as e:
         result.update(error="priming request failed: %r" % (e,), probe_ok=False)
         print(json.dumps(result, indent=1))
