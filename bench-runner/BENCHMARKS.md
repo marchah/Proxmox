@@ -264,7 +264,9 @@ the same text every time, so greedy output should repeat. `ingest-summary.json` 
 entry per depth in `by_depth`: prompt tokens, prefill rate and time (the time to first
 token), decode rate, output tokens, draft acceptance, finish reasons, notes with all three
 sections (`sections_ok`) and whether every rep returned the same text (`repeatable`). A
-request the cache served in part counts as an error (`warm_cache`).
+request the cache served in part counts as an error (`warm_cache`). Each row of
+`ingest-requests.jsonl` keeps the note's full text (`output`) and any reasoning text the
+server returned separately (`reasoning`).
 
 ### Running them
 
