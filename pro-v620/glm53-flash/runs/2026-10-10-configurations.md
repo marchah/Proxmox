@@ -1215,13 +1215,13 @@ Decode per prompt cell, t/s, with draft acceptance:
     checks 9 tokens.
   - In those phases the container used 20–23 CPU cores, against 28–31 in the others, and
     GPU busy rose to 50–66%, from 39–45%.
+  - Flash-Next's head dropped at the same two points ([MTP record](../../qwen38-flash-next/runs/2026-10-09-mtp.md)).
 - **Card and CPU, per phase** (`SUMMARY.md` medians):
   - prefill 175–181 W at 2,352–2,360 MHz, 99% busy, at every length;
   - decode 50–51 W at 499 MHz on 28.4–29.8 cores at n-max 1–7, and 46 W at 525 MHz on
     20.2 cores at 8;
   - two streams 48–49 W on 30.2–30.5 cores at n-max 1–3, and 43–44 W on 22.4–23.1 cores at
     4–8.
-  - Flash-Next's head dropped at the same two points ([MTP record](../../qwen38-flash-next/runs/2026-10-09-mtp.md)).
 - **VRAM:** load grew by about 317 MiB per draft token, from 19,911 MiB at n-max 1 to 22,131 at
   8. n-max 8 reproduced 7a's `m8-n46` load exactly.
   - Nothing went outside VRAM at any length. The least free was 8,220–10,254 MiB.
