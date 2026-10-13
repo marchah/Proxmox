@@ -90,7 +90,7 @@ def synthetic_prompt(base_url: str, approx_input_tokens: int) -> str:
 
 
 def prompt_for(scenario: dict[str, Any], run_salt: str, index: int) -> str:
-    """Per-request prompt, led by a unique id so every request is a cold prefill.
+    """Per-request prompt; a fixed salt pairs identical inputs across configurations.
 
     A repeated prompt is otherwise served from the server's prompt cache: on CT 120
     (b11475) the second of three identical 32-token requests prefilled 4 tokens, and
@@ -233,6 +233,7 @@ def request_chat(
     scenario_group: str | None,
     scenario_tags: list[str],
     expected_contains: list[str] | None = None,
+    cache_prompt: bool | None = None,
 ) -> dict[str, Any]:
     body = {
         "model": model,
@@ -241,6 +242,10 @@ def request_chat(
         "temperature": temperature,
         "stream": stream,
     }
+    if cache_prompt is not None:
+        # Paired llama-server runs must prefill identical inputs afresh. Leave this
+        # extension out of default requests to providers that may reject it.
+        body["cache_prompt"] = cache_prompt
     if stream:
         body["stream_options"] = {"include_usage": True}
 
@@ -414,6 +419,9 @@ def main() -> int:
     parser.add_argument("--requests", type=int, default=3, help="Requests per scenario.")
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--prompt-salt", default=os.environ.get("BENCHMARK_PROMPT_SALT"),
+                        help="Reuse the same request prefixes across compared llama-server runs; "
+                             "default: random per invocation. Also sets cache_prompt=false.")
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--no-stream", action="store_true")
     args = parser.parse_args()
@@ -458,6 +466,7 @@ def main() -> int:
     summary_path = output_dir / f"openai-{args.label}-summary.json"
     manifest_path = output_dir / f"openai-{args.label}-manifest.json"
 
+    run_salt = args.prompt_salt or uuid.uuid4().hex[:8]
     manifest = {
         "timestamp": now_iso(),
         "label": args.label,
@@ -475,13 +484,14 @@ def main() -> int:
         "temperature": args.temperature,
         # Each prompt led by a unique id (prompt_for); earlier runs repeated prompts verbatim.
         "cold_requests": True,
+        "prompt_salt": run_salt,
+        "cache_prompt": False if args.prompt_salt else None,
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    # One salt per process, so ids differ between sweep points (each point is a
-    # separate invocation) and between reruns. Within a run, scenarios reuse indexes;
-    # their prompts differ right after the id.
-    run_salt = uuid.uuid4().hex[:8]
+    # Random by default for providers without cache_prompt support. A fixed salt lets
+    # llama-server configuration comparisons reuse byte-identical prompts; verify
+    # prompt_n in timings to check that cache_prompt=false produced a cold prefill.
 
     jobs = []
     for scenario_name, scenario in scenarios.items():
@@ -503,6 +513,7 @@ def main() -> int:
                     stream=not args.no_stream,
                     timeout=args.timeout,
                     request_id=f"{scenario_name}-{index + 1}",
+                    cache_prompt=False if args.prompt_salt else None,
                     label=args.label,
                     scenario=scenario_name,
                     scenario_group=scenario.get("group"),

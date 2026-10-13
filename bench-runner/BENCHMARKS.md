@@ -198,7 +198,14 @@ Every `openai-direct` and sweep request starts with its own id (`[<salt>-<n>] `,
 tokens), so the prompt cache cannot serve a repeated prompt. Without it, on CT 120
 (b11475), the second and third of three identical 32-token requests prefilled 4 tokens
 and took 28 from the cache, reading 32–38 tok/s against 125 tok/s cold. The openai
-manifest records `cold_requests: true`.
+manifest records `cold_requests: true`. The salt is random per invocation by default.
+
+For paired llama-server configuration comparisons, set the same
+`BENCHMARK_PROMPT_SALT` in each invocation, or pass `--prompt-salt` to
+`benchmark-openai-api.py`. This reuses byte-identical request prefixes and sends
+`cache_prompt: false`; the openai manifest records both the salt and cache setting.
+Verify the full prompt was prefilled in the server's per-request timings: other
+providers may ignore `cache_prompt`. Leave the salt unset for those providers.
 
 Older runs do not compare with later ones; their openai manifest tells which:
 
@@ -258,13 +265,16 @@ characters of the reply.
 ### Document ingestion
 
 `benchmark-doc-ingest.py` (target `doc-ingest/`) fills the prompt with documents to 8k,
-16k, 32k and 48k tokens, with the prompt cache off, and asks for a ~500-token note with
-three sections. Depths run interleaved and each rep starts at the next depth. A depth sends
+16k, 32k and 48k tokens, with the prompt cache off, and asks for a note in three sections:
+five summary sentences, eight key facts and three open questions. The prompt sets no length;
+replies are capped at 640 tokens (`--max-tokens`). Depths run interleaved and each rep starts at the next depth. A depth sends
 the same text every time, so greedy output should repeat. `ingest-summary.json` has one
 entry per depth in `by_depth`: prompt tokens, prefill rate and time (the time to first
 token), decode rate, output tokens, draft acceptance, finish reasons, notes with all three
 sections (`sections_ok`) and whether every rep returned the same text (`repeatable`). A
-request the cache served in part counts as an error (`warm_cache`).
+request the cache served in part counts as an error (`warm_cache`). Each row of
+`ingest-requests.jsonl` keeps the note's full text (`output`) and any reasoning text the
+server returned separately (`reasoning`).
 
 ### Running them
 
@@ -293,17 +303,24 @@ through the container that serves it:
 | --- | --- | --- | --- | --- | --- | --- |
 | `1` (default) | CT 120 | Qwen3.6-35B-A3B | 4 × 64k | 2 × 128k | Each preset's | `pro-v620/results/llamacpp/` |
 | `2` | CT 123 | Qwen3.8-Flash-Next | 1 × 64k | 1 × 64k | 56k | `pro-v620/results/llamacpp-gpu2/` |
+| `2`, `MODEL=glm53f` | CT 123 | GLM-5.3-Flash, not deployed | 1 × 64k | 1 × 64k | 56k | `pro-v620/results/llamacpp-gpu2-glm53f/` |
 
 One 64k slot holds neither agent preset's full depth, so GPU 2's sessions stop at 56k.
+`MODEL` runs a model that is not deployed in the GPU's container, for a usage test; the
+`models` map in `ansible/benchmark.yml` holds its unit, helper and slot layout, and its
+directory's README says how to set the container up and restore it.
+
 Before changing anything, the batch checks that the container is serving its model and
-has its reload helper. It stops if the two-card cutover is active, or if CT 123 lacks
-`llamacpp-qwen38fn-reload`; install that from `pro-v620/qwen38-flash-next/` with
-`VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh`.
+has its reload helper. It stops if the two-card cutover is active, or if CT 123 lacks the
+helper: `llamacpp-qwen38fn-reload` installs from `pro-v620/qwen38-flash-next/` with
+`VMID=123 ENV_FILE=qwen38fn-gpu2.env ./install.sh`, and `llamacpp-glm53f-reload` from
+`pro-v620/glm53-flash/`.
 
 | Command | Runs |
 | --- | --- |
 | `make bench` | GPU 1: regression items, agent sessions, document ingestion |
 | `make bench GPU=2` | The same on GPU 2 |
+| `make bench GPU=2 MODEL=glm53f` | The same on GPU 2 with GLM-5.3-Flash in Flash-Next's place |
 | `make bench SUITE=short` | Regression items only |
 | `make bench INGEST=false` | Regression items and agent sessions |
 | `make bench AGENT=false` | Regression items and document ingestion |

@@ -181,7 +181,9 @@ server sees (`GGML_VK_VISIBLE_DEVICES`), so a one-card cell in a two-card contai
 `dio`'s pinned memory on its own card. `CONFIGS`, a list of `NCMOE[:CACHE]` entries, is the
 short form. `UNIT` points the sweep, `thermal-guard.sh` and `capture-env.sh` at another
 model's unit; [GLM-5.3-Flash](../glm53-flash/README.md#test-setup) uses
-`UNIT=llamacpp-glm53f N_BLOCKS=46`.
+`UNIT=llamacpp-glm53f N_BLOCKS=46`. `PROBE_CHAT=true` sends both probes' prompts through
+`/v1/chat/completions` instead of `/completion`, with the same text and sampling; results
+compare only with other sweeps in the same mode.
 
 ```bash
 VMID=123 CELLS=runs/2026-10-08-threads-concurrency.cells DEPTHS="0,8000" ./placement-sweep.sh
@@ -190,13 +192,27 @@ VMID=123 CONFIGS="34 40 48" ./placement-sweep.sh
 
 `PROBE_CLASSES` limits the prompt classes, and `DROP_CACHES=true` drops the host page
 cache before every load, for cold loads. `CONC_REPS` sets the concurrency probe's rounds
-per pass (default 1); its medians come only from rounds in which every stream completed,
-and `SUMMARY.md` counts the others. A depth is the probe's target: its filler gives
+per pass (default 1); its medians and acceptance come only from rounds in which every
+stream returned non-empty, non-degenerate output with valid timings. `SUMMARY.md` counts
+the other rounds; rates conditional on successful rounds do not establish serving
+reliability. A depth is the probe's target: its filler gives
 about 0.72 prompt tokens per unit (d8000 is ~5.8k tokens), and `SUMMARY.md` prints the
 measured sizes. Every cell is checked before the first load; a cell that fails to load
 is recorded and the sweep moves on. No cell starts while the hottest DIMM is above
 `DIMM_START_MAX_C` (58 °C), and a cell with a DIMM sample at 66 °C, where the BMC caps
 memory bandwidth to a third, is flagged invalid in `SUMMARY.md`.
+
+Each cell load runs the chat-contract checks, and the summary reports their coverage
+and failures per cell. A probe with failed requests, invalid timings, empty output,
+degenerate output, disagreeing repetitions or a failed contract exits nonzero while
+keeping its JSON for inspection. These gates validate the sampled requests; they do not
+check tool-call correctness. The older sweeps checked only their first loaded cell.
+Raw `/completion` throughput rows can generate reasoning despite the chat setting
+`--reasoning off`; confirm draft tuning through the production chat workloads.
+
+For matched `openai-direct` comparisons, reuse `BENCHMARK_PROMPT_SALT` (or
+`--prompt-salt`) across configurations and verify cold prefill in each request's
+timings; see [benchmark prompts](../../bench-runner/BENCHMARKS.md).
 
 `vram-residency-sampler.py` runs on the host as root, beside a sweep or a batch. Once a
 second it records the card's memory and core clocks, power, VRAM and GTT. For each
@@ -205,10 +221,27 @@ and the placement of each of its buffers. Requested minus resident VRAM is memor
 process asked to have in VRAM that sits elsewhere, including a buffer created in GTT
 because VRAM was full; `amd-evicted-vram` counts only memory moved out after it was
 created. `residency-summary.py` matches each request's prefill to those samples.
+The card's VRAM reads 16 MiB above the server's own at rest. A single sample above that by
+about a compute buffer's size is llama.cpp swapping its compute buffer: the freed buffer
+stays counted until the driver has wiped it. That takes up to 0.2 s on GLM-5.3-Flash and
+36 ms on Flash-Next ([GLM findings record](../glm53-flash/runs/2026-10-13-findings.md)).
 
 ```bash
 systemd-run --unit=vram-residency --collect /usr/bin/python3 "$PWD/vram-residency-sampler.py" \
   --pci 0000:83:00.0 --output /root/qwen38-flash-next/residency.jsonl
+```
+
+`vram-release-trace.sh` runs on the host as root and logs the kernel's VRAM allocations
+and frees of at least 16 MiB, with the task behind each one. It probes the VRAM manager,
+the release of buffer objects and the driver's VRAM fills and clears, and it adds the
+driver's own create and move tracepoints. The trace shows when a freed buffer's VRAM
+returns to the card, relative to the process's next allocations. `--check` defines the
+probes and removes them again, without tracing anything.
+
+```bash
+systemd-run --unit=vram-release-trace --collect "$PWD/vram-release-trace.sh" \
+  /root/qwen38-flash-next/trace.txt
+systemctl stop vram-release-trace        # removes the probes and the tracefs instance
 ```
 
 These experiments restart model servers. Check their container/device settings
@@ -366,4 +399,5 @@ Read DIMM temperatures alongside any CPU-offload throughput measurement.
 ```bash
 shellcheck -S warning ./*.sh ./llamacpp-serve-qwen38fn ./llamacpp-qwen38fn-reload
 python3 -m py_compile ./*.py
+python3 test_probes.py
 ```

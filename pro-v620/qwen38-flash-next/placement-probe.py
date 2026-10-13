@@ -3,10 +3,14 @@
 
 Run from the Proxmox host against CT 120's llama-server.
 
-Why /completion and not /v1/chat/completions for the throughput rows: no chat template
-sits between configs, and llama.cpp returns the full `timings` block. The chat path is
-still exercised once, by --contract, because this model's template is the one thing that
-can turn a working server into 500s (see below).
+Why /completion and not /v1/chat/completions for the throughput rows by default: no chat
+template sits between configs, and llama.cpp returns the full `timings` block. The chat
+path is exercised by --contract after every cell load in placement-sweep.sh. Raw completion
+rows can generate reasoning even when the chat server has --reasoning off; validate
+the chosen configuration on chat workloads before treating it as a serving optimum.
+--chat (PROBE_CHAT=true in placement-sweep.sh) sends the throughput rows through
+/v1/chat/completions instead, which also returns `timings`; the GLM-5.3-Flash records
+use it from stage 3 on, because GLM continued the raw d8000 filler instead of answering.
 
 ⚠️ Three things this model breaks that others here do not:
 
@@ -22,7 +26,7 @@ can turn a working server into 500s (see below).
      the prompt gets accepted, so each row records draft_n and draft_n_accepted. Without
      it, draft_n is absent and tok/s is a plain bandwidth number.
 """
-import argparse, hashlib, json, sys, time, urllib.error, urllib.request
+import argparse, hashlib, json, math, statistics, sys, time, urllib.error, urllib.request
 
 # Three classes, because a speculative-free bandwidth number still moves with how much
 # the tokenizer packs per token. Named in the output so a range is never quoted bare.
@@ -123,26 +127,45 @@ def contract_check(base, efforts):
     return out
 
 
-def one(base, prompt, n_predict):
-    body = {"prompt": prompt, "n_predict": n_predict, "temperature": 0, "top_k": 1,
-            # ⚠️ Without this, a repeated identical request reports prompt_n ~4 and every
-            # config looks the same — you measure cache hits, not the model.
-            "cache_prompt": False, "stream": False}
+def one(base, prompt, n_predict, chat=False):
+    # ⚠️ cache_prompt false: without it, a repeated identical request reports prompt_n ~4 and
+    # every config looks the same — you measure cache hits, not the model.
+    if chat:
+        # The same text as one user turn through the chat template. GLM-5.3-Flash reads the
+        # raw depth prompt (filler, then the instruction) as a document and continues the
+        # filler; as a question it answers. llama-server returns the same timings block.
+        body = {"messages": [{"role": "user", "content": prompt}], "max_tokens": n_predict,
+                "temperature": 0, "top_k": 1, "cache_prompt": False, "stream": False}
+        path = "/v1/chat/completions"
+    else:
+        body = {"prompt": prompt, "n_predict": n_predict, "temperature": 0, "top_k": 1,
+                "cache_prompt": False, "stream": False}
+        path = "/completion"
     t0 = time.time()
-    r = post(base + "/completion", body)
+    r = post(base + path, body)
     wall = time.time() - t0
     tm = r.get("timings", {})
-    content = r.get("content") or ""
+    if chat:
+        choice = r["choices"][0]
+        msg = choice.get("message") or {}
+        content = msg.get("content") or ""
+        reasoning_chars = len(msg.get("reasoning_content") or "")
+        stop = {"length": "limit", "stop": "eos"}.get(choice.get("finish_reason"),
+                                                      choice.get("finish_reason") or "other")
+    else:
+        content = r.get("content") or ""
+        reasoning_chars = None
+        # b11505 reports `stop_type`; older builds set stopped_eos / stopped_limit.
+        stop = r.get("stop_type") or ("eos" if r.get("stopped_eos") else
+                                      "limit" if r.get("stopped_limit") else "other")
     words = content.split()
     shingles = {" ".join(words[j:j + 8]) for j in range(max(0, len(words) - 7))}
     uniq = round(len(shingles) / max(1, len(words) - 7), 3)
-    # Draft acceptance, present only when speculation is active. This repo's rule is to
-    # judge a speculative config by ACCEPTANCE, not tok/s — unchanged acceptance with a
-    # different tok/s means only the workload moved. Absent keys mean no speculation,
-    # which is a valid control, not a failure.
+    # Report acceptance alongside speed: the same acceptance can still have a different
+    # cost when placement, scheduling or the verification batch changes.
     dn, da = tm.get("draft_n"), tm.get("draft_n_accepted")
     accept = round(100.0 * da / dn, 1) if (dn and da is not None) else None
-    return {
+    row = {
         "wall_s": round(wall, 2),
         # When the request started and how its time split, so the sweep can place its
         # telemetry samples in the prefill or the decode phase.
@@ -162,10 +185,15 @@ def one(base, prompt, n_predict):
         "content_sha": hashlib.sha256(content.encode()).hexdigest()[:12],
         # The text itself, so a response that differs from its control can be read.
         "content": content,
-        # b11505 reports `stop_type`; older builds set stopped_eos / stopped_limit.
-        "stop": r.get("stop_type") or ("eos" if r.get("stopped_eos") else
-                                       "limit" if r.get("stopped_limit") else "other"),
+        "stop": stop,
+        # Chat requests only: tokens spent in a reasoning block count toward predicted_n.
+        "reasoning_chars": reasoning_chars,
     }
+    if not content.strip():
+        row["error"] = "empty completion"
+    elif not isinstance(row["decode_tps"], (int, float)) or not math.isfinite(row["decode_tps"]) or row["decode_tps"] <= 0:
+        row["error"] = "missing or invalid decode timing"
+    return row
 
 
 def main():
@@ -176,6 +204,8 @@ def main():
     ap.add_argument("--depths", default="0",
                     help="comma-separated approximate prompt-token depths, e.g. 0,8000,32000")
     ap.add_argument("--contract", action="store_true")
+    ap.add_argument("--chat", action="store_true",
+                    help="send the throughput prompts through /v1/chat/completions")
     # Flash-Next's template takes low, medium and xhigh and raises on none and high;
     # GLM-5.3-Flash's takes low, high and max and reads anything else as max.
     ap.add_argument("--efforts", default="none,high,low,medium,xhigh",
@@ -188,9 +218,11 @@ def main():
     ap.add_argument("--classes", default="",
                     help="comma-separated subset of %s (default: all)" % ",".join(PROMPTS))
     a = ap.parse_args()
+    if a.reps < 1 or a.n_predict < 1:
+        ap.error("--reps and --n-predict must be positive")
 
     result = {"base": a.base, "reps": a.reps, "n_predict": a.n_predict,
-              "classes": a.classes or "all"}
+              "classes": a.classes or "all", "chat": a.chat}
     if a.contract:
         result["contract"] = contract_check(
             a.base, [e.strip() for e in a.efforts.split(",") if e.strip()])
@@ -207,7 +239,7 @@ def main():
         for cls, p in ((c, PROMPTS[c]) for c in want):
             for rep in range(a.reps):
                 try:
-                    m = one(a.base, pad + p, a.n_predict)
+                    m = one(a.base, pad + p, a.n_predict, a.chat)
                 except Exception as e:
                     m = {"error": repr(e)[:200]}
                 m.update({"class": cls, "depth_target": depth, "rep": rep})
@@ -219,7 +251,7 @@ def main():
     # already been actively misleading in this homelab.
     agg = {}
     for r in rows:
-        if "decode_tps" not in r or r.get("decode_tps") is None:
+        if r.get("error") or r.get("decode_tps") is None:
             continue
         k = "d%d/%s" % (r["depth_target"], r["class"])
         agg.setdefault(k, {"decode": [], "prefill": [], "accept": [], "sha": set(),
@@ -233,8 +265,7 @@ def main():
         agg[k]["degen"] |= bool(r.get("degenerate"))
 
     def med(xs):
-        xs = sorted(xs)
-        return round(xs[len(xs) // 2], 2) if xs else None
+        return round(statistics.median(xs), 2) if xs else None
 
     result["summary"] = {
         k: {"prompt_n": v["prompt_n"],
@@ -256,9 +287,18 @@ def main():
            if s["decode_tps_median"]]
     result["decode_tps_overall_median"] = med(dec)
     result["any_degenerate"] = any(s["any_degenerate"] for s in result["summary"].values())
-    result["all_reps_agree"] = all(s["reps_agree"] for s in result["summary"].values())
+    result["failed_requests"] = sum(bool(r.get("error")) for r in rows)
+    result["all_reps_agree"] = bool(agg) and not result["failed_requests"] and all(
+        s["reps_agree"] for s in result["summary"].values())
+    result["contract_ok"] = all(
+        v.get("ok", v.get("harmless", False)) and not v.get("think_leaked_into_content")
+        and not v.get("reasoning_chars") for v in result["contract"].values()
+    ) if a.contract else None
+    result["probe_ok"] = (result["all_reps_agree"] and not result["any_degenerate"]
+                          and result["contract_ok"] is not False)
     print(json.dumps(result, indent=1))
+    return 0 if result["probe_ok"] else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

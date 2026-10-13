@@ -49,6 +49,7 @@ VMID=123 ./install.sh --download     # env, launcher, reload helper, unit; verif
 pct exec 123 -- journalctl -u glm53f-dl --no-pager -n 20
 ./ct123-test-host.sh one-card        # Flash-Next disabled; CT 123 at 240 GiB and 48 cores
 ./ct123-test-host.sh two-card        # also GPU 1; CT 120 must be stopped
+VMID=123 ENV_FILE=glm53f-bench.env ./install.sh   # after one-card: the best configuration
 ./ct123-test-host.sh restore         # Flash-Next back on GPU 2; CT 120's autostart restored
 ./ct123-test-host.sh status
 ```
@@ -59,7 +60,11 @@ pct exec 123 -- journalctl -u glm53f-dl --no-pager -n 20
   and points the thermal watchdog's map at the unit that owns each card. It never starts
   CT 120.
 - `glm53f.env` starts with every routed expert in host RAM (`-ncmoe 46`), which fits one
-  card. The sweep in [`../qwen38-flash-next/`](../qwen38-flash-next/README.md#benchmark-tools)
+  card.
+- `glm53f-bench.env` is the best configuration from the configurations record, at one 64k
+  slot: `-ncmoe 46`, `dio`, batch and micro-batch 4096, 32 threads, f16 KV and MTP at
+  n-max 2. With `llamacpp-glm53f` started, `make bench GPU=2 MODEL=glm53f` runs the usage
+  batch on it from the Mac; `ct123-test-host.sh restore` puts Flash-Next back. The sweep in [`../qwen38-flash-next/`](../qwen38-flash-next/README.md#benchmark-tools)
   drives it with `UNIT=llamacpp-glm53f N_BLOCKS=46`.
 - `MODEL_VK_VISIBLE_DEVICES` limits the cards llama-server sees (`GGML_VK_VISIBLE_DEVICES`,
   by vulkaninfo's index). The launcher exports it only when set: an empty value hides
@@ -69,7 +74,8 @@ pct exec 123 -- journalctl -u glm53f-dl --no-pager -n 20
 
 - Architecture: #27773, merged 2026-09-30. MTP: #29928, merged 2026-10-07. b11505
   contains both.
-- #27773 notes that several sequences need `--kv-unified`.
+- #27773 notes that several sequences need `--kv-unified`. Two slots worked without it on
+  b11505 ([test record](runs/2026-10-10-configurations.md#stage-1-screen--2026-10-10-21232220-et)).
 - Open issues, checked 2026-10-10:
   - #30204: with `--spec-type draft-mtp` on Vulkan, every request that contains an image
     fails with HTTP 500.
@@ -84,7 +90,9 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 
 | Date | Build | Backend | Record | Status |
 | --- | --- | --- | --- | --- |
-| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The fastest configuration on one card, two cards and CPU only](runs/2026-10-10-configurations.md) | planned |
+| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The fastest configuration on one card, two cards and CPU only](runs/2026-10-10-configurations.md) | done |
+| 2026-10-12 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch on the best configuration](runs/2026-10-12-bench.md) | done |
+| 2026-10-13 | b11505 | Vulkan, Mesa 26.2.4 | [The batch's ingestion notes and brief VRAM rises](runs/2026-10-13-findings.md) | done |
 
 ## Local validation
 

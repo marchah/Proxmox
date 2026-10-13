@@ -1,0 +1,13 @@
+# Stage 3 of runs/2026-10-10-configurations.md (load mode and micro-batch), CT 123 holding
+# 0000:83:00.0 only, timed: REPS=3 DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true, all three prompt
+# classes, 16 threads, f16 KV, context 65536, two slots, --reasoning-budget 0 (glm53f.env).
+#
+# Placements from stage 2: -ncmoe 43 at micro-batch 1024, -ncmoe 44 at 4096.
+auto-1024        MODE=1gpu NCMOE=43 KV=f16 CTX=65536 UBATCH=1024 PARALLEL=2 STREAMS=2
+dio-1024         MODE=1gpu NCMOE=43 KV=f16 CTX=65536 UBATCH=1024 PARALLEL=2 STREAMS=2 LOAD_MODE=dio
+dio-4096         MODE=1gpu NCMOE=44 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio
+# Optimized: every routed expert in RAM, at dio-4096's micro-batch, so the two differ only in the
+# one expert layer on the card. Stage 1 measured 17,951 MiB in use at this setting.
+dio-experts-ram  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio
+# CPU only: the whole model in host RAM, --device none, the sweep's CPU batch (4096/1024).
+cpu              MODE=cpu KV=f16 CTX=65536 PARALLEL=2 STREAMS=2

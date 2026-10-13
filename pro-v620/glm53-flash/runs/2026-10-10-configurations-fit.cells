@@ -1,0 +1,21 @@
+# Stage 2 of runs/2026-10-10-configurations.md (fit), CT 123 holding 0000:83:00.0 only, with
+# REPS=1 DEPTHS=8000 PROBE_CLASSES=code and vram-residency-sampler.py running. Per variant, the
+# smallest --n-cpu-moe that leaves at least 3,072 MiB free right after load, with
+# requested-minus-resident VRAM at zero through the d8000 request and the two-stream round (the
+# concurrency probe sends its two streams at d0).
+#
+# Stage 1 settled: f16 KV, two slots without --kv-unified, --reasoning-budget 0 (in glm53f.env).
+# All cells load under dio, the mode in which Flash-Next's buffers went to GTT; stage 1 measured
+# the same VRAM under dio and auto (15,462 and 15,461 MiB).
+#
+# --n-cpu-moe N keeps the experts of blocks 0..N-1 in RAM, so blocks N..44 hold theirs on the
+# card. Expert layers: 4,176 MiB each, 4,482 for block 44. From stage 1, free VRAM after load with
+# every expert in RAM: 15,243 MiB at micro-batch 1024, 12,753 at 4096; a second slot +77.
+# No speculation here: MTP is fitted in stage 7, at the context stage 5 leads to.
+
+# F1: no speculation, micro-batch 1024. 43 should leave ~6.5 GiB, 42 ~2.3 GiB (under the rule).
+f1-42  MODE=1gpu NCMOE=42 KV=f16 CTX=65536 UBATCH=1024 PARALLEL=2 STREAMS=2 LOAD_MODE=dio
+f1-43  MODE=1gpu NCMOE=43 KV=f16 CTX=65536 UBATCH=1024 PARALLEL=2 STREAMS=2 LOAD_MODE=dio
+# F2: no speculation, micro-batch 4096. 43 should leave ~3.9 GiB; 44 is the step back.
+f2-43  MODE=1gpu NCMOE=43 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio
+f2-44  MODE=1gpu NCMOE=44 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio

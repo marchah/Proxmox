@@ -3,11 +3,13 @@
 
 Each request sends documents (this repository's Markdown at a pinned commit, then its code)
 filling the prompt to --depths tokens, with the prompt cache off, and asks for a structured
-note of about 500 tokens. Depths run interleaved, --reps times, each rep starting at the next
-depth. A given depth sends the same text every time, so greedy output should repeat; the
+note in three sections: five summary sentences, eight key facts and three open questions. The
+prompt sets no length; --max-tokens caps the reply. Depths run interleaved, --reps times, each
+rep starting at the next depth. A given depth sends the same text every time, so greedy output should repeat; the
 summary records whether it did, and whether the note has the three requested sections.
 
-Writes ingest-requests.jsonl (one row per request) and ingest-summary.json.
+Writes ingest-requests.jsonl (one row per request, with the note's full text) and
+ingest-summary.json.
 """
 
 from __future__ import annotations
@@ -126,7 +128,8 @@ def main() -> int:
                     row.update(status="error", error=http_error_text(exc), t_end=time.time())
                 else:
                     choice = (response.get("choices") or [{}])[0]
-                    output = (choice.get("message") or {}).get("content") or ""
+                    message = choice.get("message") or {}
+                    output = message.get("content") or ""
                     prompt_tokens = (response.get("usage") or {}).get("prompt_tokens")
                     fields = timing_fields(response.get("timings"))
                     row.update(fields)
@@ -137,7 +140,8 @@ def main() -> int:
                         finish=choice.get("finish_reason"),
                         sections_ok=all(section in output for section in SECTIONS),
                         content_sha=hashlib.sha256(output.encode("utf-8")).hexdigest()[:16],
-                        output_preview=output[:300],
+                        output=output,
+                        reasoning=message.get("reasoning_content") or "",
                     )
                     if not output.strip():
                         row.update(status="invalid_output", error="empty response")

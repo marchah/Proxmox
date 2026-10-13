@@ -70,8 +70,8 @@ One more CPU-resident expert layer costs about 1.8% of decode and 2.3% of prefil
 ([MTP record](2026-10-09-mtp.md)).
 
 - **One slot, one card:** as in the 2026-10-10 batch (owner, 2026-10-10).
-- **Without the head:** left out. `dio` alone leaves 2,076 MiB more VRAM free and showed no
-  slowdown in the [best-configuration record](2026-10-10-best-config.md). The question is
+- **Without the head:** left out. `dio` alone leaves 2,076 MiB of VRAM free at load and
+  showed no slowdown in the [best-configuration record](2026-10-10-best-config.md). The question is
   about this configuration.
 
 ## Controls
@@ -385,8 +385,9 @@ passes, every load cold:
   `h37`.
 - `h35`'s GTT grew by 1,180 MiB during its probe in every pass, and the sweep flagged the
   row as a possible spill. `h35` decoded 21% slower than `h36`.
-- All cells passed the output gate and the template contract. The hottest DIMM reached
-  58 °C.
+- All cells passed the raw-completion output gate. The template contract was checked
+  only on `h35` in the first pass; `h36` and `h37` were not checked. The hottest DIMM
+  reached 58 °C.
 
 ### Stage 3: the full batch at `-ncmoe 37`
 

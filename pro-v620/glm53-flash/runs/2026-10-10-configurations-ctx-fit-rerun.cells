@@ -1,0 +1,10 @@
+# Stage 5a rerun of runs/2026-10-10-configurations.md, after the host's amdgpu compute job
+# timeout went from 2,000 to 10,000 ms (amdgpu-lockup-timeout.sh, owner's choice, host
+# rebooted). One pass: REPS=1 PROBE_CLASSES=code PROBE_CHAT=true, with
+# vram-residency-sampler.py running.
+#
+# In 5a, every request deeper than 64k failed after about 9 minutes of prefill with
+# ErrorDeviceLost (ring comp_1.x timeout). -ncmoe 44 already failed at both contexts with memory
+# outside VRAM, so only the -ncmoe 46 cells rerun, to complete their deepest requests.
+ctx128k-n46  MODE=1gpu NCMOE=46 KV=f16 CTX=131072 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 DEPTHS=8000,165000
+ctx256k-n46  MODE=1gpu NCMOE=46 KV=f16 CTX=262144 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 DEPTHS=8000,330000

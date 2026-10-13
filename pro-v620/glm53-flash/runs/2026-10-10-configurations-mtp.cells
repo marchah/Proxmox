@@ -1,0 +1,19 @@
+# Stage 7c of runs/2026-10-10-configurations.md (MTP timed), CT 123 holding 0000:83:00.0 only,
+# three passes: DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true, every prompt class, a residency
+# sampler on the card. dio, batch and micro-batch 4096, 32 threads, f16 KV, context 65536, two
+# slots, compute job timeout 10 s.
+#
+# 7b (sweep-mtp-scan-20261012T200414Z, one pass at -ncmoe 46): n-max 2 decoded fastest at one
+# stream (8.47 t/s, median of the six prompt cells) and at two streams (12.34 t/s aggregate).
+# n-max 4 to 8 are more than 10% below it at both stream counts; n-max 1 is 7.7% and 5.1%
+# below, n-max 3 18.1% and 2.7%.
+#
+# mtp-n1, mtp-n2, mtp-n3: the best length and the lengths one below and above it, at 7a's fit
+# (-ncmoe 46, every expert in RAM). The best two-stream length is the same, so no cell is added
+# for it. nospec-n46: the same placement without speculation, the control. nospec-n44: the best
+# configuration from stages 3-5, stage 4's dio-4096-t32.
+mtp-n2      MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2'
+nospec-n46  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32
+mtp-n1      MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 1'
+nospec-n44  MODE=1gpu NCMOE=44 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32
+mtp-n3      MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 3'

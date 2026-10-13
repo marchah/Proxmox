@@ -1,0 +1,17 @@
+# Stage 6b of runs/2026-10-10-configurations.md (two cards, timed), CT 123 holding 0000:03:00.0 and
+# 0000:83:00.0 (ct123-test-host.sh two-card), three passes: DEPTHS=0,8000 CONC_REPS=3
+# PROBE_CHAT=true, every prompt class, a residency sampler on each card. Vulkan0 is GPU 1
+# (0000:03:00.0), Vulkan1 GPU 2 (0000:83:00.0). Micro-batch 4096, 32 threads, f16 KV, context
+# 65536, two slots, compute job timeout 10 s.
+#
+# 6a's fit: -ncmoe 38 at split 39,7 (GPU 1 blocks 0-39 with the experts of 38-39, GPU 2 blocks
+# 40-44 with theirs), fitted under dio. -sm tensor does not load for glm5-next on b11505, so no
+# tensor-split cell runs.
+#
+# 2c-auto and 2c-dio: the fit under each load mode. 1c-best: stages 3-4's configuration (dio,
+# -ncmoe 44) with only GPU 2 visible, so it is Vulkan0 and runs on 0000:83:00.0; it stands in for
+# the one-card results if its median d8000 prefill and single-stream decode are within the spread
+# of stage 4's dio-4096-t32.
+2c-auto  MODE=2gpu NCMOE=38 TENSOR_SPLIT=39,7 KV=f16 CTX=65536 BATCH=4096 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=auto THREADS=32
+2c-dio   MODE=2gpu NCMOE=38 TENSOR_SPLIT=39,7 KV=f16 CTX=65536 BATCH=4096 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio  THREADS=32
+1c-best  MODE=1gpu NCMOE=44 VK_DEVICES=1 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32

@@ -1,0 +1,15 @@
+# Stage 7a of runs/2026-10-10-configurations.md (MTP fit), round 2, same setup and settings as
+# round 1 (2026-10-10-configurations-mtp-fit.cells): REPS=1 DEPTHS=8000 PROBE_CLASSES=code
+# PROBE_CHAT=true, a residency sampler on the card.
+#
+# Round 1 (sweep-mtp-fit-20261012T193444Z), MTP at n-max 8, VRAM free after load and
+# VRAM-requested memory outside VRAM:
+#   m8-n44     (blocks 44 and 45 on the card):     935 MiB free; up to 3,863 MiB outside
+#   m8-n45     (block 45 on the card):           4,397 MiB free; 1,584-1,890 MiB outside from the
+#                                                d8000 request on
+#   m8-n44-r45 (block 44 on the card, 45 in RAM): 4,091 MiB free; 1,584-1,890 MiB outside from the
+#                                                d8000 request on
+# None fits. Block 45's experts on the card have no further step: -ncmoe 45 already holds only
+# block 45's. With block 45's experts in RAM the step back is -ncmoe 46, every expert in RAM,
+# expected at about 22,130 MiB (m8-n44-r45 less block 44's 4,482 MiB).
+m8-n46  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 8'

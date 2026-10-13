@@ -363,7 +363,8 @@ In prefill under `none`, `03:00.0` ran at 2,475 MHz and 133 W on two cards. On o
 **Output gate:**
 - Each cell produced the same text in all three passes of every prompt.
 - `none` produced the same text as `auto` in all six prompts on both shapes.
-- No degenerate output, and all seven template-contract checks passed.
+- No degenerate output, and template-contract checks passed on the first loaded cell
+  only; the other cells were not checked.
 
 **Thermals:** hottest DIMM 53–54 °C. No thermal-guard trip.
 

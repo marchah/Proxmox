@@ -76,9 +76,12 @@ restart_ct() {
   log "restarting CT ${VMID}"
   if [ "$(ct_state "$VMID")" = "running" ]; then pct stop "$VMID"; sleep 4; fi
   pct start "$VMID"
+  # degraded counts as up: apparmor.service always fails in this unprivileged container.
+  # is-system-running exits non-zero for degraded, so read its output, not its status.
+  local st
   for _ in $(seq 1 30); do
-    pct exec "$VMID" -- systemctl is-system-running --quiet 2>/dev/null && return 0
-    pct exec "$VMID" -- systemctl is-system-running 2>/dev/null | grep -q degraded && return 0
+    st="$(pct exec "$VMID" -- systemctl is-system-running 2>/dev/null || true)"
+    case "$st" in running | degraded) return 0 ;; esac
     sleep 2
   done
   log "WARN: CT ${VMID} not fully up after 60 s"
