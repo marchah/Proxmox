@@ -21,7 +21,9 @@
 # `man` is a card's VRAM manager, one address per card; `bo` is the buffer's raw address,
 # the same in all three probes. Timestamps are CLOCK_MONOTONIC seconds; a `sync <epoch>`
 # marker every SYNC_SECONDS pairs them with the wall clock. Buffers under MIN_MIB are left
-# out. On exit the script removes its probes and its tracefs instance.
+# out; `vram_new_ret` lines carry no size and are all kept. On exit the script removes its
+# probes and its tracefs instance, and it exits non-zero if OUTPUT cannot be written or the
+# reader stops early.
 set -Eeuo pipefail
 
 MIN_MIB="${MIN_MIB:-16}"
@@ -107,6 +109,7 @@ main() {
     return 0
   fi
   local output="${1:?usage: vram-release-trace.sh OUTPUT | --check}"
+  : >>"$output" || die "cannot write ${output}"
 
   trap cleanup EXIT
   trap 'exit 0' INT TERM
@@ -116,6 +119,7 @@ main() {
   reader_pid=$!
   echo 1 >"${INSTANCE}/tracing_on"
   while :; do
+    kill -0 "$reader_pid" 2>/dev/null || die "the trace reader stopped; ${output} is incomplete"
     echo "sync $(date +%s.%N)" >"${INSTANCE}/trace_marker"
     sleep "$SYNC_SECONDS" &
     wait $!
