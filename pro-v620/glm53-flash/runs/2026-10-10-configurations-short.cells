@@ -1,0 +1,13 @@
+# Stage 7c short replies of runs/2026-10-10-configurations.md, CT 123 holding 0000:83:00.0 only,
+# three passes: N_PREDICT=32 DEPTHS=0,700 PROBE_CHAT=true, every prompt class, a residency sampler
+# on the card. dio, batch and micro-batch 4096, 32 threads, f16 KV, context 65536, two slots,
+# compute job timeout 10 s.
+#
+# 7c timed (sweep-mtp-20261012T212915Z): mtp-n2 is the best MTP cell, 8.410 t/s decode (median of
+# the six prompt cells) against 7.685 for n-max 1 and 6.865 for n-max 3. nospec-n44 is the best
+# configuration without speculation (stage 4's dio-4096-t32).
+#
+# Read per depth: the median 32-token decode across the three classes, per pass. MTP is slower at
+# a depth when its median over the passes is lower by more than both cells' pass-to-pass spreads.
+mtp-n2      MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2'
+nospec-n44  MODE=1gpu NCMOE=44 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=2 STREAMS=2 LOAD_MODE=dio THREADS=32
