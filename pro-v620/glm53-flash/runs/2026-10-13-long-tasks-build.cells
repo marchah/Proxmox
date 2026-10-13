@@ -1,12 +1,12 @@
 # Stage 0 of runs/2026-10-13-long-tasks.md (build A/B), CT 123 holding 0000:83:00.0 only,
 # three passes: DEPTHS=0,8000 with CONTEXT_FILE (exact tokens of the pinned corpus),
-# PROBE_CHAT=true, every prompt class, TURN_DEPTH=30000, a residency sampler and the VRAM
-# release trace on the card.
+# PROBE_CHAT=true, every prompt class, a residency sampler and the VRAM release trace on the
+# card. No turn probe: stage 1 runs it.
 #
 # Both cells are the batch's configuration (glm53f-bench.env at one 64k slot): -ncmoe 46,
 # dio, batch and micro-batch 4096, 32 threads, f16 KV, MTP at n-max 2. They differ only in
 # the build: b11505 (ff5888f99), the three earlier records' build, against b11583
 # (988015788), installed beside it by install-llamacpp-release.sh. Both set LLAMACPP_DIR,
 # since the sweep deletes an ENV name from the env file for a cell that does not set it.
-b11505  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11505' TURNS=true
-b11583  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583' TURNS=true
+b11505  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11505'
+b11583  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583'
