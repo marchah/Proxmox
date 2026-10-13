@@ -554,9 +554,13 @@ comparison.
   outside VRAM 0 MiB and nothing evicted in every one. The sweep's "possible spill" flags on
   `base-ub2048`, `base-ub4096`, `base-mtp3` and `base-p2` were GTT growth of 273–296 MiB during the
   probe, against `base`'s own 224 MiB, which stays under the flag's 256 MiB.
-- **Peak VRAM sits above the load reading at long context.** During `base-ctx256k`'s prefill the
-  least free VRAM was 9,794 MiB, so about 20.9 GiB in use against 19,967 MiB after load;
-  `base-ub4096` reached 17,081 MiB.
+- **Peak VRAM sits at the load reading.** Through `base-ctx256k`'s prefill the card read at most
+  19,971 MiB in use, against 19,967 MiB after load; `base-ub4096` reached 17,955 MiB against
+  17,951.
+  - One `base-ctx256k` sample read 20,910 MiB in use (9,794 MiB free), above the server's own
+    allocation.
+  - That sample is a compute-buffer swap, which the card counts twice for up to 0.2 s
+    ([findings record](2026-10-13-findings.md)).
 - **Block 45 loads only with MTP.** `base-n45` used exactly `base`'s VRAM, and the load log lists
   block 45's tensors as unused. Without speculation `-ncmoe 45` and `46` are the same placement.
 - **MTP:** the head without its experts, plus its draft context, took 1,206 MiB at n-max 3.
@@ -764,6 +768,13 @@ Decode per prompt cell, t/s, median of the three passes:
   separately.
 - 32 threads kept 30.3 cores busy in decode, against 15.0 at 16.
 - Prefill runs on the card, on 0.4 cores, at 174.2–174.7 t/s at every count.
+- **Card, per phase** (`SUMMARY.md` medians), the same at every thread count within 1 W and
+  2 MHz:
+  - prefill 174–175 W at 2,362–2,364 MHz, 99% busy;
+  - decode 52–53 W at 499 MHz, 51% busy;
+  - two streams 48–49 W at 499 MHz, 39–42% busy.
+- **CPU only** used 14.3, 17.1 and 23.7 cores in prefill at 16, 24 and 32 threads, and every
+  thread in decode.
 
 **CPU only's result: 32 threads.**
 - Decode 4.875 t/s. That beats 16 threads (0.155, against spreads of 0.110 and 0.050) and is
@@ -1137,6 +1148,10 @@ experts in RAM with `-ot blk\.45\.ffn_(up|gate|down)_exps=CPU`.
   without MTP; the differences start within the first ~200 characters. All read coherently,
   with 8-gram uniqueness 1.0. Two streams completed in every cell.
 - **Contract:** clean at every effort value, with MTP on.
+- **Card and CPU, per phase** (`SUMMARY.md` medians, all four cells):
+  - prefill 146–175 W at 2,356–2,382 MHz, 99% busy;
+  - decode 46 W at 528–538 MHz, 64–69% busy, on 18.8–20.1 cores;
+  - two streams 42–44 W, 57–63% busy, on 22.5–23.1 cores.
 - **Heat:** junction peaked at 72–74 °C in prefill; hottest DIMM 55–56 °C.
 
 ### Stage 7b, MTP draft-length scan — 2026-10-12 16:04–17:26 ET
@@ -1200,6 +1215,12 @@ Decode per prompt cell, t/s, with draft acceptance:
     checks 9 tokens.
   - In those phases the container used 20–23 CPU cores, against 28–31 in the others, and
     GPU busy rose to 50–66%, from 39–45%.
+- **Card and CPU, per phase** (`SUMMARY.md` medians):
+  - prefill 175–181 W at 2,352–2,360 MHz, 99% busy, at every length;
+  - decode 50–51 W at 499 MHz on 28.4–29.8 cores at n-max 1–7, and 46 W at 525 MHz on
+    20.2 cores at 8;
+  - two streams 48–49 W on 30.2–30.5 cores at n-max 1–3, and 43–44 W on 22.4–23.1 cores at
+    4–8.
   - Flash-Next's head dropped at the same two points ([MTP record](../../qwen38-flash-next/runs/2026-10-09-mtp.md)).
 - **VRAM:** load grew by about 317 MiB per draft token, from 19,911 MiB at n-max 1 to 22,131 at
   8. n-max 8 reproduced 7a's `m8-n46` load exactly.
@@ -1291,6 +1312,17 @@ d8000 prefill per class, t/s, median of the three passes:
 - Per prompt cell against `nospec-n44`, decode leads beyond the spread in five of six. In d8000
   list it is within the spread: 6.29 against 6.26, at 40% acceptance.
 - MTP at n-max 2 takes 2,934 MiB at load: `mtp-n2` against `nospec-n46`.
+
+**Card and CPU, per phase** (`SUMMARY.md` medians; prefill ran on 0.4 cores in every cell, and
+every phase at 499 MHz except prefill):
+
+| Cell | Prefill: W, MHz, busy | Decode: W, busy, cores | Two streams: W, busy, cores |
+| --- | --- | --- | --- |
+| `mtp-n1` | 176, 2,362, 99% | 51, 42%, 29.6 | 48, 39%, 30.5 |
+| `mtp-n2` | 179, 2,362, 99% | 51, 42%, 29.8 | 48, 36%, 30.3 |
+| `mtp-n3` | 176, 2,364, 99% | 51, 44%, 28.4 | 48, 36%, 30.4 |
+| `nospec-n46` | 178, 2,357, 99% | 52, 50%, 30.7 | 48, 40%, 30.8 |
+| `nospec-n44` | 176, 2,363, 99% | 52, 49%, 30.3 | 49, 41%, 30.4 |
 
 **MTP criteria, `mtp-n2`:**
 1. Decode beats both `nospec-n46` and `nospec-n44`: **holds**.
@@ -1385,6 +1417,12 @@ Decode per prompt cell, t/s, median of the three passes, with draft acceptance:
   - Nothing went outside VRAM in 499 samples.
   - Contract clean on `mtp-n2`'s first pass.
   - Junction peaked at 60–63 °C; hottest DIMM 53–55 °C.
+- **Card and CPU, per phase** (`SUMMARY.md` medians):
+  - `mtp-n2` prefilled at 138 W and 2,379 MHz on 0.6 cores, and decoded at 48 W and 499 MHz,
+    41% busy, on 29.8 cores;
+  - `nospec-n44` prefilled at 132 W and 2,383 MHz on 0.6 cores, and decoded at 51 W and
+    499 MHz, 44% busy, on 30.4 cores;
+  - two streams: 46 W on 23.5 cores with MTP, against 48 W on 29.4 without.
 
 **All four MTP criteria hold for `mtp-n2`, so by the plan's rule MTP at n-max 2 joins the best
 configuration.**
@@ -1482,6 +1520,12 @@ configuration.**
 - **Stage 7b has no block-placement comparison.** The plan compared block 45's experts on the
   card and in RAM at n-max 3, each at its n-max 8 fit. Block 45's experts on the card have no
   fit at n-max 8 (7a), so the scan runs at the one fit, `-ncmoe 46`.
+- **Corrected after the record was done** (owner, 2026-10-13, after PR review):
+  - **Stage 1's peak-VRAM sentence misstated two readings.** It gave 20,910 MiB as "about
+    20.9 GiB" and `base-ub4096`'s 17,955 MiB peak as 17,081. It also read one sample's
+    compute-buffer swap as a peak above the load reading.
+  - **Stages 4 and 7 lacked the per-phase card figures** the plan asks for. They are now
+    added from each sweep's `SUMMARY.md` on the host.
 
 ## Conclusion
 
