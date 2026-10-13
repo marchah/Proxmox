@@ -3,11 +3,14 @@
 
 Run from the Proxmox host against CT 120's llama-server.
 
-Why /completion and not /v1/chat/completions for the throughput rows: no chat template
-sits between configs, and llama.cpp returns the full `timings` block. The chat path
-is exercised by --contract after every cell load in placement-sweep.sh. Raw completion
+Why /completion and not /v1/chat/completions for the throughput rows by default: no chat
+template sits between configs, and llama.cpp returns the full `timings` block. The chat
+path is exercised by --contract after every cell load in placement-sweep.sh. Raw completion
 rows can generate reasoning even when the chat server has --reasoning off; validate
 the chosen configuration on chat workloads before treating it as a serving optimum.
+--chat (PROBE_CHAT=true in placement-sweep.sh) sends the throughput rows through
+/v1/chat/completions instead, which also returns `timings`; the GLM-5.3-Flash records
+use it from stage 3 on, because GLM continued the raw d8000 filler instead of answering.
 
 ⚠️ Three things this model breaks that others here do not:
 
