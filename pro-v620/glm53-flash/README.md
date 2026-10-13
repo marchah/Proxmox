@@ -69,7 +69,8 @@ pct exec 123 -- journalctl -u glm53f-dl --no-pager -n 20
 
 - Architecture: #27773, merged 2026-09-30. MTP: #29928, merged 2026-10-07. b11505
   contains both.
-- #27773 notes that several sequences need `--kv-unified`.
+- #27773 notes that several sequences need `--kv-unified`. Two slots worked without it on
+  b11505 ([test record](runs/2026-10-10-configurations.md#stage-1-screen--2026-10-10-2123-2220-et)).
 - Open issues, checked 2026-10-10:
   - #30204: with `--spec-type draft-mtp` on Vulkan, every request that contains an image
     fails with HTTP 500.
@@ -84,7 +85,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 
 | Date | Build | Backend | Record | Status |
 | --- | --- | --- | --- | --- |
-| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The fastest configuration on one card, two cards and CPU only](runs/2026-10-10-configurations.md) | running |
+| 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The fastest configuration on one card, two cards and CPU only](runs/2026-10-10-configurations.md) | done |
 
 ## Local validation
 

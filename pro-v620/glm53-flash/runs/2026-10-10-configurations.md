@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–6 and 7a–7c timed done) · Status: running
+Plan committed 2026-10-10 · Run 2026-10-10 to 2026-10-12 · Status: done
 
 ## Question
 
@@ -1339,6 +1339,75 @@ excluded as read races.
 - **Contract:** clean at every effort value, on `mtp-n2`'s first pass.
 - **Heat:** junction peaked at 77–82 °C in prefill; hottest DIMM 58–59 °C.
 
+### Stage 7c, short replies — 2026-10-12 20:11–20:32 ET
+
+Harness `7a44e90`, cells
+[`2026-10-10-configurations-short.cells`](2026-10-10-configurations-short.cells): three passes,
+`N_PREDICT=32 DEPTHS=0,700 PROBE_CHAT=true`, every prompt class, `mtp-n2` against `nospec-n44`
+with 7c's settings. Prompts were 31–42 tokens at d0 and 504–515 at d700. Raw data on the host:
+`/root/glm53-flash/sweep-short-20261013T001059Z/` and `residency-short.jsonl`.
+
+Decode and prefill are the median across the three classes in each pass; request time is the
+median time per request. Each figure is the median of the three passes [range].
+
+| Cell | Depth | Decode, t/s | Prefill, t/s | Request time, s |
+| --- | --- | --- | --- | --- |
+| `mtp-n2` | d0 | **8.966** [8.863–9.045] | 12.2 [12.1–13.4] | 7.04 [6.20–7.13] |
+| `nospec-n44` | d0 | 6.808 [6.757–6.858] | 14.5 [13.9–14.5] | 7.20 [7.14–7.32] |
+| `mtp-n2` | d700 | **8.561** [8.500–8.620] | 55.6 [55.2–55.7] | 12.86 [12.83–12.99] |
+| `nospec-n44` | d700 | 6.704 [6.679–6.781] | 57.6 [57.6–57.8] | 13.44 [13.38–13.47] |
+
+Decode per prompt cell, t/s, median of the three passes, with draft acceptance:
+
+| Cell | d0 code | d0 list | d0 prose | d700 code | d700 list | d700 prose |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `mtp-n2` | 8.97 (75%) | 6.81 (42%) | 9.04 (75%) | 8.62 (69%) | 6.38 (38%) | 8.56 (69%) |
+| `nospec-n44` | 6.81 | 6.71 | 6.86 | 6.65 | 6.95 | 6.70 |
+
+- **32-token replies decode faster with MTP at both depths**: +31.7% at d0 and +27.7% at d700,
+  beyond both cells' spreads. Criterion 4 holds.
+- **Request time:**
+  - At d700 it was 4.3% shorter with MTP, beyond the spreads.
+  - At d0 it was 2.2% shorter, within MTP's spread of 0.93 s.
+- **Prefill was slower with MTP**, beyond the spreads at both depths:
+  - −15.9% at d0 (12.2 against 14.5 t/s, on 31–42 tokens);
+  - −3.5% at d700.
+- **List is the weakest class.** At d700 list, MTP decoded 6.38 t/s against 6.95 (−8.2%),
+  within MTP's spread of 0.72; one pass read 5.66. At d0 list it was 6.81 against 6.71.
+- **Two streams** (one round per pass, 32 tokens): 11.67 [11.57–11.70] t/s aggregate against 8.67
+  [8.22–8.83], +34.6%, at 78.7% acceptance.
+- **Output:**
+  - Every cell gave the same text in every pass.
+  - The two cells' 32-token texts match in three prompt cells: d0 list, d700 code and d700
+    prose.
+  - Every reply reached the 32-token limit, with 8-gram uniqueness 1.0.
+- **Residency and heat:**
+  - Nothing went outside VRAM in 499 samples.
+  - Contract clean on `mtp-n2`'s first pass.
+  - Junction peaked at 60–63 °C; hottest DIMM 53–55 °C.
+
+**All four MTP criteria hold for `mtp-n2`, so by the plan's rule MTP at n-max 2 joins the best
+configuration.**
+
+### Restore — 2026-10-12 20:33–20:35 ET
+
+`ct123-test-host.sh restore` from harness `7a44e90`, with a residency sampler on GPU 2
+(`residency-restore.jsonl`):
+- **What restore put back:**
+  - CT 123's limits are back to 24 cores and 120 GiB.
+  - CT 120's `onboot` is 1, and CT 120 stays stopped.
+  - The watchdog map is back to `0000:03:00.0=120:llamacpp,0000:83:00.0=123:llamacpp-qwen38fn`.
+  - `llamacpp-qwen38fn` is enabled and running, and `llamacpp-glm53f` is disabled.
+- **Flash-Next:**
+  - It served at 20:34:57 ET.
+  - It answered "OK" to a short chat request.
+  - It summarized an 8,803-token prompt correctly, at 329.0 t/s prefill and 23.1 t/s decode,
+    with 12 of 12 drafts accepted.
+  - The least free VRAM was 3,255 MiB, and nothing went outside VRAM in 129 samples. GTT is
+    58,044 MiB, its pinned experts.
+- The residency sampler and the GLM thermal guard were stopped at 20:35 ET.
+- CT 121, 140, 200 and 201 and VM 300 are still off; starting them waits for the owner.
+
 ## Deviations
 
 - **Stage order, changed after stage 1** (owner, 2026-10-10): MTP runs last, as stage 7,
@@ -1415,3 +1484,79 @@ excluded as read races.
   fit at n-max 8 (7a), so the scan runs at the one fit, `-ncmoe 46`.
 
 ## Conclusion
+
+All figures are from b11505 on Vulkan (RADV, Mesa 26.2.4), UD-Q4_K_XL, in CT 123. One card is
+GPU 2 (`0000:83:00.0`). Decode is the median of the six prompt cells and prefill is at ~5.8k
+tokens, unless noted.
+
+- **Load and contract:**
+  - b11505 loads the model and its MTP block on RADV, on one card and on two.
+  - Two slots work without `--kv-unified`.
+  - `--reasoning off` alone does not give clean content: bare chat, `none` and `max` returned
+    empty content. With `--reasoning-budget 0`, every effort value answered with no
+    reasoning block, and no think tag reached `content`.
+  - Tool calls work streamed and not.
+  - Image requests work without MTP and fail with HTTP 500 under MTP (#30204).
+- **What the card holds** (stage 1: context 65536, micro-batch 1024, one slot):
+  - Every routed expert in RAM: 15,461 MiB at load.
+  - q8_0 KV saves 577 MiB.
+  - 128k context adds 1,586 MiB and 256k 4,506 MiB at load, and more at depth.
+  - Micro-batch 4096 adds 2,490 MiB, and a second slot 77 MiB.
+  - At micro-batch 4096 with two slots, MTP takes 2,643 MiB at n-max 1 and 4,859 at n-max 8,
+    about 317 MiB per draft token (2,934 at n-max 2).
+  - An expert layer is 4,176 MiB, and block 44's 4,482.
+- **Prefill:** `dio` prefills fastest.
+  - At micro-batch 1024, `-ncmoe 43`: 116.6 t/s, against 41.4 for `auto`. Through raw
+    `/completion` on the same load it was 142–143 t/s; the chat-template request prefilled 19%
+    slower, cause not measured.
+  - At micro-batch 4096 it reached 174.4 t/s at `-ncmoe 44`. That is 1.5 times micro-batch
+    1024's, not 4, for one expert layer, with decode within the spread.
+- **Decode:**
+  - 32 threads decoded fastest: 6.635 t/s at `-ncmoe 44`, 9.07 aggregate at two streams. 16
+    threads were within the spread and 24 below it.
+  - Block 44's experts on the card against every expert in RAM: decode within the spread at
+    ~5.8k tokens, +3.3% at 59k tokens. Prefill +0.9%, and two streams +3.4% in 7c.
+- **CPU only:** best at 32 threads, 4.875 t/s decode, 19.2 t/s prefill and 7.55 at two
+  streams. Against the best GPU configuration: decode 26.5% lower, prefill 9.1 times slower.
+- **Context:**
+  - 128k costs one expert layer (`-ncmoe 46` against 44).
+  - 256k does not fit on one card at micro-batch 4096: 2.3 GiB went outside VRAM at depth,
+    even with every expert in RAM.
+  - At 128k, decode fell 29% from 42 tokens to 119k tokens (6.82 to 4.84 t/s). Prefill fell 29%
+    from ~5.8k tokens to 119k (172.7 to 123.1 t/s); the 119k request took 16.2 min.
+  - At the same placement, 64k and 128k were within each other's spread.
+  - Requests past about 65k tokens needed amdgpu's compute job timeout raised from 2 s to 10 s.
+- **Two cards:**
+  - The fit is `-ncmoe 38` at split 39,7, seven expert layers on the cards against one.
+  - Against one card: decode within the spread (+1.4%), two streams +4.3%, prefill +7.5% (187.9
+    against 174.8 t/s). Prefill runs on GPU 1 with two cards and on GPU 2 with one; the card
+    difference was not separated.
+  - `dio` prefilled 1.91 times as fast as `auto`.
+  - `-sm tensor` does not load for glm5-next.
+- **MTP** (one card, 64k, the owner's choice after stage 6):
+  - The MTP block fits only with every expert in RAM (`-ncmoe 46`).
+  - The best draft length is n-max 2, at one stream and at two. Acceptance per prompt cell is
+    63–73% for code and prose, 40–47% for list, and 74–78% at two streams.
+  - Against the best configuration without it (stage 4's): decode +29.5% (8.410 against 6.495
+    t/s) and two streams +33.3%. d8000 prefill is 2.9% lower, within 10% in every class.
+  - 32-token replies decode +31.7% at d0 and +27.7% at d700.
+  - Against the same placement without it: decode +30.3%, two streams +37.9%, prefill −2.0%.
+  - Steps that check more than 8 tokens drop sharply: two streams from n-max 4, one stream at
+    n-max 8.
+  - MTP's texts differ from the control's in every prompt cell, and both read coherently.
+- **Best configuration by the plan's rules:** one card (GPU 2), context 65536, `dio`, batch and
+  micro-batch 4096, 32 threads, f16 KV, two slots, `--reasoning-budget 0`, `-ncmoe 46` and MTP
+  at n-max 2.
+  - It loads at 20,202 MiB, and the least free during requests was 9,957 MiB.
+  - Image requests fail with it (#30204).
+  - The full benchmark batch on it gets its own record and plan. Whether to deploy GLM is
+    decided separately.
+- **The 3,072 MiB margin** decided one fit. At micro-batch 1024, `f1-42` kept everything in VRAM
+  with 2,329 MiB free, so `-ncmoe 43` is that fit only because of the margin. It is the record's
+  only margin-only placement. Elsewhere the residency check did the rejecting:
+  - At micro-batch 4096 on one card, every placement with 4.1–4.8 GiB free put memory outside
+    VRAM.
+  - On two cards, every placement under the margin did.
+- **Repeatability:** in 7c, stage 4's configuration decoded 2.1% below its stage 4 figure, with
+  the same command line, environment and texts and the same prefill. The cause was not
+  measured.
