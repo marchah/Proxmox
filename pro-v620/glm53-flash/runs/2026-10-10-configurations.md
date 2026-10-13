@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: the fastest configuration on one card, two cards and CPU only
 
-Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–6, 7a and 7b done) · Status: running
+Plan committed 2026-10-10 · Run from 2026-10-10 (stages 1–6 and 7a–7c timed done) · Status: running
 
 ## Question
 
@@ -1233,6 +1233,111 @@ Decode per prompt cell, t/s, with draft acceptance:
   - Two streams completed in every cell; all replies reached the limit.
 - **Contract:** clean at every effort value, at n-max 3, the first cell.
 - **Heat:** junction peaked at 77–81 °C in prefill; hottest DIMM 57–58 °C.
+
+### Stage 7c, MTP timed — 2026-10-12 17:29–20:08 ET
+
+Harness `3a88a0c`, cells [`2026-10-10-configurations-mtp.cells`](2026-10-10-configurations-mtp.cells):
+three passes, `DEPTHS=0,8000 CONC_REPS=3 PROBE_CHAT=true`, every prompt class. `dio`, batch and
+micro-batch 4096, 32 threads, f16 KV, context 65536, two slots, compute job timeout 10 s. Raw data
+on the host: `/root/glm53-flash/sweep-mtp-20261012T212915Z/` and `residency-mtp.jsonl`. Figures as
+in stage 3; acceptance at two streams is the range over passes.
+
+7b's best length at one and two streams was n-max 2. `mtp-n1`, `mtp-n2` and `mtp-n3` run it and
+the lengths one below and above at `-ncmoe 46`. `nospec-n46` is the same placement without
+speculation, and `nospec-n44` is stage 4's `dio-4096-t32`. Stage 4's row is repeated for
+comparison.
+
+| Cell | `-ncmoe`, n-max | VRAM after load, MiB | Least free, MiB | Load, s | Decode, t/s | d8000 prefill, t/s | Two streams, aggregate t/s | Acceptance at two streams |
+| --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: |
+| `mtp-n1` | 46, 1 | 19,911 | 10,252 | 119–121 | 7.685 [7.675–7.890] | 169.6 [169.2–169.7] | 11.21 [11.00–11.23] | 83–89% |
+| `mtp-n2` | 46, 2 | 20,202 | 9,957 | 118–119 | **8.410** [8.235–8.465] | 169.6 [169.6–169.6] | **12.01** [11.86–12.31] | 74–78% |
+| `mtp-n3` | 46, 3 | 20,493 | 9,661 | 118–119 | 6.865 [6.835–6.965] | 169.7 [169.4–169.9] | 11.69 [11.60–11.72] | 63–65% |
+| `nospec-n46` | 46, — | 17,268 | 13,431 | 115–116 | 6.455 [6.445–6.495] | 173.1 [172.7–173.2] | 8.71 [8.70–8.86] | — |
+| `nospec-n44` | 44, — | 21,750 | 8,951 | 112 | 6.495 [6.465–6.505] | **174.7** [174.6–174.8] | 9.01 [8.95–9.03] | — |
+| stage 4 `dio-4096-t32` | 44, — | 21,750 | — | 115–116 | 6.635 [6.585–6.655] | 174.7 [174.4–174.7] | 9.07 [9.06–9.12] | — |
+
+Decode per prompt cell, t/s, median of the three passes, with draft acceptance (the same in
+every pass):
+
+| Cell | d0 code | d0 list | d0 prose | d8000 code | d8000 list | d8000 prose |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `mtp-n1` | 8.53 (90%) | 7.45 (65%) | 7.74 (71%) | 7.96 (86%) | 6.71 (57%) | 7.63 (82%) |
+| `mtp-n2` | 9.00 (73%) | 7.24 (47%) | 8.45 (63%) | 8.51 (73%) | 6.29 (40%) | 8.37 (70%) |
+| `mtp-n3` | 9.25 (64%) | 6.09 (30%) | 7.86 (50%) | 7.36 (57%) | 5.25 (31%) | 6.41 (46%) |
+| `nospec-n46` | 6.76 | 6.75 | 6.76 | 6.17 | 6.23 | 6.16 |
+| `nospec-n44` | 6.82 | 6.82 | 6.70 | 6.18 | 6.26 | 6.16 |
+
+d8000 prefill per class, t/s, median of the three passes:
+
+| Cell | code | list | prose |
+| --- | ---: | ---: | ---: |
+| `mtp-n2` | 168.3 | 169.6 | 169.8 |
+| `nospec-n44` | 174.4 | 175.0 | 174.7 |
+| `mtp-n2` against `nospec-n44` | −3.5% | −3.1% | −2.8% |
+
+**Best MTP cell: `mtp-n2`.**
+- Its decode leads `mtp-n1` by 0.725 t/s and `mtp-n3` by 1.545, beyond both cells' spreads.
+- At two streams it leads `mtp-n1` beyond the spread. Its lead over `mtp-n3`, 0.32 t/s, is
+  within its own spread of 0.45.
+
+**`mtp-n2` against the configurations without speculation:**
+
+| | Decode | d8000 prefill | Two streams |
+| --- | ---: | ---: | ---: |
+| Against `nospec-n46` (same placement) | +30.3% | −2.0% | +37.9% |
+| Against `nospec-n44` (stage 4's configuration) | +29.5% | −2.9% | +33.3% |
+
+- Every difference is beyond both cells' spreads.
+- Per prompt cell against `nospec-n44`, decode leads beyond the spread in five of six. In d8000
+  list it is within the spread: 6.29 against 6.26, at 40% acceptance.
+- MTP at n-max 2 takes 2,934 MiB at load: `mtp-n2` against `nospec-n46`.
+
+**MTP criteria, `mtp-n2`:**
+1. Decode beats both `nospec-n46` and `nospec-n44`: **holds**.
+2. Two streams are not lower than `nospec-n44`'s: **holds**.
+3. d8000 prefill is within 10% of `nospec-n44`'s in every class (−2.8% to −3.5%): **holds**.
+4. 32-token replies: the short-reply sweep below.
+
+**Placement without speculation** (`nospec-n44` against `nospec-n46`):
+- Decode is within the spread: 6.495 against 6.455.
+- Block 44's experts on the card add 0.9% d8000 prefill and 3.4% at two streams, both beyond
+  the spreads.
+
+**`nospec-n44` decoded 2.1% below stage 4's same configuration**, beyond both spreads.
+- Decode: 6.495 against 6.635, and 6b's `1c-best` had 6.625. It was lower in every prompt cell,
+  by 1.2–3.6%.
+- Prefill matched stage 4 (174.7), and two streams were within the spread (9.01 against 9.07).
+- The server command line, the captured environment and the six texts are the same as stage
+  4's. Decode used 30.3–30.4 CPU cores and 52 W on the card in both.
+- Cause not measured. 7c's comparisons are among its own interleaved cells.
+
+**Residency:** nothing went outside VRAM in 9,571 samples. Up to two single samples per pass read
+the card total 1.3–6.7 GiB above the server's request, or caught a server unloading; they were
+excluded as read races.
+
+**Output:**
+- Every cell gave the same text in every pass.
+  - Each MTP cell's texts are 7b's at that length, in all six prompt cells.
+  - `nospec-n44`'s are stage 4's.
+- MTP texts differ from the control's (`nospec-n46`) in every prompt cell, at every length.
+  - The texts diverge between the first character (d0 code) and character 267 (d8000 prose).
+  - Read for sense: both sides answer the prompt coherently, and the differences are wording,
+    order and choice of items. For example, at d0 code, `mtp-n2` opens with a heading where the
+    control opens with "Here's a robust implementation". At d8000 list, the two diverge at
+    "partitions isolate" against "partition isolates", 37 characters in.
+- Without speculation, the placement also changes the text: `nospec-n46` and `nospec-n44` match
+  in four prompt cells. They differ in both list cells, from character 264 at d0 and 617 at
+  d8000.
+- **The control's d8000 list reply repeats item 14, then breaks off:** "14. Ret asked to list 20
+  distinct failure modes".
+  - Its 8-gram uniqueness is 0.974, the same in all three passes.
+  - No MTP reply repeats a line, and every other reply's 8-gram uniqueness is 1.0.
+- d0 list stopped after 20 items in every cell (213–248 tokens); every other reply reached the
+  256-token limit.
+- **Two streams:** every round completed in every cell and pass, and every reply reached the
+  limit. Each stream gave 2–5 distinct texts per cell.
+- **Contract:** clean at every effort value, on `mtp-n2`'s first pass.
+- **Heat:** junction peaked at 77–82 °C in prefill; hottest DIMM 58–59 °C.
 
 ## Deviations
 
