@@ -91,7 +91,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | Date | Build | Backend | Record | Status |
 | --- | --- | --- | --- | --- |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The fastest configuration on one card, two cards and CPU only](runs/2026-10-10-configurations.md) | done |
-| 2026-10-12 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch on the best configuration](runs/2026-10-12-bench.md) | running |
+| 2026-10-12 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch on the best configuration](runs/2026-10-12-bench.md) | done |
 
 ## Local validation
 
