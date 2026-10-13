@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: tuning one 64k slot for long tasks
 
-Plan committed 2026-10-13 · Run not started · Status: planned
+Plan committed 2026-10-13 · Run from 2026-10-13 · Status: running
 
 Issue #106. The tests, their order and the cuts were agreed with the owner on 2026-10-13. A
 second review the same day trimmed the campaign from about 46 h to about 23–29 h of runs.
@@ -265,15 +265,260 @@ systemctl stop vram-release-trace vram-residency
 
 ## Environment
 
-The batch's stack: llama.cpp b11505 (`ff5888f99`), Vulkan with Mesa 26.2.4 RADV, kernel
-7.0.14-22-pve, both V620s at stock 0 mV and 250 W. b11583 (`988015788`, asset SHA-256
-`2c331fa6fc87…`) is added for stage 0. Each sweep saves `capture-env.sh`'s output as
-`environment.json`, and the record pastes it when the stage runs.
+llama.cpp b11505 (`ff5888f99`, release tarball, `llama-server` SHA-256 `b8f67ab0…729c`) and
+b11583 (`988015788`, release tarball, asset SHA-256 `2c331fa6…3332`, `llama-server` SHA-256
+`42ad308d…53b3`), Vulkan with Mesa 26.2.4 RADV, kernel `7.0.14-22-pve`, `schedutil`,
+8 × 64 GB DDR4-3200. CT 123 with 48 cores and 240 GiB holding `0000:83:00.0` (`unique_id`
+`99b104541144b36c`) at 0 mV and 250 W; amdgpu's compute job timeout is 10 s (not in the
+capture). Stage 0's capture, taken before its sweep with the env file on b11505:
+
+<details>
+<summary>environment.json, stage 0</summary>
+
+```json
+{
+ "captured_at": "2026-10-13T16:00:12Z",
+ "host": {
+  "hostname": "proxmox",
+  "kernel": "7.0.14-22-pve",
+  "pve_manager": "9.2.21",
+  "pve_firmware": "3.18-7",
+  "cpu": "AMD EPYC 7532 32-Core Processor",
+  "governor": "schedutil",
+  "mem_gib": 504,
+  "dimms": [
+   {
+    "locator": "P0 CHANNEL A",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL B",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL C",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL D",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL E",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL F",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL G",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   },
+   {
+    "locator": "P0 CHANNEL H",
+    "size": "64 GB",
+    "part": "M393A8K40B22-CAE",
+    "configured_speed": "3200 MT/s"
+   }
+  ]
+ },
+ "guest": {
+  "unit": "llamacpp-glm53f",
+  "env_file": "/etc/llamacpp-glm53f.env",
+  "env": {
+   "LLAMACPP_DIR": "/opt/llamacpp/llama-b11505",
+   "MODEL_PATH": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf",
+   "MODEL_ALIAS": "glm-5.3-flash",
+   "MODEL_MMPROJ": "/models/hf/glm-5.3-flash/mmproj-F16.gguf",
+   "MODEL_SERVER_BIND": "0.0.0.0",
+   "MODEL_SERVER_PORT": "1234",
+   "MODEL_GPU_LAYERS": "99",
+   "MODEL_CPU_MOE": "46",
+   "MODEL_OT_OVERRIDE": "",
+   "MODEL_CONTEXT_LENGTH": "65536",
+   "MODEL_PARALLEL": "1",
+   "MODEL_THREADS": "32",
+   "MODEL_EXPECTED_GPUS": "1",
+   "MODEL_VK_VISIBLE_DEVICES": "",
+   "MODEL_TENSOR_SPLIT": "",
+   "MODEL_LOAD_MODE": "dio",
+   "MODEL_REASONING_BUDGET": "0",
+   "EXTRA_ARGS": "--device Vulkan0 --spec-type draft-mtp --spec-draft-n-max 2",
+   "MODEL_BATCH_SIZE": "4096",
+   "MODEL_UBATCH_SIZE": "4096",
+   "MODEL_KV_TYPE": "f16",
+   "MODEL_MMPROJ_ON_CPU": "true"
+  },
+  "unit_active": "inactive",
+  "server_cmdline": null,
+  "llamacpp": {
+   "dir": "/opt/llamacpp/llama-b11505",
+   "version": "version: 0.6.0-dev (build 11505, commit ff5888f99)",
+   "built_with": "built with GNU 11.4.0 for Linux x86_64",
+   "llama_server_sha256": "b8f67ab0ac46efeed0bc84fe84ef51e9eee08a52c5f7fe56375ec89d3f79729c",
+   "devices": "Vulkan0: AMD Radeon Pro V620 (RADV NAVI21) (30704 MiB, 30687 MiB free)"
+  },
+  "os": "Ubuntu 24.04 LTS",
+  "guest_kernel": "7.0.14-22-pve",
+  "mesa": "26.2.4~kisak1~n",
+  "vulkan_driver": "Mesa 26.2.4 - kisak-mesa PPA",
+  "rocm": null,
+  "model_files": [
+   {
+    "path": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf",
+    "exists": true,
+    "bytes": 9429984,
+    "verified_stamp": true
+   },
+   {
+    "path": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00002-of-00006.gguf",
+    "exists": true,
+    "bytes": 49198039200,
+    "verified_stamp": true
+   },
+   {
+    "path": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00003-of-00006.gguf",
+    "exists": true,
+    "bytes": 49988626304,
+    "verified_stamp": true
+   },
+   {
+    "path": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00004-of-00006.gguf",
+    "exists": true,
+    "bytes": 48700701344,
+    "verified_stamp": true
+   },
+   {
+    "path": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00005-of-00006.gguf",
+    "exists": true,
+    "bytes": 49026026752,
+    "verified_stamp": true
+   },
+   {
+    "path": "/models/hf/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00006-of-00006.gguf",
+    "exists": true,
+    "bytes": 2784497888,
+    "verified_stamp": true
+   },
+   {
+    "path": "/models/hf/glm-5.3-flash/mmproj-F16.gguf",
+    "exists": true,
+    "bytes": 1128047296,
+    "verified_stamp": true
+   }
+  ],
+  "vmid": 123,
+  "kind": "lxc",
+  "config": {
+   "cores": "48",
+   "hostname": "gpu2",
+   "memory": "245760",
+   "ostype": "ubuntu",
+   "swap": "4096"
+  }
+ },
+ "cards": [
+  {
+   "pci": "0000:83:00.0",
+   "name": "Advanced Micro Devices, Inc. [AMD/ATI] Navi 21 [Radeon Pro V620]",
+   "driver": "amdgpu",
+   "unique_id": "99b104541144b36c",
+   "vbios": "113-D6030500-100",
+   "vram_total_mib": 30704,
+   "od_vddgfx_offset": "0mV",
+   "power_cap_w": 250,
+   "pcie_link": "16.0GT/s, x16 619Mhz"
+  }
+ ]
+}
+```
+
+</details>
 
 ---
 
 ## Results
 
+### Stage 0, build — 2026-10-13 12:00–12:54 ET
+
+Harness `0faeb4420b8e`, cells [`-build.cells`](2026-10-13-long-tasks-build.cells), three
+passes. Raw data on the host: `/root/glm53-flash/sweep-106-build-20261013T160008Z/`,
+`residency-106-build.jsonl`, `trace-106-build.txt` and `image-check-106.log`. The corpus file
+is `corpus-f7e762c53388.txt`: `docs.txt` then `code.txt`, each matching `CORPUS_SHA256`,
+SHA-256 `ed17f002…2439` combined.
+
+| Cell | Decode, median of six prompt cells (t/s) | d8000 prefill (t/s) | Free after load | Load |
+| --- | ---: | ---: | ---: | ---: |
+| `b11505` | 7.910 [7.795–7.925] | 180.8 [180.8–180.9] | 10,927 MiB | 119 s |
+| `b11583` | 7.925 [7.895–8.005] | 180.0 [178.9–180.1] | 10,927 MiB | 119–120 s |
+
+Decode per prompt cell, t/s, median of three passes, with draft acceptance (the same in both
+builds):
+
+| Cell | d0 code | d0 list | d0 prose | d8000 code | d8000 list | d8000 prose |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `b11505` | 9.41 | 7.36 | 8.74 | 8.06 | 6.95 | 7.77 |
+| `b11583` | 9.38 | 7.42 | 8.82 | 8.01 | 6.97 | 7.87 |
+| acceptance | 72.6% | 46.5% | 63.4% | 62.8% | 46.4% | 58.3% |
+
+The d8000 prompts were 8,038–8,049 tokens: 8,000 of the corpus plus the instruction and the
+template.
+
+- **Decode:** b11583 is 0.015 t/s ahead, within both cells' spreads (0.13 and 0.11).
+- **Prefill at d8000:** b11583 is 0.8 t/s lower (−0.4%). That is beyond b11505's spread
+  (0.1) but within its own (1.1), so it is not lower beyond both.
+- **Output:** each build returned the same text in every pass, and the two builds returned
+  the same text as each other in all six prompt cells.
+  - No request failed, and no text was degenerate.
+  - The contract was clean on every load: six, three per build.
+- **VRAM:** nothing was outside VRAM, and no VRAM allocation failed in the trace.
+  - Steady least free was 10,486 MiB in both builds.
+  - The compute buffer swapped 21 times on b11505 and 24 times on b11583 over three passes.
+  - The 1 Hz sampler caught one swap at 8,560 MiB free on b11505, and one at 4,684 MiB on
+    b11583. Which swap a sample catches is chance; the mechanism is the same.
+- **Reallocation reports (#30329):** b11583 logged no reallocation line at the default log
+  level.
+- **Card, per phase:** prefill 175–177 W at 2,358–2,360 MHz, 99% busy, on 0.4 CPU cores. Decode
+  51 W at 499 MHz, 42–44% busy, on 29.8 cores. Junction peaked at 80–82 °C; the hottest DIMM
+  reached 53–56 °C.
+
+**Image request under MTP** (12:49–12:54 ET, `glm53f-bench.env` with each build). The request
+was a 64 × 64 PNG, red on the left and blue on the right, through `/v1/chat/completions`:
+
+| Build | Result |
+| --- | --- |
+| b11505 | HTTP 500 `decode() failed: failed to process speculative batch`; the log shows `llama_process(ctx_dft) head=0 failed rc=-1` (#30204) |
+| b11583 | HTTP 200, "Red (left) and blue (right).", 48 prompt tokens, 11 generated, 5 of 10 drafts accepted |
+
+Both servers answered a text request after the image request.
+
+**Stage 0's rule holds for b11583, so stages 1–6 run on b11583.**
+- Decode and d8000 prefill are not lower beyond both spreads.
+- Every request succeeded, no text was degenerate, the contract was clean, and the text is
+  identical to b11505's.
+- It loaded with the same launcher and settings.
+
+Stage 1's control cell is the baseline rerun on b11583. Stage 5's control reruns on b11583
+too, since the bench ran on b11505.
+
 ## Deviations
+
+- **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
+  the d0 and d8000 cells, as in the configurations record, and that is what was applied.
 
 ## Conclusion
