@@ -617,6 +617,72 @@ data on the host: `/root/glm53-flash/sweep-106-fit-20261013T221937Z/`,
   ([`-placement.cells`](2026-10-13-long-tasks-placement.cells)). `-ncmoe 45` fits at 2048,
   so no 1024 pass is needed.
 
+### Stage 2, timed pass — 2026-10-14 13:00–15:18 ET
+
+Harness `341982751388`, cells [`-placement.cells`](2026-10-13-long-tasks-placement.cells),
+three interleaved passes, b11583 (every server command line), `GGML_OP_OFFLOAD_MIN_BATCH=512`,
+depths 0 and 8,000 plus the turn probe. Raw data on the host:
+`/root/glm53-flash/sweep-106-placement-20261014T170018Z/`, `residency-106-placement.jsonl`
+and `trace-106-placement.txt`. Figures are medians of the three passes, with their range.
+
+**Estimated batch time.** This is the stage's rule: the bench's 186 warm turns, with their
+37,236 generated tokens at the cell's d8000 decode.
+
+| Cell | Batch, s | Turn prefill, s | Decode, s | Decode d0 / d8000, t/s | d8000 prefill, t/s | 30k prime (cold), s |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| `n46-ub4096` (control) | 7,591 [7,563–7,632] | 2,810 [2,809–2,819] | 4,782 | 8.60 [8.55–8.83] / 7.79 [7.74–7.83] | 180.1 [180.0–180.2] | 193.7 |
+| `n46-ub2048` | 7,668 [7,615–7,682] | 2,915 [2,905–2,938] | 4,753 | 8.88 [8.73–8.92] / 7.83 [7.80–7.96] | 141.4 [141.3–141.5] | 235.2 |
+| **`n45-ub2048`** | **7,417 [7,406–7,439]** | 2,906 [2,885–2,930] | **4,511** | **9.17 [9.10–9.19] / 8.26 [8.24–8.26]** | 142.0 [142.0–142.3] | 233.7 |
+
+- **By the rule, `n45-ub2048` has the lowest estimated batch time:** 174 s (2.3%) below the
+  control, beyond both spreads.
+  - Its decode accounts for all of the difference: 271 s less than the control.
+  - Its turn prefill is 96 s more.
+- **Block 45 on the card, same micro-batch** (`n45-ub2048` against `n46-ub2048`, identical
+  text): decode is 3.2% faster at d0 and 5.4% faster at d8000. The ranges do not overlap.
+  Prefill and turn times are the same.
+- **Micro-batch 2048, same placement** (`n46-ub2048` against the control):
+  - d8000 prefill is 21.5% lower, and the cold 30k prime takes 21% longer.
+  - Turn times match up to 1,024 new tokens. At 2,048 they take 19.1 s against 18.7 s.
+  - d0 decode, on identical text, is 3% higher. The two ranges overlap.
+- **Text:**
+  - d0 is identical in every cell and pass.
+  - At d8000 the two micro-batch-2048 cells match each other, and all three classes differ
+    from the control's. The texts diverge within the first 61–86 characters.
+  - Every text is coherent, the same in every pass, and not degenerate.
+  - The d8000 decode comparison against the control is therefore on different text.
+    Acceptance there is 66.5/49.8/59.7% (code/list/prose) against 62.8/46.4/58.3%.
+- **What the rule does not cover:**
+  - **Turns past 2,048 new tokens are extrapolated.**
+    - 69 warm turns run past 2,048 new tokens, with 134,679 tokens beyond it (up to 8,777).
+    - The turn probe stops at 2,048, so these are extrapolated along each cell's 1,024–2,048
+      segment.
+    - For the control, the estimate on those 69 turns is 2,020 s against the bench's
+      measured 2,197 s (8% low).
+    - At micro-batch 2048 each of these turns runs at least two micro-batches. That was
+      not measured.
+  - **Ingestion is not in the estimate.**
+    - The bench's 12 ingestion requests prefilled 319,404 tokens cold, at 8k–48k, in
+      2,086 s.
+    - At the fit pass's micro-batch-2048 prefill rates (1.27× the time at 8k, 1.21× at
+      48k), that is about 480 s more.
+    - Their 905 s of decode, at `n45-ub2048`'s d8000 rate, would be about 50 s less.
+    - That nets about +430 s on ingestion, against −174 s on the agent turns.
+- **Fit, over the three passes** (no 48k prompt in this pass):
+
+  | Cell | Least free with swaps | Least free outside swaps | Free after load | Swaps, largest | Outside VRAM | Failed VRAM allocations |
+  | --- | ---: | ---: | ---: | --- | ---: | ---: |
+  | `n46-ub4096` | 5,559 MiB | 9,789 MiB | 10,927 MiB | 69, 8,066 MiB | 0 | 0 |
+  | `n46-ub2048` | 7,264 MiB | 12,632 MiB | 13,073 MiB | 105, 6,493 MiB | 0 | 0 |
+  | `n45-ub2048` | 2,816 MiB | 8,455 MiB | 8,897 MiB | 107, 6,493 MiB | 0 | 0 |
+
+- **Every cell and pass:**
+  - Probe and contract were clean: nine loads.
+  - No request or turn failed, and the cache served the whole 30,023-token context on
+    every turn.
+  - Prefill drew 173–182 W at 2,359–2,364 MHz, and decode 51–52 W.
+  - Junction peaked at 80–82 °C, and the hottest DIMM at 56 °C.
+
 ## Deviations
 
 - **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
