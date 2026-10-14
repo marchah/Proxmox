@@ -1,0 +1,12 @@
+# Stage 2 of runs/2026-10-13-long-tasks.md (micro-batch and placement), the TIMED pass: three
+# passes, CT 123 holding 0000:83:00.0 only, DEPTHS=0,8000 with CONTEXT_FILE (exact tokens of
+# the pinned corpus), PROBE_CHAT=true, every prompt class, TURNS with TURN_DEPTH=30000, a
+# residency sampler and the VRAM release trace on the card.
+#
+# The fit pass (sweep-106-fit-20261013T221937Z) failed n45-ub4096: swaps left 54 MiB free,
+# 25 VRAM allocations failed and 1,890 MiB stayed outside VRAM. These three fit. Every cell:
+# b11583, GGML_OP_OFFLOAD_MIN_BATCH=512, MTP at n-max 2, dio, 32 threads, f16 KV, one 64k
+# slot, batch 4096. n46-ub4096 is the control.
+n46-ub4096  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512' TURNS=true
+n46-ub2048  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=2048 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512' TURNS=true
+n45-ub2048  MODE=1gpu NCMOE=45 KV=f16 CTX=65536 UBATCH=2048 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512' TURNS=true

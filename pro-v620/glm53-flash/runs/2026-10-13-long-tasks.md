@@ -586,6 +586,37 @@ beyond both spreads. Its decode at d0 (8.64 against 8.73) and d8000 (7.76 agains
 within the control's spread (0.15 and 0.12), and so is its d8000 prefill. Stages 2–6 run with
 it. Stage 5 checks it on real sessions.
 
+### Stage 2, fit pass — 2026-10-13 18:19–20:05 ET
+
+Harness `bca01927e027`, cells [`-fit.cells`](2026-10-13-long-tasks-fit.cells), one pass,
+b11583, `GGML_OP_OFFLOAD_MIN_BATCH=512`, depths 0, 8,000 and 48,000 plus the turn probe. Raw
+data on the host: `/root/glm53-flash/sweep-106-fit-20261013T221937Z/`,
+`residency-106-fit.jsonl` and `trace-106-fit.txt`.
+
+| Cell | Fit | Least free with swaps | Least free outside swaps | Outside VRAM | Failed VRAM allocations | Code prefill d8000 / d48000, t/s | Decode, median of six |
+| --- | --- | ---: | ---: | ---: | ---: | --- | ---: |
+| `n46-ub4096` (control) | fits | 3,750 MiB | 9,071 MiB | 0 | 0 | 178.8 / 145.8 | 7.40 |
+| `n45-ub4096` | **fails** (rules 1, 2, 3) | **54 MiB** | 5,361 MiB | **1,890 MiB** | **25** | 163.2 / 136.1 | 7.65 |
+| `n46-ub2048` | fits | 6,468 MiB | 12,442 MiB | 0 | 0 | 141.0 / 120.0 | 7.43 |
+| `n45-ub2048` | fits | 2,251 MiB | 8,265 MiB | 0 | 0 | 140.3 / 120.3 | 7.73 |
+
+- **What happens when a swap does not fit** (`n45-ub4096`): this was untested before.
+  - 25 VRAM allocations failed, and 26 buffers of at least 256 MiB were created in GTT.
+  - Up to 1,890 MiB stayed outside VRAM, and free VRAM fell to 54 MiB during a swap.
+  - d8000 prefill was 9% below the control.
+  - Steady free VRAM was 5,361 MiB, above the 3,072 margin. The swap transient, not the
+    steady state, set the fit.
+- **Micro-batch 2048:**
+  - It shrinks the largest swap from 8,066 MiB to 6,493 MiB.
+  - It frees 2,146 MiB at load (13,073 against 10,927 MiB) and lets `-ncmoe 45` fit.
+  - It costs 21% of d8000 prefill and 18% at 48k.
+- **Block 45's experts on the card** decoded 4% faster in this one pass (7.73 against 7.43 at
+  micro-batch 2048). The timed pass checks it against the spread.
+- **Every cell:** probe and contract clean, no turn failed.
+- **Timed pass:** `n46-ub4096` (control), `n46-ub2048` and `n45-ub2048`, three passes
+  ([`-placement.cells`](2026-10-13-long-tasks-placement.cells)). `-ncmoe 45` fits at 2048,
+  so no 1024 pass is needed.
+
 ## Deviations
 
 - **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
