@@ -683,6 +683,11 @@ and `trace-106-placement.txt`. Figures are medians of the three passes, with the
   - Prefill drew 173–182 W at 2,359–2,364 MHz, and decode 51–52 W.
   - Junction peaked at 80–82 °C, and the hottest DIMM at 56 °C.
 
+**Stage 2's winner is `n45-ub2048`**, by the rule. The owner kept the rule on 2026-10-14
+after seeing what it leaves out. Stages 3–6 run on it, and stage 5's bench measures its
+ingestion. **Stage 3's screen:** 12 MTP cells plus `nospec` on this placement, one pass
+([`-mtp.cells`](2026-10-13-long-tasks-mtp.cells)).
+
 ## Deviations
 
 - **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
