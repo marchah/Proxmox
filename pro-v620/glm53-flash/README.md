@@ -74,6 +74,14 @@ VMID=123 ./install-llamacpp-release.sh   # another pinned release beside b11505,
   n-max 2. With `llamacpp-glm53f` started, `make bench GPU=2 MODEL=glm53f` runs the usage
   batch on it from the Mac; `ct123-test-host.sh restore` puts Flash-Next back. The sweep in [`../qwen38-flash-next/`](../qwen38-flash-next/README.md#benchmark-tools)
   drives it with `UNIT=llamacpp-glm53f N_BLOCKS=46`.
+- `glm53f-long.env` holds the winners of the long-tasks record's stages 1–4 (#106):
+  - b11583 and `GGML_OP_OFFLOAD_MIN_BATCH=512`;
+  - `-ncmoe 45` at micro-batch 2048;
+  - MTP n-max 2 at p-min 0.2;
+  - 32 threads pinned to CPUs 0–31, which needs `TEST_CPUSET=0-47`.
+
+  `glm53f-bench-b11583.env` is `glm53f-bench.env` on b11583, that record's stage 5
+  control.
 - `MODEL_VK_VISIBLE_DEVICES` limits the cards llama-server sees (`GGML_VK_VISIBLE_DEVICES`,
   by vulkaninfo's index). The launcher exports it only when set: an empty value hides
   every card.

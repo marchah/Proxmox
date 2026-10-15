@@ -893,6 +893,14 @@ host: `/root/glm53-flash/sweep-106-cpu-20261015T141427Z/`, `residency-106-cpu.js
 - 32 threads pinned to CPUs 0–31 (`--cpu-mask 0xffffffff --cpu-strict 1`), on CT 123's
   CPU set 0–47.
 
+**Stage 5's env files:**
+- [`glm53f-long.env`](../glm53f-long.env) is that configuration.
+- [`glm53f-bench-b11583.env`](../glm53f-bench-b11583.env) is the control: the bench's
+  configuration with only the build changed.
+- Both run on CPU set 0–47. Each is installed with `install.sh` before its run.
+- `make bench GPU=2 MODEL=glm53f SUITE=workloads` runs from the Mac, with CT 200 running
+  for it.
+
 ## Deviations
 
 - **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
