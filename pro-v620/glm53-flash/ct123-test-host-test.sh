@@ -43,6 +43,7 @@ EOF
   set_unit 120 llamacpp enabled inactive
   set_unit 123 llamacpp-qwen38fn enabled active
   set_unit 123 llamacpp-glm53f disabled inactive
+  set_unit 123 llamacpp-mimo disabled inactive
   # by-path links resolve to the real node names, as udev's do
   : >"$T/dri/renderD128"; : >"$T/dri/card1"; : >"$T/dri/renderD129"; : >"$T/dri/card2"
   ln -s renderD128 "$T/dri/pci-${GPU2}-render"; ln -s card1 "$T/dri/pci-${GPU2}-card"
@@ -217,6 +218,25 @@ TEST_CPUSET=0-47 run one-card || { bad "one-card with TEST_CPUSET exited non-zer
 run restore || { bad "restore exited non-zero"; tail_log; }
 diff -q "$T/123.conf.orig" "$T/lxc/123.conf" >/dev/null && ok "restore: CT 123 config exactly as found" \
   || { bad "CT 123 config differs:"; diff "$T/123.conf.orig" "$T/lxc/123.conf" | sed 's/^/      /'; }
+rm -rf "$T"
+
+echo "=== 6. GLM one-card, then TEST_MODEL=mimo two-card, then restore ==="
+new_host
+TEST_MODEL=nope run status && bad "accepted an unknown TEST_MODEL" || ok "refused an unknown TEST_MODEL"
+run one-card || { bad "one-card exited non-zero"; tail_log; }
+sed -i.bak "s/^123 llamacpp-glm53f .*/123 llamacpp-glm53f disabled active/" "$T/units"
+TEST_MODEL=mimo run two-card || { bad "mimo two-card exited non-zero"; tail_log; }
+[ "$(unit 123 llamacpp-glm53f)" = "disabled inactive" ] && ok "GLM unit stopped" || bad "GLM unit is $(unit 123 llamacpp-glm53f)"
+[ "$(limit 123 memory)/$(limit 123 cores)" = "499712/48" ] && ok "CT 123 at 488 GiB, 48 cores" || bad "limits $(limit 123 memory)/$(limit 123 cores)"
+[ "$(map)" = "${GPU1}=123:llamacpp-mimo,${GPU2}=123:llamacpp-mimo" ] && ok "watchdog: both cards -> MiMo unit" || bad "map is $(map)"
+double_binding_possible && bad "TWO CONTAINERS COULD HOLD GPU 1" || ok "exclusivity holds"
+sed -i.bak "s/^123 llamacpp-mimo .*/123 llamacpp-mimo disabled active/" "$T/units"
+run restore || { bad "restore exited non-zero"; tail_log; }
+[ "$(unit 123 llamacpp-mimo)" = "disabled inactive" ] && ok "MiMo unit stopped by a restore without TEST_MODEL" || bad "MiMo unit is $(unit 123 llamacpp-mimo)"
+[ "$(limit 123 memory)/$(limit 123 cores)" = "122880/24" ] && ok "limits from before the first test" || bad "limits $(limit 123 memory)/$(limit 123 cores)"
+diff -q "$T/123.conf.orig" "$T/lxc/123.conf" >/dev/null && ok "CT 123 config exactly as found" \
+  || { bad "CT 123 config differs:"; diff "$T/123.conf.orig" "$T/lxc/123.conf" | sed 's/^/      /'; }
+[ "$(map)" = "${GPU1}=120:llamacpp,${GPU2}=123:llamacpp-qwen38fn" ] && ok "watchdog map as found" || bad "map is $(map)"
 rm -rf "$T"
 
 echo
