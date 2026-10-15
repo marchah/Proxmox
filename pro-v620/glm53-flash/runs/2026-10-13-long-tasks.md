@@ -688,6 +688,72 @@ after seeing what it leaves out. Stages 3–6 run on it, and stage 5's bench mea
 ingestion. **Stage 3's screen:** 12 MTP cells plus `nospec` on this placement, one pass
 ([`-mtp.cells`](2026-10-13-long-tasks-mtp.cells)).
 
+### Stage 3, screen — 2026-10-14 15:47–19:51 ET
+
+Harness `b1348a477261`, cells [`-mtp.cells`](2026-10-13-long-tasks-mtp.cells), one pass,
+b11583 on `n45-ub2048`. Code, list and prose at 8,000 and 48,000 tokens, 640-token cap,
+`--cache`, greedy. Raw data on the host: `/root/glm53-flash/sweep-106-mtp-20261014T194736Z/`,
+`residency-106-mtp.jsonl` and `trace-106-mtp.txt`.
+
+Ranked by the rule, summed decode time over the six requests:
+
+| Cell | Decode, s | Tokens | Decode rate, t/s | Acceptance | Drafts wasted | Text = control | Text = `nospec` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `n2-p03` | **406.2** | 3,122 | 7.69 | 62.6% | 1,017 | 1/6 | 0/6 |
+| `n2-p02` | 406.9 | 3,133 | 7.70 | 61.7% | 1,072 | 4/6 | 0/6 |
+| `n2-p0` (control) | 407.8 | 3,163 | **7.76** | 61.7% | 1,082 | — | 0/6 |
+| `n2-p05` | 412.5 | 3,119 | 7.56 | 70.7% | 672 | 0/6 | 0/6 |
+| `n1-p02` | 430.6 | 3,133 | 7.28 | 76.2% | 422 | 2/6 | 0/6 |
+| `n1-p03` | 432.7 | 3,144 | 7.27 | 77.4% | 395 | 0/6 | 0/6 |
+| `n1-p0` | 434.5 | 3,168 | 7.29 | 76.3% | 426 | 2/6 | 0/6 |
+| `n1-p05` | 435.7 | 3,140 | 7.21 | 81.2% | 301 | 0/6 | 0/6 |
+| `n3-p05` | 464.0 | 3,176 | 6.85 | 61.0% | 1,149 | 0/6 | 0/6 |
+| `n3-p03` | 494.2 | 3,175 | 6.42 | 49.8% | 1,858 | 0/6 | 0/6 |
+| `n3-p0` | 495.7 | 3,207 | 6.47 | 49.5% | 1,948 | 0/6 | 0/6 |
+| `n3-p02` | 524.4 | 3,296 | 6.29 | 48.5% | 2,064 | 0/6 | 0/6 |
+| `nospec` | 545.3 | 3,248 | 5.96 | — | — | 0/6 | — |
+
+- **n-max 2 is fastest at every p-min.**
+  - **The four n-max 2 cells are within 1.6% of each other** in this one pass.
+    - p-min 0.5 wastes 38% fewer drafts (672 against 1,082), but decodes 2.6% slower.
+  - **n-max 1** is 6–7% slower, with acceptance of 76–81%.
+  - **n-max 3** is 14–29% slower.
+    - Acceptance falls to 48.5–49.8% at p-min 0–0.3.
+    - p-min 0.5 lifts it to 61.0%, and that cell is the fastest at n-max 3.
+- **MTP against `nospec`:**
+  - The control decodes 30% faster (7.76 against 5.96 t/s), and its summed decode time is
+    25% lower.
+  - By request, `nospec` decodes 5.64–5.72 t/s at 48k and 6.17–6.28 at 8k. The control
+    decodes 6.15–7.80 at 48k and 7.37–9.43 at 8k.
+- **Output length moves the rule.**
+  - The code and prose replies all reach the 640-token cap.
+  - The list replies stop on their own at 200–338 tokens (48k) and 339–407 (8k).
+  - `n2-p03` ranks first by time with 41 fewer tokens than the control. The control has the
+    highest decode rate.
+- **Text:**
+  - Every MTP text differs from `nospec`'s in all six prompts. They diverge within the first
+    17–972 characters, as batched verification is known to do.
+  - Few MTP texts match the control's (table).
+  - Every reply is coherent, and none is degenerate. Every list has its 20 items.
+- **Fit:** every cell fits.
+  - Nothing was outside VRAM, and no VRAM allocation failed.
+  - Free after load: n-max 1 9,047 MiB, n-max 2 8,897, n-max 3 8,747, `nospec` 14,716. The MTP
+    context takes 5,819 MiB at n-max 2.
+  - The least free including swaps was 2,165 MiB (n-max 3) to 5,603 MiB, and 11,584 MiB for
+    `nospec`. The largest swap was 6,489–6,497 MiB (6,047 for `nospec`).
+- **Every cell:** probe and contract clean, and no request failed.
+  - Cold prefill was 120.7 t/s at 48k [120.6–123.3] and 144.3 t/s at 8k [143.2–145.6].
+  - Prefill drew 178–181 W, and decode 52–54 W.
+  - Junction peaked at 84 °C, and the hottest DIMM reached 56–58 °C.
+  - Decode used 26.0 CPU cores for the control and 30.4 for `nospec`.
+
+**Retained cells, by the owner's decision on 2026-10-14:**
+- **The cells:** `n2-p0` (control), `n2-p02`, `n2-p03` and `n2-p05`, for two more
+  interleaved passes ([`-mtp-retained.cells`](2026-10-13-long-tasks-mtp-retained.cells)).
+- **Why `n2-p05` is in:** the control is one of the three lowest, so the plan's rule names
+  only three cells. `n2-p05`, fourth and within one pass's noise, is retained as the third
+  challenger. That gives the four cells the plan's timing assumed.
+
 ## Deviations
 
 - **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
@@ -709,5 +775,14 @@ ingestion. **Stage 3's screen:** 12 MTP cells plus `nospec` on this placement, o
     265-token one in 8.3–8.4 s.
   - The stage restarts from scratch at that commit. The first attempt's data stays on the
     host in `sweep-106-offload-20261013T172410Z/` and is not used.
+- **Stage 3's prompts did not all reuse the 48k context**, as the Method expected.
+  - The 8k code prompt was served 9 tokens from the cache, so every cell prefilled 8k cold
+    as well. GLM resumes only from a context checkpoint, and none sits at 8k inside the 48k
+    prompt.
+  - The list and prose prompts re-prefilled 2,041–2,047 tokens at each depth. The cache
+    resumed about one micro-batch before the shared prefix's end.
+  - The screen took 4 h 04 min against about 3.7 h.
+  - Decode, which the stage ranks, is not affected, and the cold 8k prefill is an extra
+    measurement.
 
 ## Conclusion

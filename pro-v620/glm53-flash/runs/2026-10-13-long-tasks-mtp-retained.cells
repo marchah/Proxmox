@@ -1,0 +1,14 @@
+# Stage 3 of runs/2026-10-13-long-tasks.md (draft length and confidence), the RETAINED
+# passes: two more interleaved passes (REPS=2), with the same settings as the screen
+# (-mtp.cells): CT 123 holding 0000:83:00.0 only, DEPTHS=8000,48000 with CONTEXT_FILE,
+# PROBE_CHAT=true, PROBE_ARGS="--n-predict 640 --cache", a residency sampler and the VRAM
+# release trace on the card.
+#
+# The screen (sweep-106-mtp-20261014T194736Z) ranked n2-p03, n2-p02 and the control n2-p0
+# lowest by summed decode time. With the control among them, the owner retained the fourth,
+# n2-p05, as the third challenger. Winner: the lowest summed request time over the three
+# passes.
+n2-p0    MODE=1gpu NCMOE=45 KV=f16 CTX=65536 UBATCH=2048 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-p-min 0' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512'
+n2-p02   MODE=1gpu NCMOE=45 KV=f16 CTX=65536 UBATCH=2048 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-p-min 0.2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512'
+n2-p03   MODE=1gpu NCMOE=45 KV=f16 CTX=65536 UBATCH=2048 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-p-min 0.3' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512'
+n2-p05   MODE=1gpu NCMOE=45 KV=f16 CTX=65536 UBATCH=2048 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-p-min 0.5' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512'
