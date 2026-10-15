@@ -835,6 +835,15 @@ with the screen's settings, plus `--sampling server --seed 1234`. Raw data on th
 
 Stages 4–6 run on `n45-ub2048` with `n2-p02`.
 
+**Stage 4's cells** ([`-cpu.cells`](2026-10-13-long-tasks-cpu.cells)) run on a fixed CPU set
+(Deviations):
+- `t32`, the control;
+- `t24`;
+- `t32-poll0`;
+- `t32-pin`, with `--cpu-mask 0xffffffff --cpu-strict 1`: CPUs 0–31, one per physical core.
+
+`--poll` and the mask also cover the batch and draft threads, which default to them.
+
 ## Deviations
 
 - **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
@@ -865,5 +874,17 @@ Stages 4–6 run on `n45-ub2048` with `n2-p02`.
   - The screen took 4 h 04 min against about 3.7 h.
   - Decode, which the stage ranks, is not affected, and the cold 8k prefill is an extra
     measurement.
+- **Stage 4 runs on a fixed CPU set**, by the owner's decision on 2026-10-15.
+  - **What Proxmox does:** it gives a container a random set of `cores` CPUs at every
+    start. Stages 0–3 ran on the set from CT 123's start at about 11:59 ET on
+    2026-10-13.
+  - **What that set covered:** 48 CPUs, but only 30 of the 7532's 32 physical cores
+    (cores 4 and 19 missing).
+  - **Effect:** the planned 32 threads pinned one per physical core could not be built,
+    and the 32-thread control shared cores.
+  - **Change:** `TEST_CPUSET=0-47 ./ct123-test-host.sh one-card` fixes the set to CPUs
+    0–47. That covers all 32 cores, plus the second threads of cores 0–15.
+  - **Stages 4–6 keep that set.** Stage 4's control re-measures stages 1–3's
+    configuration on it, and `restore` at the campaign's end drops it.
 
 ## Conclusion

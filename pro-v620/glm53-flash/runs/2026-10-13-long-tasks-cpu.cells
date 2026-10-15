@@ -1,0 +1,14 @@
+# Stage 4 of runs/2026-10-13-long-tasks.md (CPU), three interleaved passes. CT 123 holds
+# 0000:83:00.0 only, on the fixed CPU set 0-47 (TEST_CPUSET=0-47 ./ct123-test-host.sh
+# one-card): all 32 physical cores plus the second threads of cores 0-15. DEPTHS=0,8000 with
+# CONTEXT_FILE, PROBE_CHAT=true, every prompt class, TURNS with TURN_DEPTH=30000, a residency
+# sampler and the VRAM release trace on the card.
+#
+# Every cell runs on stages 1-3's winners: b11583, GGML_OP_OFFLOAD_MIN_BATCH=512, -ncmoe 45,
+# micro-batch 2048, MTP n-max 2 at p-min 0.2, dio, f16 KV, one 64k slot, batch 4096. t32 is
+# the control. t32-pin pins one thread per physical core: CPUs 0-31 (CPU n and n+32 share
+# core n). --poll and the mask also cover the batch and draft threads, which default to them.
+t32        MODE=1gpu NCMOE=45 KV=f16 CTX=65536 UBATCH=2048 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-p-min 0.2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512' TURNS=true
+t24        MODE=1gpu NCMOE=45 KV=f16 CTX=65536 UBATCH=2048 PARALLEL=1 LOAD_MODE=dio THREADS=24 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-p-min 0.2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512' TURNS=true
+t32-poll0  MODE=1gpu NCMOE=45 KV=f16 CTX=65536 UBATCH=2048 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-p-min 0.2 --poll 0' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512' TURNS=true
+t32-pin    MODE=1gpu NCMOE=45 KV=f16 CTX=65536 UBATCH=2048 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-p-min 0.2 --cpu-mask 0xffffffff --cpu-strict 1' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512' TURNS=true

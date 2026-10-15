@@ -60,6 +60,13 @@ VMID=123 ./install-llamacpp-release.sh   # another pinned release beside b11505,
 - `ct123-test-host.sh` keeps CT 120 from autostarting onto GPU 1 while CT 123 holds it,
   and points the thermal watchdog's map at the unit that owns each card. It never starts
   CT 120.
+- **CPUs:** Proxmox gives a container a random set of `cores` CPUs at every start, and CPU
+  n and n+32 share one of the 7532's 32 cores.
+  - At 48 CPUs that can leave cores out. CT 123's start on 2026-10-13 covered 30 of 32.
+  - `TEST_CPUSET=0-47 ./ct123-test-host.sh one-card` fixes the set to all 32 cores, plus
+    16 second threads.
+  - A run without `TEST_CPUSET`, and `restore`, give the choice back to Proxmox.
+  - `status` shows the set and the cores it covers.
 - `glm53f.env` starts with every routed expert in host RAM (`-ncmoe 46`), which fits one
   card.
 - `glm53f-bench.env` is the best configuration from the configurations record, at one 64k

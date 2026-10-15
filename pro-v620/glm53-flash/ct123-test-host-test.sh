@@ -201,5 +201,23 @@ run restore || { bad "restore from the partial state failed"; tail_log; }
 [ "$(onboot 120)" = 1 ] && ok "restore recovers CT 120's autostart" || bad "CT 120 onboot is $(onboot 120)"
 rm -rf "$T"
 
+echo "=== 5. TEST_CPUSET fixes CT 123's CPUs; a run without it and restore drop them ==="
+new_host
+cpusets() { grep -c '^lxc.cgroup2.cpuset.cpus:' "$T/lxc/123.conf" || true; }
+TEST_CPUSET=0-31 run one-card && bad "took 32 CPUs for 48 cores" || ok "refused a cpuset of the wrong size"
+[ "$(cpusets)" = 0 ] && [ "$(unit 123 llamacpp-qwen38fn)" = "enabled active" ] \
+  && ok "nothing changed on the refusal" || bad "changed CT 123 on a refusal"
+TEST_CPUSET=0-47 run one-card || { bad "one-card with TEST_CPUSET exited non-zero"; tail_log; }
+TEST_CPUSET=0-47 run one-card || { bad "a second one-card with TEST_CPUSET exited non-zero"; tail_log; }
+[ "$(cpusets)" = 1 ] && grep -q '^lxc.cgroup2.cpuset.cpus: 0-47$' "$T/lxc/123.conf" \
+  && ok "cpuset 0-47, written once" || bad "$(cpusets) cpuset lines"
+run one-card || { bad "one-card without TEST_CPUSET exited non-zero"; tail_log; }
+[ "$(cpusets)" = 0 ] && ok "a run without TEST_CPUSET drops it" || bad "cpuset kept"
+TEST_CPUSET=0-47 run one-card || { bad "one-card with TEST_CPUSET exited non-zero"; tail_log; }
+run restore || { bad "restore exited non-zero"; tail_log; }
+diff -q "$T/123.conf.orig" "$T/lxc/123.conf" >/dev/null && ok "restore: CT 123 config exactly as found" \
+  || { bad "CT 123 config differs:"; diff "$T/123.conf.orig" "$T/lxc/123.conf" | sed 's/^/      /'; }
+rm -rf "$T"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "ALL PASSED"; else echo "${fails} FAILED"; exit 1; fi

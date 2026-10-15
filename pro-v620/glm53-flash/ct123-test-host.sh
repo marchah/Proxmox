@@ -7,9 +7,16 @@
 #   ./ct123-test-host.sh restore    # Flash-Next on GPU 2 alone; CT 120's autostart restored
 #   ./ct123-test-host.sh status
 #
+#   TEST_CPUSET=0-47 ./ct123-test-host.sh one-card   # also fix CT 123's CPUs; a run without
+#                                                    # it, and restore, drop the fixed set
+#
 # Every transition keeps two invariants: no two containers own a card, including after a
 # host reboot, and the thermal watchdog maps each card to the unit that runs on it.
 # CT 120 itself is never started: that waits for the owner after a test.
+#
+# Without TEST_CPUSET, Proxmox gives the container a random set of `cores` CPUs at every
+# start. On the 7532 (32 cores, CPU n and n+32 share one), 48 of the 64 can leave physical
+# cores out: one start covered 30. TEST_CPUSET must name TEST_CORES CPUs.
 set -Eeuo pipefail
 
 readonly VMID=123
@@ -28,9 +35,11 @@ readonly CT120_UNIT=llamacpp
 # for 32 threads without the threads = cores collapse seen on CT 123 at 24/24.
 readonly TEST_MEMORY_MIB=245760
 readonly TEST_CORES=48
+readonly TEST_CPUSET="${TEST_CPUSET:-}"
 
 readonly LIMITS_FILE="${STATE_DIR}/123.limits.before-test"
 readonly CT120_ONBOOT_FILE="${STATE_DIR}/120.onboot.before-test"
+readonly CPUSET_KEY='lxc.cgroup2.cpuset.cpus'
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 log() { printf '==> %s\n' "$*"; }
@@ -125,6 +134,44 @@ detach_gpu1() {
   log "GPU 1 detached from CT ${VMID}"
 }
 
+# CPUs in a cpuset list such as 0-3,8,40-47.
+cpuset_count() {
+  local n=0 part lo hi
+  for part in ${1//,/ }; do
+    lo="${part%-*}"; hi="${part#*-}"
+    n=$(( n + hi - lo + 1 ))
+  done
+  echo "$n"
+}
+
+# Physical cores a cpuset list covers, from the host's CPU-to-core map.
+cpuset_cores() {
+  local part lo hi c want=" "
+  for part in ${1//,/ }; do
+    lo="${part%-*}"; hi="${part#*-}"
+    for (( c = lo; c <= hi; c++ )); do want+="$c "; done
+  done
+  lscpu -p=CPU,CORE | awk -F, -v want="$want" '!/^#/ && index(want, " " $1 " ") { seen[$2] = 1 }
+    END { print length(seen) }'
+}
+
+# An explicit cpuset stops Proxmox picking CPUs at start; drop_cpuset gives that back.
+set_cpuset() {
+  cp -a "$CONF" "${STATE_DIR}/123.conf.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+  grep -v "^${CPUSET_KEY}:" "$CONF" >"${STATE_DIR}/123.conf.new"
+  printf '%s: %s\n' "$CPUSET_KEY" "$TEST_CPUSET" >>"${STATE_DIR}/123.conf.new"
+  cat "${STATE_DIR}/123.conf.new" >"$CONF"
+  log "CT ${VMID} cpuset -> ${TEST_CPUSET}"
+}
+
+drop_cpuset() {
+  grep -q "^${CPUSET_KEY}:" "$CONF" || return 0
+  cp -a "$CONF" "${STATE_DIR}/123.conf.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+  grep -v "^${CPUSET_KEY}:" "$CONF" >"${STATE_DIR}/123.conf.new"
+  cat "${STATE_DIR}/123.conf.new" >"$CONF"
+  log "CT ${VMID} cpuset removed; Proxmox picks the CPUs again"
+}
+
 # CT 120 must not autostart onto GPU 1 while CT 123 holds it.
 ct120_release_gpu1() {
   local v
@@ -156,6 +203,12 @@ preflight() {  # [two-card]
   local st
   [ "$(ct_state "$VMID")" = "running" ] || die "CT ${VMID} is not running"
   require_glm_installed
+  if [ -n "$TEST_CPUSET" ]; then
+    [[ "$TEST_CPUSET" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]] \
+      || die "TEST_CPUSET '${TEST_CPUSET}' is not a CPU list such as 0-47"
+    [ "$(cpuset_count "$TEST_CPUSET")" -eq "$TEST_CORES" ] \
+      || die "TEST_CPUSET names $(cpuset_count "$TEST_CPUSET") CPUs; CT ${VMID} gets ${TEST_CORES}"
+  fi
   if [ "${1:-}" = two-card ]; then
     st="$(ct_state 120)"
     [ "$st" = "stopped" ] || die "CT 120 is '${st}'; shut it down first (stop Hermes, CT 121, before it)"
@@ -169,6 +222,7 @@ prepare_ct123() {
   retire_unit "$VMID" "$PROD_UNIT"
   retire_unit "$VMID" "$TEST_UNIT"
   pct set "$VMID" --memory "$TEST_MEMORY_MIB" --cores "$TEST_CORES"
+  if [ -n "$TEST_CPUSET" ]; then set_cpuset; else drop_cpuset; fi
 }
 
 status() {
@@ -178,6 +232,10 @@ status() {
   pct config "$VMID" | grep -E '^(cores|memory|swap|onboot)' | sed 's/^/  /'
   [ -f "$LIMITS_FILE" ] && echo "  (before the test: $(tr '\n' ' ' <"$LIMITS_FILE"))"
   if [ "$(ct_state "$VMID")" = "running" ]; then
+    local cpus
+    cpus="$(cat "/sys/fs/cgroup/lxc/${VMID}/cpuset.cpus.effective" 2>/dev/null || true)"
+    echo "--- CT ${VMID} CPUs: ${cpus:-unknown} ($(grep -q "^${CPUSET_KEY}:" "$CONF" && echo fixed || echo "picked by Proxmox"))"
+    [ -n "$cpus" ] && echo "    physical cores covered: $(cpuset_cores "$cpus") of $(lscpu -p=CORE | grep -v '^#' | sort -u | wc -l)"
     echo "--- V620s llama-server sees in CT ${VMID}: $(devices_offered) ---"
     for u in "$TEST_UNIT" "$PROD_UNIT"; do
       printf '  %-20s enabled=%-10s active=%s\n' "$u" \
@@ -239,6 +297,7 @@ main() {
         while read -r k v; do pct set "$VMID" "--${k}" "$v"; done <"$LIMITS_FILE"
         rm -f "$LIMITS_FILE"
       fi
+      drop_cpuset
       restart_ct
       ct120_restore
       set_watchdog_map "${GPU1_PCI}=120:${CT120_UNIT},${GPU2_PCI}=${VMID}:${PROD_UNIT}"
