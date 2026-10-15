@@ -754,6 +754,45 @@ Ranked by the rule, summed decode time over the six requests:
   only three cells. `n2-p05`, fourth and within one pass's noise, is retained as the third
   challenger. That gives the four cells the plan's timing assumed.
 
+### Stage 3, retained passes — 2026-10-14 20:07–22:33 ET
+
+Harness `b99224a980dd`, cells
+[`-mtp-retained.cells`](2026-10-13-long-tasks-mtp-retained.cells), two interleaved passes
+with the screen's settings. With the screen, that makes three passes. Raw data on the host:
+`/root/glm53-flash/sweep-106-mtp-retained-20261015T000737Z/`,
+`residency-106-mtp-retained.jsonl` and `trace-106-mtp-retained.txt`.
+
+Ranked by the rule, summed request time over the three passes. The other figures are
+per-pass medians, with their range.
+
+| Cell | Request time, 3 passes | Decode, s | Tokens | Decode rate, t/s | Acceptance | Drafts wasted |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **`n2-p02`** | **2,792.1 s** | 406.9 [406.5–407.5] | 3,133 | 7.70 [7.69–7.71] | 61.7% | 1,072 |
+| `n2-p03` | 2,795.1 s | 408.8 [406.2–408.9] | 3,122 | 7.64 [7.63–7.69] | 62.6% | 1,017 |
+| `n2-p0` (control) | 2,800.7 s | 409.5 [407.8–412.9] | 3,163 | 7.72 [7.66–7.76] | 61.7% | 1,082 |
+| `n2-p05` | 2,805.9 s | 412.5 [409.1–413.2] | 3,119 | 7.56 [7.55–7.62] | 70.7% | 672 |
+
+- **By the rule, stage 3's winner is `n2-p02`** (n-max 2, p-min 0.2). `n2-p03` is the
+  runner-up.
+- **The four cells are within 0.5%**, 13.8 s over three passes.
+  - Prefill took 523.0–524.0 s per pass in every cell.
+  - `n2-p02`'s lead over the control, 8.6 s, is smaller than its 30 fewer tokens per pass
+    are worth at 7.7 t/s, about 12 s.
+  - By decode rate, the control is level with `n2-p02` and faster than `n2-p03` and
+    `n2-p05`.
+  - p-min 0.2–0.5 does not decode faster than p-min 0 here. p-min 0.5 wastes 38% fewer
+    drafts and decodes 2% slower.
+- **Every cell and pass:**
+  - The text is identical in all three passes.
+  - No request failed, no text was degenerate, and probe and contract were clean.
+- **Fit:**
+  - Nothing was outside VRAM, and no VRAM allocation failed.
+  - Free after load was 8,897 MiB.
+  - The least free including swaps was 2,311–2,672 MiB.
+- **Model's own sampling:** the winner, the runner-up and the control,
+  three passes with `--sampling server --seed 1234`
+  ([`-mtp-sampling.cells`](2026-10-13-long-tasks-mtp-sampling.cells)).
+
 ## Deviations
 
 - **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
