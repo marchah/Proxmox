@@ -793,6 +793,48 @@ per-pass medians, with their range.
   three passes with `--sampling server --seed 1234`
   ([`-mtp-sampling.cells`](2026-10-13-long-tasks-mtp-sampling.cells)).
 
+### Stage 3, model's own sampling — 2026-10-15 06:14–09:03 ET
+
+Harness `0a0777c923d0`, cells
+[`-mtp-sampling.cells`](2026-10-13-long-tasks-mtp-sampling.cells), three interleaved passes
+with the screen's settings, plus `--sampling server --seed 1234`. Raw data on the host:
+`/root/glm53-flash/sweep-106-mtp-sampling-20261015T101413Z/`,
+`residency-106-mtp-sampling.jsonl` and `trace-106-mtp-sampling.txt`.
+
+| Cell | Request time, 3 passes | Decode, s | Tokens | Decode rate, t/s | Acceptance | Drafts wasted |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `n2-p0` (control) | **2,912.3 s** | 446.6 [445.0–447.9] | 3,175 | 7.11 [7.09–7.13] | 53.9% | 1,405 |
+| `n2-p02` | 2,915.0 s | 447.5 [445.7–450.4] | 3,182 | 7.11 [7.07–7.14] | 54.2% | 1,396 |
+| `n2-p03` | 2,969.7 s | 466.3 [464.6–467.1] | 3,287 | 7.05 [7.04–7.07] | 55.5% | 1,348 |
+
+- **The order changes under the model's own sampling.**
+  - The control is first, 2.7 s (0.1%) ahead of `n2-p02`. Their decode rates are equal.
+  - `n2-p03` is third. Most of its gap is length: 112 more tokens per pass than the
+    control, mostly from a 48k list of 443 tokens against 348.
+- **Against greedy, for the same cells:**
+  - Acceptance falls from about 62% to 54–56%.
+  - Decode rate falls by 8%, from 7.70 to 7.11 t/s for `n2-p02`.
+- **Text:**
+  - The seeded sampler gives every cell the same text in all three passes.
+  - `n2-p02`'s texts match the control's in 4 of 6 prompts, and `n2-p03`'s in none.
+  - No text is degenerate. Every list reply stops on its own, at 267–443 tokens.
+- **Every cell and pass:**
+  - No request failed, and probe and contract were clean.
+  - Nothing was outside VRAM, and no VRAM allocation failed.
+  - The least free including swaps was 2,311 MiB.
+  - Junction peaked at 84 °C, and the hottest DIMM at 58 °C.
+
+**Stage 3's winner is `n2-p02`** (n-max 2, p-min 0.2), by the rule over the greedy passes.
+- Under greedy decoding it leads the control by 0.3%, less than its 30 fewer tokens per pass
+  are worth. Under the model's own sampling it trails by 0.1%, at the same decode rate.
+- The four n-max 2 settings are within the measurement's resolution of each other.
+- What the stage separates is n-max:
+  - n-max 1 is 6–7% slower;
+  - n-max 3 is 14–29% slower;
+  - no speculation is 34% slower.
+
+Stages 4–6 run on `n45-ub2048` with `n2-p02`.
+
 ## Deviations
 
 - **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
