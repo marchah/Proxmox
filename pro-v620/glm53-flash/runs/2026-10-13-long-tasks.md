@@ -844,6 +844,55 @@ Stages 4–6 run on `n45-ub2048` with `n2-p02`.
 
 `--poll` and the mask also cover the batch and draft threads, which default to them.
 
+### Stage 4, CPU — 2026-10-15 10:14–13:20 ET
+
+Harness `76ae3d45faaa`, cells [`-cpu.cells`](2026-10-13-long-tasks-cpu.cells), three
+interleaved passes on CPU set 0–47, depths 0 and 8,000 plus the turn probe. Raw data on the
+host: `/root/glm53-flash/sweep-106-cpu-20261015T141427Z/`, `residency-106-cpu.jsonl` and
+`trace-106-cpu.txt`. Figures are medians of the three passes, with their range.
+
+| Cell | Batch, s | Turn prefill, s | Decode, s | Decode d0 / d8000, t/s | Decode CPU cores | Hottest DIMM |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| `t32` (control) | 7,419 [7,407–7,485] | 2,889 | 4,521 | 9.20 [9.06–9.21] / 8.24 [8.10–8.24] | 29.1 | 57 °C |
+| `t24` | 7,659 [7,622–7,686] | 2,988 | 4,670 | 8.82 [8.74–8.86] / 7.97 [7.84–8.04] | 21.8 | 57 °C |
+| `t32-poll0` | 7,471 [7,446–7,527] | 2,890 | 4,586 | 8.97 [8.89–9.11] / 8.12 [8.04–8.17] | 29.1 | 57 °C |
+| **`t32-pin`** | **7,110 [7,098–7,131]** | **2,835** | **4,277** | **9.64 [9.56–9.65] / 8.71 [8.71–8.74]** | 29.0 | 58 °C |
+
+- **Stage 4's winner is `t32-pin`**, by the rule. Its estimated batch time is 309 s (4.2%)
+  below the control's, beyond both spreads.
+  - **Decode** is 4.8% faster at d0 and 5.7% faster at d8000, worth 244 s.
+  - **Short turns are faster.** They run on the CPU below the offload threshold.
+
+    | New tokens | 32 | 64 | 128 | 256 |
+    | --- | ---: | ---: | ---: | ---: |
+    | Pinned, s | 2.2 | 2.8 | 4.0 | 6.3 |
+    | Control, s | 2.3 | 3.0 | 4.4 | 7.3 |
+
+    Turns of 512 tokens and more, on the card, take the same time. That is worth 54 s.
+  - Prefill at d8000 (142.4 against 142.2 t/s) and the cold 30k prime (234 s) are the same.
+  - It uses the same 29 decode cores, on 32 distinct physical cores.
+  - Checked on the live server: each compute thread is bound to one CPU of 0–31, and at
+    one sample its 32 running threads sat on 32 distinct CPUs.
+- **`t24` is 3.2% slower.**
+  - It decodes 4% slower.
+  - Its turns of 128–256 new tokens, on the CPU, take 5.1–9.1 s against 4.4–7.3 s.
+- **`--poll 0`** is within the control's spread, 0.7% slower by its median.
+- **The fixed CPU set alone changed nothing measurable.** The control decodes 9.20 / 8.24
+  t/s; stage 2's `n45-ub2048` decoded 9.17 / 8.26 on the random set, at p-min 0.
+- **Text:** identical in every cell and pass, for all six prompts.
+- **Every cell and pass:**
+  - Probe and contract were clean, and no request or turn failed.
+  - Nothing was outside VRAM, and no VRAM allocation failed.
+  - The least free including swaps was 2,600–2,816 MiB.
+  - Junction peaked at 82–85 °C.
+
+**Stages 1–4's configuration**, for stage 5:
+- b11583, with `GGML_OP_OFFLOAD_MIN_BATCH=512`;
+- `-ncmoe 45`, micro-batch 2048;
+- MTP at n-max 2, p-min 0.2;
+- 32 threads pinned to CPUs 0–31 (`--cpu-mask 0xffffffff --cpu-strict 1`), on CT 123's
+  CPU set 0–47.
+
 ## Deviations
 
 - **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
