@@ -5,15 +5,17 @@
 # engine needs a window of at least 2). Suffix drafts stay off, so the drafts are MTP's alone.
 # If an arm's decode still rises at s6, the record adds s7, s8, ... for that arm. The best length
 # of each arm and that arm's control then get three passes (2026-10-16-strata-7-confirm.cells).
-one-ctl    MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0
-split-ctl  MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
-one-s2     MODEL_SPEC=2 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0
-split-s2   MODEL_SPEC=2 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
-one-s3     MODEL_SPEC=3 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0
-split-s3   MODEL_SPEC=3 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
-one-s4     MODEL_SPEC=4 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0
-split-s4   MODEL_SPEC=4 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
-one-s5     MODEL_SPEC=5 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0
-split-s5   MODEL_SPEC=5 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
-one-s6     MODEL_SPEC=6 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0
-split-s6   MODEL_SPEC=6 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+# STRATA_MMQ_KQ=1 is the screen's kept setting, given here rather than in the env file: the env
+# file is also the served configuration, and that switch changes numerics (the owner's call).
+one-ctl    MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0 STRATA_MMQ_KQ=1
+split-ctl  MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto STRATA_MMQ_KQ=1
+one-s2     MODEL_SPEC=2 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0 STRATA_MMQ_KQ=1
+split-s2   MODEL_SPEC=2 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto STRATA_MMQ_KQ=1
+one-s3     MODEL_SPEC=3 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0 STRATA_MMQ_KQ=1
+split-s3   MODEL_SPEC=3 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto STRATA_MMQ_KQ=1
+one-s4     MODEL_SPEC=4 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0 STRATA_MMQ_KQ=1
+split-s4   MODEL_SPEC=4 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto STRATA_MMQ_KQ=1
+one-s5     MODEL_SPEC=5 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0 STRATA_MMQ_KQ=1
+split-s5   MODEL_SPEC=5 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto STRATA_MMQ_KQ=1
+one-s6     MODEL_SPEC=6 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0 STRATA_MMQ_KQ=1
+split-s6   MODEL_SPEC=6 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto STRATA_MMQ_KQ=1
