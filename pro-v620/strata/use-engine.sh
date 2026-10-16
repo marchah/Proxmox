@@ -126,7 +126,7 @@ status() {
   map="$(grep -m1 '^GPU_SERVICE_MAP=' "$WATCHDOG_ENV" 2>/dev/null | cut -d= -f2-)"
   echo "  watchdog map: ${map:-MISSING}"
   echo "  /dev/kfd:     config $(grep -cE '^dev[0-9]+: /dev/kfd' "/etc/pve/lxc/${VMID}.conf"), in CT $(in_ct test -c /dev/kfd && echo yes || echo no)"
-  echo "  DRM cgroup:   $(grep '^lxc.cgroup2.devices.allow: c 226:' "/etc/pve/lxc/${VMID}.conf" | awk '{print $4}' | paste -sd' ' -)"
+  echo "  DRM cgroup:   $(grep '^lxc.cgroup2.devices.allow: c 226:' "/etc/pve/lxc/${VMID}.conf" | awk '{print $3}' | paste -sd' ' -)"
   for u in "$LLAMACPP_UNIT" "$STRATA_UNIT"; do
     echo "  ${u}: $(in_ct systemctl is-active "$u" 2>&1 | head -1)/$(in_ct systemctl is-enabled "$u" 2>&1 | head -1)"
   done
