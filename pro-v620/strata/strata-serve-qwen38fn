@@ -21,7 +21,10 @@ engine="${STRATA_HOME}/build-hip/strata"
 [ -x "${engine}" ] || die "no engine at ${engine}; run install.sh on the host"
 [ -c /dev/kfd ] || die "/dev/kfd is not in the container; on the host: ./use-engine.sh strata"
 [ -r /dev/kfd ] && [ -w /dev/kfd ] || die "/dev/kfd is not readable and writable by $(id -un) (group render)"
-renders="$(find /dev/dri -maxdepth 1 -name 'renderD*' -type c 2>/dev/null | wc -l)"
+# Count with [ -c ]: the nodes are bind mounts over files LXC creates, so find's directory
+# entry type reads them as regular files.
+renders=0
+for node in /dev/dri/renderD*; do [ -c "${node}" ] && renders=$((renders + 1)); done
 [ "${renders}" -ge 1 ] || die "no /dev/dri/renderD* node; see pro-v620/README.md 'Recovering after a DRM renumber'"
 
 export LD_LIBRARY_PATH="${ROCM_ROOT}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
