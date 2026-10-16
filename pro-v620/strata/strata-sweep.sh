@@ -282,7 +282,7 @@ cells_json="$(for label in "${CELL_ORDER[@]}"; do printf '%s\t%s\n' "$label" "$(
 python3 - "${OUT_DIR}/manifest.json" "$HARNESS_COMMIT" "$VMID" "${CARDS[*]}" "$UNIT" "$PASSES" "$REPS" \
   "$N_PREDICT" "$CONC_REPS" "$DEPTHS" "$PROBE_CLASSES" "$EFFORTS" "$THINKING_EFFORTS" \
   "$DIMM_START_MAX_C" "$CELLS" "$cells_json" "${OUT_DIR}/environment.json" <<'PY'
-import datetime, json, sys
+import datetime, json, os, sys
 (path, commit, vmid, cards, unit, passes, reps, n_predict, conc_reps, depths, classes, efforts,
  thinking, dimm_max, cells_file, cells, env_path) = sys.argv[1:18]
 env = json.load(open(env_path))["guest"]
@@ -297,6 +297,7 @@ json.dump({
     "n_predict": int(n_predict), "conc_reps": int(conc_reps), "depths": depths,
     "probe_classes": classes, "contract_efforts": efforts, "thinking_efforts": thinking,
     "dimm_start_max_c": int(dimm_max), "cells_file": cells_file, "cells": json.loads(cells),
+    "host_ram_gib": round(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30),
 }, open(path, "w"), indent=1)
 PY
 
