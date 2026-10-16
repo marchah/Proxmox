@@ -1,0 +1,10 @@
+# MiMo-V2.6-Pro-RL baseline, stage 1, fit pass 2, one pass. Plan: 2026-10-15-baseline.md,
+# Deviations. Same sweep settings as -fit.cells (run-stage.sh fit2).
+# - The RAM experts load into anonymous memory (--load-mode none --no-host --no-repack): in
+#   pass 1 the page cache could not hold them under the CT limit.
+# - Micro-batch 2048: at 4096, card 1 overflowed in every pass 1 cell.
+# - Splits from pass 1's per-card measurements, not the sweep's rule.
+a-n67-ub2048       MODE=2gpu NCMOE=67 KV=f16 BATCH=4096 UBATCH=2048 THREADS=32 STREAMS=2 LOAD_MODE=none TENSOR_SPLIT=66,4 EXTRA='--cpu-mask 0xffffffff --cpu-strict 1 --no-host --no-repack'
+a-n67-ub2048-cpupp MODE=2gpu NCMOE=67 KV=f16 BATCH=4096 UBATCH=2048 THREADS=32 STREAMS=2 LOAD_MODE=none TENSOR_SPLIT=66,4 ENV='GGML_OP_OFFLOAD_MIN_BATCH=8192' EXTRA='--cpu-mask 0xffffffff --cpu-strict 1 --no-host --no-repack'
+a-mtp-q8-n68       MODE=2gpu NCMOE=68 KV=f16 BATCH=4096 UBATCH=2048 THREADS=32 STREAMS=2 LOAD_MODE=none TENSOR_SPLIT=58,12 EXTRA='--cpu-mask 0xffffffff --cpu-strict 1 --no-host --no-repack --spec-type draft-mtp --spec-draft-n-max 2 -md /models/hf/mimo-v2.6-pro-rl/mtp-MiMo-V2.6-Pro-RL-Q8_0.gguf'
+a-mtp-q4-n67       MODE=2gpu NCMOE=67 KV=f16 BATCH=4096 UBATCH=2048 THREADS=32 STREAMS=2 LOAD_MODE=none TENSOR_SPLIT=67,3 EXTRA='--cpu-mask 0xffffffff --cpu-strict 1 --no-host --no-repack --spec-type draft-mtp --spec-draft-n-max 2 -md /models/hf/mimo-v2.6-pro-rl/mtp-MiMo-V2.6-Pro-RL-Q4_0.gguf'

@@ -2,7 +2,7 @@
 # Run one stage of the baseline record (runs/2026-10-15-baseline.md) with its samplers.
 # Runs on the Proxmox HOST as root, from a harness staged by ../push-harness.sh.
 #
-#   ./run-stage.sh fit|mtp|timed
+#   ./run-stage.sh fit|fit2|mtp|timed
 #   WAIT_DOWNLOAD=true SETUP=true ./run-stage.sh fit   # queued: after the download, set up
 #                                                      # both cards, then run stage 1
 #
@@ -35,10 +35,10 @@ log() { printf '%s ==> %s\n' "$(date -u +%FT%TZ)" "$*"; }
 
 # The record's per-stage probe settings (Method table).
 case "$STAGE" in
-  fit)   REPS=1; DEPTHS=0,8000; CLASSES=prose ;;
+  fit | fit2) REPS=1; DEPTHS=0,8000; CLASSES=prose ;;
   mtp)   REPS=1; DEPTHS=0;      CLASSES= ;;
   timed) REPS=3; DEPTHS=0,8000; CLASSES= ;;
-  *) die "usage: run-stage.sh fit|mtp|timed" ;;
+  *) die "usage: run-stage.sh fit|fit2|mtp|timed" ;;
 esac
 CELLS="${HERE}/runs/2026-10-15-baseline-${STAGE}.cells"
 
