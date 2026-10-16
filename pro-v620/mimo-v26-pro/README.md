@@ -2,7 +2,9 @@
 
 MiMo-V2.6-Pro-RL (`mimo2`, MIT) is Xiaomi's 1.02T-total, 42B-active MoE with vision and
 audio encoders. It is not deployed. At 4-bit it fills nearly all of the host's RAM, and the
-[test records](#test-records) measure it on this box as a baseline for hardware changes.
+[test records](#test-records) measure it on this box as a baseline for hardware changes. On
+b11583 with both cards and MTP, it decodes 6.35 t/s at d0 and 5.17 t/s at d8000 and prefills
+28.3 t/s ([baseline](runs/2026-10-15-baseline.md#conclusion)).
 
 ## Model
 
@@ -69,11 +71,13 @@ layer moved to the cards costs 7.17 GiB of VRAM and frees the same in RAM:
 - KV cache, compute buffers and margins share the cards' remaining VRAM.
 - One card is left out: every expert layer would be in RAM (495.8 GiB with the
   embedding), leaving the host under 8 GiB. CPU only is left out too: 516.2 GiB of weights.
-- The RAM experts stay in the page cache (`auto`, mmap). `dio` pins them as GTT, which
-  amdgpu caps at half of RAM (251.8 GiB).
-- An expert page the kernel drops is read back from the store in the middle of a request.
-  The VRAM checks do not see that. `page-in-sampler.sh` logs the store's reads and CT
-  123's memory, and `page-in-summary.py` reports them per sweep cell.
+- The RAM experts load into anonymous memory (`--load-mode none --no-host --no-repack`).
+  With `auto` (mmap), the cold load streams the whole file through CT 123's page cache,
+  which its limit cannot hold beside the experts. Requests then read evicted experts back
+  from the store, 188–538 GiB per probe in the baseline's first fit pass. `dio` pins them
+  as GTT, which amdgpu caps at half of RAM (251.8 GiB).
+- The VRAM checks do not see store reads. `page-in-sampler.sh` logs the store's reads and
+  CT 123's memory, and `page-in-summary.py` reports them per sweep cell.
 
 ## Test setup
 
@@ -94,13 +98,14 @@ TEST_MODEL=mimo TEST_CPUSET=0-47 ./ct123-test-host.sh two-card   # CT 120 stoppe
 - `TEST_MODEL=mimo` sets CT 123's memory to 488 GiB, which leaves the host 15.5 GiB with
   every other guest shut down. `restore` retires every test unit and puts back the limits
   from before the first test.
-- `mimo.env` is the configuration the baseline record starts from: `-ncmoe 67`, split
-  `66,4`, `auto`, batch and micro-batch 4096, 32 pinned threads, f16 KV, 65,536 tokens in
-  two slots.
+- `mimo.env` is the baseline record's best configuration: the Q8_0 MTP head at n-max 1,
+  `-ncmoe 68`, split `58,12`, anonymous memory, batch 4096 and micro-batch 2048, op-offload
+  threshold 1024, 32 pinned threads, f16 KV, 65,536 tokens in two slots.
 - The sweep in [`../qwen38-flash-next/`](../qwen38-flash-next/README.md#benchmark-tools)
-  drives it with `UNIT=llamacpp-mimo N_BLOCKS=70`. `run-stage.sh fit|mtp|timed` runs one
-  stage of the baseline record with its samplers; `WAIT_DOWNLOAD=true SETUP=true` queues
-  stage 1 behind the download and does the two-card setup.
+  drives it with `UNIT=llamacpp-mimo N_BLOCKS=70`. `run-stage.sh fit|fit2|mtp|timed` runs
+  one stage of the baseline record with its samplers; `WAIT_DOWNLOAD=true SETUP=true` queues
+  stage 1 behind the download and does the two-card setup. `run-rest.sh` chains stages 2
+  and 3 and the restore, with `pick-nmax.py` applying stage 2's rule.
 - MTP runs as `--spec-type draft-mtp --spec-draft-n-max N -md <mtp GGUF>`.
 
 ## llama.cpp support
@@ -116,12 +121,12 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 
 | Date | Build | Backend | Record | Status |
 | --- | --- | --- | --- | --- |
-| 2026-10-15 | b11583 | Vulkan, Mesa 26.2.4 | [Baseline speed on two V620s and 512 GB of DDR4](runs/2026-10-15-baseline.md) | planned |
+| 2026-10-15 | b11583 | Vulkan, Mesa 26.2.4 | [Baseline speed on two V620s and 512 GB of DDR4](runs/2026-10-15-baseline.md) | done |
 
 ## Local validation
 
 ```bash
 shellcheck -S warning ./*.sh ./llamacpp-serve-mimo
-python3 -m py_compile page-in-summary.py
+python3 -m py_compile page-in-summary.py pick-nmax.py
 ../glm53-flash/ct123-test-host-test.sh
 ```
