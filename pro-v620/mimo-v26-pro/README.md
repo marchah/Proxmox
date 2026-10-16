@@ -98,7 +98,9 @@ TEST_MODEL=mimo TEST_CPUSET=0-47 ./ct123-test-host.sh two-card   # CT 120 stoppe
   `66,4`, `auto`, batch and micro-batch 4096, 32 pinned threads, f16 KV, 65,536 tokens in
   two slots.
 - The sweep in [`../qwen38-flash-next/`](../qwen38-flash-next/README.md#benchmark-tools)
-  drives it with `UNIT=llamacpp-mimo N_BLOCKS=70`.
+  drives it with `UNIT=llamacpp-mimo N_BLOCKS=70`. `run-stage.sh fit|mtp|timed` runs one
+  stage of the baseline record with its samplers; `WAIT_DOWNLOAD=true SETUP=true` queues
+  stage 1 behind the download and does the two-card setup.
 - MTP runs as `--spec-type draft-mtp --spec-draft-n-max N -md <mtp GGUF>`.
 
 ## llama.cpp support
