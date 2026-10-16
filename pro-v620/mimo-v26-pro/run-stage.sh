@@ -13,7 +13,8 @@
 #   samplers, the VRAM trace and the page-in sampler; runs the sweep with the stage's
 #   settings from the record's Method. On exit it stops the samplers, whatever happened, and
 #   writes the page-in summary into the sweep's directory.
-# - Refuses to start while any guest other than CT 123 runs, or a thermal trip is recorded.
+# - Refuses to start while any guest other than CT 123 runs, or a thermal trip is recorded,
+#   and fails if a trip is recorded when the sweep ends.
 set -Eeuo pipefail
 
 STAGE="${1:-}"
@@ -109,4 +110,7 @@ if [ -d "$OUT_DIR" ]; then
     | tee "${OUT_DIR}/pagein-summary.tsv" || true
 fi
 log "stage ${STAGE} ended (sweep exit ${rc})"
+# The sweep checks for a trip only before each load, so one during the last cell still ends
+# it with 0. Fail the stage, so run-rest.sh stops before the next stage or the restore.
+[ ! -e "$TRIP_FILE" ] || die "thermal trip recorded in ${TRIP_FILE} during the stage; check cooling"
 exit "$rc"
