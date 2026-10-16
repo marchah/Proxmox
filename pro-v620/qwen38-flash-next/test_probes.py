@@ -234,6 +234,19 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(data["failed_requests"], 2)
         self.assertIn("cache served", data["rows"][0]["error"])
 
+    def test_turn_partial_resume_fails_the_probe(self):
+        # A checkpointed model resuming one micro-batch early serves most of the context
+        # and re-prefills the rest; the row would time that, not the turn.
+        def responder(base, context, chunk, n_predict, chat, cache=True):
+            if chunk is None:
+                return {"prompt_n": 2000, "cache_n": 0, "prompt_ms": 15000.0, "prefill_tps": 133.0}
+            return {"prompt_n": len(chunk) + 150, "cache_n": 1850, "prompt_ms": 3000.0, "prefill_tps": 60.0}
+
+        status, data = self.run_turns(responder, "--reps", "1")
+        self.assertEqual(status, 1)
+        self.assertEqual(data["failed_requests"], 2)
+        self.assertIn("cache served 1850 of the 2000", data["rows"][0]["error"])
+
     def test_empty_output_and_nonfinite_timing_are_errors(self):
         for content, rate in [("", 14), ("valid text", float("inf"))]:
             response = {"content": content, "timings": {"predicted_per_second": rate}}

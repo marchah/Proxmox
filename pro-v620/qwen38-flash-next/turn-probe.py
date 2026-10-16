@@ -40,6 +40,9 @@ import time
 import urllib.request
 
 INSTRUCTION = "Reply with exactly: OK"
+# A turn's cache may miss the prime's closing tokens (raw mode) or the template's; anything
+# more is a resume from an earlier checkpoint, which re-prefills context (~one micro-batch).
+CACHE_SLACK = 64
 
 
 def post(url, body, timeout=3600):
@@ -152,7 +155,7 @@ def main():
             m.update(size_target=size, rep=rep)
             # The turn's cost is only measured if the cache served the context; otherwise
             # this row timed a deep prefill.
-            if "error" not in m and (m.get("cache_n") or 0) < 0.9 * context_n:
+            if "error" not in m and (m.get("cache_n") or 0) < context_n - CACHE_SLACK:
                 m["error"] = "cache served %s of the %d context tokens" % (m.get("cache_n"), context_n)
             if "error" not in m and not (isinstance(m.get("prompt_ms"), (int, float))
                                          and math.isfinite(m["prompt_ms"])):
