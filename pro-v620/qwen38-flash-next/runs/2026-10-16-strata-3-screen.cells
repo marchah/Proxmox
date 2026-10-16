@@ -1,0 +1,22 @@
+# Cells for runs/2026-10-16-strata.md, stages 3-6 as one screen, on CT 123 (GPU 2 alone)
+# through ../../strata/strata-sweep.sh with PASSES=1. Keys are /etc/strata-qwen38fn.env keys,
+# applied over the env file of this commit (stage 1's kept settings). No drafts: no draft layer
+# and --suffix-draft 0. The control runs first and last; w15 is the control's worker count.
+ctl        MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0'
+# Stage 3, prompt path
+mmqkq      MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_MMQ_KQ=1
+densemmq   MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_DENSE_MMQ=1
+chunk16k   MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_PREFILL=auto:16384
+# Stage 4, memory placement
+ple-ram    MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_PLE_IO=ram MODEL_MEMORY_LIMIT_MIB=159744 CT_MEMORY_MIB=163840
+kv-vram    MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_KV_RESIDENT=
+reserve2g  MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_VRAM_RESERVE_MIB=2048
+# Stage 5, CPU workers
+w11        MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_POOL_WORKERS=11
+w19        MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_POOL_WORKERS=19
+w23        MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_POOL_WORKERS=23
+# Stage 6, context and slots
+ctx128k    MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_CONTEXT_LENGTH=131072
+p1         MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_PARALLEL=1 STREAMS=2
+p2         MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_PARALLEL=2 STREAMS=2
+ctl-end    MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0'
