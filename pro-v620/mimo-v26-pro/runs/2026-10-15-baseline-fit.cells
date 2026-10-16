@@ -1,0 +1,11 @@
+# MiMo-V2.6-Pro-RL baseline, stage 1: fit, one pass. Plan: 2026-10-15-baseline.md.
+# Sweep: VMID=123 UNIT=llamacpp-mimo N_BLOCKS=70 CONTRACT_EFFORTS=none,high PROBE_CHAT=true
+#   CTX=65536 PARALLEL=2 PROBE_CLASSES=prose REPS=1 DEPTHS=0,8000
+#   CONTEXT_FILE=/root/mimo/corpus-f7e762c53388.txt
+# Split derived by the sweep at N_BLOCKS=70: -ncmoe 67 -> 66,4; -ncmoe 68 -> 67,3.
+n67-ub4096  MODE=2gpu NCMOE=67 KV=f16 BATCH=4096 UBATCH=4096 THREADS=32 STREAMS=2 EXTRA='--cpu-mask 0xffffffff --cpu-strict 1'
+n67-cpupp   MODE=2gpu NCMOE=67 KV=f16 BATCH=4096 UBATCH=4096 THREADS=32 STREAMS=2 ENV='GGML_OP_OFFLOAD_MIN_BATCH=8192' EXTRA='--cpu-mask 0xffffffff --cpu-strict 1'
+n67-ub2048  MODE=2gpu NCMOE=67 KV=f16 BATCH=4096 UBATCH=2048 THREADS=32 STREAMS=2 EXTRA='--cpu-mask 0xffffffff --cpu-strict 1'
+n68-ub4096  MODE=2gpu NCMOE=68 KV=f16 BATCH=4096 UBATCH=4096 THREADS=32 STREAMS=2 EXTRA='--cpu-mask 0xffffffff --cpu-strict 1'
+mtp-q8-n68  MODE=2gpu NCMOE=68 KV=f16 BATCH=4096 UBATCH=4096 THREADS=32 STREAMS=2 EXTRA='--cpu-mask 0xffffffff --cpu-strict 1 --spec-type draft-mtp --spec-draft-n-max 2 -md /models/hf/mimo-v2.6-pro-rl/mtp-MiMo-V2.6-Pro-RL-Q8_0.gguf'
+mtp-q4-n67  MODE=2gpu NCMOE=67 KV=f16 BATCH=4096 UBATCH=4096 THREADS=32 STREAMS=2 EXTRA='--cpu-mask 0xffffffff --cpu-strict 1 --spec-type draft-mtp --spec-draft-n-max 2 -md /models/hf/mimo-v2.6-pro-rl/mtp-MiMo-V2.6-Pro-RL-Q4_0.gguf'

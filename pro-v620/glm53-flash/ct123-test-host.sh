@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Put CT 123 into the GLM-5.3-Flash test configurations and back. Runs on the Proxmox HOST
-# as root, from this directory, after ./install.sh.
+# Put CT 123 into a model test's configurations and back: GLM-5.3-Flash by default, or
+# MiMo-V2.6-Pro-RL with TEST_MODEL=mimo. Runs on the Proxmox HOST as root, from this
+# directory, after the model's install.sh.
 #
 #   ./ct123-test-host.sh one-card   # the GLM unit owns GPU 2; Flash-Next disabled; 240 GiB, 48 cores
 #   ./ct123-test-host.sh two-card   # also GPU 1, while CT 120 stays stopped with autostart off
@@ -9,6 +10,11 @@
 #
 #   TEST_CPUSET=0-47 ./ct123-test-host.sh one-card   # also fix CT 123's CPUs; a run without
 #                                                    # it, and restore, drop the fixed set
+#   TEST_MODEL=mimo ./ct123-test-host.sh two-card    # the MiMo unit on both cards; 488 GiB
+#
+# restore retires every test unit, whichever TEST_MODEL set the container up. State is kept
+# in one directory for every model, so a switch from one test to another restores the
+# limits from before the first.
 #
 # Every transition keeps two invariants: no two containers own a card, including after a
 # host reboot, and the thermal watchdog maps each card to the unit that runs on it.
@@ -28,13 +34,27 @@ readonly CPU_ONLINE="${CPU_ONLINE:-/sys/devices/system/cpu/online}"
 
 readonly GPU1_PCI='0000:03:00.0'
 readonly GPU2_PCI='0000:83:00.0'
-readonly TEST_UNIT=llamacpp-glm53f
 readonly PROD_UNIT=llamacpp-qwen38fn
 readonly CT120_UNIT=llamacpp
+# Every model unit a test installs in CT 123; restore retires all of them.
+readonly TEST_UNITS='llamacpp-glm53f llamacpp-mimo'
 
-# The test's limits: the model under auto page cache or dio pinning (~200 GB), and room
-# for 32 threads without the threads = cores collapse seen on CT 123 at 24/24.
-readonly TEST_MEMORY_MIB=245760
+# Each test's unit, model files and memory limit. Room for 32 threads without the
+# threads = cores collapse seen on CT 123 at 24/24 sets the cores for both.
+# - glm53f: the model under auto page cache or dio pinning (~200 GB).
+# - mimo: 480.5 GiB of experts at -ncmoe 68 in anonymous memory, 482.9 GiB in all, out of
+#   503.6 GiB on the host; the baseline record measured 2.9 GiB left under the CT's limit.
+#   488 GiB leaves the host 15.5 GiB, with every other guest shut down.
+readonly TEST_MODEL="${TEST_MODEL:-glm53f}"
+case "$TEST_MODEL" in
+  glm53f)
+    readonly TEST_UNIT=llamacpp-glm53f TEST_MEMORY_MIB=245760
+    readonly MODEL_DIR=/models/hf/glm-5.3-flash MODEL_FILES=7 ;;
+  mimo)
+    readonly TEST_UNIT=llamacpp-mimo TEST_MEMORY_MIB=499712
+    readonly MODEL_DIR=/models/hf/mimo-v2.6-pro-rl MODEL_FILES=9 ;;
+  *) echo "ERROR: TEST_MODEL must be glm53f or mimo" >&2; exit 1 ;;
+esac
 readonly TEST_CORES=48
 readonly TEST_CPUSET="${TEST_CPUSET:-}"
 
@@ -97,14 +117,20 @@ restart_ct() {
   log "WARN: CT ${VMID} not fully up after 60 s"
 }
 
-require_glm_installed() {
+require_model_installed() {
   pct exec "$VMID" -- test -f "/etc/systemd/system/${TEST_UNIT}.service" \
     || die "${TEST_UNIT} not installed in CT ${VMID}; run VMID=${VMID} ./install.sh first"
   # shellcheck disable=SC2016  # expands inside the container
   pct exec "$VMID" -- bash -c '
-    n=$(ls /models/hf/glm-5.3-flash/*.verified 2>/dev/null | wc -l)
-    [ "$n" -ge 7 ] || { echo "only ${n}/7 model files verified; run install.sh --download"; exit 1; }' \
+    n=$(ls "$1"/*.verified 2>/dev/null | wc -l)
+    [ "$n" -ge "$2" ] || { echo "only ${n}/$2 model files verified; run install.sh --download"; exit 1; }' \
+    _ "$MODEL_DIR" "$MODEL_FILES" \
     || die "model files not verified"
+}
+
+retire_test_units() {
+  local u
+  for u in $TEST_UNITS; do retire_unit "$VMID" "$u"; done
 }
 
 # GPU 1 is mounted at its REAL host node names: a different name inside the container
@@ -207,15 +233,15 @@ ct120_restore() {
 devices_offered() {
   # shellcheck disable=SC2016  # expands inside the container
   pct exec "$VMID" -- bash -c '
-    D=$(. /etc/llamacpp-glm53f.env && printf "%s" "$LLAMACPP_DIR")
-    LD_LIBRARY_PATH=$D $D/llama-server --list-devices 2>/dev/null | grep -c V620' 2>/dev/null || true
+    D=$(. "/etc/$1.env" && printf "%s" "$LLAMACPP_DIR")
+    LD_LIBRARY_PATH=$D $D/llama-server --list-devices 2>/dev/null | grep -c V620' _ "$TEST_UNIT" 2>/dev/null || true
 }
 
 # Every check before the first change, so a refusal leaves the host as it was.
 preflight() {  # [two-card]
   local st
   [ "$(ct_state "$VMID")" = "running" ] || die "CT ${VMID} is not running"
-  require_glm_installed
+  require_model_installed
   [ -z "$TEST_CPUSET" ] || check_cpuset
   if [ "${1:-}" = two-card ]; then
     st="$(ct_state 120)"
@@ -228,7 +254,7 @@ prepare_ct123() {
   save_limits
   log "retiring ${PROD_UNIT} in CT ${VMID} for the test"
   retire_unit "$VMID" "$PROD_UNIT"
-  retire_unit "$VMID" "$TEST_UNIT"
+  retire_test_units
   pct set "$VMID" --memory "$TEST_MEMORY_MIB" --cores "$TEST_CORES"
   if [ -n "$TEST_CPUSET" ]; then set_cpuset; else drop_cpuset; fi
 }
@@ -298,7 +324,7 @@ main() {
       ;;
     restore)
       require_root; mkdir -p "$STATE_DIR"
-      [ "$(ct_state "$VMID")" = "running" ] && retire_unit "$VMID" "$TEST_UNIT"
+      [ "$(ct_state "$VMID")" = "running" ] && retire_test_units
       gpu1_attached && detach_gpu1
       if [ -f "$LIMITS_FILE" ]; then
         local k v

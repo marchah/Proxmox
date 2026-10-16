@@ -34,7 +34,7 @@ else
 fi
 
 if [ -z "$UNIT" ]; then
-  for u in llamacpp-qwen38fn llamacpp-glm53f llamacpp llama-swap; do
+  for u in llamacpp-qwen38fn llamacpp-glm53f llamacpp-mimo llamacpp llama-swap; do
     if guest "systemctl is-active --quiet $u" 2>/dev/null; then UNIT="$u"; break; fi
   done
 fi
