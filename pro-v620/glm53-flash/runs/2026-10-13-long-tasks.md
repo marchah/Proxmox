@@ -588,6 +588,17 @@ beyond both spreads. Its decode at d0 (8.64 against 8.73) and d8000 (7.76 agains
 within the control's spread (0.15 and 0.12), and so is its d8000 prefill. Stages 2–6 run with
 it. Stage 5 checks it on real sessions.
 
+- **How "within the control's spread" is read here:** the median's difference from the
+  control is no larger than the width of the control's range.
+- **Read as "inside the control's range", `thr512` fails.** Its d0 passes (8.58, 8.64, 8.64)
+  all sit below the control's lowest (8.68), and its d8000 median (7.76) is below the
+  control's lowest there (7.77). `thr256` and `thr1024` fail too, and `thr128` would win, with an estimate 136 s
+  higher.
+- **The threshold cannot change decode.** A decode step with MTP at n-max 2 is a batch of
+  at most 3 tokens, below every threshold tested, so every cell decodes on the same path.
+  The differences in decode between cells are noise.
+- The owner kept this reading on 2026-10-15, after the raw-data check raised it.
+
 ### Stage 2, fit pass — 2026-10-13 18:19–20:42 ET
 
 Harness `bca01927e027`, cells [`-fit.cells`](2026-10-13-long-tasks-fit.cells), one pass,
