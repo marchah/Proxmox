@@ -20,7 +20,9 @@ def main():
     for f in sorted(out.glob("mtp-n*-r1.json")):
         n = int(re.match(r"mtp-n(\d+)-r1\.json$", f.name).group(1))
         j = json.loads(f.read_text())
-        d0 = [r["decode_tps"] for r in j["rows"] if r["depth_target"] == 0]
+        # A failed load has no rows, and a failed request's row no decode_tps.
+        d0 = [r["decode_tps"] for r in j.get("rows", [])
+              if r.get("depth_target") == 0 and r.get("decode_tps") is not None]
         conc = f.with_name(f"mtp-n{n}-r1.concurrency.json")
         agg = json.loads(conc.read_text()).get("aggregate_tps") if conc.exists() else None
         ok = (j.get("probe_ok") and not j.get("failed_requests") and not j.get("any_degenerate")
