@@ -90,7 +90,7 @@ ensure_drm_cgroup() {
       if (!done) printf "%s", rules; done = 1; next }
     { print }' "$CONF" >"${BAK_DIR}/${VMID}.conf.new"
   rewrite_conf
-  log "CT ${VMID} DRM cgroup -> $(printf '%s\n' "${rules[@]}" | awk '{print $4}' | paste -sd' ' -); a restart applies it"
+  log "CT ${VMID} DRM cgroup -> $(printf '%s\n' "${rules[@]}" | awk '{print $3}' | paste -sd' ' -); a restart applies it"
   return 1
 }
 
