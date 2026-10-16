@@ -37,8 +37,8 @@ backup job's `exclude-path` can leave them out.
 ## Model files
 
 No other quantization is needed. The four UD-Q4_K_XL shards llama.cpp serves have the
-SHA-256s of the revision Strata supports (`38bb39e`; head `766911a` is byte-identical), and
-Strata reads their experts in place. Strata cannot use Unsloth's separate MTP GGUF heads. It
+SHA-256s of the revision Strata supports (`38bb39e`; head `766911a` is byte-identical).
+Strata loads their experts from the shards into its arena at start, with no repacked copy. Strata cannot use Unsloth's separate MTP GGUF heads. It
 builds its own draft layer from the 31 `mtp.*` tensors of the BF16 checkpoint
 `Qwen/Qwen3.8-Flash-Next` (HTTP range reads, about 5 GB), with Q2_0 experts, as its setup
 does.

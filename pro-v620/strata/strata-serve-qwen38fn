@@ -36,7 +36,7 @@ for i in $(seq 1 "${total}"); do
   [ -f "${shard}" ] || die "missing shard $(basename "${shard}")"
 done
 [ -f "${MODEL_PACK}/native_experts.txt" ] || die "no pack at ${MODEL_PACK}; run install.sh on the host"
-[ -f "${MODEL_MTP}/experts.bin" ] || [ -z "${MODEL_SPEC}" ] || die "no MTP draft layer at ${MODEL_MTP}"
+[ -f "${MODEL_MTP}/experts.bin" ] || [ -z "${MODEL_SPEC:-}" ] || die "no MTP draft layer at ${MODEL_MTP}"
 
 # Kept after the server stops: quant_quality.py and other one-off engine runs read it.
 config="${STATE_DIRECTORY:-/var/lib/strata-qwen38fn}/config.json"

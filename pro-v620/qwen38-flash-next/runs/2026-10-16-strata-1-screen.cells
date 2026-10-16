@@ -1,0 +1,8 @@
+# Cells for runs/2026-10-16-strata.md, stage 1, on CT 123 through ../../strata/strata-sweep.sh.
+# Keys are /etc/strata-qwen38fn.env keys, applied over the env file of this commit. An empty
+# STRATA_* value removes that switch from the env file, so the engine never sees it; an empty
+# MODEL_SPEC runs without the draft layer. Stages 1-5 run without drafts: no draft layer and
+# --suffix-draft 0. rdna2-mtp loads the draft layer only for the gate and its VRAM.
+base       MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_HIP_PROMPT_F16= STRATA_SH_STREAM=
+rdna2      MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0'
+rdna2-mtp  MODEL_EXTRA_ARGS='--suffix-draft 0'

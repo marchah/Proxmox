@@ -1,0 +1,6 @@
+# Cells for runs/2026-10-16-strata.md, stage 3, applied over stage 2's kept settings. No drafts.
+# ple-ram holds the 28.8 GB n-gram table in RAM: CT_MEMORY_MIB raises CT 123's memory for the
+# cell (pct set -memory, live) and the sweep sets it back to 122880 after it.
+ctl        MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0'
+ple-ram    MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_PLE_IO=ram MODEL_MEMORY_LIMIT_MIB=159744 CT_MEMORY_MIB=163840
+kv-vram    MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_KV_RESIDENT=
