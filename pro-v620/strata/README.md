@@ -24,11 +24,25 @@ are in the test records under [`qwen38-flash-next/runs/`](../qwen38-flash-next/R
 | Env file, launcher, reload helper | `/etc/strata-qwen38fn.env`, `/usr/local/bin/strata-serve-qwen38fn`, `/usr/local/bin/strata-qwen38fn-reload` | this directory |
 | Unit | `strata-qwen38fn.service`, `Conflicts=llamacpp-qwen38fn.service` | this directory |
 
-The kernel driver is the host's in-tree amdgpu (kernel 7.0.14-pve). The container gets
-`/dev/kfd` through Proxmox device passthrough (`devN:`), beside the render node it already
-has. ROCm's libraries stay out of `ld.so`'s path, so llama.cpp's Vulkan stack in the same
-container is unchanged; `install.sh` refuses a ROCm install that would replace Mesa, libdrm
-or the Vulkan loader.
+The kernel driver is the host's in-tree amdgpu (kernel 7.0.14-pve). ROCm's libraries stay
+out of `ld.so`'s path, so llama.cpp's Vulkan stack in the same container is unchanged;
+`install.sh` refuses a ROCm install that would replace Mesa, libdrm or the Vulkan loader.
+
+HIP in CT 123 needs two container settings, which `use-engine.sh strata` makes:
+- `/dev/kfd` through Proxmox device passthrough (`dev0:`). It joins a running container.
+- A DRM cgroup rule that allows only GPU 2's two nodes (`c 226:1` card1, `c 226:128`
+  renderD128) instead of `c 226:*`. KFD reports to a process every GPU whose render node
+  the process's device cgroup allows. With `226:*` that includes GPU 1, which has no render
+  node in CT 123. ROCm 10's thunk then fails to set GPU 1's memory policy (`Failed to set
+  mem policy for GPU [0x1f6a]`), and HIP finds no device at all. With the narrow rule, GPU 1's
+  KFD node reads `Operation not permitted` in CT 123 and HIP lists the one V620. llama.cpp
+  serves unchanged under the same rule.
+
+The rule names DRM minors, which change when the nodes renumber. After a renumber, fix the
+mount entries as for CT 120 ([Recovering after a DRM renumber](../README.md#recovering-after-a-drm-renumber)),
+then run `./use-engine.sh strata`: it resolves the minors from the by-path links again and
+restarts CT 123 if they changed. A stale rule fails loudly, since llama.cpp's guard and
+Strata's launcher both refuse to start without their device.
 
 Rebuildable bulk on CT 123's root disk, which the weekly backup includes: `/opt/rocm` and
 `/opt/strata`. Check their size with `pct exec 123 -- du -sh /opt/rocm /opt/strata`; the
@@ -54,13 +68,16 @@ Other files Strata supports, for reference (its own measurements, on an R9700 32
 ```bash
 VMID=123 ./install.sh            # idempotent; llama.cpp keeps serving
 ./use-engine.sh status
-./use-engine.sh strata           # adds /dev/kfd if missing (restarts CT 123 once), then Strata
+./use-engine.sh strata           # the two container settings above if missing, then Strata
 ./use-engine.sh llamacpp         # back to the deployed llama.cpp server
 ```
 
+Run `install.sh` from a terminal: under `systemd-run` the container steps' output did not
+reach the journal, although they ran.
+
 Each switch changes the running unit, the unit enabled at boot and the thermal watchdog's
 map entry for `0000:83:00.0` together, so a reboot and a thermal trip both act on the engine
-that holds the card. The first `strata` switch restarts CT 123 to apply `/dev/kfd`.
+that holds the card. A changed DRM cgroup rule restarts CT 123 once.
 Switch back to `llamacpp` before running `../qwen38-flash-next/ct120-cutover.sh`: its
 rollback writes `123:llamacpp-qwen38fn` into the watchdog map.
 
@@ -121,12 +138,17 @@ and exports the env file's `STRATA_*` switches to the engine. The starting value
 
 ```bash
 shellcheck -S warning ./*.sh ./strata-serve-qwen38fn ./strata-qwen38fn-reload
-# In CT 123, with the server stopped (both engines):
-pct exec 123 -- bash -lc 'cd /opt/strata/strata-v0.1.44.1 && LD_LIBRARY_PATH=/opt/rocm/core-10.0/lib \
-  build-hip/strata-device --selftest'
-pct exec 123 -- systemd-run --wait --pipe -p LimitMEMLOCK=infinity -p User=llamacpp \
-  -p SupplementaryGroups=render -E LD_LIBRARY_PATH=/opt/rocm/core-10.0/lib \
-  ctest --test-dir /opt/strata/strata-v0.1.44.1/build-hip --output-on-failure --timeout 120 -E '^ple_parity$'
+# In CT 123, with neither engine on the card (the tests allocate VRAM):
+pct exec 123 -- systemctl stop strata-qwen38fn
+pct exec 123 -- runuser -u llamacpp -- env LD_LIBRARY_PATH=/opt/rocm/core-10.0/lib \
+  /opt/strata/strata-v0.1.44.1/build-hip/strata-device --list-devices   # one gfx1030
+pct exec 123 -- runuser -u llamacpp -- env LD_LIBRARY_PATH=/opt/rocm/core-10.0/lib \
+  /opt/strata/strata-v0.1.44.1/build-hip/strata-device --selftest
+# As root: ctest writes into the build tree, and two tests page-lock memory.
+pct exec 123 -- env LD_LIBRARY_PATH=/opt/rocm/core-10.0/lib bash -c 'ulimit -l unlimited;
+  ctest --test-dir /opt/strata/strata-v0.1.44.1/build-hip --timeout 300 -E "^ple_parity$"'
+pct exec 123 -- systemctl start strata-qwen38fn
 ```
 
-`ple_parity` needs a Q2_0 model fixture this box does not have.
+`ple_parity` needs a Q2_0 model fixture this box does not have. On gfx1030 the matrix-core
+(WMMA, fused prompt) and hipBLASLt tests skip, and `expert_multi_test` skips without AVX-512.
