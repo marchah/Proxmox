@@ -19,7 +19,7 @@ STAGE="${1:-}"
 WAIT_DOWNLOAD="${WAIT_DOWNLOAD:-false}"
 SETUP="${SETUP:-false}"
 
-readonly VMID=123
+VMID=123
 readonly STATE=/root/mimo
 readonly CORPUS="${STATE}/corpus-f7e762c53388.txt"
 readonly CORPUS_SRC=/root/glm53-flash/corpus-f7e762c53388.txt
@@ -40,7 +40,7 @@ case "$STAGE" in
   timed) REPS=3; DEPTHS=0,8000; CLASSES= ;;
   *) die "usage: run-stage.sh fit|mtp|timed" ;;
 esac
-readonly CELLS="${HERE}/runs/2026-10-15-baseline-${STAGE}.cells"
+CELLS="${HERE}/runs/2026-10-15-baseline-${STAGE}.cells"
 
 [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"
 [ -f "${HERE}/../../HARNESS_COMMIT" ] || die "not a staged harness; run ../push-harness.sh and use its path"
