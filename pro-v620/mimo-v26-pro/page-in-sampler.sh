@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Log what the NVMe model store reads and how CT 123's memory splits, every INTERVAL seconds,
-# so a test can show the RAM-resident experts stayed in the page cache. Under mmap, experts
-# the kernel drops are read back from the store in the middle of a request; the VRAM checks
-# do not see it. Runs on the Proxmox HOST as root:
+# so a test can show the RAM-resident experts were never read back from the store. Under mmap,
+# experts the kernel drops are read back in the middle of a request; the VRAM checks do not
+# see it. Runs on the Proxmox HOST as root:
 #
 #   systemd-run --unit=mimo-pagein --collect $PWD/page-in-sampler.sh /root/mimo/pagein-<stage>.tsv
 #   ./page-in-summary.py <sweep OUT_DIR> /root/mimo/pagein-<stage>.tsv

@@ -41,7 +41,8 @@ readonly TEST_UNITS='llamacpp-glm53f llamacpp-mimo'
 # Each test's unit, model files and memory limit. Room for 32 threads without the
 # threads = cores collapse seen on CT 123 at 24/24 sets the cores for both.
 # - glm53f: the model under auto page cache or dio pinning (~200 GB).
-# - mimo: 473 GiB of experts in the page cache at -ncmoe 67, out of 503.6 GiB on the host.
+# - mimo: 480.5 GiB of experts at -ncmoe 68 in anonymous memory, 482.9 GiB in all, out of
+#   503.6 GiB on the host; the baseline record measured 2.9 GiB left under the CT's limit.
 #   488 GiB leaves the host 15.5 GiB, with every other guest shut down.
 readonly TEST_MODEL="${TEST_MODEL:-glm53f}"
 case "$TEST_MODEL" in
