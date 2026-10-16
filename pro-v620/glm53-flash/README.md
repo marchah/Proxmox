@@ -101,7 +101,8 @@ VMID=123 ./install-llamacpp-release.sh   # another pinned release beside b11505,
   b11505 ([test record](runs/2026-10-10-configurations.md#stage-1-screen--2026-10-10-21232220-et)).
 - Open issues, checked 2026-10-10:
   - #30204: with `--spec-type draft-mtp` on Vulkan, every request that contains an image
-    fails with HTTP 500.
+    fails with HTTP 500 on b11505. b11583 answers it
+    ([long-tasks record, stage 0](runs/2026-10-13-long-tasks.md#stage-0-build--2026-10-13-12001254-et)).
   - #29950: the prompt-processing compute buffer grows with context × micro-batch.
   - #28433: the MTP draft context is sized from the total context.
   - #30093: `--spec-type draft-dflash` aborts on the first request, because glm5-next does
