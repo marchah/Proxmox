@@ -1,0 +1,5 @@
+# Cells for runs/2026-10-16-strata.md, stage 8: the deployed llama.cpp configuration
+# (qwen38fn-gpu2.env on main, b11505) on CT 123 through ./placement-sweep.sh with PROBE_CHAT=true,
+# REPS=1 per round. The cell is the prefill-slowdown record's h37, which reproduces that env:
+# GPU 2 alone, -ncmoe 37, dio, the Q4_K_M MTP head at n-max 3, one 64k slot, q8_0 KV.
+llamacpp  MODE=1gpu NCMOE=37 LOAD_MODE=dio EXTRA='--spec-type draft-mtp --model-draft /models/hf/qwen3.8-flash-next/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf --spec-draft-ngl all --spec-draft-n-max 3'

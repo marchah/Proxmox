@@ -121,6 +121,11 @@ engine's own account of each request. [`strata-summary.py`](strata-summary.py) a
 engine's expert cache, VRAM residency and log lines to the speed tables. Its header lists the
 cell keys; the [test record](../qwen38-flash-next/runs/2026-10-16-strata.md) has the commands.
 
+[`strata-vs-llamacpp.sh`](strata-vs-llamacpp.sh) interleaves the two engines on CT 123. Each
+round is a llama.cpp pass of `placement-sweep.sh` on GPU 2, then a Strata pass of
+`strata-sweep.sh` with both cards attached. It switches between them with `use-engine.sh`,
+and ends with Strata on GPU 2 alone.
+
 [`strata-yardstick.sh`](strata-yardstick.sh) runs on the host with the server stopped, and
 starts it again on exit. It runs Strata's quality yardstick (`tools/quant_quality.py`) on the
 server's last config and env file: teacher-forced perplexity with the experts on the CPU
