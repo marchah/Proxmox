@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Print, as JSON, the software and hardware a llama.cpp guest is running on.
+# Print, as JSON, the software and hardware a model-server guest (llama.cpp or Strata) runs on.
 # Runs on the Proxmox HOST as root and changes nothing. Test records paste its output
 # (see TEST-RECORDS.md); placement-sweep.sh and `make bench` save it with every run.
 #
 #   ./capture-env.sh 123                         # CT 123, its active llama.cpp unit
 #   ./capture-env.sh 120 llamacpp                # name the unit
+#   ./capture-env.sh 123 strata-qwen38fn         # Strata (../strata/)
 #   GUEST_SSH=root@rocm-vm ./capture-env.sh 310  # a VM: guest commands go over ssh
 #   HASH_MODELS=true ./capture-env.sh 123        # also sha256 each model file (minutes)
 #
@@ -34,14 +35,14 @@ else
 fi
 
 if [ -z "$UNIT" ]; then
-  for u in llamacpp-qwen38fn llamacpp-glm53f llamacpp-mimo llamacpp llama-swap; do
+  for u in llamacpp-qwen38fn strata-qwen38fn llamacpp-glm53f llamacpp-mimo llamacpp llama-swap; do
     if guest "systemctl is-active --quiet $u" 2>/dev/null; then UNIT="$u"; break; fi
   done
 fi
-# Each llama.cpp unit's launcher sources /etc/<unit>.env.
+# Each llama.cpp and Strata unit's launcher sources /etc/<unit>.env.
 case "$UNIT" in
-  llamacpp | llamacpp-*) ENVFILE="/etc/${UNIT}.env" ;;
-  *)                     ENVFILE="" ;;
+  llamacpp | llamacpp-* | strata-*) ENVFILE="/etc/${UNIT}.env" ;;
+  *)                                ENVFILE="" ;;
 esac
 
 # Cards: LXC passthrough binds /dev/dri/by-path/pci-<address>-render; a VM lists hostpci.
@@ -78,25 +79,54 @@ if out["env_file"] and os.path.exists(out["env_file"]):
 out["env"] = env
 out["unit_active"] = sh("systemctl is-active %s" % out["unit"]) if out["unit"] else None
 
-pid = sh("pgrep -o -x llama-server")
+strata = (out["unit"] or "").startswith("strata-")
 argv = []
+pid = sh("pgrep -o -x strata" if strata else "pgrep -o -x llama-server")
 if pid.isdigit():
     argv = open("/proc/%s/cmdline" % pid, "rb").read().split(b"\0")
     argv = [a.decode() for a in argv if a]
 out["server_cmdline"] = " ".join(shlex.quote(a) for a in argv) or None
 
-bindir = os.path.dirname(argv[0]) if argv else os.path.realpath(env.get("LLAMACPP_DIR", "/opt/llamacpp/current"))
-bindir = os.path.realpath(bindir)
-server = os.path.join(bindir, "llama-server")
-ver = sh("LD_LIBRARY_PATH=%s %s --version 2>&1" % (shlex.quote(bindir), shlex.quote(server)))
-out["llamacpp"] = {
-    "dir": bindir,
-    "version": next((l for l in ver.splitlines() if l.startswith("version")), None),
-    "built_with": next((l for l in ver.splitlines() if l.startswith("built with")), None),
-    "llama_server_sha256": sh("sha256sum %s | cut -c1-64" % shlex.quote(server)) or None,
-    "devices": sh("LD_LIBRARY_PATH=%s %s --list-devices 2>&1 | grep -E '^ +[A-Za-z]+[0-9]+:'"
-                  % (shlex.quote(bindir), shlex.quote(server))),
-}
+if strata:
+    # The engine (`strata --serve`, its argv above) runs under Strata's Python server.
+    home = env.get("STRATA_HOME", "")
+    rocm = env.get("ROCM_ROOT", "")
+    spid = sh("pgrep -of 'serve.server --engine strata'")
+    cfg_path = "/var/lib/%s/config.json" % out["unit"]
+    out["strata"] = {
+        "release": env.get("STRATA_RELEASE"),
+        "built_commit": (open(home + "/build-hip/BUILT_COMMIT").read().strip()
+                         if os.path.exists(home + "/build-hip/BUILT_COMMIT") else None),
+        "source_head": sh("git -C %s rev-parse HEAD 2>/dev/null" % shlex.quote(home)) or None,
+        "ggml_head": sh("git -C %s/third_party/llama.cpp rev-parse HEAD 2>/dev/null" % shlex.quote(home)) or None,
+        "strata_sha256": sh("sha256sum %s/build-hip/strata | cut -c1-64" % shlex.quote(home)) or None,
+        "server_cmdline": (" ".join(shlex.quote(a.decode()) for a in
+                                    open("/proc/%s/cmdline" % spid, "rb").read().split(b"\0") if a)
+                           if spid.isdigit() else None),
+        "config": json.load(open(cfg_path)) if os.path.exists(cfg_path) else None,
+        "devices": sh("LD_LIBRARY_PATH=%s/lib %s/build-hip/strata-device --list-devices 2>&1"
+                      % (shlex.quote(rocm), shlex.quote(home))),
+        "rocm_package": sh("dpkg-query -W -f='${Package}=${Version}' %s 2>/dev/null"
+                           % shlex.quote(env.get("ROCM_PACKAGE", "amdrocm-runtime10.0"))) or None,
+        "hip_runtime": sh("readlink -f %s/lib/libamdhip64.so 2>/dev/null" % shlex.quote(rocm)) or None,
+        # Engine switches reach the engine through the server's environment.
+        "engine_env": {k: v for k, v in env.items() if k.startswith("STRATA_") and k not in
+                       ("STRATA_RELEASE", "STRATA_COMMIT", "STRATA_GGML_COMMIT", "STRATA_HOME",
+                        "STRATA_GGML_DIR", "STRATA_VENV")},
+    }
+else:
+    bindir = os.path.dirname(argv[0]) if argv else os.path.realpath(env.get("LLAMACPP_DIR", "/opt/llamacpp/current"))
+    bindir = os.path.realpath(bindir)
+    server = os.path.join(bindir, "llama-server")
+    ver = sh("LD_LIBRARY_PATH=%s %s --version 2>&1" % (shlex.quote(bindir), shlex.quote(server)))
+    out["llamacpp"] = {
+        "dir": bindir,
+        "version": next((l for l in ver.splitlines() if l.startswith("version")), None),
+        "built_with": next((l for l in ver.splitlines() if l.startswith("built with")), None),
+        "llama_server_sha256": sh("sha256sum %s | cut -c1-64" % shlex.quote(server)) or None,
+        "devices": sh("LD_LIBRARY_PATH=%s %s --list-devices 2>&1 | grep -E '^ +[A-Za-z]+[0-9]+:'"
+                      % (shlex.quote(bindir), shlex.quote(server))),
+    }
 out["os"] = sh(". /etc/os-release && echo \"$PRETTY_NAME\"")
 out["guest_kernel"] = sh("uname -r")
 out["mesa"] = sh("dpkg-query -W -f='${Version}' mesa-vulkan-drivers 2>/dev/null") or None
@@ -109,8 +139,12 @@ def opt(*names):
         if a in names and i + 1 < len(argv):
             return argv[i + 1]
     return None
-paths = [opt("-m", "--model") or env.get("MODEL_PATH"), opt("--mmproj") or env.get("MODEL_MMPROJ"),
-         opt("-md", "--model-draft")]
+if strata:
+    # The GGUF shards Strata reads its experts from; the pack and MTP layer are rebuilt from them.
+    paths = [opt("--native") or env.get("MODEL_GGUF")]
+else:
+    paths = [opt("-m", "--model") or env.get("MODEL_PATH"), opt("--mmproj") or env.get("MODEL_MMPROJ"),
+             opt("-md", "--model-draft")]
 files = []
 for p in [p for p in paths if p]:
     m = re.match(r"(.*-)0*1-of-(0*\d+)\.gguf$", p)

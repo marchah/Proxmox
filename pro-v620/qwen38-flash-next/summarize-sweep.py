@@ -20,7 +20,9 @@ def contract_failures(contract):
     for name, check in contract.items():
         content = check.get("content") or ""
         leaked = check.get("think_leaked_into_content", "<think>" in content or "</think>" in content)
-        if not check.get("ok", check.get("harmless", False)) or leaked or check.get("reasoning_chars"):
+        # Strata honours a caller's effort: those efforts' replies may reason (reasoning_allowed).
+        reasoned = check.get("reasoning_chars") and not check.get("reasoning_allowed")
+        if not check.get("ok", check.get("harmless", False)) or leaked or reasoned:
             failed.append(name)
     return failed
 
@@ -135,14 +137,14 @@ def main():
     if manifest_error:
         print("⚠️ `manifest.json` is unreadable (%s), so the run header is missing.\n" % manifest_error)
     if manifest:
+        engine = manifest.get("engine") or "llama.cpp `%s`" % str(manifest.get("llamacpp_dir", "")).rsplit("/", 1)[-1]
         print("`ctx %s` · `parallel %s` · `%s reps` · `n_predict %s` · depths `%s` · "
-              "%s · %s GiB host RAM · llama.cpp `%s`\n" % (
+              "%s · %s GiB host RAM · %s\n" % (
                   manifest.get("ctx"), manifest.get("parallel"), manifest.get("reps"),
                   manifest.get("n_predict"), manifest.get("depths"),
                   ("%d cells" % len(manifest["cells"])) if manifest.get("cells")
                   else ("ONE GPU" if manifest.get("one_gpu") else "two GPUs"),
-                  manifest.get("host_ram_gib"),
-                  str(manifest.get("llamacpp_dir", "")).rsplit("/", 1)[-1]))
+                  manifest.get("host_ram_gib"), engine))
         if manifest.get("drop_caches"):
             print("Every load was cold: the host page cache was dropped before each one.\n")
         if manifest.get("probe_classes"):
@@ -413,7 +415,8 @@ def main():
     # --- the template contract ----------------------------------------------------
     print("\n## Template contract\n")
     print("Coverage is per cell and loaded pass. A pass succeeds only when bare chat and "
-          "every effort return non-empty, clean content with no reasoning block. Older "
+          "every effort return non-empty, clean content with no reasoning block, except for the "
+          "efforts a Strata sweep lets reason, and any tool call parses. Older "
           "sweeps checked only their first loaded cell; untested cells remain unverified.\n")
     print("| cell | loaded passes checked | passed | failures |")
     print("|---|---:|---:|---|")

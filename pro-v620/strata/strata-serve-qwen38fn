@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Qwen3.8-Flash-Next through Strata on the V620 passed through to CT 123, every routed expert
+# Qwen3.8-Flash-Next through Strata on the V620s passed through to CT 123, every routed expert
 # in RAM. Installed as /usr/local/bin/strata-serve-qwen38fn in CT 123 by install.sh.
 # Writes the server's JSON config from /etc/strata-qwen38fn.env, then runs Strata's server,
 # which starts the engine. The STRATA_* switches in the env file reach the engine through
 # the environment.
+#
+# MODEL_GPUS names the cards by PCI address, resolved to HIP's numbering at every start (HIP
+# need not number them in PCI order). One address runs on that card. Two run a layer split
+# when MODEL_LAYER_SPLIT is set, the first card first; without it, the second card is the
+# first's expert helper, which MODEL_EXTRA_ARGS must ask for (--expert-cache-device1).
 set -Eeuo pipefail
 set -a
 # shellcheck disable=SC1091  # runtime-only env file
@@ -16,16 +21,17 @@ engine="${STRATA_HOME}/build-hip/strata"
 [ -x "${engine}" ] || die "no engine at ${engine}; run install.sh on the host"
 [ -c /dev/kfd ] || die "/dev/kfd is not in the container; on the host: ./use-engine.sh strata"
 [ -r /dev/kfd ] && [ -w /dev/kfd ] || die "/dev/kfd is not readable and writable by $(id -un) (group render)"
-[ -c /dev/dri/renderD128 ] || die "/dev/dri/renderD128 is missing; see pro-v620/README.md 'Recovering after a DRM renumber'"
+renders="$(find /dev/dri -maxdepth 1 -name 'renderD*' -type c 2>/dev/null | wc -l)"
+[ "${renders}" -ge 1 ] || die "no /dev/dri/renderD* node; see pro-v620/README.md 'Recovering after a DRM renumber'"
 
 export LD_LIBRARY_PATH="${ROCM_ROOT}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-# One gfx1030 card, or nothing. HIP sees only the render nodes the container holds, so a
-# second card here means the passthrough changed; none means the engine cannot start.
+# HIP must see every card the container holds, as gfx1030. Fewer means a card the DRM cgroup
+# rule or the passthrough lost (use-engine.sh sets both); none means the engine cannot start.
 devices="$("${STRATA_HOME}/build-hip/strata-device" --list-devices 2>&1 || true)"
 found="$(printf '%s\n' "${devices}" | grep -c 'gfx1030' || true)"
-if [ "${found}" -ne 1 ]; then
-  echo "FATAL: expected one gfx1030 device, strata-device listed ${found}:" >&2
+if [ "${found}" -ne "${renders}" ]; then
+  echo "FATAL: CT holds ${renders} render node(s), strata-device listed ${found} gfx1030 device(s):" >&2
   printf '%s\n' "${devices}" >&2
   exit 1
 fi
@@ -42,10 +48,35 @@ done
 config="${STATE_DIRECTORY:-/var/lib/strata-qwen38fn}/config.json"
 log_dir="${LOGS_DIRECTORY:-/var/log/strata-qwen38fn}"
 ENGINE="${engine}" CONFIG="${config}" LOG="${log_dir}/engine.log" python3 -I - <<'PY'
+import ctypes
 import json
 import os
+import sys
 
 e = os.environ
+
+
+def hip_index_of():
+    """{PCI address: HIP device index}, from the runtime itself."""
+    hip = ctypes.CDLL(e["ROCM_ROOT"] + "/lib/libamdhip64.so")
+    n = ctypes.c_int(0)
+    if hip.hipGetDeviceCount(ctypes.byref(n)) != 0:
+        sys.exit("FATAL: hipGetDeviceCount failed")
+    out = {}
+    for i in range(n.value):
+        buf = ctypes.create_string_buffer(64)
+        if hip.hipDeviceGetPCIBusId(buf, 64, i) != 0:
+            sys.exit("FATAL: hipDeviceGetPCIBusId failed for device %d" % i)
+        out[buf.value.decode().lower()] = i
+    return out
+
+
+index = hip_index_of()
+cards = [c.strip().lower() for c in e["MODEL_GPUS"].split(",") if c.strip()]
+missing = [c for c in cards if c not in index]
+if not cards or missing or len(set(cards)) != len(cards):
+    sys.exit("FATAL: MODEL_GPUS %r: HIP has %s" % (e["MODEL_GPUS"], index))
+gpus = [index[c] for c in cards]
 args = ["--pack", e["MODEL_PACK"], "--native", e["MODEL_GGUF"],
         "--expert-profile", e["STRATA_HOME"] + "/data/expert-profile.bin", "--expert-cache", "auto",
         "--prefill", e["MODEL_PREFILL"], "--max-context", e["MODEL_CONTEXT_LENGTH"], "--kv", e["MODEL_KV"],
@@ -64,7 +95,7 @@ cfg = {
     "model_name": e["MODEL_ALIAS"],
     "log": e["LOG"],
     "backend": "hip",
-    "gpu": 0,
+    "gpu": gpus[0],
     "lib_dirs": [e["ROCM_ROOT"] + "/lib"],
     "allowed_hosts": [h for h in e.get("MODEL_ALLOWED_HOSTS", "").split(",") if h],
     "reasoning_effort": e["MODEL_REASONING_EFFORT"],
@@ -72,6 +103,15 @@ cfg = {
 }
 if int(e["MODEL_PARALLEL"]) > 1:
     cfg["parallel"] = int(e["MODEL_PARALLEL"])
+if len(gpus) > 1 and e.get("MODEL_LAYER_SPLIT"):
+    cfg.update(gpu=gpus, layer_split=e["MODEL_LAYER_SPLIT"], gpu_order="as_given")
+elif len(gpus) > 1:
+    # The helper mode: the engine sees the primary as device 0 and the helper as device 1.
+    if "--expert-cache-device1" not in args:
+        sys.exit("FATAL: two cards without MODEL_LAYER_SPLIT need --expert-cache-device1 in MODEL_EXTRA_ARGS")
+    cfg["env"] = {"HIP_VISIBLE_DEVICES": ",".join(str(g) for g in gpus)}
+print("strata-serve-qwen38fn: cards %s -> HIP %s%s" % (cards, gpus, " (layer split %s)" % e["MODEL_LAYER_SPLIT"]
+      if len(gpus) > 1 and e.get("MODEL_LAYER_SPLIT") else " (helper)" if len(gpus) > 1 else ""), file=sys.stderr)
 with open(e["CONFIG"], "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=1)
 PY

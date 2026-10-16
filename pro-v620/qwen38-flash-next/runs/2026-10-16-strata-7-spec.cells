@@ -1,8 +1,8 @@
-# Cells for runs/2026-10-16-strata.md, stage 6, applied over stage 5's kept settings.
+# Cells for runs/2026-10-16-strata.md, stage 7, applied over stage 6's kept settings.
 # ctl has no drafts; suffix has only the suffix (prompt-lookup) drafts; s1..s6 add the MTP draft
 # layer at --spec-min-p 0.5. If decode still rises at s6, the record adds s7, s8, ... until it
 # has clearly fallen past its peak; then it adds the best length and its neighbours at
-# --spec-min-p 0.3 and 0.7, and the best one at two streams (with --batch-mtp if stage 5
+# --spec-min-p 0.3 and 0.7, and the best one at two streams (with --batch-mtp if stage 6
 # kept two slots).
 ctl        MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0'
 suffix     MODEL_SPEC= MODEL_EXTRA_ARGS=

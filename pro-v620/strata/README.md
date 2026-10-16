@@ -69,15 +69,22 @@ Other files Strata supports, for reference (its own measurements, on an R9700 32
 VMID=123 ./install.sh            # idempotent; llama.cpp keeps serving
 ./use-engine.sh status
 ./use-engine.sh strata           # the two container settings above if missing, then Strata
+./use-engine.sh strata-two-card  # Strata with GPU 1 attached too, for tests; CT 120 stopped
 ./use-engine.sh llamacpp         # back to the deployed llama.cpp server
 ```
 
 Run `install.sh` from a terminal: under `systemd-run` the container steps' output did not
 reach the journal, although they ran.
 
-Each switch changes the running unit, the unit enabled at boot and the thermal watchdog's
-map entry for `0000:83:00.0` together, so a reboot and a thermal trip both act on the engine
-that holds the card. A changed DRM cgroup rule restarts CT 123 once.
+Each switch changes the cards CT 123 binds, the running unit, the unit enabled at boot and
+the thermal watchdog's map together, so a reboot and a thermal trip both act on the engine
+that holds each card. The DRM cgroup rule always allows exactly the cards CT 123 binds; a
+changed rule or card set restarts CT 123 once.
+
+`strata-two-card` attaches GPU 1 (`0000:03:00.0`) at its real node names, as
+`glm53-flash/ct123-test-host.sh` does for llama.cpp. It needs CT 120 stopped and turns CT
+120's autostart off; `strata` and `llamacpp` detach GPU 1 and give the autostart back. CT 120
+itself is never started.
 Switch back to `llamacpp` before running `../qwen38-flash-next/ct120-cutover.sh`: its
 rollback writes `123:llamacpp-qwen38fn` into the watchdog map.
 
@@ -97,24 +104,36 @@ and exports the env file's `STRATA_*` switches to the engine. The starting value
 | Context, KV | 64k, `--kv int8`, `--kv-resident 32768` | llama.cpp's one 64k slot; setup.py streams KV from 64k |
 | Prompt chunks | `--prefill auto` (8,192 tokens) | setup.py |
 | Draft | MTP draft layer, `--spec 4 --spec-min-p 0.5` | setup.py |
+| Cards | `MODEL_GPUS=0000:83:00.0`: GPU 2, by PCI address | the launcher resolves addresses to HIP's numbering at every start; two addresses run a layer split (`MODEL_LAYER_SPLIT=auto`) or, without it, an expert helper |
 | CPU expert workers | `--pool-workers 15` | CT 123's 24 CPUs sit on 21 cores; STREAM peaks at 16 threads ([memory bandwidth](../qwen38-flash-next/README.md#host-memory-bandwidth--2026-10-08)) |
 | n-gram (PLE) table | `--ple-io direct` from the NVMe store | engine default |
 | Memory limit | `--memory-limit-mib 118784` | the engine cannot see CT 123's 120 GiB limit from inside |
 | Reasoning | `reasoning_effort: none` | llama.cpp runs `--reasoning off` |
 | Sampling defaults | temperature 1.0, top_k 20, top_p 0.95, min_p 0.05 | llama-server's `/props` on CT 123; Strata's own default is greedy |
 | RDNA2 switches | `STRATA_HIP_PROMPT_F16=1`, `STRATA_SH_STREAM=1`, `STRATA_HIP_ADAPT_KERNEL_COPY=1` | docs/AMD_HIP.md: FP16 prompt GEMMs, the shared-expert stream, kernel copies for the #884 hang |
+| Route tail skip | `STRATA_ROUTE_TAIL_SKIP=0` | it skips a missed expert every token of a verify window routes at rank 7 or lower. Off by default on gfx1030 (on for CUDA and RDNA4); pinned off, as setup.py does for Unsloth files with every expert in RAM, where it raised KL against Q8_0 from 0.056 to 0.086 (docs/QUANTS.md) |
+
+## Sweeps
+
+[`strata-sweep.sh`](strata-sweep.sh) measures cells of env-file settings with the probes in
+`../qwen38-flash-next/` in chat mode, the placement sweep's telemetry and gates, and the
+engine's own account of each request. [`strata-summary.py`](strata-summary.py) adds the
+engine's expert cache, VRAM residency and log lines to the speed tables. Its header lists the
+cell keys; the [test record](../qwen38-flash-next/runs/2026-10-16-strata.md) has the commands.
 
 ## Differences from llama.cpp that matter to the tooling here
 
 - No `/completion`, `/tokenize` or `/detokenize`. The probes run in chat mode
   (`PROBE_CHAT=true`); a `CONTEXT_FILE` needs the pack's tokenizer instead of the server.
-- `cache_prompt` is ignored: the conversation cache reuses any matching prefix. A cold
-  prefill needs a prompt that differs from every earlier one near its start; check
-  `timings.cache_n` in the response.
+- `cache_prompt` is ignored: the conversation cache reuses any matching prefix. A request
+  with `"strata_checkpoint": false` reads its whole prompt (the probes send it on cold rows);
+  check `timings.cache_n` in the response.
 - Responses carry llama.cpp's `timings` names (`prompt_n`, `cache_n`, `prompt_per_second`,
   `predicted_per_second`, `draft_n`, `draft_n_accepted`). `/props`, `/slots` and
   `/metrics/prometheus` use llama-server's names.
-- Reasoning effort takes `none`, `low`, `medium` or `high`; there is no `xhigh`.
+- Reasoning effort takes `none`, `low`, `medium` or `high` (`xhigh` is accepted too). A
+  caller's effort wins over the config's `none`: llama.cpp's `--reasoning off` ignores it, Strata
+  thinks.
 - `/v1/models` is empty until the engine has said READY; `/health` answers before.
 - The server checks the `Host` header: `gpu2`, the container's IPs and `MODEL_ALLOWED_HOSTS`
   pass.

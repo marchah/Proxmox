@@ -25,6 +25,12 @@ use it from stage 3 on, because GLM continued the raw d8000 filler instead of an
   3. With the MTP head (CT 123's deployed env), decode depends on how many drafted tokens
      the prompt gets accepted, so each row records draft_n and draft_n_accepted. Without
      it, draft_n is absent and tok/s is a plain bandwidth number.
+
+Strata (../strata/) serves the chat rows too (--chat). It ignores cache_prompt and resumes
+any matching prefix, so a cold row also sends "strata_checkpoint": false, which llama.cpp
+ignores. A row with cache_n above 0 that was meant to be cold fails. Strata honours a
+caller's reasoning effort, so --thinking-efforts names the efforts whose contract reply may
+reason; --tool-check adds a tool call, streamed and not.
 """
 import argparse, hashlib, json, math, pathlib, statistics, sys, time, urllib.error, urllib.request
 
@@ -75,8 +81,58 @@ def context_prefixes(base, text, depths):
     return {d: post(base + "/detokenize", {"tokens": tokens[:d]})["content"] for d in want}
 
 
-def contract_check(base, efforts):
-    """The template traps, asserted rather than assumed."""
+TOOLS = [{"type": "function", "function": {
+    "name": "get_weather", "description": "Current weather for a city",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}},
+                   "required": ["city"]}}}]
+
+
+def post_stream(url, body, timeout=600):
+    """The data lines of a streamed reply, decoded."""
+    req = urllib.request.Request(
+        url, data=json.dumps(dict(body, stream=True)).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        lines = r.read().decode().splitlines()
+    return [json.loads(l[6:]) for l in lines if l.startswith("data: ") and l != "data: [DONE]"]
+
+
+def tool_check(base):
+    """One call to the declared tool, with JSON arguments, streamed and not."""
+    out = {}
+    body = {"model": "qwen3.8-flash-next", "tools": TOOLS, "max_tokens": 512, "temperature": 0,
+            "messages": [{"role": "user", "content": "What is the weather in Montreal right now? Use the tool."}]}
+    try:
+        r = post(base + "/v1/chat/completions", body)
+        calls = r["choices"][0]["message"].get("tool_calls") or []
+        args = [json.loads(c["function"]["arguments"]) for c in calls]
+        out["tool_call"] = {"ok": len(calls) == 1 and calls[0]["function"]["name"] == "get_weather"
+                            and isinstance(args[0], dict) and bool(args[0].get("city")),
+                            "calls": [[c["function"]["name"], a] for c, a in zip(calls, args)],
+                            "finish_reason": r["choices"][0].get("finish_reason")}
+    except Exception as e:
+        out["tool_call"] = {"ok": False, "error": repr(e)[:200]}
+    try:
+        name, arguments = "", ""
+        for chunk in post_stream(base + "/v1/chat/completions", body):
+            for ch in chunk.get("choices", []):
+                for c in (ch.get("delta") or {}).get("tool_calls") or []:
+                    name += (c.get("function") or {}).get("name") or ""
+                    arguments += (c.get("function") or {}).get("arguments") or ""
+        parsed = json.loads(arguments) if arguments else None
+        out["tool_call_stream"] = {"ok": name == "get_weather" and isinstance(parsed, dict)
+                                   and bool(parsed.get("city")), "name": name, "arguments": parsed}
+    except Exception as e:
+        out["tool_call_stream"] = {"ok": False, "error": repr(e)[:200]}
+    return out
+
+
+def contract_check(base, efforts, thinking=()):
+    """The template traps, asserted rather than assumed.
+
+    `thinking`: efforts whose reply may carry a reasoning block (Strata honours them); they
+    get room to finish it, and only a clean, non-empty answer is required of them.
+    """
     out = {}
     msgs = [{"role": "user", "content": "Reply with exactly: OK"}]
 
@@ -118,7 +174,8 @@ def contract_check(base, efforts):
         try:
             r = post(base + "/v1/chat/completions",
                      {"model": "qwen3.8-flash-next", "messages": msgs,
-                      "max_tokens": 32, "temperature": 0, "reasoning_effort": val})
+                      "max_tokens": 2048 if val in thinking else 32, "temperature": 0,
+                      "reasoning_effort": val})
             ch = r["choices"][0]["message"]
             content = ch.get("content") or ""
             ok = bool(content.strip())
@@ -129,6 +186,7 @@ def contract_check(base, efforts):
                 "content": content[:40],
                 "think_leaked_into_content": leaked,
                 "reasoning_chars": len(ch.get("reasoning_content") or ""),
+                "reasoning_allowed": val in thinking,
                 "note": ("200 but EMPTY content — --reasoning off may have stopped working" if not ok
                          else "think tag in content — the reasoning block reached the answer"
                          if leaked else ""),
@@ -161,6 +219,9 @@ def one(base, prompt, n_predict, chat=False, cache=False, sampling="greedy", see
     # greedy pins the target's choices; server sends no sampler settings, so the server's
     # defaults (the GGUF's generation_config, where present) apply, as for a client that
     # sets none. A fixed seed keeps server sampling repeatable.
+    if not cache:
+        # Strata ignores cache_prompt; this stops it resuming a matching prefix.
+        body["strata_checkpoint"] = False
     if sampling == "greedy":
         body.update(temperature=0, top_k=1)
     if seed is not None:
@@ -219,6 +280,8 @@ def one(base, prompt, n_predict, chat=False, cache=False, sampling="greedy", see
         row["error"] = "empty completion"
     elif not isinstance(row["decode_tps"], (int, float)) or not math.isfinite(row["decode_tps"]) or row["decode_tps"] <= 0:
         row["error"] = "missing or invalid decode timing"
+    elif not cache and (row["cache_n"] or 0) > 0:
+        row["error"] = "a cold row was served from the prompt cache (cache_n %s)" % row["cache_n"]
     return row
 
 
@@ -247,6 +310,10 @@ def main():
     # GLM-5.3-Flash's takes low, high and max and reads anything else as max.
     ap.add_argument("--efforts", default="none,high,low,medium,xhigh",
                     help="comma-separated reasoning_effort values --contract sends")
+    ap.add_argument("--thinking-efforts", default="",
+                    help="comma-separated efforts whose --contract reply may reason (Strata)")
+    ap.add_argument("--tool-check", action="store_true",
+                    help="with --contract: a tool call, streamed and not")
     # Limit which prompt classes run. The WARM pass does not need all three -- warming is
     # about weights, the graph and the deep-prefill indexer state, none of which is
     # prompt-class specific -- and at depth each class costs a full 8k prefill, which is
@@ -272,7 +339,10 @@ def main():
                                   "sha256": hashlib.sha256(context.encode()).hexdigest()}
     if a.contract:
         result["contract"] = contract_check(
-            a.base, [e.strip() for e in a.efforts.split(",") if e.strip()])
+            a.base, [e.strip() for e in a.efforts.split(",") if e.strip()],
+            {e.strip() for e in a.thinking_efforts.split(",") if e.strip()})
+        if a.tool_check:
+            result["contract"].update(tool_check(a.base))
 
     rows = []
     depths = [int(d) for d in a.depths.split(",")]
@@ -357,7 +427,8 @@ def main():
         s["reps_agree"] for s in result["summary"].values())
     result["contract_ok"] = all(
         v.get("ok", v.get("harmless", False)) and not v.get("think_leaked_into_content")
-        and not v.get("reasoning_chars") for v in result["contract"].values()
+        and (v.get("reasoning_allowed") or not v.get("reasoning_chars"))
+        for v in result["contract"].values()
     ) if a.contract else None
     # Under server sampling, reps that differ are reported, not failed: a seeded sampler
     # repeats on one load, but that is what the field shows rather than what it assumes.

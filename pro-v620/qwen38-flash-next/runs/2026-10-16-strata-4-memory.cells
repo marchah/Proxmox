@@ -1,4 +1,4 @@
-# Cells for runs/2026-10-16-strata.md, stage 3, applied over stage 2's kept settings. No drafts.
+# Cells for runs/2026-10-16-strata.md, stage 4, applied over stage 3's kept settings. No drafts.
 # ple-ram holds the 28.8 GB n-gram table in RAM: CT_MEMORY_MIB raises CT 123's memory for the
 # cell (pct set -memory, live) and the sweep sets it back to 122880 after it. reserve2g leaves
 # 2 GiB of VRAM after the expert cache (the start leaves ~0.9 GiB at 1024): with llama.cpp,

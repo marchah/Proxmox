@@ -1,4 +1,4 @@
-# Cells for runs/2026-10-16-strata.md, stage 5, applied over stage 4's kept settings. No drafts.
+# Cells for runs/2026-10-16-strata.md, stage 6, applied over stage 5's kept settings. No drafts.
 # p1 and p2 both run two concurrent streams; with one slot the second request waits.
 ctl        MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0'
 ctx128k    MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_CONTEXT_LENGTH=131072

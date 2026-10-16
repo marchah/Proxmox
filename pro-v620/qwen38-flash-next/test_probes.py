@@ -151,6 +151,41 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(bodies[1]["seed"], 7)
         self.assertTrue(bodies[1]["cache_prompt"])
 
+    def test_cold_rows_ask_strata_not_to_resume(self):
+        bodies = []
+
+        def capture(url, body):
+            bodies.append(body)
+            return {"choices": [{"message": {"content": "some answer text"}, "finish_reason": "length"}],
+                    "timings": {"predicted_per_second": 9, "cache_n": 0}}
+
+        with patch.object(probe, "post", side_effect=capture):
+            probe.one("http://unused", "p", 16, chat=True)
+            probe.one("http://unused", "p", 16, chat=True, cache=True)
+        self.assertIs(bodies[0]["strata_checkpoint"], False)
+        self.assertNotIn("strata_checkpoint", bodies[1])
+
+    def test_cold_row_served_from_cache_is_an_error(self):
+        reply = {"choices": [{"message": {"content": "some answer text"}, "finish_reason": "length"}],
+                 "timings": {"predicted_per_second": 9, "prompt_n": 7, "cache_n": 1936}}
+        with patch.object(probe, "post", return_value=reply):
+            cold = probe.one("http://unused", "p", 16, chat=True)
+            cached = probe.one("http://unused", "p", 16, chat=True, cache=True)
+        self.assertIn("served from the prompt cache", cold["error"])
+        self.assertNotIn("error", cached)
+
+    def test_reasoning_passes_the_contract_only_where_allowed(self):
+        allowed = {"bare_chat": {"ok": True, "reasoning_chars": 0},
+                   "effort_high": {"harmless": True, "reasoning_chars": 151, "reasoning_allowed": True}}
+        refused = {"bare_chat": {"ok": True, "reasoning_chars": 0},
+                   "effort_high": {"harmless": True, "reasoning_chars": 151, "reasoning_allowed": False}}
+        for contract, ok in ((allowed, True), (refused, False)):
+            with patch.object(probe, "one", side_effect=[row()]), \
+                    patch.object(probe, "contract_check", return_value=dict(contract)):
+                status, data = run_probe("--reps", "1", "--classes", "code", "--contract")
+            self.assertEqual(data["contract_ok"], ok)
+            self.assertEqual(status, 0 if ok else 1)
+
     def test_server_sampling_may_differ_across_reps_but_greedy_may_not(self):
         rows = [dict(row(), content_sha="a"), dict(row(), content_sha="b")]
         with patch.object(probe, "one", side_effect=list(rows)):
