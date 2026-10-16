@@ -123,7 +123,7 @@ CONTAINER_SCRIPT
 }
 
 build_engine() {
-  log "HIP engine for gfx1030 (${JOBS} jobs at nice 19; 20-40 min the first time)"
+  log "HIP engine for gfx1030 (${JOBS} jobs at nice 19)"
   pct exec "$VMID" -- "${ctenv[@]}" bash -s <<'CONTAINER_SCRIPT'
 set -Eeuo pipefail
 b="${STRATA_HOME}/build-hip"

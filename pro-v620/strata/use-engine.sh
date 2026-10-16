@@ -3,15 +3,16 @@
 # (0000:83:00.0). Runs on the Proxmox HOST as root, after ./install.sh.
 #
 #   ./use-engine.sh status
-#   ./use-engine.sh strata      # passes /dev/kfd in if missing, then serves with Strata
+#   ./use-engine.sh strata      # sets up CT 123's devices for HIP if needed, then Strata
 #   ./use-engine.sh llamacpp    # back to the deployed llama.cpp server
 #
 # Each direction changes three things together, as ct120-cutover.sh does for the cards:
 # the unit that runs, the unit enabled at boot, and the thermal watchdog's map entry for the
 # card. A map that names the stopped engine leaves the card unprotected.
 #
-# Adding /dev/kfd needs a container restart. That restart stops the llama.cpp server for its
-# reload (about 50 s with dio); the script says so before it does it.
+# HIP needs /dev/kfd in the container and a DRM cgroup rule that allows only GPU 2's nodes
+# (ensure_drm_cgroup). /dev/kfd joins a running container; a changed cgroup rule needs one
+# container restart, which the script announces before it does it. Both stay for llama.cpp.
 set -Eeuo pipefail
 
 VMID="${VMID:-123}"
@@ -38,7 +39,8 @@ assert_owns_card() {
   fi
 }
 
-# Proxmox's device passthrough resolves /dev/kfd's (dynamic) major number at every start.
+# Proxmox's device passthrough resolves /dev/kfd's (dynamic) major number at every start, and
+# adds it to a running container.
 ensure_kfd() {
   if grep -qE '^dev[0-9]+: /dev/kfd' "/etc/pve/lxc/${VMID}.conf"; then
     in_ct test -c /dev/kfd && return 0
@@ -51,6 +53,33 @@ ensure_kfd() {
   log "passing /dev/kfd into CT ${VMID} as dev${n} (gid ${gid}, render)"
   pct set "$VMID" "-dev${n}" "/dev/kfd,gid=${gid},mode=0660" || die "pct set -dev${n} failed"
   in_ct test -c /dev/kfd 2>/dev/null && return 0
+  return 1
+}
+
+# KFD reports to a process every GPU whose render node its device cgroup allows. With
+# `c 226:* rwm` that includes GPU 1, which has no render node in CT 123; ROCm's thunk then
+# fails to set GPU 1's memory policy and HIP finds no device at all. Allowing only GPU 2's two
+# DRM minors hides GPU 1 from CT 123 (its KFD node reads EPERM). The minors follow the
+# by-path links, so this also repairs the rule after a DRM renumber.
+ensure_drm_cgroup() {
+  local conf="/etc/pve/lxc/${VMID}.conf" render card rm cm want
+  render="$(readlink -f "/dev/dri/by-path/pci-${GPU2_PCI}-render")"
+  card="$(readlink -f "/dev/dri/by-path/pci-${GPU2_PCI}-card")"
+  rm=$((16#$(stat -c %T "$render")))
+  cm=$((16#$(stat -c %T "$card")))
+  want="$(printf 'lxc.cgroup2.devices.allow: c 226:%s rwm\nlxc.cgroup2.devices.allow: c 226:%s rwm' "$cm" "$rm")"
+  [ "$(grep '^lxc.cgroup2.devices.allow: c 226:' "$conf")" = "$want" ] && return 0
+  install -d -m 0700 "$BAK_DIR"
+  cp -a "$conf" "${BAK_DIR}/${VMID}.conf.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+  # Replace every DRM allow line with the two for GPU 2, where the first one was.
+  awk -v cm="$cm" -v rm="$rm" '/^lxc.cgroup2.devices.allow: c 226:/ {
+      if (!done) { print "lxc.cgroup2.devices.allow: c 226:" cm " rwm"; print "lxc.cgroup2.devices.allow: c 226:" rm " rwm" }
+      done = 1; next }
+    { print }' "$conf" >"${BAK_DIR}/${VMID}.conf.new"
+  # Rewrite in place: /etc/pve is the cluster filesystem.
+  cat "${BAK_DIR}/${VMID}.conf.new" >"$conf"
+  rm -f "${BAK_DIR}/${VMID}.conf.new"
+  log "CT ${VMID} DRM cgroup -> 226:${cm} (${card##*/}) and 226:${rm} (${render##*/}); a restart applies it"
   return 1
 }
 
@@ -97,6 +126,7 @@ status() {
   map="$(grep -m1 '^GPU_SERVICE_MAP=' "$WATCHDOG_ENV" 2>/dev/null | cut -d= -f2-)"
   echo "  watchdog map: ${map:-MISSING}"
   echo "  /dev/kfd:     config $(grep -cE '^dev[0-9]+: /dev/kfd' "/etc/pve/lxc/${VMID}.conf"), in CT $(in_ct test -c /dev/kfd && echo yes || echo no)"
+  echo "  DRM cgroup:   $(grep '^lxc.cgroup2.devices.allow: c 226:' "/etc/pve/lxc/${VMID}.conf" | awk '{print $4}' | paste -sd' ' -)"
   for u in "$LLAMACPP_UNIT" "$STRATA_UNIT"; do
     echo "  ${u}: $(in_ct systemctl is-active "$u" 2>&1 | head -1)/$(in_ct systemctl is-enabled "$u" 2>&1 | head -1)"
   done
@@ -108,9 +138,13 @@ case "${1:-}" in
     ;;
   strata)
     assert_owns_card
-    if ! ensure_kfd; then
-      log "restarting CT ${VMID} to apply /dev/kfd; ${LLAMACPP_UNIT} stops until the switch below"
+    restart=false
+    ensure_kfd || restart=true
+    ensure_drm_cgroup || restart=true
+    if [ "$restart" = true ]; then
+      log "restarting CT ${VMID} to apply its device changes; ${LLAMACPP_UNIT} stops until the switch below"
       in_ct systemctl disable --now "$LLAMACPP_UNIT"
+      in_ct systemctl disable "$STRATA_UNIT" 2>/dev/null || true
       pct reboot "$VMID"
       for _ in $(seq 1 60); do in_ct true 2>/dev/null && break; sleep 2; done
       in_ct test -c /dev/kfd || die "/dev/kfd is still absent in CT ${VMID} after the restart"
@@ -123,7 +157,7 @@ case "${1:-}" in
     status
     ;;
   *)
-    sed -n '2,14p' "$0"
+    sed -n '2,15p' "$0"
     exit 2
     ;;
 esac
