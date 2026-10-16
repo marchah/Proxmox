@@ -6,9 +6,11 @@
 A cell's window is its probes: the first to the last timestamp of the sweep's
 <tag>.gpu.tsv, which the sweep samples only while the probes run, so the load is left out.
 For each window it prints the store's reads and the host's major faults over the window,
-CT 123's peak memory and its least headroom under the CT limit, and the host's least
-MemFree. A cell fails the record's RAM rule when the store read more than 1 GiB, the CT
-came within 2 GiB of its limit, or the host's MemFree fell under 4 GiB.
+CT 123's peak memory, its least headroom under the CT limit, and the host's least MemFree.
+The headroom leaves out the page cache, which the kernel reclaims when the CT needs room:
+it is the limit minus the CT's memory other than page cache. A cell fails the record's RAM
+rule when the store read more than 1 GiB, the headroom fell under 2 GiB, or the host's
+MemFree fell under 4 GiB.
 
 MemAvailable counts the experts' page cache as reclaimable, so it cannot show the host's
 margin. A TSV from before the sampler logged MemFree is summarised on MemAvailable, and
@@ -48,8 +50,8 @@ def main():
         majflt = end["pgmajfault"] - start["pgmajfault"]
         peak = max(r["ct_mib"] for r in inside)
         # No limit read (cgroup missing or unlimited) fails the rule rather than passing it.
-        headroom = min((r["ct_max_mib"] - r["ct_mib"] for r in inside if r["ct_max_mib"] > 0),
-                       default=None)
+        headroom = min((r["ct_max_mib"] - (r["ct_mib"] - r["ct_file_mib"])
+                        for r in inside if r["ct_max_mib"] > 0), default=None)
         host_least = min(r[host] for r in inside)
         ok = (reads <= READ_MAX_MIB and headroom is not None and headroom >= CT_HEADROOM_MIB
               and host_least >= HOST_FREE_MIB)
