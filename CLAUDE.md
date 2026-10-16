@@ -12,6 +12,8 @@ Use component READMEs for deployment commands, defaults, and measurements.
   two-card CT 120 configuration, placement measurements and cutover procedure.
 - [glm53-flash/](pro-v620/glm53-flash/README.md): GLM-5.3-Flash model notes and test
   records; not deployed.
+- [mimo-v26-pro/](pro-v620/mimo-v26-pro/README.md): MiMo-V2.6-Pro-RL model notes, RAM fit
+  and test records; not deployed.
 - [hermes/](hermes/README.md): CT 121 agent gateway.
 - [kb-rag/](kb-rag/README.md): CT 140 retrieval API and corpus policy.
 - [bench-runner/](bench-runner/README.md) and [ansible/](ansible/README.md): endpoint
@@ -78,7 +80,8 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
 - CT 120 and CT 123 must never own the same card. Use `ct120-cutover.sh` for the
   two-card alternative: it changes passthrough, CT 123's `onboot` and the watchdog
   service map together. `glm53-flash/ct123-test-host.sh` does the same in the other
-  direction for the GLM-5.3-Flash test, giving CT 123 both cards while CT 120 stays off.
+  direction for the GLM-5.3-Flash and MiMo-V2.6-Pro-RL tests, giving CT 123 both cards
+  while CT 120 stays off.
 - Both servers use `--reasoning off --reasoning-format auto`. The first disables
   thinking; the second removes empty think tags from response content. Revalidate
   response content and tool calls when changing these flags or the KV cache type.
@@ -130,7 +133,7 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   (`MODEL=glm53f` runs GLM-5.3-Flash there, after `glm53-flash/` sets CT 123 up). It
   ends with the agent-session and document-ingestion workloads, run at the server's
   operational slots on real repository text; `SUITE=short` runs only the regression
-  items. See `bench-runner/BENCHMARKS.md`.
+  items, `SUITE=workloads` only the workloads. See `bench-runner/BENCHMARKS.md`.
 - Wrappers in `/usr/local/bin` need a login shell through `pct exec`:
   `pct exec 200 -- bash -lc 'llm-bench-baseline'`.
 

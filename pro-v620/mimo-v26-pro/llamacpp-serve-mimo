@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# MiMo-V2.6-Pro-RL (mimo2) on the configured V620(s), with routed experts in host RAM.
+# Installed as /usr/local/bin/llamacpp-serve-mimo in CT 123 by install.sh.
+set -Eeuo pipefail
+set -a
+# shellcheck disable=SC1091  # runtime-only env file
+source /etc/llamacpp-mimo.env
+set +a
+export LD_LIBRARY_PATH="${LLAMACPP_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+# 🔴 Export the device filter only when set: ggml-vulkan reads an EMPTY
+# GGML_VK_VISIBLE_DEVICES as "no devices" and the model would load on the CPU.
+if [ -n "${MODEL_VK_VISIBLE_DEVICES:-}" ]; then
+  export GGML_VK_VISIBLE_DEVICES="${MODEL_VK_VISIBLE_DEVICES}"
+else
+  unset GGML_VK_VISIBLE_DEVICES
+fi
+
+# Require the configured GPU count; a missing card otherwise causes CPU fallback.
+: "${MODEL_EXPECTED_GPUS:=2}"
+if [ "${MODEL_EXPECTED_GPUS}" -gt 0 ]; then
+  devices="$("${LLAMACPP_DIR}/llama-server" --list-devices 2>/dev/null || true)"
+  found="$(printf '%s\n' "${devices}" | grep -ciE 'Vulkan.*V620|V620' || true)"
+  if [ "${found}" -lt "${MODEL_EXPECTED_GPUS}" ]; then
+    echo "FATAL: expected ${MODEL_EXPECTED_GPUS} Vulkan V620(s), RADV offered ${found}." >&2
+    echo "A missing card does NOT fail the load: llama.cpp would place its layers in host" >&2
+    echo "RAM and serve at a fraction of the expected speed. Check the container's DRM" >&2
+    echo "mounts (pro-v620/README.md, 'Recovering after a DRM renumber') and" >&2
+    echo "MODEL_VK_VISIBLE_DEVICES. Devices RADV offered:" >&2
+    printf '%s\n' "${devices}" >&2
+    exit 1
+  fi
+fi
+
+# Verify every shard before starting a load.
+case "${MODEL_PATH}" in
+  *-00001-of-*)
+    total="$(printf '%s' "${MODEL_PATH}" | sed -E 's/.*-00001-of-0*([0-9]+)\.gguf/\1/')"
+    for i in $(seq 1 "${total}"); do
+      shard="$(printf '%s' "${MODEL_PATH}" | sed -E "s/-00001-of-/-$(printf '%05d' "${i}")-of-/")"
+      [ -f "${shard}" ] || { echo "FATAL: missing shard $(basename "${shard}")" >&2; exit 1; }
+    done
+    ;;
+esac
+
+args=(
+  --model "${MODEL_PATH}"
+  --host "${MODEL_SERVER_BIND}"
+  --port "${MODEL_SERVER_PORT}"
+  --alias "${MODEL_ALIAS}"
+  --n-gpu-layers "${MODEL_GPU_LAYERS}"
+  --ctx-size "${MODEL_CONTEXT_LENGTH}"
+  --parallel "${MODEL_PARALLEL}"
+  --threads "${MODEL_THREADS}"
+  --flash-attn on
+  --batch-size "${MODEL_BATCH_SIZE:-4096}"
+  --ubatch-size "${MODEL_UBATCH_SIZE:-4096}"
+  --jinja
+  # The template thinks unless enable_thinking is false; --reasoning off sets that. The
+  # contract check confirms the content comes back clean.
+  --reasoning off
+  --reasoning-format auto
+  --cache-ram 0
+  --metrics
+)
+
+[ -n "${MODEL_REASONING_BUDGET:-}" ] && args+=( --reasoning-budget "${MODEL_REASONING_BUDGET}" )
+
+# Routed experts for the FIRST N GGUF blocks in host RAM. Block 0 has a dense FFN and no
+# experts, so N=70 keeps all 69 expert layers in RAM and N=67 puts blocks 67-69 on the cards.
+[ -n "${MODEL_CPU_MOE:-}" ] && [ "${MODEL_CPU_MOE}" != "0" ] && args+=( --n-cpu-moe "${MODEL_CPU_MOE}" )
+[ -n "${MODEL_OT_OVERRIDE:-}" ] && args+=( --override-tensor "${MODEL_OT_OVERRIDE}" )
+
+# Explicit split for multiple cards: CPU-expert layers are much lighter than GPU ones.
+[ -n "${MODEL_TENSOR_SPLIT:-}" ] && args+=( --tensor-split "${MODEL_TENSOR_SPLIT}" )
+
+if [ -n "${MODEL_KV_TYPE:-}" ]; then
+  args+=( --cache-type-k "${MODEL_KV_TYPE}" --cache-type-v "${MODEL_KV_TYPE}" )
+fi
+
+[ -n "${MODEL_LOAD_MODE:-}" ] && args+=( --load-mode "${MODEL_LOAD_MODE}" )
+
+# Vision and audio. --no-mmproj-offload keeps the projector on the CPU: no VRAM, slower
+# encoding, text unaffected.
+if [ -n "${MODEL_MMPROJ:-}" ] && [ -f "${MODEL_MMPROJ}" ]; then
+  args+=( --mmproj "${MODEL_MMPROJ}" )
+  [ "${MODEL_MMPROJ_ON_CPU:-false}" = "true" ] && args+=( --no-mmproj-offload )
+fi
+
+# Word-split and appended verbatim: --device, speculation and its -md head, CPU affinity.
+# shellcheck disable=SC2206
+[ -n "${EXTRA_ARGS:-}" ] && args+=( ${EXTRA_ARGS} )
+
+printf 'llamacpp-serve-mimo: %s%s\n' \
+  "${GGML_VK_VISIBLE_DEVICES:+GGML_VK_VISIBLE_DEVICES=${GGML_VK_VISIBLE_DEVICES} }" \
+  "${LLAMACPP_DIR}/llama-server ${args[*]}" >&2
+exec "${LLAMACPP_DIR}/llama-server" "${args[@]}"

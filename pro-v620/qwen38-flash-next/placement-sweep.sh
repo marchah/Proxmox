@@ -31,6 +31,12 @@
 #               vulkaninfo numbers them), e.g. one card of a two-card container: with only
 #               that card visible, it is Vulkan0 and pinned memory (none, dio) is charged
 #               to it. Needs a launcher that reads MODEL_VK_VISIBLE_DEVICES.
+#   ENV         space-separated NAME=VALUE pairs exported to llama-server through the env
+#               file, e.g. ENV="GGML_OP_OFFLOAD_MIN_BATCH=256". A name another cell sets is
+#               deleted from the env file for a cell that does not set it, never left
+#               empty: an empty GGML_OP_OFFLOAD_MIN_BATCH reads as 0 and offloads every op.
+#   TURNS       also run turn-probe.py: `true` for TURN_SIZES, or comma-separated sizes.
+#               Needs CONTEXT_FILE.
 # CONFIGS (NCMOE[:CACHE] entries) is the short form for cells that vary only those two.
 #
 # ⚠️ Method rules this encodes, each learned the hard way on this box:
@@ -89,6 +95,15 @@ CONTRACT_EFFORTS="${CONTRACT_EFFORTS:-}"
 # true sends the probes' prompts through /v1/chat/completions instead of /completion. GLM-5.3-
 # Flash continues the raw depth prompt's filler; as a chat turn it answers the instruction.
 PROBE_CHAT="${PROBE_CHAT:-false}"
+# More placement-probe.py arguments, word-split, e.g. "--n-predict 256,640,1024 --cache".
+PROBE_ARGS="${PROBE_ARGS:-}"
+# A text file on the host for the probes' deep context instead of the built-in filler
+# (placement-probe.py --context-file). turn-probe.py needs it.
+CONTEXT_FILE="${CONTEXT_FILE:-}"
+# turn-probe.py, for TURNS cells: tokens of cached context, chunk sizes, reps per pass.
+TURN_DEPTH="${TURN_DEPTH:-30000}"
+TURN_SIZES="${TURN_SIZES:-32,64,128,256,512,1024,2048}"
+TURN_REPS="${TURN_REPS:-3}"
 # Flash-Next: 48 MoE layers, ~1.56 GB of Q4 expert weight each, so each +1 hands ~1.56 GB back:
 #   15 = minimum that fits two cards · 20 = ~8 GB spare · 28 = ~20 GB spare
 #   34 = fits one card · 48 = all experts in RAM (the no-GPU-experts control)
@@ -179,7 +194,7 @@ if [ -n "$CELLS" ]; then
 import re, shlex, sys
 KEYS = {"MODE", "NCMOE", "CACHE", "SPLIT_MODE", "TENSOR_SPLIT", "BATCH", "UBATCH", "THREADS",
         "KV", "CTX", "PARALLEL", "LOAD_MODE", "MMPROJ_CPU", "EXTRA", "STREAMS", "DEPTHS",
-        "DEVICE", "VK_DEVICES"}
+        "DEVICE", "VK_DEVICES", "ENV", "TURNS"}
 seen = set()
 for n, line in enumerate(open(sys.argv[1]), 1):
     words = shlex.split(line, comments=True)
@@ -272,6 +287,22 @@ for label in "${CELL_ORDER[@]}"; do
     [ "$streams" -le "${CELL[$label|PARALLEL]:-$PARALLEL}" ] || bad "STREAMS ${streams} needs PARALLEL of at least ${streams}"
     [ -x ./concurrency-probe.py ] || bad "STREAMS needs concurrency-probe.py, not found or not executable"
   fi
+  for pair in ${CELL[$label|ENV]:-}; do
+    [[ "$pair" =~ ^[A-Z_][A-Z0-9_]*=[^[:space:]\"\'\$\`]+$ ]] \
+      || bad "ENV takes NAME=VALUE pairs with plain, non-empty values"
+  done
+  turns="${CELL[$label|TURNS]:-}"
+  if [ -n "$turns" ]; then
+    [ "$turns" = true ] || [[ "$turns" =~ ^[0-9]+(,[0-9]+)*$ ]] || bad "TURNS must be true or comma-separated sizes"
+    [ -n "$CONTEXT_FILE" ] || bad "TURNS needs CONTEXT_FILE"
+    [ -x ./turn-probe.py ] || bad "TURNS needs turn-probe.py, not found or not executable"
+  fi
+done
+[ -z "$CONTEXT_FILE" ] || [ -f "$CONTEXT_FILE" ] || die "CONTEXT_FILE ${CONTEXT_FILE} not found"
+# Every name any cell's ENV sets, so a cell that does not set one can delete it.
+declare -A ENV_NAMES=()
+for label in "${CELL_ORDER[@]}"; do
+  for pair in ${CELL[$label|ENV]:-}; do ENV_NAMES[${pair%%=*}]=1; done
 done
 if [ "$has_cache" = "true" ]; then
   [ -n "$LOG_VERBOSITY" ] || LOG_VERBOSITY=4
@@ -331,6 +362,17 @@ if not n:
     src = src.rstrip("\n") + "\n" + line + "\n"
 open(path, "w").write(src)
 ' "$ENVFILE" "$key" "$val"
+}
+
+# Delete one KEY= line from the container's env file, if present.
+unset_env_var() {
+  pct exec "$VMID" -- python3 -c '
+import os, re, sys
+path, key = sys.argv[1], sys.argv[2]
+if os.path.exists(path):
+    src = open(path).read()
+    open(path, "w").write(re.sub(r"(?m)^" + re.escape(key) + r"=.*\n?", "", src))
+' "$ENVFILE" "$1"
 }
 
 # The sweep rewrites the production env file, so keep a copy and put it back on exit,
@@ -450,6 +492,10 @@ start_server() {
   set_env_var MODEL_EXPECTED_GPUS  "$gpus"
   # Empty exposes every card; the launcher exports GGML_VK_VISIBLE_DEVICES only when set.
   set_env_var MODEL_VK_VISIBLE_DEVICES "${CELL[$label|VK_DEVICES]:-}"
+  # Cell environment: delete every name a cell sets, then write this cell's own.
+  local name pair
+  for name in "${!ENV_NAMES[@]}"; do unset_env_var "$name"; done
+  for pair in ${CELL[$label|ENV]:-}; do set_env_var "${pair%%=*}" "${pair#*=}"; done
   # This is what actually carries --device into llama-server; the serve script
   # word-splits EXTRA_ARGS and appends it verbatim.
   v="${CELL[$label|EXTRA]:-}"
@@ -573,7 +619,7 @@ dimm_cooldown() {
 # A cell's settings as a JSON object, for the manifest and its per-cell JSON.
 cell_json() {
   local label="$1" key args=()
-  for key in MODE NCMOE CACHE SPLIT_MODE TENSOR_SPLIT BATCH UBATCH THREADS KV CTX PARALLEL LOAD_MODE MMPROJ_CPU EXTRA STREAMS DEPTHS DEVICE VK_DEVICES; do
+  for key in MODE NCMOE CACHE SPLIT_MODE TENSOR_SPLIT BATCH UBATCH THREADS KV CTX PARALLEL LOAD_MODE MMPROJ_CPU EXTRA STREAMS DEPTHS DEVICE VK_DEVICES ENV TURNS; do
     [ -n "${CELL[$label|$key]+x}" ] && args+=("$key" "${CELL[$label|$key]}")
   done
   python3 -c 'import json, sys; a = sys.argv[1:]; print(json.dumps(dict(zip(a[::2], a[1::2]))))' "${args[@]}"
@@ -590,6 +636,9 @@ cat >"${OUT_DIR}/manifest.json" <<JSON
  "contract_efforts": "${CONTRACT_EFFORTS}", "probe_chat": ${PROBE_CHAT},
  "ctx": ${CTX}, "parallel": ${PARALLEL}, "reps": ${REPS},
  "n_predict": ${N_PREDICT}, "conc_reps": ${CONC_REPS}, "depths": "${DEPTHS}", "probe_classes": "${PROBE_CLASSES}",
+ "probe_args": "${PROBE_ARGS}", "context_file": "${CONTEXT_FILE}",
+ "context_sha256": "$([ -n "$CONTEXT_FILE" ] && sha256sum "$CONTEXT_FILE" | cut -d' ' -f1)",
+ "turn_depth": ${TURN_DEPTH}, "turn_sizes": "${TURN_SIZES}", "turn_reps": ${TURN_REPS},
  "drop_caches": ${DROP_CACHES}, "dimm_start_max_c": ${DIMM_START_MAX_C},
  "one_gpu": ${ONE_GPU}, "expected_gpus": ${GLOBAL_GPUS},
  "load_mode": "${LOAD_MODE}", "tensor_split_override": "${TENSOR_SPLIT}",
@@ -673,6 +722,8 @@ PYFAIL
 
     probe_args=( "$BASE" --reps 1 --n-predict "$N_PREDICT" --depths "${CELL[$label|DEPTHS]:-$DEPTHS}" "${CHAT_ARGS[@]}" )
     [ -n "$PROBE_CLASSES" ] && probe_args+=( --classes "$PROBE_CLASSES" )
+    [ -n "$CONTEXT_FILE" ] && probe_args+=( --context-file "$CONTEXT_FILE" )
+    if [ -n "$PROBE_ARGS" ]; then read -r -a extra_args <<<"$PROBE_ARGS"; probe_args+=( "${extra_args[@]}" ); fi
     # KV type, placement and speculation can change chat output. Check each load,
     # including later passes; one successful control cannot qualify another cell.
     probe_args+=( --contract )
@@ -693,6 +744,17 @@ PYFAIL
         >"${OUT_DIR}/${tag}.concurrency.json" 2>"${OUT_DIR}/${tag}.concurrency.log" \
         || log "concurrency probe FAILED for ${tag}"
       conc_span="${conc_span} $(date +%s.%N)"
+    fi
+    turns="${CELL[$label|TURNS]:-}"
+    turn_span=""
+    if [ -n "$turns" ]; then
+      [ "$turns" = true ] && turns="$TURN_SIZES"
+      turn_span="$(date +%s.%N)"
+      ./turn-probe.py "$BASE" --context-file "$CONTEXT_FILE" --depth "$TURN_DEPTH" --sizes "$turns" \
+        --reps "$TURN_REPS" "${CHAT_ARGS[@]}" \
+        >"${OUT_DIR}/${tag}.turns.json" 2>"${OUT_DIR}/${tag}.turns.log" \
+        || log "turn probe FAILED for ${tag}"
+      turn_span="${turn_span} $(date +%s.%N)"
     fi
     kill "$DIMM_PID" "$GPU_PID" 2>/dev/null || true
     wait "$DIMM_PID" "$GPU_PID" 2>/dev/null || true
@@ -717,10 +779,12 @@ PYFAIL
       "$cards_csv" "${c_used[*]}" "${c_gtt[*]}" "${c_total[*]}" \
       "${OUT_DIR}/${tag}.moecache.log" "${OUT_DIR}/${tag}.dimm.tsv" "$cmdline" "${p_used[*]}" "${p_gtt[*]}" \
       "$label" "$(cell_json "$label")" "$(cell_gpus "$label")" "$LOAD_S" "${OUT_DIR}/${tag}.concurrency.json" "$mem" \
-      "${OUT_DIR}/${tag}.gpu.tsv" "${OUT_DIR}/${tag}.rows.jsonl" "$conc_span" <<'PYADD'
+      "${OUT_DIR}/${tag}.gpu.tsv" "${OUT_DIR}/${tag}.rows.jsonl" "$conc_span" \
+      "${OUT_DIR}/${tag}.turns.json" "$turn_span" <<'PYADD'
 import json, pathlib, re, statistics, sys
 (path, ncmoe, spec, cache, spill, cards, vs, gs, ts, cache_log, dimm_log, cmdline, pvs, pgs,
- label, settings, gpus, load_s, conc_path, mem, gpu_log, rows_log, conc_span) = sys.argv[1:24]
+ label, settings, gpus, load_s, conc_path, mem, gpu_log, rows_log, conc_span,
+ turns_path, turn_span) = sys.argv[1:26]
 cards = cards.split(",")
 vs, gs, ts, pvs, pgs = ([int(x) for x in s.split()] for s in (vs, gs, ts, pvs, pgs))
 p = pathlib.Path(path)
@@ -808,6 +872,16 @@ if pathlib.Path(rows_log).exists():
         windows["decode"].append((b, b + r["predicted_ms"] / 1000))
 if len(conc_span.split()) == 2:
     windows["streams"].append(tuple(float(x) for x in conc_span.split()))
+turns = pathlib.Path(turns_path)
+if turns.exists():
+    try:
+        t = json.loads(turns.read_text())
+        pl["turns"] = {k: t.get(k) for k in ("depth_target", "context_tokens", "sizes", "reps",
+                       "summary", "fit", "failed_requests", "probe_ok", "error")}
+    except Exception as e:
+        pl["turns"] = {"error": "unparsable: %r" % (e,)}
+if len(turn_span.split()) == 2:
+    windows["turns"] = [tuple(float(x) for x in turn_span.split())]
 util = {}
 for phase, wins in windows.items():
     inside = [s for s in samples if any(a <= s[0] <= b for a, b in wins)]

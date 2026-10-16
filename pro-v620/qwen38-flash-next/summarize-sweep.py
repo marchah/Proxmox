@@ -55,7 +55,7 @@ def main():
                                 "disagree": False, "errors": 0, "cache_mib": [],
                                 "hit": [], "dimm": [], "capped": 0, "cache_inactive": 0,
                                 "shas": {}, "load_failed": 0, "load_s": [], "gpus": None,
-                                "cell": pl.get("cell"), "conc": [], "mem": [], "util": [],
+                                "cell": pl.get("cell"), "conc": [], "turns": [], "mem": [], "util": [],
                                 "contracts": [], "loaded_passes": 0})
         if pl.get("load_failed"):
             g["load_failed"] += 1
@@ -78,6 +78,8 @@ def main():
             g["mem"].append((pl["ct_mem_mib"], pl["ct_anon_mib"], pl["ct_file_mib"]))
         if pl.get("concurrency"):
             g["conc"].append(pl["concurrency"])
+        if pl.get("turns"):
+            g["turns"].append(pl["turns"])
         g["vram"].append(pl.get("vram_total_mib") or 0)
         g["free"].append(pl.get("vram_free_for_a_guest_mib") or 0)
         g["gtt"].append(max(pl.get("gpu1_gtt_mib") or 0, pl.get("gpu2_gtt_mib") or 0))
@@ -323,6 +325,42 @@ def main():
                 med([x["wall_aggregate_tps"] for x in c if x.get("wall_aggregate_tps")]),
                 ", ".join(f) or "ok"))
 
+    # --- turns --------------------------------------------------------------------------
+    if any(by[k]["turns"] for k in keys):
+        sizes = sorted({int(z) for k in keys for t in by[k]["turns"] for z in (t.get("summary") or {})})
+        print("\n## Turns\n")
+        print("Prefill of new text appended to a cached context (turn-probe.py), the cost one "
+              "agent turn pays. Per size, the median prompt time in seconds across passes; the "
+              "fit is prompt_s = fixed + per_token × new tokens over every row of a pass. A "
+              "pass with a failed or uncached request is flagged and left out.\n")
+        hdr = ["cell", "context tokens"] + ["%d new" % z for z in sizes] + ["fixed, s", "per token, ms", "flags"]
+        print("| " + " | ".join(hdr) + " |")
+        print("|" + "|".join(["---"] + ["---:"] * (len(hdr) - 2) + ["---"]) + "|")
+        for key in keys:
+            ts_ = by[key]["turns"]
+            if not ts_:
+                continue
+            # A failed pass still summarizes its good rows; those are a subset, not the cell.
+            good = [t for t in ts_ if t.get("summary") and not t.get("error")
+                    and not t.get("failed_requests")]
+            flags = []
+            failed = sum(t.get("failed_requests") or 0 for t in ts_)
+            if failed:
+                flags.append("🔴 %d failed or uncached request(s)" % failed)
+            if len(good) < len(ts_):
+                flags.append("🔴 %d pass(es) left out" % (len(ts_) - len(good)))
+            vals = []
+            for z in sizes:
+                xs = [t["summary"][str(z)]["prompt_s_median"] for t in good if str(z) in t["summary"]]
+                vals.append("%.2f" % med(xs) if xs else "—")
+            fixed = [t["fit"]["fixed_s"] for t in good if t.get("fit")]
+            slope = [t["fit"]["per_token_ms"] for t in good if t.get("fit")]
+            ctx = [t["context_tokens"] for t in good if t.get("context_tokens")]
+            print("| %s | %s | %s | %s | %s | %s |" % (
+                label(key), med(ctx) if ctx else "—", " | ".join(vals),
+                "%.2f" % med(fixed) if fixed else "—", "%.2f" % med(slope) if slope else "—",
+                ", ".join(flags) or "ok"))
+
     # --- draft acceptance ------------------------------------------------------------
     if any(by[k]["accept"] for k in keys):
         conc_any = any(x.get("accept_pct") is not None for k in keys for x in by[k]["conc"])
@@ -346,7 +384,8 @@ def main():
     if any(by[k]["util"] for k in keys):
         print("\n## Utilization\n")
         print("Medians of 1 s samples across passes, per phase: prefill is the deep requests' "
-              "prompt time, decode their generation, streams the concurrency probe. "
+              "prompt time, decode their generation, streams the concurrency probe, turns the "
+              "turn probe. "
               "`gpu_busy_percent` counts any queued work, so it reads high at a fraction of the "
               "250 W power cap; power and sclk show how hard a card works. Two-card cells list "
               "each card. CPU is cores in use by the container.\n")
@@ -354,7 +393,7 @@ def main():
         print("|---|---|---:|---:|---:|---:|---:|---:|")
         for key in keys:
             us = by[key]["util"]
-            for phase in ("prefill", "decode", "streams"):
+            for phase in ("prefill", "decode", "streams", "turns"):
                 ps = [u[phase] for u in us if u.get(phase)]
                 if not ps:
                     continue

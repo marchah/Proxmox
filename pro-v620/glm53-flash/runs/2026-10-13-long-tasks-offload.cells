@@ -1,0 +1,17 @@
+# Stage 1 of runs/2026-10-13-long-tasks.md (op-offload threshold), CT 123 holding 0000:83:00.0
+# only, three passes: DEPTHS=0,8000 with CONTEXT_FILE (exact tokens of the pinned corpus),
+# PROBE_CHAT=true, every prompt class, TURNS with TURN_DEPTH=30000 and the default sizes
+# (32 to 2048 new tokens), a residency sampler and the VRAM release trace on the card.
+#
+# Stage 0 adopted b11583, so every cell sets LLAMACPP_DIR to it. The configuration is the
+# batch's otherwise: -ncmoe 46, dio, batch and micro-batch 4096, 32 threads, f16 KV, MTP at
+# n-max 2, one 64k slot.
+#
+# thr32 is the control: no GGML_OP_OFFLOAD_MIN_BATCH, so Vulkan's default of 32 applies (the
+# sweep deletes the variable for a cell that does not set it). The others raise the batch
+# size from which the RAM-resident experts are computed on the card instead of the CPU.
+thr32    MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583' TURNS=true
+thr128   MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=128' TURNS=true
+thr256   MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=256' TURNS=true
+thr512   MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512' TURNS=true
+thr1024  MODE=1gpu NCMOE=46 KV=f16 CTX=65536 UBATCH=4096 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=1024' TURNS=true

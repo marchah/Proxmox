@@ -39,10 +39,12 @@ EOF
   cp "$T/lxc/123.conf" "$T/123.conf.orig"
   echo stopped >"$T/status.120"; echo running >"$T/status.123"
   echo "GPU_SERVICE_MAP=${GPU1}=120:llamacpp,${GPU2}=123:llamacpp-qwen38fn" >"$T/wd.env"
+  echo 0-63 >"$T/cpu-online"   # the 7532: 32 cores, two threads each
   : >"$T/units"
   set_unit 120 llamacpp enabled inactive
   set_unit 123 llamacpp-qwen38fn enabled active
   set_unit 123 llamacpp-glm53f disabled inactive
+  set_unit 123 llamacpp-mimo disabled inactive
   # by-path links resolve to the real node names, as udev's do
   : >"$T/dri/renderD128"; : >"$T/dri/card1"; : >"$T/dri/renderD129"; : >"$T/dri/card2"
   ln -s renderD128 "$T/dri/pci-${GPU2}-render"; ln -s card1 "$T/dri/pci-${GPU2}-card"
@@ -122,7 +124,7 @@ PCT
 set_unit() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >>"$T/units"; }
 run() {  # <action>
   PATH="$T/bin:$PATH" CONF="$T/lxc/123.conf" STATE_DIR="$T/state" WATCHDOG_ENV="$T/wd.env" \
-    DRI_BY_PATH="$T/dri" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
+    DRI_BY_PATH="$T/dri" CPU_ONLINE="$T/cpu-online" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
 }
 tail_log() { echo "--- tail of out.log ---"; tail -12 "$T/out.log" | sed 's/^/      /'; }
 onboot()   { awk -F': ' '$1 == "onboot" {print $2}' "$T/lxc/$1.conf"; }
@@ -199,6 +201,49 @@ gpu1_on_123 && bad "GPU 1 attached although CT 120 was not released" || ok "GPU 
 double_binding_possible && bad "partial state allows two containers on GPU 1" || ok "no double binding"
 run restore || { bad "restore from the partial state failed"; tail_log; }
 [ "$(onboot 120)" = 1 ] && ok "restore recovers CT 120's autostart" || bad "CT 120 onboot is $(onboot 120)"
+rm -rf "$T"
+
+echo "=== 5. TEST_CPUSET fixes CT 123's CPUs; a run without it and restore drop them ==="
+cpusets() { grep -c '^lxc.cgroup2.cpuset.cpus:' "$T/lxc/123.conf" || true; }
+# 32 CPUs; 48 by count but 24 distinct; 48 the host does not have; 48 and a range written
+# backwards.
+for set in 0-31 0-23,0-23 64-111 0-47,10-5; do
+  new_host
+  TEST_CPUSET="$set" run one-card && bad "took cpuset ${set} for 48 cores" || ok "refused cpuset ${set}"
+  [ "$(cpusets)" = 0 ] && [ "$(unit 123 llamacpp-qwen38fn)" = "enabled active" ] \
+    && ok "nothing changed on the refusal" || bad "changed CT 123 on refusing ${set}"
+  rm -rf "$T"
+done
+new_host
+TEST_CPUSET=0-47 run one-card || { bad "one-card with TEST_CPUSET exited non-zero"; tail_log; }
+TEST_CPUSET=0-47 run one-card || { bad "a second one-card with TEST_CPUSET exited non-zero"; tail_log; }
+[ "$(cpusets)" = 1 ] && grep -q '^lxc.cgroup2.cpuset.cpus: 0-47$' "$T/lxc/123.conf" \
+  && ok "cpuset 0-47, written once" || bad "$(cpusets) cpuset lines"
+run one-card || { bad "one-card without TEST_CPUSET exited non-zero"; tail_log; }
+[ "$(cpusets)" = 0 ] && ok "a run without TEST_CPUSET drops it" || bad "cpuset kept"
+TEST_CPUSET=0-47 run one-card || { bad "one-card with TEST_CPUSET exited non-zero"; tail_log; }
+run restore || { bad "restore exited non-zero"; tail_log; }
+diff -q "$T/123.conf.orig" "$T/lxc/123.conf" >/dev/null && ok "restore: CT 123 config exactly as found" \
+  || { bad "CT 123 config differs:"; diff "$T/123.conf.orig" "$T/lxc/123.conf" | sed 's/^/      /'; }
+rm -rf "$T"
+
+echo "=== 6. GLM one-card, then TEST_MODEL=mimo two-card, then restore ==="
+new_host
+TEST_MODEL=nope run status && bad "accepted an unknown TEST_MODEL" || ok "refused an unknown TEST_MODEL"
+run one-card || { bad "one-card exited non-zero"; tail_log; }
+sed -i.bak "s/^123 llamacpp-glm53f .*/123 llamacpp-glm53f disabled active/" "$T/units"
+TEST_MODEL=mimo run two-card || { bad "mimo two-card exited non-zero"; tail_log; }
+[ "$(unit 123 llamacpp-glm53f)" = "disabled inactive" ] && ok "GLM unit stopped" || bad "GLM unit is $(unit 123 llamacpp-glm53f)"
+[ "$(limit 123 memory)/$(limit 123 cores)" = "499712/48" ] && ok "CT 123 at 488 GiB, 48 cores" || bad "limits $(limit 123 memory)/$(limit 123 cores)"
+[ "$(map)" = "${GPU1}=123:llamacpp-mimo,${GPU2}=123:llamacpp-mimo" ] && ok "watchdog: both cards -> MiMo unit" || bad "map is $(map)"
+double_binding_possible && bad "TWO CONTAINERS COULD HOLD GPU 1" || ok "exclusivity holds"
+sed -i.bak "s/^123 llamacpp-mimo .*/123 llamacpp-mimo disabled active/" "$T/units"
+run restore || { bad "restore exited non-zero"; tail_log; }
+[ "$(unit 123 llamacpp-mimo)" = "disabled inactive" ] && ok "MiMo unit stopped by a restore without TEST_MODEL" || bad "MiMo unit is $(unit 123 llamacpp-mimo)"
+[ "$(limit 123 memory)/$(limit 123 cores)" = "122880/24" ] && ok "limits from before the first test" || bad "limits $(limit 123 memory)/$(limit 123 cores)"
+diff -q "$T/123.conf.orig" "$T/lxc/123.conf" >/dev/null && ok "CT 123 config exactly as found" \
+  || { bad "CT 123 config differs:"; diff "$T/123.conf.orig" "$T/lxc/123.conf" | sed 's/^/      /'; }
+[ "$(map)" = "${GPU1}=120:llamacpp,${GPU2}=123:llamacpp-qwen38fn" ] && ok "watchdog map as found" || bad "map is $(map)"
 rm -rf "$T"
 
 echo

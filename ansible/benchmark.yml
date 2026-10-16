@@ -120,7 +120,8 @@
     host_suite_dir: /tmp/proxmox-bench
     results_dest: "{{ playbook_dir }}/../pro-v620/results/{{ runtime_label }}/parallel-{{ parallel }}"
     # suite=full (the default) runs the regression items, then the agent-session and
-    # document-ingestion workloads; suite=short runs the regression items only.
+    # document-ingestion workloads; suite=short runs the regression items only, and
+    # suite=workloads the workloads only.
     # run_agent_sessions=false or run_doc_ingest=false drops one workload from a full run.
     suite: full
     run_agent_sessions: true
@@ -142,20 +143,20 @@
         BENCHMARK_AGENT_DEPTH={{ agent_depth }}
         llm-bench-profile workloads
       parallel: "{{ restore_parallel }}"
-    run_workloads: "{{ suite == 'full' and (run_agent_sessions | bool or run_doc_ingest | bool) }}"
+    run_workloads: "{{ suite in ['full', 'workloads'] and (run_agent_sessions | bool or run_doc_ingest | bool) }}"
     # A list item is a command string, or {cmd, parallel} to reload the model with its
     # own slot count first.
-    benchmarks: "{{ regression_benchmarks + ([workload_benchmark] if run_workloads | bool else []) }}"
+    benchmarks: "{{ (regression_benchmarks if suite != 'workloads' else []) + ([workload_benchmark] if run_workloads | bool else []) }}"
 
   tasks:
     - name: Check the GPU and suite selection
       ansible.builtin.assert:
         that:
           - (gpu | string) in gpus
-          - suite in ['short', 'full']
+          - suite in ['short', 'full', 'workloads']
           - not model or (model in models and models[model].gpu == (gpu | string))
         fail_msg: >-
-          gpu must be one of {{ gpus | list | join(', ') }}, suite 'short' or 'full', and model
+          gpu must be one of {{ gpus | list | join(', ') }}, suite 'short', 'full' or 'workloads', and model
           empty or one of {{ models | list | join(', ') }} on its own GPU
           (got gpu={{ gpu }}, suite={{ suite }}, model={{ model }})
 

@@ -276,6 +276,17 @@ request the cache served in part counts as an error (`warm_cache`). Each row of
 `ingest-requests.jsonl` keeps the note's full text (`output`) and any reasoning text the
 server returned separately (`reasoning`).
 
+Each row also has a `quality` check, summed per depth in `by_depth`:
+- **Format:** the summary's sentences, key facts and open questions against 5, 8 and 3
+  (`format_ok`). Sentence splitting is approximate.
+- **Length:** word counts, overall and the longest sentence and bullet.
+- **Source values:** how many key facts hold a backticked name or a word with a digit that
+  appears verbatim in the documents (`facts_with_source_value`). A fact without one is
+  listed for reading by hand; it is not judged wrong.
+
+`--prompt concise` asks for the same sections with limits: under 400 words overall, under 30
+words per summary sentence and under 25 per bullet.
+
 ### Running them
 
 ```bash
@@ -322,6 +333,7 @@ helper: `llamacpp-qwen38fn-reload` installs from `pro-v620/qwen38-flash-next/` w
 | `make bench GPU=2` | The same on GPU 2 |
 | `make bench GPU=2 MODEL=glm53f` | The same on GPU 2 with GLM-5.3-Flash in Flash-Next's place |
 | `make bench SUITE=short` | Regression items only |
+| `make bench SUITE=workloads` | Agent sessions and document ingestion only |
 | `make bench INGEST=false` | Regression items and agent sessions |
 | `make bench AGENT=false` | Regression items and document ingestion |
 

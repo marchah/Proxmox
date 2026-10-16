@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""Measure the prefill an agent turn pays: new text appended to a cached deep context.
+
+Run from the Proxmox host against a llama-server, alone or from placement-sweep.sh (cell
+key TURNS):
+
+    ./turn-probe.py http://<ct>:1234 --chat --context-file corpus.txt --depth 30000 \\
+        --sizes 32,64,128,256,512,1024,2048 --reps 3
+
+Every request sends the same context (the first --depth tokens of --context-file), then a
+chunk of SIZE tokens the server has not seen. Context and chunks are cut with the server's
+own tokenizer (/tokenize, /detokenize). The prompt cache serves the context, so prompt_n is
+the new tokens and prompt_ms their prefill: the cost one agent turn pays, which on a model
+with experts in host RAM is not proportional to its size. A first request prefills the
+context alone, cold (cache_prompt off, so nothing an earlier probe left in the slot is
+reused), and leaves it in the slot. Sizes then run interleaved, rotating their order each
+rep, and each chunk is a different slice of the text so that no chunk is ever served from
+the cache.
+
+With --chat, the context is one user message, then a fixed assistant reply, and each chunk
+is a new user message, as in an agent session. A model with recurrent or sliding-window
+layers (GLM-5.3-Flash's linear-attention layers) can resume only from a context checkpoint,
+and llama-server places those at user-message starts and just before a prompt's end. A
+chunk in its own user message is resumed exactly where it starts; appended inside the
+context's message, it would resume about one micro-batch earlier and time that again. The
+raw /completion mode appends the chunk to the context, so it measures turns only on a
+model without such layers.
+
+The JSON on stdout has every row, the median per size and a straight-line fit
+prompt_s = fixed + per_token * prompt_n over all rows. One row per request also goes to
+stderr. The exit status is 1 when a request, the prime included, fails, returns empty or
+think-tagged content or no token counts and timing, or the cache did not serve the context.
+"""
+import argparse
+import json
+import math
+import pathlib
+import statistics
+import sys
+import time
+import urllib.request
+
+INSTRUCTION = "Reply with exactly: OK"
+# A turn's cache may miss the prime's closing tokens (raw mode) or the template's; anything
+# more is a resume from an earlier checkpoint, which re-prefills context (~one micro-batch).
+CACHE_SLACK = 64
+
+
+def post(url, body, timeout=3600):
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def payload(context, chunk, chat):
+    """The chat messages, or the raw prompt, for the context and an optional new chunk."""
+    documents = "<documents>\n%s\n</documents>\n\n%s" % (context, INSTRUCTION)
+    if not chat:
+        return "<documents>\n%s%s\n</documents>\n\n%s" % (context, chunk or "", INSTRUCTION)
+    messages = [{"role": "user", "content": documents}]
+    if chunk is not None:
+        messages += [{"role": "assistant", "content": "OK"},
+                     {"role": "user", "content": "%s\n\n%s" % (chunk, INSTRUCTION)}]
+    return messages
+
+
+def request(base, context, chunk, n_predict, chat, cache=True):
+    if chat:
+        body = {"messages": payload(context, chunk, True), "max_tokens": n_predict,
+                "temperature": 0, "top_k": 1, "cache_prompt": cache, "stream": False}
+        path = "/v1/chat/completions"
+    else:
+        body = {"prompt": payload(context, chunk, False), "n_predict": n_predict, "temperature": 0,
+                "top_k": 1, "cache_prompt": cache, "stream": False}
+        path = "/completion"
+    t0 = time.time()
+    r = post(base + path, body)
+    tm = r.get("timings", {})
+    content = (r["choices"][0].get("message") or {}).get("content") if chat else r.get("content")
+    content = content or ""
+    return {
+        "t0": round(t0, 3),
+        "wall_s": round(time.time() - t0, 2),
+        "prompt_n": tm.get("prompt_n"),
+        "cache_n": tm.get("cache_n"),
+        "prompt_ms": tm.get("prompt_ms"),
+        "prefill_tps": tm.get("prompt_per_second"),
+        "predicted_ms": tm.get("predicted_ms"),
+        "content": content[:40],
+        # On the whole reply: a think tag can follow a reasoning block past the stored prefix.
+        "think_tag": "<think>" in content or "</think>" in content,
+    }
+
+
+def problem(m):
+    """Why a reply cannot be timed as a turn, or None: it needs clean content and the server's counts."""
+    if not m.get("content", "").strip():
+        return "empty completion"
+    if m.get("think_tag"):
+        return "think tag in content"
+    if not (isinstance(m.get("prompt_n"), int) and m["prompt_n"] > 0):
+        return "missing prompt token count"
+    if not isinstance(m.get("cache_n"), int):
+        return "missing cache token count"
+    if not (isinstance(m.get("prompt_ms"), (int, float)) and math.isfinite(m["prompt_ms"])):
+        return "missing prompt timing"
+    return None
+
+
+def fit(points):
+    """Least-squares (fixed, per_token) for prompt_s against prompt_n; None below 2 sizes."""
+    if len({n for n, _ in points}) < 2:
+        return None
+    mx = statistics.mean(n for n, _ in points)
+    my = statistics.mean(s for _, s in points)
+    sxx = sum((n - mx) ** 2 for n, _ in points)
+    slope = sum((n - mx) * (s - my) for n, s in points) / sxx
+    return {"fixed_s": round(my - slope * mx, 3), "per_token_ms": round(slope * 1000, 3)}
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("base")
+    ap.add_argument("--context-file", required=True)
+    ap.add_argument("--depth", type=int, default=30000,
+                    help="approximate tokens of cached context before each chunk")
+    ap.add_argument("--sizes", default="32,64,128,256,512,1024,2048",
+                    help="comma-separated approximate chunk sizes, in tokens")
+    ap.add_argument("--reps", type=int, default=3)
+    ap.add_argument("--n-predict", type=int, default=8)
+    ap.add_argument("--chat", action="store_true",
+                    help="send the prompts through /v1/chat/completions")
+    a = ap.parse_args()
+    sizes = [int(s) for s in a.sizes.split(",") if s.strip()]
+    if a.reps < 1 or a.depth < 1 or not sizes or min(sizes) < 1:
+        ap.error("--depth, --sizes and --reps must be positive")
+
+    text = pathlib.Path(a.context_file).read_text(errors="replace")
+    result = {"base": a.base, "depth_target": a.depth, "sizes": sizes, "reps": a.reps,
+              "chat": a.chat, "context_file": a.context_file}
+    # ~6 chars per token is more than any tokenizer here packs, so the slice holds enough.
+    tokens = post(a.base + "/tokenize",
+                  {"content": text[:(a.depth + sum(sizes) * a.reps) * 6]})["tokens"]
+    if len(tokens) < a.depth + max(sizes):
+        sys.exit("%s holds %d tokens; --depth and the largest size need %d"
+                 % (a.context_file, len(tokens), a.depth + max(sizes)))
+    context = post(a.base + "/detokenize", {"tokens": tokens[:a.depth]})["content"]
+    rest = tokens[a.depth:]
+    try:
+        # cache_prompt off: llama-server keeps a slot's tokens after every request, so a
+        # cached prime would reuse whatever prefix the previous probe left and time less
+        # than the full context. Off, it prefills all of it, and the turns reuse it.
+        prime = request(a.base, context, None, a.n_predict, a.chat, cache=False)
+    except Exception as e:
+        result.update(error="priming request failed: %r" % (e,), probe_ok=False)
+        print(json.dumps(result, indent=1))
+        return 1
+    result["prime"] = prime
+    # Without the prime's counts there is no context size to hold the turns' cache to.
+    if problem(prime):
+        result.update(error="priming request: %s" % problem(prime), probe_ok=False)
+        print(json.dumps(result, indent=1))
+        return 1
+    context_n = prime["prompt_n"] + prime["cache_n"]
+
+    rows, offset = [], 0
+    for rep in range(a.reps):
+        shift = rep % len(sizes)
+        for size in sizes[shift:] + sizes[:shift]:
+            if offset + size > len(rest):
+                offset = 0
+            chunk = post(a.base + "/detokenize", {"tokens": rest[offset:offset + size]})["content"]
+            offset += size
+            try:
+                m = request(a.base, context, chunk, a.n_predict, a.chat)
+            except Exception as e:
+                m = {"error": repr(e)[:200]}
+            m.update(size_target=size, rep=rep)
+            if "error" not in m and problem(m):
+                m["error"] = problem(m)
+            # The turn's cost is only measured if the cache served the context; otherwise
+            # this row timed a deep prefill.
+            if "error" not in m and m["cache_n"] < context_n - CACHE_SLACK:
+                m["error"] = "cache served %s of the %d context tokens" % (m["cache_n"], context_n)
+            rows.append(m)
+            print(json.dumps(m), file=sys.stderr)
+    result["context_tokens"] = context_n
+    result["rows"] = rows
+
+    ok = [r for r in rows if "error" not in r]
+    by = {}
+    for r in ok:
+        by.setdefault(r["size_target"], []).append(r)
+    result["summary"] = {
+        str(size): {"prompt_n_median": statistics.median(r["prompt_n"] for r in rs),
+                    "prompt_s_median": round(statistics.median(r["prompt_ms"] for r in rs) / 1000, 3),
+                    "prefill_tps_median": round(statistics.median(r["prefill_tps"] for r in rs), 1),
+                    "count": len(rs)}
+        for size, rs in sorted(by.items())
+    }
+    result["fit"] = fit([(r["prompt_n"], r["prompt_ms"] / 1000) for r in ok])
+    result["failed_requests"] = len(rows) - len(ok)
+    result["probe_ok"] = bool(ok) and not result["failed_requests"]
+    print(json.dumps(result, indent=1))
+    return 0 if result["probe_ok"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,15 +1,28 @@
 #!/usr/bin/env bash
-# Put CT 123 into the GLM-5.3-Flash test configurations and back. Runs on the Proxmox HOST
-# as root, from this directory, after ./install.sh.
+# Put CT 123 into a model test's configurations and back: GLM-5.3-Flash by default, or
+# MiMo-V2.6-Pro-RL with TEST_MODEL=mimo. Runs on the Proxmox HOST as root, from this
+# directory, after the model's install.sh.
 #
 #   ./ct123-test-host.sh one-card   # the GLM unit owns GPU 2; Flash-Next disabled; 240 GiB, 48 cores
 #   ./ct123-test-host.sh two-card   # also GPU 1, while CT 120 stays stopped with autostart off
 #   ./ct123-test-host.sh restore    # Flash-Next on GPU 2 alone; CT 120's autostart restored
 #   ./ct123-test-host.sh status
 #
+#   TEST_CPUSET=0-47 ./ct123-test-host.sh one-card   # also fix CT 123's CPUs; a run without
+#                                                    # it, and restore, drop the fixed set
+#   TEST_MODEL=mimo ./ct123-test-host.sh two-card    # the MiMo unit on both cards; 488 GiB
+#
+# restore retires every test unit, whichever TEST_MODEL set the container up. State is kept
+# in one directory for every model, so a switch from one test to another restores the
+# limits from before the first.
+#
 # Every transition keeps two invariants: no two containers own a card, including after a
 # host reboot, and the thermal watchdog maps each card to the unit that runs on it.
 # CT 120 itself is never started: that waits for the owner after a test.
+#
+# Without TEST_CPUSET, Proxmox gives the container a random set of `cores` CPUs at every
+# start. On the 7532 (32 cores, CPU n and n+32 share one), 48 of the 64 can leave physical
+# cores out: one start covered 30. TEST_CPUSET must name TEST_CORES distinct online CPUs.
 set -Eeuo pipefail
 
 readonly VMID=123
@@ -17,20 +30,37 @@ readonly CONF="${CONF:-/etc/pve/lxc/${VMID}.conf}"
 readonly STATE_DIR="${STATE_DIR:-/root/glm53-flash}"
 readonly DRI_BY_PATH="${DRI_BY_PATH:-/dev/dri/by-path}"
 readonly WATCHDOG_ENV="${WATCHDOG_ENV:-/etc/gpu-thermal-watchdog.env}"
+readonly CPU_ONLINE="${CPU_ONLINE:-/sys/devices/system/cpu/online}"
 
 readonly GPU1_PCI='0000:03:00.0'
 readonly GPU2_PCI='0000:83:00.0'
-readonly TEST_UNIT=llamacpp-glm53f
 readonly PROD_UNIT=llamacpp-qwen38fn
 readonly CT120_UNIT=llamacpp
+# Every model unit a test installs in CT 123; restore retires all of them.
+readonly TEST_UNITS='llamacpp-glm53f llamacpp-mimo'
 
-# The test's limits: the model under auto page cache or dio pinning (~200 GB), and room
-# for 32 threads without the threads = cores collapse seen on CT 123 at 24/24.
-readonly TEST_MEMORY_MIB=245760
+# Each test's unit, model files and memory limit. Room for 32 threads without the
+# threads = cores collapse seen on CT 123 at 24/24 sets the cores for both.
+# - glm53f: the model under auto page cache or dio pinning (~200 GB).
+# - mimo: 480.5 GiB of experts at -ncmoe 68 in anonymous memory, 482.9 GiB in all, out of
+#   503.6 GiB on the host; the baseline record measured 2.9 GiB left under the CT's limit.
+#   488 GiB leaves the host 15.5 GiB, with every other guest shut down.
+readonly TEST_MODEL="${TEST_MODEL:-glm53f}"
+case "$TEST_MODEL" in
+  glm53f)
+    readonly TEST_UNIT=llamacpp-glm53f TEST_MEMORY_MIB=245760
+    readonly MODEL_DIR=/models/hf/glm-5.3-flash MODEL_FILES=7 ;;
+  mimo)
+    readonly TEST_UNIT=llamacpp-mimo TEST_MEMORY_MIB=499712
+    readonly MODEL_DIR=/models/hf/mimo-v2.6-pro-rl MODEL_FILES=9 ;;
+  *) echo "ERROR: TEST_MODEL must be glm53f or mimo" >&2; exit 1 ;;
+esac
 readonly TEST_CORES=48
+readonly TEST_CPUSET="${TEST_CPUSET:-}"
 
 readonly LIMITS_FILE="${STATE_DIR}/123.limits.before-test"
 readonly CT120_ONBOOT_FILE="${STATE_DIR}/120.onboot.before-test"
+readonly CPUSET_KEY='lxc.cgroup2.cpuset.cpus'
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 log() { printf '==> %s\n' "$*"; }
@@ -87,14 +117,20 @@ restart_ct() {
   log "WARN: CT ${VMID} not fully up after 60 s"
 }
 
-require_glm_installed() {
+require_model_installed() {
   pct exec "$VMID" -- test -f "/etc/systemd/system/${TEST_UNIT}.service" \
     || die "${TEST_UNIT} not installed in CT ${VMID}; run VMID=${VMID} ./install.sh first"
   # shellcheck disable=SC2016  # expands inside the container
   pct exec "$VMID" -- bash -c '
-    n=$(ls /models/hf/glm-5.3-flash/*.verified 2>/dev/null | wc -l)
-    [ "$n" -ge 7 ] || { echo "only ${n}/7 model files verified; run install.sh --download"; exit 1; }' \
+    n=$(ls "$1"/*.verified 2>/dev/null | wc -l)
+    [ "$n" -ge "$2" ] || { echo "only ${n}/$2 model files verified; run install.sh --download"; exit 1; }' \
+    _ "$MODEL_DIR" "$MODEL_FILES" \
     || die "model files not verified"
+}
+
+retire_test_units() {
+  local u
+  for u in $TEST_UNITS; do retire_unit "$VMID" "$u"; done
 }
 
 # GPU 1 is mounted at its REAL host node names: a different name inside the container
@@ -125,6 +161,56 @@ detach_gpu1() {
   log "GPU 1 detached from CT ${VMID}"
 }
 
+# The CPUs a cpuset list such as 0-3,8,40-47 names, one per line; fails on a reversed range.
+cpuset_cpus() {
+  local part lo hi c
+  for part in ${1//,/ }; do
+    lo="${part%-*}"; hi="${part#*-}"
+    (( lo <= hi )) || return 1
+    for (( c = lo; c <= hi; c++ )); do echo "$c"; done
+  done
+}
+
+# Physical cores a cpuset list covers, from the host's CPU-to-core map.
+cpuset_cores() {
+  local want
+  want=" $(cpuset_cpus "$1" | tr '\n' ' ')"
+  lscpu -p=CPU,CORE | awk -F, -v want="$want" '!/^#/ && index(want, " " $1 " ") { seen[$2] = 1 }
+    END { print length(seen) }'
+}
+
+# TEST_CPUSET must name TEST_CORES CPUs, each once and each online on this host.
+check_cpuset() {
+  local cpus online twice missing
+  [[ "$TEST_CPUSET" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]] \
+    || die "TEST_CPUSET '${TEST_CPUSET}' is not a CPU list such as 0-47"
+  cpus="$(cpuset_cpus "$TEST_CPUSET")" || die "TEST_CPUSET '${TEST_CPUSET}' has a range that runs backwards"
+  twice="$(sort -n <<<"$cpus" | uniq -d | tr '\n' ' ')"
+  [ -z "$twice" ] || die "TEST_CPUSET '${TEST_CPUSET}' names CPUs more than once: ${twice% }"
+  online="$(cpuset_cpus "$(cat "$CPU_ONLINE")")" || die "cannot read the host's online CPUs from ${CPU_ONLINE}"
+  missing="$(comm -23 <(sort -u <<<"$cpus") <(sort -u <<<"$online") | sort -n | tr '\n' ' ')"
+  [ -z "$missing" ] || die "TEST_CPUSET '${TEST_CPUSET}' names CPUs the host does not have online: ${missing% }"
+  [ "$(wc -l <<<"$cpus")" -eq "$TEST_CORES" ] \
+    || die "TEST_CPUSET names $(wc -l <<<"$cpus" | tr -d ' ') CPUs; CT ${VMID} gets ${TEST_CORES}"
+}
+
+# An explicit cpuset stops Proxmox picking CPUs at start; drop_cpuset gives that back.
+set_cpuset() {
+  cp -a "$CONF" "${STATE_DIR}/123.conf.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+  grep -v "^${CPUSET_KEY}:" "$CONF" >"${STATE_DIR}/123.conf.new"
+  printf '%s: %s\n' "$CPUSET_KEY" "$TEST_CPUSET" >>"${STATE_DIR}/123.conf.new"
+  cat "${STATE_DIR}/123.conf.new" >"$CONF"
+  log "CT ${VMID} cpuset -> ${TEST_CPUSET}"
+}
+
+drop_cpuset() {
+  grep -q "^${CPUSET_KEY}:" "$CONF" || return 0
+  cp -a "$CONF" "${STATE_DIR}/123.conf.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+  grep -v "^${CPUSET_KEY}:" "$CONF" >"${STATE_DIR}/123.conf.new"
+  cat "${STATE_DIR}/123.conf.new" >"$CONF"
+  log "CT ${VMID} cpuset removed; Proxmox picks the CPUs again"
+}
+
 # CT 120 must not autostart onto GPU 1 while CT 123 holds it.
 ct120_release_gpu1() {
   local v
@@ -147,15 +233,16 @@ ct120_restore() {
 devices_offered() {
   # shellcheck disable=SC2016  # expands inside the container
   pct exec "$VMID" -- bash -c '
-    D=$(. /etc/llamacpp-glm53f.env && printf "%s" "$LLAMACPP_DIR")
-    LD_LIBRARY_PATH=$D $D/llama-server --list-devices 2>/dev/null | grep -c V620' 2>/dev/null || true
+    D=$(. "/etc/$1.env" && printf "%s" "$LLAMACPP_DIR")
+    LD_LIBRARY_PATH=$D $D/llama-server --list-devices 2>/dev/null | grep -c V620' _ "$TEST_UNIT" 2>/dev/null || true
 }
 
 # Every check before the first change, so a refusal leaves the host as it was.
 preflight() {  # [two-card]
   local st
   [ "$(ct_state "$VMID")" = "running" ] || die "CT ${VMID} is not running"
-  require_glm_installed
+  require_model_installed
+  [ -z "$TEST_CPUSET" ] || check_cpuset
   if [ "${1:-}" = two-card ]; then
     st="$(ct_state 120)"
     [ "$st" = "stopped" ] || die "CT 120 is '${st}'; shut it down first (stop Hermes, CT 121, before it)"
@@ -167,8 +254,9 @@ prepare_ct123() {
   save_limits
   log "retiring ${PROD_UNIT} in CT ${VMID} for the test"
   retire_unit "$VMID" "$PROD_UNIT"
-  retire_unit "$VMID" "$TEST_UNIT"
+  retire_test_units
   pct set "$VMID" --memory "$TEST_MEMORY_MIB" --cores "$TEST_CORES"
+  if [ -n "$TEST_CPUSET" ]; then set_cpuset; else drop_cpuset; fi
 }
 
 status() {
@@ -178,6 +266,10 @@ status() {
   pct config "$VMID" | grep -E '^(cores|memory|swap|onboot)' | sed 's/^/  /'
   [ -f "$LIMITS_FILE" ] && echo "  (before the test: $(tr '\n' ' ' <"$LIMITS_FILE"))"
   if [ "$(ct_state "$VMID")" = "running" ]; then
+    local cpus
+    cpus="$(cat "/sys/fs/cgroup/lxc/${VMID}/cpuset.cpus.effective" 2>/dev/null || true)"
+    echo "--- CT ${VMID} CPUs: ${cpus:-unknown} ($(grep -q "^${CPUSET_KEY}:" "$CONF" && echo fixed || echo "picked by Proxmox"))"
+    [ -n "$cpus" ] && echo "    physical cores covered: $(cpuset_cores "$cpus") of $(lscpu -p=CORE | grep -v '^#' | sort -u | wc -l)"
     echo "--- V620s llama-server sees in CT ${VMID}: $(devices_offered) ---"
     for u in "$TEST_UNIT" "$PROD_UNIT"; do
       printf '  %-20s enabled=%-10s active=%s\n' "$u" \
@@ -232,13 +324,14 @@ main() {
       ;;
     restore)
       require_root; mkdir -p "$STATE_DIR"
-      [ "$(ct_state "$VMID")" = "running" ] && retire_unit "$VMID" "$TEST_UNIT"
+      [ "$(ct_state "$VMID")" = "running" ] && retire_test_units
       gpu1_attached && detach_gpu1
       if [ -f "$LIMITS_FILE" ]; then
         local k v
         while read -r k v; do pct set "$VMID" "--${k}" "$v"; done <"$LIMITS_FILE"
         rm -f "$LIMITS_FILE"
       fi
+      drop_cpuset
       restart_ct
       ct120_restore
       set_watchdog_map "${GPU1_PCI}=120:${CT120_UNIT},${GPU2_PCI}=${VMID}:${PROD_UNIT}"

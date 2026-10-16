@@ -1,0 +1,5 @@
+# MiMo-V2.6-Pro-RL baseline, stage 3: timed, three interleaved passes, when stage 2 picks
+# n-max 4 (run-stage.sh timed with NMAX=4). Plan: 2026-10-15-baseline.md.
+# nospec: stage 1's no-speculation placement (fit pass 2, a-n67-ub2048). mtp: its MTP placement.
+nospec   MODE=2gpu NCMOE=67 TENSOR_SPLIT=66,4 KV=f16 BATCH=4096 UBATCH=2048 THREADS=32 STREAMS=2 LOAD_MODE=none ENV='GGML_OP_OFFLOAD_MIN_BATCH=1024' EXTRA='--cpu-mask 0xffffffff --cpu-strict 1 --no-host --no-repack'
+mtp-n4   MODE=2gpu NCMOE=68 TENSOR_SPLIT=58,12 KV=f16 BATCH=4096 UBATCH=2048 THREADS=32 STREAMS=2 LOAD_MODE=none ENV='GGML_OP_OFFLOAD_MIN_BATCH=1024' EXTRA='--cpu-mask 0xffffffff --cpu-strict 1 --no-host --no-repack --spec-type draft-mtp -md /models/hf/mimo-v2.6-pro-rl/mtp-MiMo-V2.6-Pro-RL-Q8_0.gguf --spec-draft-n-max 4'

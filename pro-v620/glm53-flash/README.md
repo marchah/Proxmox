@@ -52,13 +52,24 @@ pct exec 123 -- journalctl -u glm53f-dl --no-pager -n 20
 VMID=123 ENV_FILE=glm53f-bench.env ./install.sh   # after one-card: the best configuration
 ./ct123-test-host.sh restore         # Flash-Next back on GPU 2; CT 120's autostart restored
 ./ct123-test-host.sh status
+VMID=123 ./install-llamacpp-release.sh   # another pinned release beside b11505, for a build A/B
 ```
 
 - `install.sh` installs the `llamacpp-glm53f` unit without enabling it. The unit conflicts
   with `llamacpp-qwen38fn` and `llamacpp`, so starting it stops either one.
 - `ct123-test-host.sh` keeps CT 120 from autostarting onto GPU 1 while CT 123 holds it,
   and points the thermal watchdog's map at the unit that owns each card. It never starts
-  CT 120.
+  CT 120. `TEST_MODEL=mimo` sets CT 123 up for
+  [MiMo-V2.6-Pro-RL](../mimo-v26-pro/README.md#test-setup) instead. `restore` retires
+  either model's unit.
+- **CPUs:** Proxmox gives a container a random set of `cores` CPUs at every start, and CPU
+  n and n+32 share one of the 7532's 32 cores.
+  - At 48 CPUs that can leave cores out. CT 123's start on 2026-10-13 covered 30 of 32.
+  - `TEST_CPUSET=0-47 ./ct123-test-host.sh one-card` fixes the set to all 32 cores, plus
+    16 second threads. The set must name 48 distinct CPUs the host has online; otherwise
+    the script changes nothing.
+  - A run without `TEST_CPUSET`, and `restore`, give the choice back to Proxmox.
+  - `status` shows the set and the cores it covers.
 - `glm53f.env` starts with every routed expert in host RAM (`-ncmoe 46`), which fits one
   card.
 - `glm53f-bench.env` is the best configuration from the configurations record, at one 64k
@@ -66,9 +77,24 @@ VMID=123 ENV_FILE=glm53f-bench.env ./install.sh   # after one-card: the best con
   n-max 2. With `llamacpp-glm53f` started, `make bench GPU=2 MODEL=glm53f` runs the usage
   batch on it from the Mac; `ct123-test-host.sh restore` puts Flash-Next back. The sweep in [`../qwen38-flash-next/`](../qwen38-flash-next/README.md#benchmark-tools)
   drives it with `UNIT=llamacpp-glm53f N_BLOCKS=46`.
+- `glm53f-long.env` holds the winners of the long-tasks record's stages 1–4 (#106):
+  - b11583 and `GGML_OP_OFFLOAD_MIN_BATCH=512`;
+  - `-ncmoe 45` at micro-batch 2048;
+  - MTP n-max 2 at p-min 0.2;
+  - 32 threads pinned to CPUs 0–31, which needs `TEST_CPUSET=0-47`.
+
+  `glm53f-bench-b11583.env` is `glm53f-bench.env` on b11583, that record's stage 5
+  control.
 - `MODEL_VK_VISIBLE_DEVICES` limits the cards llama-server sees (`GGML_VK_VISIBLE_DEVICES`,
   by vulkaninfo's index). The launcher exports it only when set: an empty value hides
   every card.
+- `install-llamacpp-release.sh` unpacks a pinned Vulkan release to
+  `/opt/llamacpp/llama-<tag>/` after checking its SHA-256. It leaves
+  `/opt/llamacpp/current` and every env file alone, so a sweep cell picks the build with
+  `ENV="LLAMACPP_DIR=..."`.
+- The env file's variables reach llama-server, because the launcher sources it with
+  `set -a`. `GGML_OP_OFFLOAD_MIN_BATCH` (default 32) is the batch size from which Vulkan
+  computes RAM-resident experts on the card; it must never be set empty, which reads as 0.
 
 ## llama.cpp support
 
@@ -78,7 +104,8 @@ VMID=123 ENV_FILE=glm53f-bench.env ./install.sh   # after one-card: the best con
   b11505 ([test record](runs/2026-10-10-configurations.md#stage-1-screen--2026-10-10-21232220-et)).
 - Open issues, checked 2026-10-10:
   - #30204: with `--spec-type draft-mtp` on Vulkan, every request that contains an image
-    fails with HTTP 500.
+    fails with HTTP 500 on b11505. b11583 answers it
+    ([long-tasks record, stage 0](runs/2026-10-13-long-tasks.md#stage-0-build--2026-10-13-12001254-et)).
   - #29950: the prompt-processing compute buffer grows with context × micro-batch.
   - #28433: the MTP draft context is sized from the total context.
   - #30093: `--spec-type draft-dflash` aborts on the first request, because glm5-next does
@@ -93,6 +120,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The fastest configuration on one card, two cards and CPU only](runs/2026-10-10-configurations.md) | done |
 | 2026-10-12 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch on the best configuration](runs/2026-10-12-bench.md) | done |
 | 2026-10-13 | b11505 | Vulkan, Mesa 26.2.4 | [The batch's ingestion notes and brief VRAM rises](runs/2026-10-13-findings.md) | done |
+| 2026-10-13 | b11505, b11583 | Vulkan, Mesa 26.2.4 | [Tuning one 64k slot for long tasks (#106)](runs/2026-10-13-long-tasks.md) | done |
 
 ## Local validation
 

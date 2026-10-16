@@ -81,8 +81,8 @@ fi
 [ -n "${MODEL_LOAD_MODE:-}" ] && args+=( --load-mode "${MODEL_LOAD_MODE}" )
 
 # Vision. --no-mmproj-offload keeps the projector on the CPU: no VRAM, slower image
-# encoding, text unaffected. With --spec-type draft-mtp on Vulkan, image requests fail
-# (llama.cpp #30204).
+# encoding, text unaffected. With --spec-type draft-mtp on Vulkan, image requests fail on
+# b11505 (llama.cpp #30204); b11583 answers them.
 if [ -n "${MODEL_MMPROJ:-}" ] && [ -f "${MODEL_MMPROJ}" ]; then
   args+=( --mmproj "${MODEL_MMPROJ}" )
   [ "${MODEL_MMPROJ_ON_CPU:-false}" = "true" ] && args+=( --no-mmproj-offload )
