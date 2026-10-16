@@ -1,6 +1,6 @@
 # GLM-5.3-Flash: tuning one 64k slot for long tasks
 
-Plan committed 2026-10-13 · Run from 2026-10-13 · Status: running
+Plan committed 2026-10-13 · Run 2026-10-13 to 2026-10-15 · Status: done
 
 Issue #106. The tests, their order and the cuts were agreed with the owner on 2026-10-13. A
 second review the same day trimmed the campaign from about 46 h to about 23–29 h of runs.
@@ -901,6 +901,158 @@ host: `/root/glm53-flash/sweep-106-cpu-20261015T141427Z/`, `residency-106-cpu.js
 - `make bench GPU=2 MODEL=glm53f SUITE=workloads` runs from the Mac, with CT 200 running
   for it.
 
+### Stage 5, long tasks — 2026-10-15 13:30–19:58 ET
+
+Harness `fb7fdf900812`, suite at `fb7fdf9`, CPU set 0–47. Two `make bench` runs back to
+back, each after `install.sh` wrote its env file:
+
+| Run | Env file | Time (ET) | Results |
+| --- | --- | --- | --- |
+| Winner | `glm53f-long.env` | 13:30–16:40 | `parallel-1/20261015T173555Z-workloads/` |
+| Control | `glm53f-bench-b11583.env` | 16:44–19:57 | `parallel-1/20261015T204931Z-workloads/` |
+
+Results are under `pro-v620/results/llamacpp-gpu2-glm53f/` on the Mac. VRAM data is on the
+host: `residency-106-bench-long.jsonl`, `trace-106-bench-long.txt`, and the same with
+`-bench-control`.
+
+**Agent sessions,** three reps of each preset to 56k; medians with their range:
+
+| | Winner | Control | Change |
+| --- | ---: | ---: | ---: |
+| `hermes` session, s | 1,557 [1,538–1,585] | 1,700 [1,681–1,752] | −8.4% |
+| — prefill / decode, s | 588 / 967 | 606 / 1,090 | −3.0% / −11.3% |
+| — decode, t/s | 8.82 | 7.97 | +11.2% |
+| — tokens generated | 8,527 | 8,684 | −1.8% |
+| `coding` session, s | 983 [975–990] | 992 [968–1,030] | −1.0% |
+| — prefill / decode, s | 517 / 465 | 459 / 533 | +12.8% / −12.8% |
+| — decode, t/s | 8.85 | 8.12 | +10.1% |
+| — tokens generated | 4,111 | 4,328 | −5.0% |
+| Six sessions, s | 7,627 | 8,123 | −6.1% |
+
+- **Prefill time per turn:** `hermes` 13.7 against 14.1 s; `coding` 27.2 against 24.1 s.
+  - The micro-batch decides it. Prefill at 32–64k depth runs at 75.4 against 72.4 t/s for
+    `hermes`, whose turns are short, and 95.7 against 106.9 t/s for `coding`, whose turns
+    read files.
+  - The first turn, cold: `hermes` 8.8k tokens at 123.6 against 144.1 t/s; `coding` 4.3k
+    tokens at 128.2 against 131.3 t/s.
+- **Decode** by depth band, 0–16k / 16–32k / 32–64k:
+  - `hermes` 9.84 / 8.97 / 8.36 t/s against 8.92 / 8.11 / 7.48;
+  - `coding` 9.77 / 9.01 / 8.50 t/s against 8.73 / 8.15 / 7.76.
+- **Per-token speed and reply length, separated.** The winner's decode time differs by
+  its rate (the control's tokens at the winner's rate) plus its length (its extra or
+  missing tokens at its own rate). Summed over the three reps:
+
+  | Preset | Rate | Length |
+  | --- | ---: | ---: |
+  | `hermes` | −332 s | −60 s |
+  | `coding` | −146 s | −60 s |
+
+  - The micro-batch and placement change the arithmetic, so the two runs write different
+    replies. The length part is what these runs wrote, not a measured effect of the
+    configuration.
+  - 52 of 186 turns stopped at their token cap on the winner, 61 on the control.
+- **Cache continuity:** no cache miss on either run. The final depth was 58.0k (`hermes`)
+  and 58.2k (`coding`) on the winner, and 58.2k and 58.4k on the control.
+- **Draft acceptance:** 0.783 (`hermes`) and 0.774 (`coding`) on the winner, against
+  0.793 and 0.796 at p-min 0.
+
+**Ingestion,** 12 cold requests, three at each depth; medians:
+
+| Depth | Wall, s | Prefill, t/s | Decode, t/s |
+| --- | ---: | ---: | ---: |
+| 8k | 117.3 / 117.1 | 142.4 / 171.0 | 10.69 / 9.24 |
+| 16k | 182.8 / 168.7 | 137.3 / 166.6 | 10.07 / 9.07 |
+| 32k | 323.1 / 290.2 | 128.0 / 154.3 | 9.52 / 8.21 |
+| 48k | 476.3 / 421.2 | 121.3 / 145.2 | 8.95 / 7.73 |
+
+Winner / control in each cell.
+
+- **Ingestion total:** 3,298 against 2,993 s (+10.2%). Prefill takes 421 s longer and
+  decode 116 s less.
+- **Notes:**
+  - Every request stopped at the 640-token cap on both runs, as in the batch, so no note
+    is complete; none reaches its open questions.
+  - The summaries have 5–6 sentences. Key facts number 4–5 on the winner and 3–7 on the
+    control, every one holding a value found verbatim in the documents.
+  - Each depth's note was identical across its three reps on each run. The two runs' notes
+    differ, and both read coherently.
+- **Agent sessions and ingestion together:** 10,925 against 11,116 s (−1.7%).
+
+**Both runs:**
+- 186 of 186 turns and 12 of 12 ingestion requests succeeded; the SLO report passes.
+- No reply contains a think tag, and none is empty or repetitive.
+- **VRAM:** over the requests, nothing was outside VRAM, no VRAM allocation failed, and no
+  buffer was created in GTT.
+  - The least free including swaps was 2,168 MiB on the winner and 2,258 on the control.
+  - Outside swaps it was 8,181 and 8,544 MiB.
+- **Card and CPU, per phase,** winner / control:
+  - Prefill drew 178 / 181 W at 2,380 / 2,385 MHz, 99% busy, on 0.7 / 0.6 host cores.
+  - Decode drew 54 / 52 W at 500 MHz, 50 / 47% busy, on 27.1 / 27.4 host cores.
+- **Temperatures:** junction peaked at 86 and 87 °C, VRAM at 70 and 72 °C, and the hottest
+  DIMM at 59 and 58 °C.
+- **The build alone:** the control on b11583 repeats the batch on b11505 (2026-10-13).
+  - `hermes` took 1,700 s on both, and ingestion 2,993 against 2,992 s.
+  - `coding` took 992 against 930 s. The control's reps ranged 968–1,030 s and the batch's
+    882–982 s.
+
+**Tool-call check,** on the winner at 20:00 ET, two tools offered, temperature 0:
+- Non-streamed and streamed, the first turn returned the same call:
+  `run_command` with `{"command":"grep -rn \"CT 120\" pro-v620/README.md"}`.
+- Given the tool's result, the second turn answered "CT 120's card uses PCI address
+  **`0000:03:00.0`**", finishing with `stop`, streamed and not.
+- No content held a think tag.
+
+### Stage 6, concise ingestion prompt — 2026-10-15 20:01–21:05 ET
+
+Stages 1–4's configuration (`glm53f-long.env`), CT 200's suite at `fb7fdf9`. Six runs,
+alternating `--prompt standard` and `--prompt concise`, each:
+
+```bash
+python3 benchmark-doc-ingest.py --base-url http://192.168.1.243:1234/v1 --model glm-5.3-flash \
+  --depths 8192 49152 --max-tokens 2048 --reps 1 --prompt <standard|concise>
+```
+
+Results: `pro-v620/results/llamacpp-gpu2-glm53f/long-tasks-2026-10-15/` on the Mac, with the
+environment and the tool-call check. VRAM data on the host: `residency-106-ingest.jsonl` and
+`trace-106-ingest.txt`. Figures are medians of three runs, with their range.
+
+| Depth | Prompt | Time to a complete note, s | Tokens | Words | Summary / facts / questions | Facts with a verbatim value |
+| --- | --- | ---: | ---: | ---: | --- | ---: |
+| 8k | standard | 155.1 [154.9–155.1] | 1,020 | 532 | **6** / 8 / 3 | 8 of 8 |
+| 8k | concise | **117.5 [117.1–117.6]** | 589 | 326 | **7** / 8 / 3 | 8 of 8 |
+| 48k | standard | 529.5 [528.6–530.0] | 1,104 | 544 | 5 / 8 / 3 | 8 of 8 |
+| 48k | concise | **476.4 [476.1–477.5]** | 612 | 322 | 5 / 8 / 3 | 8 of 8 |
+
+- **Every note is complete.** All twelve stopped on their own, with all three sections.
+- **The concise prompt saves 37.6 s at 8k (−24%) and 53.1 s at 48k (−10%).**
+  - Prefill is the same: 57.5 s at 8k and 405.6 s at 48k, at 142.4 and 121.1 t/s.
+  - All of the saving is shorter replies: 42% fewer tokens at 8k, 45% at 48k.
+  - Per token, the concise notes decode slower: 9.80 against 10.46 t/s at 8k, and 8.64
+    against 8.91 at 48k. Their draft acceptance is lower, 75.3% and 81.1% against 83.8% and
+    85.8%.
+  - The concise notes, 589 and 612 tokens, are shorter than the batch's 640-token cap. The
+    standard notes need 1,020–1,104.
+- **The format check** (5 summary sentences, 8 key facts, 3 open questions):
+  - At 48k both notes pass.
+  - At 8k both fail on the summary, with six sentences (standard) and seven (concise).
+    Neither drops a section.
+  - The concise 48k note writes its summary as five bullet points, each one sentence. The
+    check counts them as sentences.
+- **The concise limits held:** under 400 words (326 and 322), sentences under 30 words
+  (longest 26), bullets under 25 (longest 24). The standard notes' longest sentence is 42–46
+  words.
+- **Key facts:** every fact in every note holds a backticked name or a value with a digit
+  found verbatim in the documents. None was left to read by hand.
+- **Output:** each prompt and depth gave identical text in all three runs. Every note reads
+  coherently, and none has a think tag.
+- **Every run:**
+  - All twelve requests succeeded.
+  - Nothing was outside VRAM, no VRAM allocation failed, and no buffer was created in GTT.
+  - The least free including swaps was 2,251 MiB, and outside swaps 8,265 MiB.
+  - Prefill drew 183 W at 2,380 MHz, 99% busy. Decode drew 54 W at 500 MHz, 49% busy.
+  - Junction peaked at 85 °C. The thermal guard did not trip. DIMM temperatures were not
+    sampled.
+
 ## Deviations
 
 - **Stage 0's decode rule named "the six d8000 prompt cells".** d8000 has three. The six are
@@ -943,5 +1095,63 @@ host: `/root/glm53-flash/sweep-106-cpu-20261015T141427Z/`, `residency-106-cpu.js
     0–47. That covers all 32 cores, plus the second threads of cores 0–15.
   - **Stages 4–6 keep that set.** Stage 4's control re-measures stages 1–3's
     configuration on it, and `restore` at the campaign's end drops it.
+- **Stage 5's tool-call check ran after the control's bench**, on the winner reinstalled
+  for stage 6, not during the winner's own run.
+  - Its first version required a call to `read_file`. The model called `run_command`
+    instead, the same way streamed and not, and the check failed on the tool's name.
+  - The check was widened to either offered tool, with JSON arguments holding that tool's
+    required field, and rerun. The results above are from the rerun.
 
 ## Conclusion
+
+Measured on one 64k slot on GPU 2 (`0000:83:00.0`), b11583, Vulkan, Mesa 26.2.4.
+
+0. **Build.** b11583 meets stage 0's rule: the same decode, d8000 prefill and text as
+   b11505. An image request under MTP returns HTTP 500 on b11505 (#30204) and is answered
+   on b11583. At the bench's configuration, the two builds give the same `hermes` session
+   time (1,700 s) and ingestion time (2,993 against 2,992 s).
+1. **The fixed cost of a short turn is op offload.** With `GGML_OP_OFFLOAD_MIN_BATCH=512`,
+   turns under 512 new tokens run on the CPU. On a 30k cached context, a 41-token turn
+   takes 2.36 s against 4.38 s and a 264-token turn 7.41 s against 8.77 s; turns of 512
+   tokens and more are unchanged. The estimated warm-turn prefill falls 5.9%.
+2. **Placement and micro-batch.**
+   - At micro-batch 4096, block 45's experts do not fit on the card at n-max 2. During a
+     compute-buffer swap, 25 VRAM allocations failed and 1,890 MiB stayed outside VRAM.
+   - Micro-batch 2048 frees 2,146 MiB, and with it block 45 fits. At n-max 2, over stages
+     2–6, the least free VRAM was 2,168 MiB including swaps and 8,181 MiB outside them.
+     Nothing was outside VRAM, and no allocation failed.
+   - Block 45 on the card decodes 5.4% faster at d8000. Micro-batch 2048 costs 21% of
+     d8000 prefill and 18% at 48k.
+3. **Draft length and gating.** n-max 2 decodes fastest at 8k and 48k. n-max 1 is 6–7%
+   slower, n-max 3 14–29% slower, and no speculation 34% slower. p-min 0 to 0.5 at n-max 2
+   are within 0.5% of each other. Under the model's own sampling, acceptance falls from
+   about 62% to 54–56% and decode by 8%. n-max 2 at p-min 0 and 0.2 then decode at the
+   same rate.
+4. **CPU.** Proxmox's random 48-CPU set covered 30 of the 7532's 32 cores. On CPUs 0–47,
+   32 threads pinned one per physical core decode 4.8% faster at d0 and 5.7% at d8000, and
+   cut the estimated batch time by 4.2%. 24 threads are 3.2% slower, and `--poll 0` is
+   within spread.
+5. **Long tasks.** Stages 1–4's configuration against the bench's, both on b11583:
+
+   | | Stages 1–4 | Bench configuration | Change |
+   | --- | ---: | ---: | ---: |
+   | `hermes` session | 1,557 s | 1,700 s | −8.4% |
+   | `coding` session | 983 s | 992 s | −1.0% |
+   | Six sessions | 7,627 s | 8,123 s | −6.1% |
+   | Ingestion, 640-token cap | 3,298 s | 2,993 s | +10.2% |
+   | Both | 10,925 s | 11,116 s | −1.7% |
+
+   - Agent-session decode is 9–12% faster in every depth band, and ingestion decode
+     11–16%.
+   - `hermes` prefill, mostly short turns, takes 3% less time. Long prompts prefill
+     slower: `coding` prefill takes 12.8% longer, and ingestion prefills at 121–142
+     against 145–171 t/s. That nearly cancels the `coding` sessions' decode gain and
+     makes ingestion slower.
+   - Of the decode time saved, 478 s over six sessions is per-token speed, and 120 s is
+     the shorter replies these runs happened to write.
+   - Cache continuity, tool calls (streamed and not) and VRAM were clean.
+6. **Ingestion prompt.** With a 2,048-token cap, every note is complete under either
+   prompt. The concise prompt reaches a complete note 24% sooner at 8k and 10% sooner at
+   48k, all from 42–45% fewer tokens; its 589–612 tokens fit within the batch's 640 cap.
+   Both prompts pass the format check at 48k and fail it at 8k, by writing six and seven
+   summary sentences. Every key fact holds a value found verbatim in the documents.
