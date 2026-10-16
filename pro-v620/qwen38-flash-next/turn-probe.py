@@ -28,7 +28,8 @@ model without such layers.
 
 The JSON on stdout has every row, the median per size and a straight-line fit
 prompt_s = fixed + per_token * prompt_n over all rows. One row per request also goes to
-stderr. The exit status is 1 when a request fails or the cache did not serve the context.
+stderr. The exit status is 1 when a request, the prime included, fails, returns empty or
+think-tagged content or no token counts and timing, or the cache did not serve the context.
 """
 import argparse
 import json
@@ -77,6 +78,7 @@ def request(base, context, chunk, n_predict, chat, cache=True):
     r = post(base + path, body)
     tm = r.get("timings", {})
     content = (r["choices"][0].get("message") or {}).get("content") if chat else r.get("content")
+    content = content or ""
     return {
         "t0": round(t0, 3),
         "wall_s": round(time.time() - t0, 2),
@@ -85,8 +87,25 @@ def request(base, context, chunk, n_predict, chat, cache=True):
         "prompt_ms": tm.get("prompt_ms"),
         "prefill_tps": tm.get("prompt_per_second"),
         "predicted_ms": tm.get("predicted_ms"),
-        "content": (content or "")[:40],
+        "content": content[:40],
+        # On the whole reply: a think tag can follow a reasoning block past the stored prefix.
+        "think_tag": "<think>" in content or "</think>" in content,
     }
+
+
+def problem(m):
+    """Why a reply cannot be timed as a turn, or None: it needs clean content and the server's counts."""
+    if not m.get("content", "").strip():
+        return "empty completion"
+    if m.get("think_tag"):
+        return "think tag in content"
+    if not (isinstance(m.get("prompt_n"), int) and m["prompt_n"] > 0):
+        return "missing prompt token count"
+    if not isinstance(m.get("cache_n"), int):
+        return "missing cache token count"
+    if not (isinstance(m.get("prompt_ms"), (int, float)) and math.isfinite(m["prompt_ms"])):
+        return "missing prompt timing"
+    return None
 
 
 def fit(points):
@@ -138,7 +157,12 @@ def main():
         print(json.dumps(result, indent=1))
         return 1
     result["prime"] = prime
-    context_n = (prime.get("prompt_n") or 0) + (prime.get("cache_n") or 0)
+    # Without the prime's counts there is no context size to hold the turns' cache to.
+    if problem(prime):
+        result.update(error="priming request: %s" % problem(prime), probe_ok=False)
+        print(json.dumps(result, indent=1))
+        return 1
+    context_n = prime["prompt_n"] + prime["cache_n"]
 
     rows, offset = [], 0
     for rep in range(a.reps):
@@ -153,13 +177,12 @@ def main():
             except Exception as e:
                 m = {"error": repr(e)[:200]}
             m.update(size_target=size, rep=rep)
+            if "error" not in m and problem(m):
+                m["error"] = problem(m)
             # The turn's cost is only measured if the cache served the context; otherwise
             # this row timed a deep prefill.
-            if "error" not in m and (m.get("cache_n") or 0) < context_n - CACHE_SLACK:
-                m["error"] = "cache served %s of the %d context tokens" % (m.get("cache_n"), context_n)
-            if "error" not in m and not (isinstance(m.get("prompt_ms"), (int, float))
-                                         and math.isfinite(m["prompt_ms"])):
-                m["error"] = "missing prompt timing"
+            if "error" not in m and m["cache_n"] < context_n - CACHE_SLACK:
+                m["error"] = "cache served %s of the %d context tokens" % (m["cache_n"], context_n)
             rows.append(m)
             print(json.dumps(m), file=sys.stderr)
     result["context_tokens"] = context_n

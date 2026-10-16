@@ -161,13 +161,15 @@ class ProbeTests(unittest.TestCase):
             status, data = run_probe("--reps", "2", "--classes", "code")
         self.assertEqual(status, 1)
 
-    def run_turns(self, responder, *args):
+    def run_turns(self, responder, *args, server=char_tokenizer):
+        """Run turn-probe with request() replaced by responder, or, without one, post() by server."""
         with tempfile.NamedTemporaryFile("w", suffix=".txt") as ctx:
             ctx.write("".join("line %05d of the repository text\n" % i for i in range(20000)))
             ctx.flush()
             out = io.StringIO()
-            with patch.object(turns, "request", side_effect=responder), \
-                    patch.object(turns, "post", side_effect=char_tokenizer), \
+            with (patch.object(turns, "request", side_effect=responder) if responder
+                  else contextlib.nullcontext()), \
+                    patch.object(turns, "post", side_effect=server), \
                     patch.object(sys, "argv", ["turns", "http://unused", "--context-file", ctx.name,
                                                "--depth", "2000", "--sizes", "32,256", *args]), \
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
@@ -188,7 +190,7 @@ class ProbeTests(unittest.TestCase):
             caches.append(cache)
             new = 2000 if len(chunks) == 1 else 40
             return {"prompt_n": new, "cache_n": 0 if len(chunks) == 1 else 2000,
-                    "prompt_ms": 7000.0, "prefill_tps": 5.0}
+                    "prompt_ms": 7000.0, "prefill_tps": 5.0, "content": "OK"}
 
         status, data = self.run_turns(responder, "--reps", "2")
         self.assertEqual(status, 0)
@@ -227,7 +229,8 @@ class ProbeTests(unittest.TestCase):
 
     def test_turn_cache_miss_fails_the_probe(self):
         def responder(base, context, chunk, n_predict, chat, cache=True):
-            return {"prompt_n": 2000, "cache_n": 0, "prompt_ms": 30000.0, "prefill_tps": 66.0}
+            return {"prompt_n": 2000, "cache_n": 0, "prompt_ms": 30000.0, "prefill_tps": 66.0,
+                    "content": "OK"}
 
         status, data = self.run_turns(responder, "--reps", "1")
         self.assertEqual(status, 1)
@@ -239,13 +242,50 @@ class ProbeTests(unittest.TestCase):
         # and re-prefills the rest; the row would time that, not the turn.
         def responder(base, context, chunk, n_predict, chat, cache=True):
             if chunk is None:
-                return {"prompt_n": 2000, "cache_n": 0, "prompt_ms": 15000.0, "prefill_tps": 133.0}
-            return {"prompt_n": len(chunk) + 150, "cache_n": 1850, "prompt_ms": 3000.0, "prefill_tps": 60.0}
+                return {"prompt_n": 2000, "cache_n": 0, "prompt_ms": 15000.0, "prefill_tps": 133.0,
+                        "content": "OK"}
+            return {"prompt_n": len(chunk) + 150, "cache_n": 1850, "prompt_ms": 3000.0, "prefill_tps": 60.0,
+                    "content": "OK"}
 
         status, data = self.run_turns(responder, "--reps", "1")
         self.assertEqual(status, 1)
         self.assertEqual(data["failed_requests"], 2)
         self.assertIn("cache served 1850 of the 2000", data["rows"][0]["error"])
+
+    def test_turn_prime_without_counts_fails_the_probe(self):
+        # The prime sets the context size the cache guard holds each turn to. Without its
+        # counts, uncached turns reporting cache_n 0 would pass a guard against 0 tokens.
+        def responder(base, context, chunk, n_predict, chat, cache=True):
+            if chunk is None:
+                return {"prompt_n": None, "cache_n": None, "prompt_ms": None, "content": "OK"}
+            return {"prompt_n": 2000 + len(chunk), "cache_n": 0, "prompt_ms": 30000.0,
+                    "prefill_tps": 66.0, "content": "OK"}
+
+        status, data = self.run_turns(responder, "--reps", "1")
+        self.assertEqual(status, 1)
+        self.assertFalse(data["probe_ok"])
+        self.assertEqual(data["error"], "priming request: missing prompt token count")
+
+    def test_turn_reply_must_be_clean_and_carry_its_counts(self):
+        # Through request(): the prime answers properly, every turn does not.
+        counts = {"prompt_n": 40, "cache_n": 2000, "prompt_ms": 2000.0, "prompt_per_second": 20.0}
+        for content, timings, error in [
+                ("", counts, "empty completion"),
+                ("<think>plan</think>OK", counts, "think tag in content"),
+                ("OK", dict(counts, cache_n=None), "missing cache token count")]:
+            def server(url, body, *args):
+                if not url.endswith("/completions"):
+                    return char_tokenizer(url, body)
+                if not body["cache_prompt"]:
+                    return {"choices": [{"message": {"content": "OK"}}],
+                            "timings": {"prompt_n": 2000, "cache_n": 0, "prompt_ms": 15000.0}}
+                return {"choices": [{"message": {"content": content}}], "timings": timings}
+
+            with self.subTest(error):
+                status, data = self.run_turns(None, "--reps", "1", "--chat", server=server)
+                self.assertEqual(status, 1)
+                self.assertEqual(data["failed_requests"], 2)
+                self.assertEqual([r["error"] for r in data["rows"]], [error, error])
 
     def test_empty_output_and_nonfinite_timing_are_errors(self):
         for content, rate in [("", 14), ("valid text", float("inf"))]:
@@ -314,6 +354,23 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("## Turns", report)
         self.assertIn("| thr32 | 30000 | 2.30 | 7.60 | 6.80 | 6.20 | ok |", report)
         self.assertIn("🔴 2 failed or uncached request(s)", report)
+
+    def test_summary_leaves_failed_turn_passes_out_of_the_medians(self):
+        # A pass with a failed request still carries a summary of its other rows.
+        clean = {"context_tokens": 30000, "summary": {"32": {"prompt_s_median": 2.0}},
+                 "fit": {"fixed_s": 2.0, "per_token_ms": 5.0}, "failed_requests": 0, "probe_ok": True}
+        failed = {"context_tokens": 30000, "summary": {"32": {"prompt_s_median": 9.0}},
+                  "fit": {"fixed_s": 9.0, "per_token_ms": 50.0}, "failed_requests": 1, "probe_ok": False}
+        with tempfile.TemporaryDirectory() as directory:
+            for n, t in enumerate([clean, failed], 1):
+                (Path(directory) / ("thr32-r%d.json" % n)).write_text(json.dumps({
+                    "placement": {"label": "thr32", "turns": t},
+                    "summary": {"d0/code": {"decode_tps_median": 9}}}))
+            out = io.StringIO()
+            with patch.object(sys, "argv", ["summary", directory]), contextlib.redirect_stdout(out):
+                summary.main()
+        self.assertIn("| thr32 | 30000 | 2.00 | 2.00 | 5.00 | "
+                      "🔴 1 failed or uncached request(s), 🔴 1 pass(es) left out |", out.getvalue())
 
     def test_fixed_salt_pairs_cold_chat_requests_across_runs(self):
         scripts = HERE.parents[1] / "bench-runner/scripts/benchmarks"
