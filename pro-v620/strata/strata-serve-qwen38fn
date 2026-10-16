@@ -45,7 +45,7 @@ for i in $(seq 1 "${total}"); do
   [ -f "${shard}" ] || die "missing shard $(basename "${shard}")"
 done
 [ -f "${MODEL_PACK}/native_experts.txt" ] || die "no pack at ${MODEL_PACK}; run install.sh on the host"
-[ -f "${MODEL_MTP}/experts.bin" ] || [ -z "${MODEL_SPEC:-}" ] || die "no MTP draft layer at ${MODEL_MTP}"
+[ -z "${MODEL_MTP:-}" ] || [ -f "${MODEL_MTP}/experts.bin" ] || die "no MTP draft layer at ${MODEL_MTP}"
 
 # Kept after the server stops: quant_quality.py and other one-off engine runs read it.
 config="${STATE_DIRECTORY:-/var/lib/strata-qwen38fn}/config.json"
@@ -84,11 +84,13 @@ args = ["--pack", e["MODEL_PACK"], "--native", e["MODEL_GGUF"],
         "--expert-profile", e["STRATA_HOME"] + "/data/expert-profile.bin", "--expert-cache", "auto",
         "--prefill", e["MODEL_PREFILL"], "--max-context", e["MODEL_CONTEXT_LENGTH"], "--kv", e["MODEL_KV"],
         "--pool-workers", e["MODEL_POOL_WORKERS"], "--vram-reserve-mib", e["MODEL_VRAM_RESERVE_MIB"],
-        "--ple-io", e["MODEL_PLE_IO"], "--memory-limit-mib", e["MODEL_MEMORY_LIMIT_MIB"]]
+        "--ple-io", e["MODEL_PLE_IO"], "--memory-limit-mib", e["MODEL_MEMORY_LIMIT_MIB"],
+        # The verify window; the native pack needs one of 2 or more even with no drafter.
+        "--spec", e["MODEL_SPEC"], "--spec-min-p", e["MODEL_SPEC_MIN_P"]]
 if e.get("MODEL_KV_RESIDENT"):
     args += ["--kv-resident", e["MODEL_KV_RESIDENT"]]
-if e.get("MODEL_SPEC"):
-    args += ["--spec", e["MODEL_SPEC"], "--spec-min-p", e["MODEL_SPEC_MIN_P"], "--mtp", e["MODEL_MTP"]]
+if e.get("MODEL_MTP"):
+    args += ["--mtp", e["MODEL_MTP"]]
 args += e.get("MODEL_EXTRA_ARGS", "").split()
 cfg = {
     "exe": e["ENGINE"],

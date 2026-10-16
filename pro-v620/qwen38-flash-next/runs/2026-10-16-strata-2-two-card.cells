@@ -4,7 +4,7 @@
 # split21 and split12 run Strata's layer split with its automatic split point, the first card
 # first (the head and the draft layer sit on the last stage); helper runs GPU 2 with GPU 1
 # caching experts GPU 2 does not hold.
-one       MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0
-split21   MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
-split12   MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:03:00.0,0000:83:00.0 MODEL_LAYER_SPLIT=auto
-helper    MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0 --expert-cache-device1 auto --remote-expert-opt' MODEL_GPUS=0000:83:00.0,0000:03:00.0
+one       MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0
+split21   MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+split12   MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:03:00.0,0000:83:00.0 MODEL_LAYER_SPLIT=auto
+helper    MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0 --expert-cache-device1 auto --remote-expert-opt' MODEL_GPUS=0000:83:00.0,0000:03:00.0

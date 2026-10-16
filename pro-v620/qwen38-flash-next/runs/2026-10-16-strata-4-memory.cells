@@ -3,7 +3,7 @@
 # cell (pct set -memory, live) and the sweep sets it back to 122880 after it. reserve2g leaves
 # 2 GiB of VRAM after the expert cache (the start leaves ~0.9 GiB at 1024): with llama.cpp,
 # buffers created while VRAM was short went to GTT (runs/2026-10-10-prefill-slowdown.md).
-ctl        MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0'
-ple-ram    MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_PLE_IO=ram MODEL_MEMORY_LIMIT_MIB=159744 CT_MEMORY_MIB=163840
-kv-vram    MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_KV_RESIDENT=
-reserve2g  MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_VRAM_RESERVE_MIB=2048
+ctl        MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0'
+ple-ram    MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_PLE_IO=ram MODEL_MEMORY_LIMIT_MIB=159744 CT_MEMORY_MIB=163840
+kv-vram    MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_KV_RESIDENT=
+reserve2g  MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_VRAM_RESERVE_MIB=2048

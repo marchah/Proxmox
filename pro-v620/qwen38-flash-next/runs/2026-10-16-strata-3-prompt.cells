@@ -1,7 +1,7 @@
 # Cells for runs/2026-10-16-strata.md, stage 3, applied over stage 2's kept settings (the
 # record's Results name them). No drafts. MMQ_KQ and DENSE_MMQ change the prompt's rounding:
 # each kept one is reported with its prompt-path KL against ctl.
-ctl        MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0'
-mmqkq      MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_MMQ_KQ=1
-densemmq   MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_DENSE_MMQ=1
-chunk16k   MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_PREFILL=auto:16384
+ctl        MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0'
+mmqkq      MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_MMQ_KQ=1
+densemmq   MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_DENSE_MMQ=1
+chunk16k   MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_PREFILL=auto:16384

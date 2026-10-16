@@ -1,6 +1,6 @@
 # Cells for runs/2026-10-16-strata.md, stage 5, applied over stage 4's kept settings. No drafts.
 # CT 123's cpuset is 24 CPUs on 21 physical cores; w15 is the starting value.
-w11        MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_POOL_WORKERS=11
-w15        MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_POOL_WORKERS=15
-w19        MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_POOL_WORKERS=19
-w23        MODEL_SPEC= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_POOL_WORKERS=23
+w11        MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_POOL_WORKERS=11
+w15        MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_POOL_WORKERS=15
+w19        MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_POOL_WORKERS=19
+w23        MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_POOL_WORKERS=23

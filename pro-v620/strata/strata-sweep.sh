@@ -14,7 +14,7 @@
 #   MODEL_* / STRATA_*  any key of /etc/strata-qwen38fn.env, written over the env file the
 #                  sweep found. An empty STRATA_* value removes that switch, so the engine
 #                  never sees it; an empty MODEL_* value is written empty (an empty
-#                  MODEL_SPEC runs without the draft layer).
+#                  MODEL_MTP runs without the draft layer).
 #   STREAMS        also run concurrency-probe.py with this many concurrent streams
 #   DEPTHS         this cell's probe depths, replacing DEPTHS
 #   CT_MEMORY_MIB  CT 123's memory limit for this cell (pct set -memory, live), set back after
