@@ -209,6 +209,8 @@ Settings for longer tasks:
   chunk sizes. It needs `CONTEXT_FILE`. With `TURN_DEPTH` tokens of the file cached, it
   appends chunks of new text and times only their prefill, the cost one agent turn pays.
   `SUMMARY.md` gives the median time per size and a fit of fixed cost plus cost per token.
+  A pass fails on any request that errors, returns empty or think-tagged content or no
+  token counts, or that the cache did not serve; `SUMMARY.md` flags it and leaves it out.
 
 `PROBE_CLASSES` limits the prompt classes, and `DROP_CACHES=true` drops the host page
 cache before every load, for cold loads. `CONC_REPS` sets the concurrency probe's rounds

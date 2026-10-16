@@ -489,8 +489,8 @@ template.
 - **VRAM:** nothing was outside VRAM, and no VRAM allocation failed in the trace.
   - Steady least free was 10,486 MiB in both builds.
   - The compute buffer swapped 21 times on b11505 and 24 times on b11583 over three passes.
-  - The 1 Hz sampler caught one swap at 8,560 MiB free on b11505, and one at 4,684 MiB on
-    b11583. Which swap a sample catches is chance; the mechanism is the same.
+  - The 1 Hz sampler caught one swap on b11505, at 8,560 MiB free, and two on b11583, at
+    8,842 and 4,684 MiB. Which swap a sample catches is chance; the mechanism is the same.
 - **Reallocation reports (#30329):** b11583 logged no reallocation line at the default log
   level.
 - **Card, per phase:** prefill 175–177 W at 2,358–2,360 MHz, 99% busy, on 0.4 CPU cores. Decode
@@ -541,17 +541,19 @@ the card.
   turn prefilled its chunk plus 8–9 template tokens. No turn failed.
 - **The two paths:**
   - Below the threshold, prefill takes about 1.3 s plus 23 ms per token. On the card it
-    rises steeply to about 8.8 s at 264 tokens, then gains about 6.5 ms per token.
+    rises steeply to about 8.8 s at 264 tokens, then gains about 5.5 ms per token up to
+    2,056. The probe's fit over all sizes, steep start included, gives 6.5 ms.
   - The two cross at about 340 new tokens. A threshold between 256 and 512 was not
     measured.
 - **Cold short prompts are not affected.** The d0 prompts (31–42 tokens, no context) took
-  2.5–2.8 s at every threshold, on either path. The card's extra cost for a short batch
+  2.5–2.8 s at every threshold, on either path. The exception is `thr128`'s first request
+  after its first load, at 3.76 s. The card's extra cost for a short batch
   appears only on top of a deep context; its cause was not measured.
 
-**Estimated batch prefill** (the bench's 186 warm agent turns priced by these turn times) and
-the checks:
+**Estimated batch prefill** (the bench's 186 agent turns, 180 warm plus each session's cold
+first turn, all priced by these cached-turn times) and the checks:
 
-| Cell | Warm-turn prefill, s | `hermes` / `coding` | Decode d0 / d8000, t/s | d8000 prefill, t/s |
+| Cell | Turn prefill, s | `hermes` / `coding` | Decode d0 / d8000, t/s | d8000 prefill, t/s |
 | --- | ---: | --- | --- | ---: |
 | `thr32` | 2,999 [2,992–3,019] | 1,746 / 1,253 | 8.73 [8.68–8.83] / 7.78 [7.77–7.89] | 179.7 |
 | `thr128` | 2,957 [2,955–2,959] | 1,737 / 1,220 | 8.74 / 7.82 | 179.9 |
@@ -586,14 +588,27 @@ beyond both spreads. Its decode at d0 (8.64 against 8.73) and d8000 (7.76 agains
 within the control's spread (0.15 and 0.12), and so is its d8000 prefill. Stages 2–6 run with
 it. Stage 5 checks it on real sessions.
 
-### Stage 2, fit pass — 2026-10-13 18:19–20:05 ET
+- **How "within the control's spread" is read here:** the median's difference from the
+  control is no larger than the width of the control's range.
+- **Read as "inside the control's range", `thr512` fails.** Its d0 passes (8.58, 8.64, 8.64)
+  all sit below the control's lowest (8.68), and its d8000 median (7.76) is below the
+  control's lowest there (7.77). `thr256` and `thr1024` fail too, and `thr128` would win, with an estimate 136 s
+  higher.
+- **The threshold leaves decode's offload decision unchanged.** A decode step with MTP at
+  n-max 2 is a batch of at most 3 tokens, below every threshold tested, so every cell
+  decodes on the same path. The cause of the measured decode differences between cells was
+  not isolated.
+- The owner kept this reading, and `thr512` for its cached-turn benefit, on 2026-10-15,
+  after the raw-data check raised it.
+
+### Stage 2, fit pass — 2026-10-13 18:19–20:42 ET
 
 Harness `bca01927e027`, cells [`-fit.cells`](2026-10-13-long-tasks-fit.cells), one pass,
 b11583, `GGML_OP_OFFLOAD_MIN_BATCH=512`, depths 0, 8,000 and 48,000 plus the turn probe. Raw
 data on the host: `/root/glm53-flash/sweep-106-fit-20261013T221937Z/`,
 `residency-106-fit.jsonl` and `trace-106-fit.txt`.
 
-| Cell | Fit | Least free with swaps | Least free outside swaps | Outside VRAM | Failed VRAM allocations | Code prefill d8000 / d48000, t/s | Decode, median of six |
+| Cell | Fit | Least free with swaps | Least free outside swaps | Outside VRAM | Failed VRAM allocations | Code prefill d8000 / d48000, t/s | Decode, median of nine prompt cells |
 | --- | --- | ---: | ---: | ---: | ---: | --- | ---: |
 | `n46-ub4096` (control) | fits | 3,750 MiB | 9,071 MiB | 0 | 0 | 178.8 / 145.8 | 7.40 |
 | `n45-ub4096` | **fails** (rules 1, 2, 3) | **54 MiB** | 5,361 MiB | **1,890 MiB** | **25** | 163.2 / 136.1 | 7.65 |
@@ -611,7 +626,8 @@ data on the host: `/root/glm53-flash/sweep-106-fit-20261013T221937Z/`,
   - It frees 2,146 MiB at load (13,073 against 10,927 MiB) and lets `-ncmoe 45` fit.
   - It costs 21% of d8000 prefill and 18% at 48k.
 - **Block 45's experts on the card** decoded 4% faster in this one pass (7.73 against 7.43 at
-  micro-batch 2048). The timed pass checks it against the spread.
+  micro-batch 2048, medians over d0, d8000 and d48000). The timed pass checks it against
+  the spread.
 - **Every cell:** probe and contract clean, no turn failed.
 - **Timed pass:** `n46-ub4096` (control), `n46-ub2048` and `n45-ub2048`, three passes
   ([`-placement.cells`](2026-10-13-long-tasks-placement.cells)). `-ncmoe 45` fits at 2048,
@@ -625,8 +641,9 @@ depths 0 and 8,000 plus the turn probe. Raw data on the host:
 `/root/glm53-flash/sweep-106-placement-20261014T170018Z/`, `residency-106-placement.jsonl`
 and `trace-106-placement.txt`. Figures are medians of the three passes, with their range.
 
-**Estimated batch time.** This is the stage's rule: the bench's 186 warm turns, with their
-37,236 generated tokens at the cell's d8000 decode.
+**Estimated batch time.** This is the stage's rule: the bench's 186 agent turns (180 warm,
+plus each session's cold first turn), each priced at the cell's cached-turn times, with
+their 37,236 generated tokens at the cell's d8000 decode.
 
 | Cell | Batch, s | Turn prefill, s | Decode, s | Decode d0 / d8000, t/s | d8000 prefill, t/s | 30k prime (cold), s |
 | --- | ---: | ---: | ---: | --- | ---: | ---: |
@@ -653,8 +670,13 @@ and `trace-106-placement.txt`. Figures are medians of the three passes, with the
   - The d8000 decode comparison against the control is therefore on different text.
     Acceptance there is 66.5/49.8/59.7% (code/list/prose) against 62.8/46.4/58.3%.
 - **What the rule does not cover:**
+  - **The six cold first turns are priced as cached turns.** They prefill their whole
+    prompt, 4,342–8,777 tokens, cold, where micro-batch 2048 costs 21% of d8000 prefill.
+    The cached-turn times differ little between the micro-batches, so the estimate does
+    not see that cost. Stage 5 measures it.
   - **Turns past 2,048 new tokens are extrapolated.**
-    - 69 warm turns run past 2,048 new tokens, with 134,679 tokens beyond it (up to 8,777).
+    - 69 turns run past 2,048 new tokens, with 134,679 tokens beyond it: 63 warm turns of
+      up to 5,039 tokens, and the six cold first turns of 4,342–8,777.
     - The turn probe stops at 2,048, so these are extrapolated along each cell's 1,024–2,048
       segment.
     - For the control, the estimate on those 69 turns is 2,020 s against the bench's
@@ -715,9 +737,9 @@ Ranked by the rule, summed decode time over the six requests:
 
 - **n-max 2 is fastest at every p-min.**
   - **The four n-max 2 cells are within 1.6% of each other** in this one pass.
-    - p-min 0.5 wastes 38% fewer drafts (672 against 1,082), but decodes 2.6% slower.
-  - **n-max 1** is 6–7% slower, with acceptance of 76–81%.
-  - **n-max 3** is 14–29% slower.
+    - p-min 0.5 wastes 38% fewer drafts (672 against 1,082), at a 2.6% lower decode rate.
+  - **n-max 1** takes 6–7% more decode time, with acceptance of 76–81%.
+  - **n-max 3** takes 14–29% more.
     - Acceptance falls to 48.5–49.8% at p-min 0–0.3.
     - p-min 0.5 lifts it to 61.0%, and that cell is the fastest at n-max 3.
 - **MTP against `nospec`:**
@@ -781,7 +803,7 @@ per-pass medians, with their range.
   - By decode rate, the control is level with `n2-p02` and faster than `n2-p03` and
     `n2-p05`.
   - p-min 0.2–0.5 does not decode faster than p-min 0 here. p-min 0.5 wastes 38% fewer
-    drafts and decodes 2% slower.
+    drafts, at a 2% lower decode rate.
 - **Every cell and pass:**
   - The text is identical in all three passes.
   - No request failed, no text was degenerate, and probe and contract were clean.
@@ -828,10 +850,13 @@ with the screen's settings, plus `--sampling server --seed 1234`. Raw data on th
 - Under greedy decoding it leads the control by 0.3%, less than its 30 fewer tokens per pass
   are worth. Under the model's own sampling it trails by 0.1%, at the same decode rate.
 - The four n-max 2 settings are within the measurement's resolution of each other.
-- What the stage separates is n-max:
-  - n-max 1 is 6–7% slower;
-  - n-max 3 is 14–29% slower;
-  - no speculation is 34% slower.
+- What the stage separates is n-max, under greedy decoding. In summed decode time against
+  the control:
+  - n-max 1 takes 6–7% more;
+  - n-max 3 takes 14–29% more;
+  - no speculation takes 34% more, at a 23% lower decode rate (5.96 against 7.76 t/s).
+- The sampled passes ran n-max 2 only. They do not show whether n-max 1 or 3 would do
+  better under the model's own sampling.
 
 Stages 4–6 run on `n45-ub2048` with `n2-p02`.
 
@@ -874,7 +899,7 @@ host: `/root/glm53-flash/sweep-106-cpu-20261015T141427Z/`, `residency-106-cpu.js
   - Checked on the live server: each compute thread is bound to one CPU of 0–31, and at
     one sample its 32 running threads sat on 32 distinct CPUs.
 - **`t24` is 3.2% slower.**
-  - It decodes 4% slower.
+  - It decodes 4.1% slower at d0 and 3.3% at d8000.
   - Its turns of 128–256 new tokens, on the CPU, take 5.1–9.1 s against 4.4–7.3 s.
 - **`--poll 0`** is within the control's spread, 0.7% slower by its median.
 - **The fixed CPU set alone changed nothing measurable.** The control decodes 9.20 / 8.24
@@ -921,11 +946,11 @@ host: `residency-106-bench-long.jsonl`, `trace-106-bench-long.txt`, and the same
 | --- | ---: | ---: | ---: |
 | `hermes` session, s | 1,557 [1,538–1,585] | 1,700 [1,681–1,752] | −8.4% |
 | — prefill / decode, s | 588 / 967 | 606 / 1,090 | −3.0% / −11.3% |
-| — decode, t/s | 8.82 | 7.97 | +11.2% |
+| — decode, t/s, three reps pooled | 8.83 | 7.94 | +11.2% |
 | — tokens generated | 8,527 | 8,684 | −1.8% |
 | `coding` session, s | 983 [975–990] | 992 [968–1,030] | −1.0% |
 | — prefill / decode, s | 517 / 465 | 459 / 533 | +12.8% / −12.8% |
-| — decode, t/s | 8.85 | 8.12 | +10.1% |
+| — decode, t/s, three reps pooled | 8.86 | 8.04 | +10.1% |
 | — tokens generated | 4,111 | 4,328 | −5.0% |
 | Six sessions, s | 7,627 | 8,123 | −6.1% |
 
@@ -1043,6 +1068,8 @@ environment and the tool-call check. VRAM data on the host: `residency-106-inges
   words.
 - **Key facts:** every fact in every note holds a backticked name or a value with a digit
   found verbatim in the documents. None was left to read by hand.
+  - The check finds the value in the documents. It does not check that the fact attributes
+    it correctly, and no note was compared with its source passages.
 - **Output:** each prompt and depth gave identical text in all three runs. Every note reads
   coherently, and none has a think tag.
 - **Every run:**
@@ -1095,6 +1122,16 @@ environment and the tool-call check. VRAM data on the host: `residency-106-inges
     0–47. That covers all 32 cores, plus the second threads of cores 0–15.
   - **Stages 4–6 keep that set.** Stage 4's control re-measures stages 1–3's
     configuration on it, and `restore` at the campaign's end drops it.
+- **The estimated batch time prices 186 turns, not all warm.** The plan says "every warm
+  `hermes` and `coding` turn of the bench (186 turns)". 180 of them are warm. The other six
+  are each session's cold first turn, 4,342–8,777 tokens. Every stage priced all 186, as
+  the count says. The bench's measured prefill times that the estimate is checked against
+  include them too.
+  - **Each turn is priced at the cell's cached-turn times,** the cold first turns
+    included: the estimate is a cached-turn heuristic applied to every request.
+  - The cold first turns prefill their whole prompt cold instead. Micro-batch 2048 slows
+    that by 21% (stage 2), and the estimate does not see it.
+  - The stages' rules and winners stand as run. Stage 5 measures the cold turns.
 - **Stage 5's tool-call check ran after the control's bench**, on the winner reinstalled
   for stage 6, not during the winner's own run.
   - Its first version required a call to `read_file`. The model called `run_command`
@@ -1113,7 +1150,8 @@ Measured on one 64k slot on GPU 2 (`0000:83:00.0`), b11583, Vulkan, Mesa 26.2.4.
 1. **The fixed cost of a short turn is op offload.** With `GGML_OP_OFFLOAD_MIN_BATCH=512`,
    turns under 512 new tokens run on the CPU. On a 30k cached context, a 41-token turn
    takes 2.36 s against 4.38 s and a 264-token turn 7.41 s against 8.77 s; turns of 512
-   tokens and more are unchanged. The estimated warm-turn prefill falls 5.9%.
+   tokens and more are unchanged. The estimated prefill of the bench's 186 agent turns, all
+   priced as cached turns, falls 5.9%.
 2. **Placement and micro-batch.**
    - At micro-batch 4096, block 45's experts do not fit on the card at n-max 2. During a
      compute-buffer swap, 25 VRAM allocations failed and 1,890 MiB stayed outside VRAM.
@@ -1122,11 +1160,12 @@ Measured on one 64k slot on GPU 2 (`0000:83:00.0`), b11583, Vulkan, Mesa 26.2.4.
      Nothing was outside VRAM, and no allocation failed.
    - Block 45 on the card decodes 5.4% faster at d8000. Micro-batch 2048 costs 21% of
      d8000 prefill and 18% at 48k.
-3. **Draft length and gating.** n-max 2 decodes fastest at 8k and 48k. n-max 1 is 6–7%
-   slower, n-max 3 14–29% slower, and no speculation 34% slower. p-min 0 to 0.5 at n-max 2
-   are within 0.5% of each other. Under the model's own sampling, acceptance falls from
-   about 62% to 54–56% and decode by 8%. n-max 2 at p-min 0 and 0.2 then decode at the
-   same rate.
+3. **Draft length and gating.** Under greedy decoding, n-max 2 decodes fastest at 8k and
+   48k. Against it, n-max 1 takes 6–7% more decode time, n-max 3 14–29% more, and no
+   speculation 34% more, at a 23% lower decode rate. p-min 0 to 0.5 at n-max 2 are within
+   0.5% of each other. Under the model's own sampling, acceptance falls from about 62% to
+   54–56% and the decode rate by 8%. n-max 2 at p-min 0 and 0.2 then decode at the same
+   rate. Only n-max 2 ran under sampling, so draft lengths were not compared there.
 4. **CPU.** Proxmox's random 48-CPU set covered 30 of the 7532's 32 cores. On CPUs 0–47,
    32 threads pinned one per physical core decode 4.8% faster at d0 and 5.7% at d8000, and
    cut the estimated batch time by 4.2%. 24 threads are 3.2% slower, and `--poll 0` is
@@ -1141,6 +1180,9 @@ Measured on one 64k slot on GPU 2 (`0000:83:00.0`), b11583, Vulkan, Mesa 26.2.4.
    | Ingestion, 640-token cap | 3,298 s | 2,993 s | +10.2% |
    | Both | 10,925 s | 11,116 s | −1.7% |
 
+   - One run of each configuration, back to back rather than interleaved, each writing its
+     own replies: the totals are what these two runs measured. The `coding` sessions'
+     ranges overlap (975–990 against 968–1,030 s).
    - Agent-session decode is 9–12% faster in every depth band, and ingestion decode
      11–16%.
    - `hermes` prefill, mostly short turns, takes 3% less time. Long prompts prefill
@@ -1154,4 +1196,5 @@ Measured on one 64k slot on GPU 2 (`0000:83:00.0`), b11583, Vulkan, Mesa 26.2.4.
    prompt. The concise prompt reaches a complete note 24% sooner at 8k and 10% sooner at
    48k, all from 42–45% fewer tokens; its 589–612 tokens fit within the batch's 640 cap.
    Both prompts pass the format check at 48k and fail it at 8k, by writing six and seven
-   summary sentences. Every key fact holds a value found verbatim in the documents.
+   summary sentences. Every key fact holds a value found verbatim in the documents. No note
+   was compared with its sources, so this does not establish that the facts are right.

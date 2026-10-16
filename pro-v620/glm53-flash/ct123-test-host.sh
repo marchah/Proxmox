@@ -22,7 +22,7 @@
 #
 # Without TEST_CPUSET, Proxmox gives the container a random set of `cores` CPUs at every
 # start. On the 7532 (32 cores, CPU n and n+32 share one), 48 of the 64 can leave physical
-# cores out: one start covered 30. TEST_CPUSET must name TEST_CORES CPUs.
+# cores out: one start covered 30. TEST_CPUSET must name TEST_CORES distinct online CPUs.
 set -Eeuo pipefail
 
 readonly VMID=123
@@ -30,6 +30,7 @@ readonly CONF="${CONF:-/etc/pve/lxc/${VMID}.conf}"
 readonly STATE_DIR="${STATE_DIR:-/root/glm53-flash}"
 readonly DRI_BY_PATH="${DRI_BY_PATH:-/dev/dri/by-path}"
 readonly WATCHDOG_ENV="${WATCHDOG_ENV:-/etc/gpu-thermal-watchdog.env}"
+readonly CPU_ONLINE="${CPU_ONLINE:-/sys/devices/system/cpu/online}"
 
 readonly GPU1_PCI='0000:03:00.0'
 readonly GPU2_PCI='0000:83:00.0'
@@ -160,25 +161,37 @@ detach_gpu1() {
   log "GPU 1 detached from CT ${VMID}"
 }
 
-# CPUs in a cpuset list such as 0-3,8,40-47.
-cpuset_count() {
-  local n=0 part lo hi
+# The CPUs a cpuset list such as 0-3,8,40-47 names, one per line; fails on a reversed range.
+cpuset_cpus() {
+  local part lo hi c
   for part in ${1//,/ }; do
     lo="${part%-*}"; hi="${part#*-}"
-    n=$(( n + hi - lo + 1 ))
+    (( lo <= hi )) || return 1
+    for (( c = lo; c <= hi; c++ )); do echo "$c"; done
   done
-  echo "$n"
 }
 
 # Physical cores a cpuset list covers, from the host's CPU-to-core map.
 cpuset_cores() {
-  local part lo hi c want=" "
-  for part in ${1//,/ }; do
-    lo="${part%-*}"; hi="${part#*-}"
-    for (( c = lo; c <= hi; c++ )); do want+="$c "; done
-  done
+  local want
+  want=" $(cpuset_cpus "$1" | tr '\n' ' ')"
   lscpu -p=CPU,CORE | awk -F, -v want="$want" '!/^#/ && index(want, " " $1 " ") { seen[$2] = 1 }
     END { print length(seen) }'
+}
+
+# TEST_CPUSET must name TEST_CORES CPUs, each once and each online on this host.
+check_cpuset() {
+  local cpus online twice missing
+  [[ "$TEST_CPUSET" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]] \
+    || die "TEST_CPUSET '${TEST_CPUSET}' is not a CPU list such as 0-47"
+  cpus="$(cpuset_cpus "$TEST_CPUSET")" || die "TEST_CPUSET '${TEST_CPUSET}' has a range that runs backwards"
+  twice="$(sort -n <<<"$cpus" | uniq -d | tr '\n' ' ')"
+  [ -z "$twice" ] || die "TEST_CPUSET '${TEST_CPUSET}' names CPUs more than once: ${twice% }"
+  online="$(cpuset_cpus "$(cat "$CPU_ONLINE")")" || die "cannot read the host's online CPUs from ${CPU_ONLINE}"
+  missing="$(comm -23 <(sort -u <<<"$cpus") <(sort -u <<<"$online") | sort -n | tr '\n' ' ')"
+  [ -z "$missing" ] || die "TEST_CPUSET '${TEST_CPUSET}' names CPUs the host does not have online: ${missing% }"
+  [ "$(wc -l <<<"$cpus")" -eq "$TEST_CORES" ] \
+    || die "TEST_CPUSET names $(wc -l <<<"$cpus" | tr -d ' ') CPUs; CT ${VMID} gets ${TEST_CORES}"
 }
 
 # An explicit cpuset stops Proxmox picking CPUs at start; drop_cpuset gives that back.
@@ -229,12 +242,7 @@ preflight() {  # [two-card]
   local st
   [ "$(ct_state "$VMID")" = "running" ] || die "CT ${VMID} is not running"
   require_model_installed
-  if [ -n "$TEST_CPUSET" ]; then
-    [[ "$TEST_CPUSET" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]] \
-      || die "TEST_CPUSET '${TEST_CPUSET}' is not a CPU list such as 0-47"
-    [ "$(cpuset_count "$TEST_CPUSET")" -eq "$TEST_CORES" ] \
-      || die "TEST_CPUSET names $(cpuset_count "$TEST_CPUSET") CPUs; CT ${VMID} gets ${TEST_CORES}"
-  fi
+  [ -z "$TEST_CPUSET" ] || check_cpuset
   if [ "${1:-}" = two-card ]; then
     st="$(ct_state 120)"
     [ "$st" = "stopped" ] || die "CT 120 is '${st}'; shut it down first (stop Hermes, CT 121, before it)"

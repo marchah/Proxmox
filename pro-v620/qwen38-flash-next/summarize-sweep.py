@@ -332,7 +332,7 @@ def main():
         print("Prefill of new text appended to a cached context (turn-probe.py), the cost one "
               "agent turn pays. Per size, the median prompt time in seconds across passes; the "
               "fit is prompt_s = fixed + per_token × new tokens over every row of a pass. A "
-              "pass whose cache did not serve the context is flagged and left out.\n")
+              "pass with a failed or uncached request is flagged and left out.\n")
         hdr = ["cell", "context tokens"] + ["%d new" % z for z in sizes] + ["fixed, s", "per token, ms", "flags"]
         print("| " + " | ".join(hdr) + " |")
         print("|" + "|".join(["---"] + ["---:"] * (len(hdr) - 2) + ["---"]) + "|")
@@ -340,13 +340,15 @@ def main():
             ts_ = by[key]["turns"]
             if not ts_:
                 continue
-            good = [t for t in ts_ if t.get("summary") and not t.get("error")]
+            # A failed pass still summarizes its good rows; those are a subset, not the cell.
+            good = [t for t in ts_ if t.get("summary") and not t.get("error")
+                    and not t.get("failed_requests")]
             flags = []
             failed = sum(t.get("failed_requests") or 0 for t in ts_)
             if failed:
                 flags.append("🔴 %d failed or uncached request(s)" % failed)
             if len(good) < len(ts_):
-                flags.append("🔴 probe failed in %d pass(es)" % (len(ts_) - len(good)))
+                flags.append("🔴 %d pass(es) left out" % (len(ts_) - len(good)))
             vals = []
             for z in sizes:
                 xs = [t["summary"][str(z)]["prompt_s_median"] for t in good if str(z) in t["summary"]]
