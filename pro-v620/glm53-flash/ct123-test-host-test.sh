@@ -39,6 +39,7 @@ EOF
   cp "$T/lxc/123.conf" "$T/123.conf.orig"
   echo stopped >"$T/status.120"; echo running >"$T/status.123"
   echo "GPU_SERVICE_MAP=${GPU1}=120:llamacpp,${GPU2}=123:llamacpp-qwen38fn" >"$T/wd.env"
+  echo 0-63 >"$T/cpu-online"   # the 7532: 32 cores, two threads each
   : >"$T/units"
   set_unit 120 llamacpp enabled inactive
   set_unit 123 llamacpp-qwen38fn enabled active
@@ -122,7 +123,7 @@ PCT
 set_unit() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >>"$T/units"; }
 run() {  # <action>
   PATH="$T/bin:$PATH" CONF="$T/lxc/123.conf" STATE_DIR="$T/state" WATCHDOG_ENV="$T/wd.env" \
-    DRI_BY_PATH="$T/dri" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
+    DRI_BY_PATH="$T/dri" CPU_ONLINE="$T/cpu-online" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
 }
 tail_log() { echo "--- tail of out.log ---"; tail -12 "$T/out.log" | sed 's/^/      /'; }
 onboot()   { awk -F': ' '$1 == "onboot" {print $2}' "$T/lxc/$1.conf"; }
@@ -202,11 +203,17 @@ run restore || { bad "restore from the partial state failed"; tail_log; }
 rm -rf "$T"
 
 echo "=== 5. TEST_CPUSET fixes CT 123's CPUs; a run without it and restore drop them ==="
-new_host
 cpusets() { grep -c '^lxc.cgroup2.cpuset.cpus:' "$T/lxc/123.conf" || true; }
-TEST_CPUSET=0-31 run one-card && bad "took 32 CPUs for 48 cores" || ok "refused a cpuset of the wrong size"
-[ "$(cpusets)" = 0 ] && [ "$(unit 123 llamacpp-qwen38fn)" = "enabled active" ] \
-  && ok "nothing changed on the refusal" || bad "changed CT 123 on a refusal"
+# 32 CPUs; 48 by count but 24 distinct; 48 the host does not have; 48 and a range written
+# backwards.
+for set in 0-31 0-23,0-23 64-111 0-47,10-5; do
+  new_host
+  TEST_CPUSET="$set" run one-card && bad "took cpuset ${set} for 48 cores" || ok "refused cpuset ${set}"
+  [ "$(cpusets)" = 0 ] && [ "$(unit 123 llamacpp-qwen38fn)" = "enabled active" ] \
+    && ok "nothing changed on the refusal" || bad "changed CT 123 on refusing ${set}"
+  rm -rf "$T"
+done
+new_host
 TEST_CPUSET=0-47 run one-card || { bad "one-card with TEST_CPUSET exited non-zero"; tail_log; }
 TEST_CPUSET=0-47 run one-card || { bad "a second one-card with TEST_CPUSET exited non-zero"; tail_log; }
 [ "$(cpusets)" = 1 ] && grep -q '^lxc.cgroup2.cpuset.cpus: 0-47$' "$T/lxc/123.conf" \
