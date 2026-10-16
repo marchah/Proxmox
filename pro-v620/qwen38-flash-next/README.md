@@ -150,7 +150,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch with `dio` and the MTP head](runs/2026-10-10-bench.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The prefill slowdown with `dio` and the MTP head](runs/2026-10-10-prefill-slowdown.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [Short-reply decode with `dio` and the MTP head](runs/2026-10-10-short-reply-decode.md) | done |
-| 2026-10-16 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Strata in place of llama.cpp on one card](runs/2026-10-16-strata.md) | planned |
+| 2026-10-16 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Strata in place of llama.cpp on one card](runs/2026-10-16-strata.md) | running |
 
 ## Benchmark tools
 

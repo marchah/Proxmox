@@ -121,6 +121,13 @@ engine's own account of each request. [`strata-summary.py`](strata-summary.py) a
 engine's expert cache, VRAM residency and log lines to the speed tables. Its header lists the
 cell keys; the [test record](../qwen38-flash-next/runs/2026-10-16-strata.md) has the commands.
 
+[`strata-yardstick.sh`](strata-yardstick.sh) runs on the host with the server stopped, and
+starts it again on exit. It runs Strata's quality yardstick (`tools/quant_quality.py`) on the
+server's last config and env file: teacher-forced perplexity with the experts on the CPU
+(upstream's method) and with the experts in the VRAM cache, and the prompt path's
+next-token KL with `STRATA_HIP_PROMPT_F16=1` against the default path. Results land in
+`/models/strata/quality/` in CT 123.
+
 ## Differences from llama.cpp that matter to the tooling here
 
 - No `/completion`, `/tokenize` or `/detokenize`. The probes run in chat mode
