@@ -209,7 +209,7 @@ TimeoutStopSec=120
 LimitMEMLOCK=infinity
 # The experts and the n-gram table must stay resident.
 MemorySwapMax=0
-RuntimeDirectory=strata-qwen38fn
+StateDirectory=strata-qwen38fn
 LogsDirectory=strata-qwen38fn
 LogsDirectoryMode=0755
 

@@ -38,7 +38,8 @@ done
 [ -f "${MODEL_PACK}/native_experts.txt" ] || die "no pack at ${MODEL_PACK}; run install.sh on the host"
 [ -f "${MODEL_MTP}/experts.bin" ] || [ -z "${MODEL_SPEC}" ] || die "no MTP draft layer at ${MODEL_MTP}"
 
-config="${RUNTIME_DIRECTORY:-/run/strata-qwen38fn}/config.json"
+# Kept after the server stops: quant_quality.py and other one-off engine runs read it.
+config="${STATE_DIRECTORY:-/var/lib/strata-qwen38fn}/config.json"
 log_dir="${LOGS_DIRECTORY:-/var/log/strata-qwen38fn}"
 ENGINE="${engine}" CONFIG="${config}" LOG="${log_dir}/engine.log" python3 -I - <<'PY'
 import json

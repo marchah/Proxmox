@@ -24,6 +24,8 @@ at `0000:83:00.0`**, leaving CT 120's Qwen3.6 service on the other card.
 
 Vulkan requires **b11013 or later** for the hyper-connection operations. A
 registered `qwen4exp` architecture alone does not establish backend support.
+[Strata](../strata/README.md), an engine for this model on HIP, installs into CT 123 beside
+llama.cpp and serves the same files; `../strata/use-engine.sh` switches between them.
 Measurements live in the [test records](#test-records), each with its build and
 hardware.
 
@@ -148,6 +150,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch with `dio` and the MTP head](runs/2026-10-10-bench.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The prefill slowdown with `dio` and the MTP head](runs/2026-10-10-prefill-slowdown.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [Short-reply decode with `dio` and the MTP head](runs/2026-10-10-short-reply-decode.md) | done |
+| 2026-10-16 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Strata in place of llama.cpp on one card](runs/2026-10-16-strata.md) | planned |
 
 ## Benchmark tools
 
