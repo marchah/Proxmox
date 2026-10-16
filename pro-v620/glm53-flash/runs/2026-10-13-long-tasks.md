@@ -921,11 +921,11 @@ host: `residency-106-bench-long.jsonl`, `trace-106-bench-long.txt`, and the same
 | --- | ---: | ---: | ---: |
 | `hermes` session, s | 1,557 [1,538–1,585] | 1,700 [1,681–1,752] | −8.4% |
 | — prefill / decode, s | 588 / 967 | 606 / 1,090 | −3.0% / −11.3% |
-| — decode, t/s | 8.82 | 7.97 | +11.2% |
+| — decode, t/s, three reps pooled | 8.83 | 7.94 | +11.2% |
 | — tokens generated | 8,527 | 8,684 | −1.8% |
 | `coding` session, s | 983 [975–990] | 992 [968–1,030] | −1.0% |
 | — prefill / decode, s | 517 / 465 | 459 / 533 | +12.8% / −12.8% |
-| — decode, t/s | 8.85 | 8.12 | +10.1% |
+| — decode, t/s, three reps pooled | 8.86 | 8.04 | +10.1% |
 | — tokens generated | 4,111 | 4,328 | −5.0% |
 | Six sessions, s | 7,627 | 8,123 | −6.1% |
 
