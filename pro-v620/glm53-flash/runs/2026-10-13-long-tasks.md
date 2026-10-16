@@ -489,8 +489,8 @@ template.
 - **VRAM:** nothing was outside VRAM, and no VRAM allocation failed in the trace.
   - Steady least free was 10,486 MiB in both builds.
   - The compute buffer swapped 21 times on b11505 and 24 times on b11583 over three passes.
-  - The 1 Hz sampler caught one swap at 8,560 MiB free on b11505, and one at 4,684 MiB on
-    b11583. Which swap a sample catches is chance; the mechanism is the same.
+  - The 1 Hz sampler caught one swap on b11505, at 8,560 MiB free, and two on b11583, at
+    8,842 and 4,684 MiB. Which swap a sample catches is chance; the mechanism is the same.
 - **Reallocation reports (#30329):** b11583 logged no reallocation line at the default log
   level.
 - **Card, per phase:** prefill 175–177 W at 2,358–2,360 MHz, 99% busy, on 0.4 CPU cores. Decode
@@ -541,17 +541,19 @@ the card.
   turn prefilled its chunk plus 8–9 template tokens. No turn failed.
 - **The two paths:**
   - Below the threshold, prefill takes about 1.3 s plus 23 ms per token. On the card it
-    rises steeply to about 8.8 s at 264 tokens, then gains about 6.5 ms per token.
+    rises steeply to about 8.8 s at 264 tokens, then gains about 5.5 ms per token up to
+    2,056. The probe's fit over all sizes, steep start included, gives 6.5 ms.
   - The two cross at about 340 new tokens. A threshold between 256 and 512 was not
     measured.
 - **Cold short prompts are not affected.** The d0 prompts (31–42 tokens, no context) took
-  2.5–2.8 s at every threshold, on either path. The card's extra cost for a short batch
+  2.5–2.8 s at every threshold, on either path. The exception is `thr128`'s first request
+  after its first load, at 3.76 s. The card's extra cost for a short batch
   appears only on top of a deep context; its cause was not measured.
 
-**Estimated batch prefill** (the bench's 186 warm agent turns priced by these turn times) and
-the checks:
+**Estimated batch prefill** (the bench's 186 agent turns, 180 warm plus each session's cold
+first turn, priced by these turn times) and the checks:
 
-| Cell | Warm-turn prefill, s | `hermes` / `coding` | Decode d0 / d8000, t/s | d8000 prefill, t/s |
+| Cell | Turn prefill, s | `hermes` / `coding` | Decode d0 / d8000, t/s | d8000 prefill, t/s |
 | --- | ---: | --- | --- | ---: |
 | `thr32` | 2,999 [2,992–3,019] | 1,746 / 1,253 | 8.73 [8.68–8.83] / 7.78 [7.77–7.89] | 179.7 |
 | `thr128` | 2,957 [2,955–2,959] | 1,737 / 1,220 | 8.74 / 7.82 | 179.9 |
@@ -586,14 +588,14 @@ beyond both spreads. Its decode at d0 (8.64 against 8.73) and d8000 (7.76 agains
 within the control's spread (0.15 and 0.12), and so is its d8000 prefill. Stages 2–6 run with
 it. Stage 5 checks it on real sessions.
 
-### Stage 2, fit pass — 2026-10-13 18:19–20:05 ET
+### Stage 2, fit pass — 2026-10-13 18:19–20:42 ET
 
 Harness `bca01927e027`, cells [`-fit.cells`](2026-10-13-long-tasks-fit.cells), one pass,
 b11583, `GGML_OP_OFFLOAD_MIN_BATCH=512`, depths 0, 8,000 and 48,000 plus the turn probe. Raw
 data on the host: `/root/glm53-flash/sweep-106-fit-20261013T221937Z/`,
 `residency-106-fit.jsonl` and `trace-106-fit.txt`.
 
-| Cell | Fit | Least free with swaps | Least free outside swaps | Outside VRAM | Failed VRAM allocations | Code prefill d8000 / d48000, t/s | Decode, median of six |
+| Cell | Fit | Least free with swaps | Least free outside swaps | Outside VRAM | Failed VRAM allocations | Code prefill d8000 / d48000, t/s | Decode, median of nine prompt cells |
 | --- | --- | ---: | ---: | ---: | ---: | --- | ---: |
 | `n46-ub4096` (control) | fits | 3,750 MiB | 9,071 MiB | 0 | 0 | 178.8 / 145.8 | 7.40 |
 | `n45-ub4096` | **fails** (rules 1, 2, 3) | **54 MiB** | 5,361 MiB | **1,890 MiB** | **25** | 163.2 / 136.1 | 7.65 |
@@ -611,7 +613,8 @@ data on the host: `/root/glm53-flash/sweep-106-fit-20261013T221937Z/`,
   - It frees 2,146 MiB at load (13,073 against 10,927 MiB) and lets `-ncmoe 45` fit.
   - It costs 21% of d8000 prefill and 18% at 48k.
 - **Block 45's experts on the card** decoded 4% faster in this one pass (7.73 against 7.43 at
-  micro-batch 2048). The timed pass checks it against the spread.
+  micro-batch 2048, medians over d0, d8000 and d48000). The timed pass checks it against
+  the spread.
 - **Every cell:** probe and contract clean, no turn failed.
 - **Timed pass:** `n46-ub4096` (control), `n46-ub2048` and `n45-ub2048`, three passes
   ([`-placement.cells`](2026-10-13-long-tasks-placement.cells)). `-ncmoe 45` fits at 2048,
@@ -625,8 +628,9 @@ depths 0 and 8,000 plus the turn probe. Raw data on the host:
 `/root/glm53-flash/sweep-106-placement-20261014T170018Z/`, `residency-106-placement.jsonl`
 and `trace-106-placement.txt`. Figures are medians of the three passes, with their range.
 
-**Estimated batch time.** This is the stage's rule: the bench's 186 warm turns, with their
-37,236 generated tokens at the cell's d8000 decode.
+**Estimated batch time.** This is the stage's rule: the bench's 186 agent turns (180 warm,
+plus each session's cold first turn), with their 37,236 generated tokens at the cell's d8000
+decode.
 
 | Cell | Batch, s | Turn prefill, s | Decode, s | Decode d0 / d8000, t/s | d8000 prefill, t/s | 30k prime (cold), s |
 | --- | ---: | ---: | ---: | --- | ---: | ---: |
@@ -654,7 +658,8 @@ and `trace-106-placement.txt`. Figures are medians of the three passes, with the
     Acceptance there is 66.5/49.8/59.7% (code/list/prose) against 62.8/46.4/58.3%.
 - **What the rule does not cover:**
   - **Turns past 2,048 new tokens are extrapolated.**
-    - 69 warm turns run past 2,048 new tokens, with 134,679 tokens beyond it (up to 8,777).
+    - 69 turns run past 2,048 new tokens, with 134,679 tokens beyond it: 63 warm turns of
+      up to 5,039 tokens, and the six cold first turns of 4,342–8,777.
     - The turn probe stops at 2,048, so these are extrapolated along each cell's 1,024–2,048
       segment.
     - For the control, the estimate on those 69 turns is 2,020 s against the bench's
@@ -874,7 +879,7 @@ host: `/root/glm53-flash/sweep-106-cpu-20261015T141427Z/`, `residency-106-cpu.js
   - Checked on the live server: each compute thread is bound to one CPU of 0–31, and at
     one sample its 32 running threads sat on 32 distinct CPUs.
 - **`t24` is 3.2% slower.**
-  - It decodes 4% slower.
+  - It decodes 4.1% slower at d0 and 3.3% at d8000.
   - Its turns of 128–256 new tokens, on the CPU, take 5.1–9.1 s against 4.4–7.3 s.
 - **`--poll 0`** is within the control's spread, 0.7% slower by its median.
 - **The fixed CPU set alone changed nothing measurable.** The control decodes 9.20 / 8.24
@@ -1095,6 +1100,11 @@ environment and the tool-call check. VRAM data on the host: `residency-106-inges
     0–47. That covers all 32 cores, plus the second threads of cores 0–15.
   - **Stages 4–6 keep that set.** Stage 4's control re-measures stages 1–3's
     configuration on it, and `restore` at the campaign's end drops it.
+- **The estimated batch time prices 186 turns, not all warm.** The plan says "every warm
+  `hermes` and `coding` turn of the bench (186 turns)". 180 of them are warm. The other six
+  are each session's cold first turn, 4,342–8,777 tokens. Every stage priced all 186, as
+  the count says. The bench's measured prefill times that the estimate is checked against
+  include them too.
 - **Stage 5's tool-call check ran after the control's bench**, on the winner reinstalled
   for stage 6, not during the winner's own run.
   - Its first version required a call to `read_file`. The model called `run_command`
@@ -1113,7 +1123,7 @@ Measured on one 64k slot on GPU 2 (`0000:83:00.0`), b11583, Vulkan, Mesa 26.2.4.
 1. **The fixed cost of a short turn is op offload.** With `GGML_OP_OFFLOAD_MIN_BATCH=512`,
    turns under 512 new tokens run on the CPU. On a 30k cached context, a 41-token turn
    takes 2.36 s against 4.38 s and a 264-token turn 7.41 s against 8.77 s; turns of 512
-   tokens and more are unchanged. The estimated warm-turn prefill falls 5.9%.
+   tokens and more are unchanged. The estimated agent-turn prefill falls 5.9%.
 2. **Placement and micro-batch.**
    - At micro-batch 4096, block 45's experts do not fit on the card at n-max 2. During a
      compute-buffer swap, 25 VRAM allocations failed and 1,890 MiB stayed outside VRAM.
