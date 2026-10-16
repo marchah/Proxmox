@@ -2,7 +2,8 @@
 # Run one stage of the baseline record (runs/2026-10-15-baseline.md) with its samplers.
 # Runs on the Proxmox HOST as root, from a harness staged by ../push-harness.sh.
 #
-#   ./run-stage.sh fit|fit2|mtp|timed
+#   ./run-stage.sh fit|fit2|mtp
+#   NMAX=<1-4> ./run-stage.sh timed                    # the n-max stage 2 picked (pick-nmax.py)
 #   WAIT_DOWNLOAD=true SETUP=true ./run-stage.sh fit   # queued: after the download, set up
 #                                                      # both cards, then run stage 1
 #
@@ -40,7 +41,12 @@ case "$STAGE" in
   timed) REPS=3; DEPTHS=0,8000; CLASSES= ;;
   *) die "usage: run-stage.sh fit|fit2|mtp|timed" ;;
 esac
-CELLS="${HERE}/runs/2026-10-15-baseline-${STAGE}.cells"
+if [ "$STAGE" = timed ]; then
+  [[ "${NMAX:-}" =~ ^[1-4]$ ]] || die "the timed stage needs NMAX=1..4, from pick-nmax.py"
+  CELLS="${HERE}/runs/2026-10-15-baseline-timed-n${NMAX}.cells"
+else
+  CELLS="${HERE}/runs/2026-10-15-baseline-${STAGE}.cells"
+fi
 
 [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"
 [ -f "${HERE}/../../HARNESS_COMMIT" ] || die "not a staged harness; run ../push-harness.sh and use its path"
