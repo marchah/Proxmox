@@ -7,12 +7,16 @@ A cell's window is its probes: the first to the last timestamp of the sweep's
 <tag>.gpu.tsv, which the sweep samples only while the probes run, so the load is left out.
 For each window it prints the store's reads and the host's major faults over the window,
 CT 123's peak memory and its least headroom under the CT limit, and the host's least
-MemAvailable. A cell fails the record's RAM rule when the store read more than 1 GiB, the
-CT came within 2 GiB of its limit, or the host's MemAvailable fell under 4 GiB.
+MemFree. A cell fails the record's RAM rule when the store read more than 1 GiB, the CT
+came within 2 GiB of its limit, or the host's MemFree fell under 4 GiB.
+
+MemAvailable counts the experts' page cache as reclaimable, so it cannot show the host's
+margin. A TSV from before the sampler logged MemFree is summarised on MemAvailable, and
+the header says so.
 """
 import csv, pathlib, sys
 
-READ_MAX_MIB, CT_HEADROOM_MIB, HOST_AVAIL_MIB = 1024, 2048, 4096
+READ_MAX_MIB, CT_HEADROOM_MIB, HOST_FREE_MIB = 1024, 2048, 4096
 
 
 def main():
@@ -24,8 +28,9 @@ def main():
     if not rows:
         sys.exit(f"{tsv}: no samples")
 
+    host = "host_free_mib" if "host_free_mib" in rows[0] else "host_avail_mib"
     print("cell\twindow_s\tstore_read_mib\tmajflt\tct_peak_mib\tct_least_headroom_mib"
-          "\thost_least_avail_mib\tram_rule")
+          f"\t{host.replace('host_', 'host_least_')}\tram_rule")
     for gpu in sorted(out_dir.glob("*.gpu.tsv")):
         stamps = [float(line.split("\t", 1)[0]) for line in gpu.read_text().splitlines() if line]
         if not stamps:
@@ -45,12 +50,12 @@ def main():
         # No limit read (cgroup missing or unlimited) fails the rule rather than passing it.
         headroom = min((r["ct_max_mib"] - r["ct_mib"] for r in inside if r["ct_max_mib"] > 0),
                        default=None)
-        avail = min(r["host_avail_mib"] for r in inside)
+        host_least = min(r[host] for r in inside)
         ok = (reads <= READ_MAX_MIB and headroom is not None and headroom >= CT_HEADROOM_MIB
-              and avail >= HOST_AVAIL_MIB)
+              and host_least >= HOST_FREE_MIB)
         shown = "?" if headroom is None else f"{headroom:.0f}"
         print(f"{tag}\t{t1 - t0:.0f}\t{reads:.0f}\t{majflt:.0f}\t{peak:.0f}\t{shown}"
-              f"\t{avail:.0f}\t{'pass' if ok else 'FAIL'}")
+              f"\t{host_least:.0f}\t{'pass' if ok else 'FAIL'}")
 
 
 if __name__ == "__main__":
