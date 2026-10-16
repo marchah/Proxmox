@@ -163,7 +163,10 @@ residency() {
   python3 - "${CARDS[@]}" <<'PY'
 import glob, json, re, sys
 cards = set(sys.argv[1:])
-out, seen = {}, set()
+# The kernel prints each size in the largest unit that divides it evenly: a resident size
+# that is a whole number of MiB reads `29741 MiB`, not KiB.
+UNIT_KIB = {"": 1 / 1024, "KiB": 1, "MiB": 1024, "GiB": 1024 * 1024}
+out, kib, seen = {}, {}, set()
 for f in glob.glob("/proc/[0-9]*/fdinfo/*"):
     pid = f.split("/")[2]
     try:
@@ -177,12 +180,14 @@ for f in glob.glob("/proc/[0-9]*/fdinfo/*"):
     if not pdev or pdev.group(1) not in cards or not cid or (pid, cid.group(1)) in seen:
         continue
     seen.add((pid, cid.group(1)))
-    r = out.setdefault(pdev.group(1), {"requested": 0, "resident": 0, "evicted": 0})
+    r = kib.setdefault(pdev.group(1), {"requested": 0, "resident": 0, "evicted": 0})
     for key, name in (("requested", "amd-requested-vram"), ("resident", "drm-resident-vram"),
                       ("evicted", "amd-evicted-vram")):
-        m = re.search(r"%s:\s*(\d+)\s*KiB" % name, text)
+        m = re.search(r"^%s:\s*(\d+)[ \t]*([KMG]iB)?[ \t]*$" % name, text, re.M)
         if m:
-            r[key] += int(m.group(1)) // 1024
+            r[key] += int(m.group(1)) * UNIT_KIB[m.group(2) or ""]
+for pci, r in kib.items():
+    out[pci] = {key: int(v) // 1024 for key, v in r.items()}
 print(json.dumps(out))
 PY
 }
