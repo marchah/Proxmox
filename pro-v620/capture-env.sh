@@ -83,9 +83,17 @@ strata = (out["unit"] or "").startswith("strata-")
 argv = []
 pid = sh("pgrep -o -x strata" if strata else "pgrep -o -x llama-server")
 if pid.isdigit():
-    argv = open("/proc/%s/cmdline" % pid, "rb").read().split(b"\0")
-    argv = [a.decode() for a in argv if a]
+    try:
+        argv = [a.decode() for a in open("/proc/%s/cmdline" % pid, "rb").read().split(b"\0") if a]
+    except OSError:
+        argv = []  # it exited between pgrep and here
 out["server_cmdline"] = " ".join(shlex.quote(a) for a in argv) or None
+
+def cmdline_of(pid):
+    try:
+        return " ".join(shlex.quote(a.decode()) for a in open("/proc/%s/cmdline" % pid, "rb").read().split(b"\0") if a)
+    except (OSError, ValueError):
+        return None
 
 if strata:
     # The engine (`strata --serve`, its argv above) runs under Strata's Python server.
@@ -100,9 +108,7 @@ if strata:
         "source_head": sh("git -C %s rev-parse HEAD 2>/dev/null" % shlex.quote(home)) or None,
         "ggml_head": sh("git -C %s/third_party/llama.cpp rev-parse HEAD 2>/dev/null" % shlex.quote(home)) or None,
         "strata_sha256": sh("sha256sum %s/build-hip/strata | cut -c1-64" % shlex.quote(home)) or None,
-        "server_cmdline": (" ".join(shlex.quote(a.decode()) for a in
-                                    open("/proc/%s/cmdline" % spid, "rb").read().split(b"\0") if a)
-                           if spid.isdigit() else None),
+        "server_cmdline": cmdline_of(spid),
         "config": json.load(open(cfg_path)) if os.path.exists(cfg_path) else None,
         "devices": sh("LD_LIBRARY_PATH=%s/lib %s/build-hip/strata-device --list-devices 2>&1"
                       % (shlex.quote(rocm), shlex.quote(home))),
