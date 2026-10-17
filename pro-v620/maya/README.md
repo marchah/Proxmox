@@ -64,7 +64,7 @@ writes it (`maya.py write_config`), and runs `serve/server.py`. The config is ke
 | Engine arguments | `--expert-cache auto --prefill auto --kv-streaming on`, the shipped expert profile | setup's config |
 | HIP settings | 3 GiB VRAM and 16 GiB RAM left free, prompt sub-batch 1024, 4 GiB prompt budget | setup's values for a discrete card of 20 GB or more; no hipBLASLt table exists for gfx1030 |
 | RAM tier | `STRATA_GLM_RAM_RESIDENT=1`: every expert outside VRAM pinned in RAM | this box's RAM holds them; nothing is read from the SSD while it answers |
-| Conversation cache | `STRATA_GLM_SLOTS=0`, `STRATA_GLM_CKPTS=0` | each prompt that leaves the current conversation is read whole, as the probes' cold rows need |
+| Prompt reuse | `STRATA_GLM_NO_REUSE=1`: no snapshot of the last prompt, no SSD slots, no checkpoints | every request reads its whole prompt, as the probes' cold rows need; with only slots and checkpoints off, a repeated prompt still read 1 of 24 tokens |
 | Reasoning | `reasoning_effort: none` | llama.cpp runs `--reasoning-budget 0`; Maya's default is high |
 | Sampling defaults | temperature 1.0, top-p 0.95 | Maya's, the model's generation_config |
 

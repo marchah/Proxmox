@@ -127,7 +127,7 @@ nice -n 19 cmake --build "$b" -j "$JOBS" --target strata strata-device
 # define, or one that fails for gfx1030, is reported and skipped: the engine above is what runs.
 for t in glm_hc_parity glm_kda_parity glm_ffn_parity glm_dsa_parity glm_layer_parity glm_model_test \
          hip_intrinsics hip_glm_handoff hip_glm_prefill_attention hip_handoff hip_expert_cache_staging \
-         iq1_s_parity; do
+         hip_prefill_mmq_parity iq1_s_parity; do
   nice -n 19 cmake --build "$b" -j "$JOBS" --target "$t" >"$b/test-build-${t}.log" 2>&1 \
     && echo "test target ${t}: built" || echo "test target ${t}: NOT built (see ${b}/test-build-${t}.log)"
 done
