@@ -88,6 +88,22 @@ class CellTests(unittest.TestCase):
         self.assertFalse(out["probe_ok"])
         self.assertEqual(out["placement"]["engine_faults"], 1)
 
+    def test_a_hung_pipelined_window_and_the_engine_restart_fail_the_cell(self):
+        out = run_cell(
+            "strata serve: pipelined decode: verify: the window never finished; its GPU waits were released "
+            "but the GPU did not finish within 5 s (#267)\n"
+            "[strata] the engine had stopped (exit code -15); starting it again (a minute or two) ...\n")
+        self.assertFalse(out["probe_ok"])
+        self.assertEqual(out["placement"]["engine_faults"], 2)
+
+    def test_pipeline_lines_are_kept(self):
+        on = ("strata generate: --pipeline-windows 2: 160 MiB of CUDA0 kept out of the expert cache\n"
+              "strata serve: --pipeline-windows 2: two verifiers per stage, 2 stages overlap across windows\n")
+        account = cell.engine_account(SPLIT_LOG + on)
+        self.assertEqual(len(account["pipeline_lines"]), 2)
+        self.assertTrue(account["pipeline_lines"][1].startswith("--pipeline-windows 2: two verifiers"))
+        self.assertEqual(account["stall_lines"], 0)
+
     def test_nonfinite_logits_fail_the_cell(self):
         out = run_cell("strata: non-finite logits at position 812\n")
         self.assertFalse(out["probe_ok"])

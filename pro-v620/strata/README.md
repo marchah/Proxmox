@@ -124,7 +124,9 @@ engine's own account of each request. `UNIT=maya-glm53f` runs it on
 [`strata-cell.py`](strata-cell.py) turns each loaded cell's readings into its result:
 - the expert cache on every card the engine uses;
 - the VRAM the engine requested against the VRAM resident, on each card the cell runs on;
-- the engine log's stall and non-finite lines.
+- the engine log's stall and non-finite lines, a verify window that never finished (#267,
+  Strata #2245) and the server restarting a dead engine;
+- the engine's `--pipeline-windows` lines: on, off and why, or a request decoded serially.
 
 A missing residency reading or an engine fault fails the cell, and the summary leaves it out
 of the reference. [`strata-summary.py`](strata-summary.py) adds the engine's account to the

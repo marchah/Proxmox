@@ -126,7 +126,13 @@ def engine_account(text):
         "decode_hit_pct_median": round(statistics.median(hits), 1) if hits else None,
         "decode_hit_pct_last": hits[-1] if hits else None,
         "pcie_share_pct_median": round(statistics.median(pcie), 1) if pcie else None,
-        "stall_lines": len(re.findall(r"stall report|timed out at layer|no progress for", text)),
+        # Whether --pipeline-windows ran: on (with its VRAM kept out of the cache), off and why,
+        # or a request that fell back to the serial loop.
+        "pipeline_lines": re.findall(r"(--pipeline-windows[^\n]{0,200})", text)[:6],
+        # A verify window that never finished on the GPU (#267, Strata #2245) and the server
+        # restarting a dead engine count as stalls.
+        "stall_lines": len(re.findall(r"stall report|timed out at layer|no progress for|never finished"
+                                      r"|the engine had stopped", text)),
         "nonfinite_lines": len(re.findall(r"non-finite logits", text)),
         "warning_lines": [l for l in text.splitlines() if "WARNING" in l][:10],
     }
