@@ -1,6 +1,6 @@
 # Qwen3.8-Flash-Next: why greedy text changes between starts with pipeline windows (Strata)
 
-Plan committed 2026-10-17 · Run 2026-10-17 · Status: running
+Plan committed 2026-10-17 · Run 2026-10-17 · Status: done
 
 ## Question
 
@@ -235,6 +235,111 @@ the nine pipeline-windows loads: 153 requests, 17 per load. With the pipeline re
   thermal trip.
 - Drift: `pw2` decodes 67.5 t/s, inside the pipeline record's soak range (64.8–70.3).
 
+### Stage B: each switch alone
+
+Run 2026-10-17 10:31–10:57 ET, harness `62d2907`, three interleaved passes of
+`2026-10-17-strata-text-2-single.cells`, in CT 123 holding both cards; raw data in
+`/root/qwen38-flash-next/strata-sweep-20261017T143129Z/`. Decode is computed as in stage A. Stage
+A's `pw2` and `pw2-frozen`, run in the session before, are the comparison.
+
+| Cell | Switch | Rows with one text in all passes | Different texts per row | Decode, t/s | vs `pw2` | Acceptance | Decode hit rate | PCIe share |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| `pw2` (stage A) | none | 1 of 9 | 3 on 8 rows | 67.5 (66.8–67.9) | | 79.1% | 97.6% | 1.3% |
+| `pw2-mtmin` | `STRATA_IQ_MT_MIN=1` | 0 of 9 | 3 on 8 rows, 2 on 1 | 67.0 (64.3–69.2) | −0.7% | 78.4% | 97.7% | 1.0% |
+| `pw2-noswap` | `--adapt-swaps 0` | **9 of 9** | 1 | 64.8 (64.7–64.8) | −4.0% | 77.2% | 92.8% | 3.4% |
+| `pw2-nopcie` | `--pcie-frac 0` | 0 of 9 | 3 on 7 rows, 2 on 2 | 69.9 (68.7–70.3) | +3.6% | 78.4% | 96.4% | — |
+| `pw2-frozen` (stage A) | all four | 9 of 9 | 1 | 70.8 (70.6–70.9) | +4.9% | 79.9% | 89.4% | — |
+
+**`--adapt-swaps 0` is enough on its own.**
+- With it, `pw2` gives the same text in all three passes on 9 of 9 rows.
+- `STRATA_IQ_MT_MIN=1` alone and `--pcie-frac 0` alone leave the text changing on every row.
+- `pw2-noswap`'s text matches `pw2-frozen`'s on 1 of 9 rows. The two round differently, since
+  `pw2-noswap` keeps the PCIe share and the single-token CPU kernels. Each still repeats its own
+  text.
+
+**Speed**, against stage A's `pw2`:
+- `--adapt-swaps 0` alone is 4.0% slower, with the ranges clear of each other.
+- `--pcie-frac 0` alone is 3.6% faster, also with clear ranges. Strata's `docs/DETAILS.md` says
+  that `--pcie-frac 0` costs decode speed. Without pipeline windows, stage A agrees: there the
+  four switches together were 3.0% slower.
+- `STRATA_IQ_MT_MIN=1` alone is within `pw2`'s spread. Its passes spread 4.9 t/s.
+- All four together are the fastest pipeline-windows cell measured, and repeat.
+- Prefill is unchanged: 968–969 t/s at d8000, 1,431–1,433 at d32000.
+
+**The cards in decode**, GPU 1 / GPU 2: 89–92% / 83–87% busy, 169–179 W / 144–152 W in all
+three cells.
+
+**Hang.** There were no `#267` lines, engine restarts, stalls or fallbacks to the serial loop in
+the nine loads: 153 requests, 17 per load. Over this record that makes 306 requests across 18
+pipeline-windows starts. With the pipeline record, it makes 918 across 54, which rules out a
+per-request hang rate above about 0.3%, at 95%.
+
+**Checks:**
+- Each load's log shows the pipeline on, with 272 MiB of CUDA0 kept out of the expert cache.
+- Chat contract and tool calls: 9 of 9 loads.
+- Rows: of 81, none empty, degenerate or cut off. Eight ended on end-of-sequence at 239–249
+  tokens, all `list` at d0.
+- Memory: 0 MiB outside VRAM on either card, at load and after the probe. The samplers saw no
+  gap between requested and resident VRAM in 1,395 samples per card. Another 18 per card had
+  only one counter and are left out.
+- Thermal: the hottest DIMM read 52 °C; the hottest junction 84 °C, in prefill. There was no
+  thermal trip.
+
+**End state** (10:59 ET): `use-engine.sh strata` returned CT 123 to GPU 2 alone:
+- it serves the unchanged env file;
+- the watchdog map is restored;
+- CT 120 is stopped, with `onboot=1` again.
+
+The thermal guard and both samplers are stopped. The other guests stay stopped for the owner.
+
 ## Deviations
 
+None. Stage A took 46 minutes and stage B 26, within the plan's estimates.
+
 ## Conclusion
+
+Measured on two V620s in the split21 layer split, with Strata v0.1.44.1 (`296b59d`),
+UD-Q4_K_XL and `--spec 4 --spec-min-p 0.7`. Chat mode, greedy 256-token replies, three cold
+starts per configuration.
+
+1. **Cause.** With `--pipeline-windows 2`, the greedy text changes between server starts because
+   of the adaptive expert tier.
+   - With `--adapt-swaps 0` alone, the text repeats on 9 of 9 rows.
+   - `STRATA_IQ_MT_MIN=1` alone and `--pcie-frac 0` alone leave it changing on every row.
+   - Without pipeline windows, the text repeats with the tier on (`serial`, 9 of 9).
+   - In the source, the tier runs beside the pipeline on a thread of its own. Its copies wait
+     for the windows in flight (`src/program/generate.cpp:11988`).
+2. **The pipeline's tokens are exact.** With all four switches, guessed windows give the same
+   text as the same configuration that never starts one (`STRATA_PIPELINE_THETA=2`), on 9 of 9
+   rows.
+3. **Speed:**
+
+   | Configuration | Text across starts | Decode, t/s |
+   | --- | --- | ---: |
+   | `pw2` | changes | 67.5 (66.8–67.9) |
+   | `pw2` + `--adapt-swaps 0` | repeats | 64.8 (64.7–64.8) |
+   | `pw2` + `--pcie-frac 0` | changes | 69.9 (68.7–70.3) |
+   | `pw2` + all four switches | repeats | 70.8 (70.6–70.9) |
+   | `serial` | repeats | 60.2 (60.1–60.2) |
+
+   - With pipeline windows, `--pcie-frac 0` makes decode faster on these cards. Strata's
+     documentation says it costs speed, which held without pipeline windows.
+   - With all four switches, guessed windows add 9.3%.
+   - Prefill is unchanged.
+4. **Stability.** In 306 requests across 18 pipeline-windows starts there was no #2245 hang,
+   engine restart or stall. With the pipeline record, that makes 918 requests across 54 starts.
+5. **Checks.** Every load passed:
+   - the chat contract, the tool calls and the row checks;
+   - nothing outside VRAM;
+   - no thermal trip.
+
+**Not measured:**
+- `--adapt-swaps 0 --pcie-frac 0` without the other two switches.
+- Conversations longer than the probe. With `--adapt-swaps 0`, the expert cache keeps what the
+  profile loads at start and does not follow the conversation. The decode hit rate was 89–93%
+  here, against 96–98% with the tier on.
+- Two concurrent streams, sampling above temperature 0, agent sessions.
+- Draft settings other than `--spec 4 --spec-min-p 0.7`.
+
+CT 123 still serves the starting configuration on GPU 2 alone. Whether to use any of these
+settings is the owner's decision.
