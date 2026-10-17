@@ -12,8 +12,9 @@ The hardware target is exclusively the existing ROMED8-2T host: EPYC 7532
 (Zen 2 / AVX2), approximately 503.6 GiB usable RAM, two V620s (gfx1030) with
 30,704 MiB exposed VRAM each, and NVMe model storage. Use the already working
 Linux/HIP/ROCm 10.0 environment. Those are recorded values, not a fresh host
-inspection. CT 123's current 120 GiB limit must be increased for these tests.
-See the [host fit notes](../mimo-v26-pro/README.md) and
+inspection. Development and tests run in CT 124 `strata-dev` on GPU 2
+([development container plan](../strata-dev/PLAN.md)), whose memory limit fits the Q2
+budget below. See the [host fit notes](../mimo-v26-pro/README.md) and
 [current Strata installation](README.md).
 
 Scope clarified by the owner on 2026-10-17: start with a small quantization to
@@ -175,12 +176,14 @@ arena is below the recorded approximately 252 GiB amdgpu GTT ceiling, so the
 existing pinned-arena approach is worth trying first; keep Engram outside GPU
 registration and measure the actual pinning budget. The GPU remains a cache.
 
-For Q4, retain all experts in RAM and use an SSD-backed Engram row cache initially.
+For Q4, retain all experts in RAM and read Engram rows from the NVMe through a
+bounded row cache. Q4 cannot also keep Engram resident: its routed experts and
+Engram alone are 284.77 + 188.83 = 473.6 GiB, against approximately 503.6 GiB of
+host RAM, before dense weights, KV, scratch, runtime and a host reserve.
 The approximately 285 GiB expert store exceeds that recorded GTT ceiling; use
 ordinary resident RAM plus bounded pinned transfer buffers, or a capped registered
 subset. Account for duplicated GPU cache entries. Engram row prefetch can overlap
-the backbone because the row IDs depend on input tokens. Compare RAM-resident
-Engram later if the full allocation ledger leaves adequate headroom.
+the backbone because the row IDs depend on input tokens.
 
 The original official checkpoint's 475.24 GiB was independently verified from
 all 48 safetensors headers, but loading that representation is not a prerequisite.
@@ -250,11 +253,12 @@ correctness/security fixes promptly. Change the frozen base only in a separate
 reviewable update that reruns CPU, gfx1030 and service gates. Offer generic loader,
 session-versioning and dispatch fixes upstream without coupling the two model forks.
 
-Build and run AVX2 fixtures in CT 123 under `/opt/strata-ds41/`; macOS is the
-authoring machine. HIP tests require both cards free of serving processes. Add an
-x86-64 AVX2 CPU-only GitHub Actions build and small deterministic fixtures on every
-change, without full model downloads. In the fork, provide one documented
-`tools/deepseek/validate-gfx1030.sh` entry point for CT 123: device enumeration,
+The fork is a private repository under the owner's account. An OpenCode agent writes,
+builds and tests it in CT 124 under `/opt/strata-ds41/`, on GPU 2 with no serving
+process on the card. Add an x86-64 AVX2 CPU-only GitHub Actions build and small
+deterministic fixtures on every pull request, without full model downloads; a private
+repository has limited Actions minutes. In the fork, provide one documented
+`tools/deepseek/validate-gfx1030.sh` entry point for CT 124: device enumeration,
 required operator/loader/prefill/session fixtures and scratch-boundary checks.
 Run CPU scratch tests under supported address/undefined-behavior sanitizers and
 device fixtures with guard checks. List inherited WMMA/hipBLASLt/AVX-512 skips;
@@ -264,17 +268,18 @@ error metric and predeclared tolerance in `tests/deepseek/tolerances.json` with 
 README explaining reference repeatability and CPU/GPU deltas. These are proposed
 fork deliverables, not existing commands or tests in this repository.
 
-**Lab integration and campaign safety.** Parameterize `use-engine.sh` and
-`../glm53-flash/ct123-test-host.sh` once for engine root, unit, model and restore
-target; MiMo will reuse the same plumbing. Implement the test subset before the
-first full-model run, with final packaging in step 7. Planned names are
-`TEST_MODEL=deepseek41`, `TEST_ENGINE=strata`, root `/opt/strata-ds41/`, unit/env
-`strata-ds41`, launcher `strata-serve-ds41`. Update all test-unit and `Conflicts=`
-lists, readiness/device checks, `/dev/kfd`, DRM cgroups, CT 120 autostart and the
-watchdog map together. Derive `TEST_MEMORY_MIB` from step 1's peak allocation
-ledger plus container overhead, reserving host memory; 488 GiB is not a fixed
-DeepSeek requirement. Set `--memory-limit-mib` below the CT limit by the declared
-container reserve; the existing 118784 MiB launcher default is inappropriate.
+**Lab integration and campaign safety.** `../strata-dev/strata-dev-host.sh` moves
+the cards: `dev` gives GPU 2 to CT 124 with Flash-Next stopped, `two-card` adds GPU 1
+with CT 120 stopped, and `restore` returns both. It changes passthrough, `/dev/kfd`,
+DRM cgroups, autostart and the watchdog map together. The agent develops within CT
+124's one-card setup; the owner decides when a step is ready for a two-card or
+whole-host test. Step 7 packages the qualified engine for CT 123 as unit/env
+`strata-ds41` with launcher `strata-serve-ds41`, extending `use-engine.sh` with an
+engine root and unit. Size CT 124's memory limit from step 1's peak allocation ledger
+plus container overhead, keeping the running guests' limits and a host reserve within
+host RAM; 488 GiB is not a fixed DeepSeek requirement. Set `--memory-limit-mib`
+below the CT limit by the declared container reserve; the existing 118784 MiB
+launcher default is inappropriate.
 Before a full load, fix the host minimum-MemFree and CT runtime-reserve thresholds
 in the campaign record. Reject a configuration with swap, expert paging, VRAM
 spill, or a breached reserve; do not count resident file-backed experts as free
@@ -305,8 +310,8 @@ DSpark exists but is deferred until its own implementation; quote no-draft contr
 and explain that exclusion. Revalidate cold requests/token counting tracked by
 [#112](https://github.com/marchah/Proxmox/issues/112) before usage benchmarks, and
 check the Hermes provider against the endpoint before a deployment decision.
-Restore the saved Flash-Next engine, device ownership, limits and watchdog map
-with one command; DeepSeek need not run in llama.cpp for that restore to work.
+`strata-dev-host.sh restore` returns the saved Flash-Next engine, device ownership,
+limits and watchdog map; DeepSeek need not run in llama.cpp for that restore to work.
 Other guests stay off after a campaign until the owner asks to start them.
 Model-store capacity remains owner-managed; retain pinned downloads and SHA-256
 verification (`.verified`), without a storage-capacity planning gate.
@@ -335,9 +340,10 @@ reviewable change or small series. Work inside a fork; the user's permission to
 drop Qwen supersedes upstream's policy of preserving Qwen defaults. Keep license
 notices for reused Strata, ggml, and DeepSeek code.
 
-0. **Qualify the frozen base before porting.** Build v0.1.45 / `477ac13` separately
-   from the installed v0.1.44.1. Run the existing Flash-Next UD-Q4_K_XL yardstick
-   and chat/tool gates from the 2026-10-16 record on the same card/configuration.
+0. **Qualify the frozen base before porting.** Build v0.1.45 / `477ac13` in CT
+   124, separately from CT 123's installed v0.1.44.1. Run the existing Flash-Next
+   UD-Q4_K_XL yardstick and chat/tool gates from the 2026-10-16 record on the same
+   card/configuration.
    Gate: no correctness regression, and any speed/memory change explained. Keep
    the installed service as the restore target; this is not an automatic upgrade.
 
@@ -364,7 +370,8 @@ notices for reused Strata, ggml, and DeepSeek code.
 
    Gate: all expected tensors, dtypes, dimensions, scale layouts, and layer
    dependencies accounted for; fixture provenance recorded; target allocations
-   fit the proposed hardware budget. The campaign must record a numerical usable
+   fit the proposed hardware budget; for each component, a recorded decision to
+   port Lucebox's HIP V4.1 operators or DwarfStar's, or to write it, with the reason. The campaign must record a numerical usable
    decode/TTFT threshold agreed with the owner before performance qualification
    if no same-quant engine baseline exists; the 15–30 t/s forecast is not that
    threshold. This does not block metadata/fixture development now.

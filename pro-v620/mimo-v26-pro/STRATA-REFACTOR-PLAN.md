@@ -66,11 +66,13 @@ the deferral. The approximately 390 GiB Q2_K artifact already removes much of th
 fit pressure (about 98 GiB below the prior CT limit before runtime allocations); MXFP4's
 near-capacity fit is a separate later constraint. Neither estimate is a floor or ceiling.
 
-Reconsider after DeepSeek supplies reusable fixtures/plumbing, improved upstream MiMo
-scheduling, or changed GPU/host-memory capacity. These are reasons to re-estimate, not
-automatic restart conditions. On the owner's decision to resume, refresh the pins, qualify
-the base, measure the same-quant baseline and run the routing probe below before committing
-to the cache implementation. Model-store capacity remains owner-managed; retain pinned
+The owner will not resume MiMo until the host has substantially more VRAM, which is not
+expected soon. Reusable DeepSeek fixtures/plumbing or improved upstream MiMo scheduling are
+reasons to re-estimate then, not restart conditions. Development would use a container like
+DeepSeek's CT 124 ([plan](../strata-dev/PLAN.md)); the sections below still name CT 123.
+On the owner's decision to resume, refresh the pins, qualify the base, measure the
+same-quant baseline and run the routing probe below before committing to the cache
+implementation. Model-store capacity remains owner-managed; retain pinned
 downloads and SHA-256 verification, without an eviction/capacity-planning deliverable.
 
 ## Fork maintenance and development
