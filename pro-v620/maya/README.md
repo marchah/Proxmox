@@ -59,7 +59,7 @@ writes it (`maya.py write_config`), and runs `serve/server.py`. The config is ke
 
 | Setting | Value | Source |
 | --- | --- | --- |
-| Cards | `MODEL_GPUS=0000:83:00.0`, by PCI address | the launcher resolves HIP's numbering at every start; two addresses run a layer split, the first card first, at `MODEL_LAYER_SPLIT=auto` |
+| Cards | `MODEL_GPUS=0000:83:00.0`, by PCI address | the launcher resolves HIP's numbering at every start; two addresses run a layer split, the first card first, at `MODEL_LAYER_SPLIT` |
 | Context | 64k, one request at a time | llama.cpp's one 64k slot |
 | Engine arguments | `--expert-cache auto --prefill auto --kv-streaming on`, the shipped expert profile | setup's config |
 | HIP settings | 3 GiB VRAM and 16 GiB RAM left free, prompt sub-batch 1024, 4 GiB prompt budget | setup's values for a discrete card of 20 GB or more; no hipBLASLt table exists for gfx1030 |
@@ -67,6 +67,12 @@ writes it (`maya.py write_config`), and runs `serve/server.py`. The config is ke
 | Prompt reuse | `STRATA_GLM_NO_REUSE=1`: no snapshot of the last prompt, no SSD slots, no checkpoints | every request reads its whole prompt, as the probes' cold rows need; with only slots and checkpoints off, a repeated prompt still read 1 of 24 tokens |
 | Reasoning | `reasoning_effort: none` | llama.cpp runs `--reasoning-budget 0`; Maya's default is high |
 | Sampling defaults | temperature 1.0, top-p 0.95 | Maya's, the model's generation_config |
+
+On two cards, the engine's split search (`MODEL_LAYER_SPLIT=auto`) prices each card from HIP's
+memory clock, which reads 64 GB/s on the V620 against the card's 512 GB/s. It then gives GPU 2
+only the dense layers 0–1, with no expert pool and no prompt path, so every prompt runs token by
+token. `MODEL_LAYER_SPLIT=24` gives each card 21 MoE layers. Two-card loads at layer 24 stalled
+on long prompts ([test record](../glm53-flash/runs/2026-10-16-maya.md#stage-2-arms)).
 
 ## Measuring it
 
