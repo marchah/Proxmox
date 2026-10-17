@@ -47,33 +47,36 @@ access to the host or to the other guests.
 | Template | Ubuntu 24.04 | AMD's ROCm 10.0 repository targets `ubuntu2404`, as in CT 123. |
 | Privilege | Unprivileged, `lxc.prlimit.memlock: unlimited` | CT 123 is privileged (the llama-swap provisioner created it), so HIP with page-locked memory in an unprivileged container is unverified here. Fall back to privileged only if KFD or pinning fails, and record why. |
 | Cores | 24 | As CT 123. Owner tests set an explicit `TEST_CPUSET` (siblings n/n+32). |
-| Memory | See [Memory](#memory); swap 0 | The fork plans reject runs that swap. |
+| Memory | 64 GiB while CT 123 still runs; raised when GPU 2 moves (see [Memory](#memory)); swap 0 | The fork plans reject runs that swap. |
 | Root disk | 200 GB on `local-lvm` | |
 | Devices | `dev0: /dev/kfd`; `dev1`, `dev2`: GPU 2's render and card nodes at their real names; group `render`, mode 0660 | Proxmox allows exactly these device numbers in the cgroup: the narrow rule HIP needs ([Strata README](../strata/README.md)). Resolve the names from `/dev/dri/by-path/pci-0000:83:00.0-{render,card}` at every switch. |
 | Mounts | `mp0: /mnt/models/store,mp=/models,ro=1`; `mp1: /mnt/models/store/dev,mp=/models-dev` | The agent reads every GGUF and cannot change one. `/models-dev` holds derived files: fixtures, manifests, converted tables. |
 | onboot | 1 while it holds GPU 2, 0 after `restore` | |
 | Firewall | On | See [Network](#network). |
 
-Software, pinned in the provisioner: ROCm `amdrocm-core-dev10.0-gfx1030=10.0.0-4`, read from
-`../strata/strata-qwen38fn.env` so the two containers stay on one runtime; build tools and
-ccache; a Python venv with CPU PyTorch for the reference implementations; `gh`; tmux;
-OpenCode 2 at a fixed 2.0.x version. The DeepSeek checkout lives in `/opt/strata-ds41/`, owned
-by `agent`.
+[`create-lxc-strata-dev.sh`](create-lxc-strata-dev.sh) creates it without the GPU, and
+installs, pinned: ROCm `amdrocm-core-dev10.0-gfx1030=10.0.0-4` (the values in
+`../strata/strata-qwen38fn.env`, on every login's paths); build tools, ccache, Python venv
+support, `gh` and tmux from Ubuntu; OpenCode 2.0.32. The agent makes its own Python
+environments, such as CPU PyTorch for the reference implementations. The DeepSeek checkout
+lives in `/opt/strata-ds41/`, owned by `agent`.
 
 ## Memory
 
-The host has about 503.6 GiB usable. The DeepSeek plan's provisional Q2 process budget is
-384–416 GiB, with routed experts (142.4 GiB) and Engram (188.8 GiB) both in RAM. Set CT 124's
-limit so that it, the limits of the other running guests, and a host reserve fit within the
-host's RAM. Read the other limits with `pct config` and `qm config` when creating it. With the
-other guests small, the result exceeds the Q2 budget. Replace the provisional figure with
-step 1's ledger, and keep the engine's `--memory-limit-mib` below the container limit by the
-reserve the DeepSeek plan declares.
+The host has about 503.6 GiB usable. CT 124's limit, the limits of the other running guests
+and a 16 GiB host reserve fit within it. On 2026-10-17 the others were CT 120 16 GiB,
+CT 121 8 GiB, CT 140 4 GiB and VM 300 4 GiB: 32 GiB. So CT 124 runs at 64 GiB while CT 123
+(120 GiB) still serves, enough for builds and fixtures, and gets about 455 GiB once
+`strata-dev-host.sh dev` stops CT 123. Keep the engine's `--memory-limit-mib` below the
+container limit by the reserve the DeepSeek plan declares.
 
-Q4 does not fit with Engram in RAM. Its routed experts and Engram alone are
-284.8 + 188.8 = 473.6 GiB, before dense weights, KV, scratch and runtime. The MiMo tests'
-488 GiB container limit left the host 15.5 GiB with every other guest stopped. The DeepSeek
-plan reads Q4's Engram rows from the NVMe, which keeps a Q4 run near 300 GiB.
+The DeepSeek plan's provisional Q2 budget, 384–416 GiB with routed experts (142.4 GiB) and
+Engram (188.8 GiB) both in RAM, comes from the September artifact; step 1 recomputes it for
+Unsloth's 1017 files. At those sizes Q4 does not fit with Engram in RAM: its routed experts
+and Engram alone are 284.8 + 188.8 = 473.6 GiB, before dense weights, KV, scratch and
+runtime. The MiMo tests' 488 GiB container limit left the host 15.5 GiB with every other
+guest stopped. The DeepSeek plan reads Q4's Engram rows from the NVMe, which keeps a Q4 run
+near 300 GiB.
 
 ## GPU ownership: `strata-dev-host.sh`
 
@@ -112,10 +115,10 @@ sessions on disk. As for any trip, the owner checks cooling before starting CT 1
 
 ## Agent runtime: OpenCode 2
 
-- Install a pinned OpenCode 2.0.x for `agent`, with `autoupdate: false` and no plugins: a
-  plugin runs with the agent's rights. The 1.x installer does not offer 2.x, and third-party
-  guides disagree on the 2.0 service commands, so take both from the pinned version's
-  `opencode --help`.
+- OpenCode 2.0.32 comes from the npm tarball its own v2 installer downloads
+  (`@opencode/cli-linux-x64`), checked against a pinned SHA-256. The agent's config sets
+  `update: "disable"`, so the version changes only with the provisioner's pin. No plugins:
+  a plugin runs with the agent's rights.
 - The model is the owner's choice of free Zen model, pinned in
   `~agent/.config/opencode/opencode.json`; the owner logs in once as `agent`.
 - Permission prompts are acceptable: the TUI stays attached inside tmux, so a prompt waits on
@@ -185,8 +188,11 @@ Proxmox firewall on CT 124 (`firewall=1` on `net0`):
   (web UI, API, SSH), the BMC (IPMI drives the blowers), the NAS, CT 120 and CT 123 `:1234`,
   Hermes `:8642` and VM 300.
 
-Enabling the firewall at datacenter level also filters the host. Confirm the host's rules
-allow 8006 and 22 from the LAN first, or the web UI locks out. The container holds no SSH key
+The provisioner writes these rules to `/etc/pve/firewall/124.fw`. Guest rules apply only
+while the datacenter firewall is on, which also turns on the host's own firewall with an
+inbound DROP policy. So `ENABLE_DATACENTER_FIREWALL=1` first writes the host's
+`host.fw` with `enable: 0`, then turns the datacenter firewall on: the host stays
+unfiltered, and no other guest has `firewall=1` on its NIC. The container holds no SSH key
 or API token for the host or another guest.
 
 ## Backups
@@ -210,12 +216,12 @@ first, code staged by commit, environment from `capture-env.sh`. Afterwards,
    (124 unused), the other guests' memory limits, and `../strata/use-engine.sh status` (the
    Flash-Next engine to restore).
 2. GitHub: the private repository at `477ac13`, the token, and the frontier agent's issues.
-3. Create `/mnt/models/store/dev`, owned by `101000:101000`. When the store has room, the
-   owner downloads the pinned Q2 GGUF to `/mnt/models/store/hf/deepseek-v4.1-flash/`, with
-   SHA-256 and `.verified` like the other models.
+3. When Unsloth publishes the 1017 Q2 GGUF, download it to
+   `/mnt/models/store/hf/deepseek-v4.1-flash-1017/` with a pinned revision, SHA-256 and
+   `.verified`, like the other models.
 4. The watchdog's `@container` form, with its README and env file, tested in `warn` mode.
-5. `create-lxc-strata-dev.sh`, in the repository's config block → helpers → ordered `main()`
-   form: container, firewall, ROCm, toolchain, `agent`, sshd, the tmux unit, OpenCode, `gh`.
+5. `create-lxc-strata-dev.sh`: container, `/mnt/models/store/dev` (owned by
+   `101000:101000`), firewall, ROCm, toolchain, `agent`, sshd, OpenCode, the tmux unit.
 6. The card guards in `use-engine.sh`, `ct123-test-host.sh` and `ct120-cutover.sh`; then
    `strata-dev-host.sh`, with a mocked-`pct` test like `ct123-test-host-test.sh`.
 7. `strata-dev-host.sh dev`, then verify:
