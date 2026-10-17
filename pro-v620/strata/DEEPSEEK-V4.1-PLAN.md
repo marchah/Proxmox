@@ -21,9 +21,10 @@ Scope clarified by the owner on 2026-10-17: start with a small quantization to
 remove capacity pressure, aim for approximately 4-bit weights eventually, and
 support only this hardware. The first deliverable is text inference on the
 pinned Q2 artifact at short context, one request at a time. Then add the text/tool
-API, performance tuning, and Q4. CUDA, other GPU generations, other operating
-systems, vision, and DSpark are outside the first release. There is no requirement
-to implement native FP4/FP8 GPU arithmetic or a catalog of weight formats.
+API, performance tuning, and Q4. All of that works on one V620 before any two-card
+work starts. CUDA, other GPU generations, other operating systems, vision, and
+DSpark are outside the first release. There is no requirement to implement native
+FP4/FP8 GPU arithmetic or a catalog of weight formats.
 The Q2 release uses exact full-forward prefill; approximate SWA bounded replay
 requires its own later acceptance and cache identity. One 8K slot is the release
 target. Two isolated 8K slots are a later qualification target, not a release gate.
@@ -271,9 +272,10 @@ fork deliverables, not existing commands or tests in this repository.
 **Lab integration and campaign safety.** `../strata-dev/strata-dev-host.sh` moves
 the cards: `dev` gives GPU 2 to CT 124 with Flash-Next stopped, `two-card` adds GPU 1
 with CT 120 stopped, and `restore` returns both. It changes passthrough, `/dev/kfd`,
-DRM cgroups, autostart and the watchdog map together. The agent develops within CT
-124's one-card setup; the owner decides when a step is ready for a two-card or
-whole-host test. Step 7 packages the qualified engine for CT 123 as unit/env
+DRM cgroups, autostart and the watchdog map together. Steps 0–7 run on GPU 2 alone,
+for Q2 and then Q4; two-card work waits for step 8, which keeps whole-host runs to
+one-card measurements and that step. The owner decides when each is due. Step 7
+packages the qualified engine for CT 123 as unit/env
 `strata-ds41` with launcher `strata-serve-ds41`, extending `use-engine.sh` with an
 engine root and unit. Size CT 124's memory limit from step 1's peak allocation ledger
 plus container overhead, keeping the running guests' limits and a host reserve within
@@ -304,8 +306,8 @@ and `capture-env.sh`. DIMM risk analysis/new thermal gates are excluded by the
 recorded owner decision; retain existing guard behavior and DIMM telemetry.
 
 Use [TEST-RECORDS.md](../TEST-RECORDS.md), committed plans, `push-harness.sh`,
-`environment.json`, and adapted `strata-sweep.sh`/probes. Start on GPU 2, then both
-cards; record why CPU-only or resource-saving arms are omitted if not useful.
+`environment.json`, and adapted `strata-sweep.sh`/probes. Campaigns before step 8
+use GPU 2 alone; record why CPU-only or resource-saving arms are omitted if not useful.
 DSpark exists but is deferred until its own implementation; quote no-draft controls
 and explain that exclusion. Revalidate cold requests/token counting tracked by
 [#112](https://github.com/marchah/Proxmox/issues/112) before usage benchmarks, and
@@ -437,11 +439,7 @@ notices for reused Strata, ggml, and DeepSeek code.
    Replace Qwen expert profiles and route-tail skipping with conservative
    defaults; collect a new profile from DeepSeek workloads.
 
-   Start with one V620. Add a two-card layer split only with explicit transfer
-   and ownership of shared KV/index dependencies. A split at the encoder/decoder
-   boundary is a candidate, not an assumed optimum; arbitrary Qwen layer splits
-   can strand CSA2 consumers on the wrong device. Expert-helper placement is an
-   alternative to benchmark once single-card correctness is established.
+   Run on one V620 (GPU 2). Two-card placement waits for step 8.
 
    Gate: chunk sizes 1, 2, 3 and larger blocks agree with token-by-token execution,
    including odd compressor boundaries and positions 127/128/129. Benchmark
@@ -501,8 +499,9 @@ notices for reused Strata, ggml, and DeepSeek code.
    affect another; eviction and cancellation leave bounded allocations. Longer
    context and packed KV are optional subsequent work, not Q2 release gates.
 
-7. **Qualify Q2, add Q4_K, and package for this host.** Record single-card and
-   two-card Q2 results before changing quantization. Add the matching Q4 artifact's
+7. **Qualify Q2, add Q4_K, and package for this host.** Everything in this step
+   runs on GPU 2 alone. Record Q2 results before changing quantization. Add the
+   matching Q4 artifact's
    Q4_K expert path, keeping its dense tensor precision and Engram contract.
    Validate Q4 against its own dequantized reference; Q4 need not produce Q2's
    output. The publisher's Q4 files are binary transport parts of one GGUF, not
@@ -526,12 +525,25 @@ notices for reused Strata, ggml, and DeepSeek code.
    the root README inventory and CLAUDE.md's "Where to look" when the service is
    installed. Qualify service
    restart, model readiness, shutdown/cancellation, RAM limits, and recovery.
-   Gate: publish reproducible Q2/Q4 prefill, decode, TTFT, memory and cache results
-   on this host, with model/quant/context/draft status explicit. Qualify the Q2
-   text release after gates 1–6 and its packaging checks; Q4 follows after the
-   same checks pass with its new loader, kernels, and memory policy.
+   Gate: publish reproducible one-card Q2/Q4 prefill, decode, TTFT, memory and
+   cache results on this host, with model/quant/context/draft status explicit.
+   Qualify the Q2 text release after gates 1–6 and its packaging checks; Q4
+   follows after the same checks pass with its new loader, kernels, and memory
+   policy.
 
-8. **Optional work after the measured Q2/Q4 text service.** Prioritize these from
+8. **Add the second card.** Start only after Q2 and Q4 pass every one-card gate
+   above; the owner sets up these runs, which stop CT 120. Add a two-card layer
+   split only with explicit transfer and ownership of shared KV/index
+   dependencies. A split at the encoder/decoder boundary is a candidate, not an
+   assumed optimum; arbitrary Qwen layer splits can strand CSA2 consumers on the
+   wrong device. Expert-helper placement is an alternative to benchmark.
+
+   Gate: two-card traces and logits agree with the one-card path under the same
+   tolerances, with no state divergence or unbounded duplication. Measure each
+   quant against its own one-card result, interleaved, and keep two cards only
+   where they improve on one.
+
+9. **Optional work after the measured Q2/Q4 text service.** Prioritize these from
    observed bottlenecks rather than treating them as prerequisites:
 
    - Two 8K slots. Reuse upstream admission and batch scheduling only after the
