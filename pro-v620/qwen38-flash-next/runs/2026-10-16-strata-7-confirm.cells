@@ -1,0 +1,9 @@
+# Cells for runs/2026-10-16-strata.md, stage 7's confirming passes, in CT 123 holding both
+# cards, at PASSES=3. Each arm's no-draft control and its best length in the one-pass scan
+# (sweep 20261016T212016Z): --spec 5 on both arms (one card 49.4 t/s, split 59.5 t/s; lengths
+# 3-5 within 0.5 t/s of each other, 6 lower on both). Suffix drafts off, STRATA_MMQ_KQ=1 as in
+# the scan.
+one-ctl    MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0 STRATA_MMQ_KQ=1
+split-ctl  MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto STRATA_MMQ_KQ=1
+one-s5     MODEL_SPEC=5 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0 STRATA_MMQ_KQ=1
+split-s5   MODEL_SPEC=5 MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto STRATA_MMQ_KQ=1

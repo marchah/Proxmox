@@ -151,6 +151,41 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(bodies[1]["seed"], 7)
         self.assertTrue(bodies[1]["cache_prompt"])
 
+    def test_cold_rows_ask_strata_not_to_resume(self):
+        bodies = []
+
+        def capture(url, body):
+            bodies.append(body)
+            return {"choices": [{"message": {"content": "some answer text"}, "finish_reason": "length"}],
+                    "timings": {"predicted_per_second": 9, "cache_n": 0}}
+
+        with patch.object(probe, "post", side_effect=capture):
+            probe.one("http://unused", "p", 16, chat=True)
+            probe.one("http://unused", "p", 16, chat=True, cache=True)
+        self.assertIs(bodies[0]["strata_checkpoint"], False)
+        self.assertNotIn("strata_checkpoint", bodies[1])
+
+    def test_cold_row_served_from_cache_is_an_error(self):
+        reply = {"choices": [{"message": {"content": "some answer text"}, "finish_reason": "length"}],
+                 "timings": {"predicted_per_second": 9, "prompt_n": 7, "cache_n": 1936}}
+        with patch.object(probe, "post", return_value=reply):
+            cold = probe.one("http://unused", "p", 16, chat=True)
+            cached = probe.one("http://unused", "p", 16, chat=True, cache=True)
+        self.assertIn("served from the prompt cache", cold["error"])
+        self.assertNotIn("error", cached)
+
+    def test_reasoning_passes_the_contract_only_where_allowed(self):
+        allowed = {"bare_chat": {"ok": True, "reasoning_chars": 0},
+                   "effort_high": {"harmless": True, "reasoning_chars": 151, "reasoning_allowed": True}}
+        refused = {"bare_chat": {"ok": True, "reasoning_chars": 0},
+                   "effort_high": {"harmless": True, "reasoning_chars": 151, "reasoning_allowed": False}}
+        for contract, ok in ((allowed, True), (refused, False)):
+            with patch.object(probe, "one", side_effect=[row()]), \
+                    patch.object(probe, "contract_check", return_value=dict(contract)):
+                status, data = run_probe("--reps", "1", "--classes", "code", "--contract")
+            self.assertEqual(data["contract_ok"], ok)
+            self.assertEqual(status, 0 if ok else 1)
+
     def test_server_sampling_may_differ_across_reps_but_greedy_may_not(self):
         rows = [dict(row(), content_sha="a"), dict(row(), content_sha="b")]
         with patch.object(probe, "one", side_effect=list(rows)):
@@ -336,6 +371,26 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("| legacy | 0/1 | 0 | not checked |", report)
         self.assertIn("Reference: `control`", report)
         self.assertNotIn("Reference: `mtp`", report)
+
+    def test_summary_never_picks_a_faulty_or_unmeasured_cell_as_reference(self):
+        # strata-cell.py marks engine stall/non-finite lines and missing residency readings.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for label, rate, extra in [("control", 14, {}), ("valid", 15, {}),
+                                       ("faulty", 99, {"engine_faults": 1}),
+                                       ("unmeasured", 98, {"residency_missing": ["0000:83:00.0 at load"]})]:
+                (root / (label + "-r1.json")).write_text(json.dumps({
+                    "placement": dict({"label": label}, **extra),
+                    "summary": {"d0/code": {"decode_tps_median": rate}}}))
+            out = io.StringIO()
+            with patch.object(sys, "argv", ["summary", directory]), contextlib.redirect_stdout(out):
+                summary.main()
+            report = out.getvalue()
+        self.assertIn("🔴 engine stall or non-finite logits in 1 run(s)", report)
+        self.assertIn("⚠️ VRAM residency not measured in 1 run(s)", report)
+        self.assertIn("Reference: `valid`", report)
+        self.assertNotIn("| faulty | 99.0 t/s", report)
+        self.assertNotIn("| unmeasured | 98.0 t/s", report)
 
     def test_summary_prints_turns_and_flags_uncached_passes(self):
         turn = {"context_tokens": 30000, "summary": {"32": {"prompt_s_median": 2.3},

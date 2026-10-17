@@ -1,0 +1,6 @@
+# Cells for runs/2026-10-16-strata.md, stage 8: Strata's best configurations, in CT 123 holding
+# both cards, through ../../strata/strata-sweep.sh with PASSES=1 per round. strata-best is stage
+# 7's one-card result (--spec 5, STRATA_MMQ_KQ=1, no suffix drafts, the draft layer from the env
+# file); strata-best-2 is the same on stage 2's split21 layer split, at the owner's request.
+strata-best    MODEL_SPEC=5 MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0
+strata-best-2  MODEL_SPEC=5 MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto

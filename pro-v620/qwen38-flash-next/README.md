@@ -24,6 +24,16 @@ at `0000:83:00.0`**, leaving CT 120's Qwen3.6 service on the other card.
 
 Vulkan requires **b11013 or later** for the hyper-connection operations. A
 registered `qwen4exp` architecture alone does not establish backend support.
+[Strata](../strata/README.md), an engine for this model on HIP, installs into CT 123 beside
+llama.cpp and serves the same files; `../strata/use-engine.sh` switches between them. Since
+2026-10-16, CT 123 serves Strata, the owner's choice; `use-engine.sh llamacpp` restores the
+configuration above.
+
+On GPU 2, against that configuration, Strata v0.1.44.1 decoded 49.2 t/s against 18.2, and
+read a 23k-token prompt at 1,008 t/s against 340. Both were measured in chat mode with
+256-token replies, `--spec 5` and `STRATA_MMQ_KQ=1`. With both cards in a layer split,
+Strata decoded 59.7 t/s and read that prompt at 1,423 t/s
+([record](runs/2026-10-16-strata.md#stage-8-against-llamacpp)).
 Measurements live in the [test records](#test-records), each with its build and
 hardware.
 
@@ -148,6 +158,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch with `dio` and the MTP head](runs/2026-10-10-bench.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The prefill slowdown with `dio` and the MTP head](runs/2026-10-10-prefill-slowdown.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [Short-reply decode with `dio` and the MTP head](runs/2026-10-10-short-reply-decode.md) | done |
+| 2026-10-16 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Strata in place of llama.cpp on one card](runs/2026-10-16-strata.md) | done |
 
 ## Benchmark tools
 

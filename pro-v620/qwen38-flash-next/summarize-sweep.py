@@ -20,7 +20,9 @@ def contract_failures(contract):
     for name, check in contract.items():
         content = check.get("content") or ""
         leaked = check.get("think_leaked_into_content", "<think>" in content or "</think>" in content)
-        if not check.get("ok", check.get("harmless", False)) or leaked or check.get("reasoning_chars"):
+        # Strata honours a caller's effort: those efforts' replies may reason (reasoning_allowed).
+        reasoned = check.get("reasoning_chars") and not check.get("reasoning_allowed")
+        if not check.get("ok", check.get("harmless", False)) or leaked or reasoned:
             failed.append(name)
     return failed
 
@@ -56,7 +58,8 @@ def main():
                                 "hit": [], "dimm": [], "capped": 0, "cache_inactive": 0,
                                 "shas": {}, "load_failed": 0, "load_s": [], "gpus": None,
                                 "cell": pl.get("cell"), "conc": [], "turns": [], "mem": [], "util": [],
-                                "contracts": [], "loaded_passes": 0})
+                                "contracts": [], "loaded_passes": 0,
+                                "engine_faults": 0, "residency_missing": 0})
         if pl.get("load_failed"):
             g["load_failed"] += 1
             continue
@@ -84,6 +87,10 @@ def main():
         g["free"].append(pl.get("vram_free_for_a_guest_mib") or 0)
         g["gtt"].append(max(pl.get("gpu1_gtt_mib") or 0, pl.get("gpu2_gtt_mib") or 0))
         g["spill"] |= bool(pl.get("possible_gtt_spill"))
+        # strata-cell.py: engine stall or non-finite lines, and cards whose VRAM residency was
+        # not read. Both leave the measurements in place and the run unusable.
+        g["engine_faults"] += bool(pl.get("engine_faults"))
+        g["residency_missing"] += bool(pl.get("residency_missing"))
         g["degen"] |= bool(j.get("any_degenerate"))
         g["disagree"] |= (j.get("all_reps_agree") is False)
         if pl.get("moe_cache_spec"):
@@ -135,14 +142,14 @@ def main():
     if manifest_error:
         print("⚠️ `manifest.json` is unreadable (%s), so the run header is missing.\n" % manifest_error)
     if manifest:
+        engine = manifest.get("engine") or "llama.cpp `%s`" % str(manifest.get("llamacpp_dir", "")).rsplit("/", 1)[-1]
         print("`ctx %s` · `parallel %s` · `%s reps` · `n_predict %s` · depths `%s` · "
-              "%s · %s GiB host RAM · llama.cpp `%s`\n" % (
+              "%s · %s GiB host RAM · %s\n" % (
                   manifest.get("ctx"), manifest.get("parallel"), manifest.get("reps"),
                   manifest.get("n_predict"), manifest.get("depths"),
                   ("%d cells" % len(manifest["cells"])) if manifest.get("cells")
                   else ("ONE GPU" if manifest.get("one_gpu") else "two GPUs"),
-                  manifest.get("host_ram_gib"),
-                  str(manifest.get("llamacpp_dir", "")).rsplit("/", 1)[-1]))
+                  manifest.get("host_ram_gib"), engine))
         if manifest.get("drop_caches"):
             print("Every load was cold: the host page cache was dropped before each one.\n")
         if manifest.get("probe_classes"):
@@ -205,6 +212,10 @@ def main():
             flags.append("⚠️ GTT spill")
         if g["degen"]:
             flags.append("🔴 degenerate output")
+        if g["engine_faults"]:
+            flags.append("🔴 engine stall or non-finite logits in %d run(s)" % g["engine_faults"])
+        if g["residency_missing"]:
+            flags.append("⚠️ VRAM residency not measured in %d run(s)" % g["residency_missing"])
         split = sorted(k for k, s in g["shas"].items() if len(s) > 1)
         if g["disagree"] or split:
             flags.append("⚠️ reps disagree" + (" (%s)" % ", ".join(split) if split else ""))
@@ -234,7 +245,8 @@ def main():
         # Keep failed/invalid measurements visible above, but do not choose one as
         # the fastest reference or quote its performance trade as a usable option.
         invalid = (g["errors"] or g["load_failed"] or g["spill"] or g["degen"]
-                   or g["disagree"] or split or g["capped"] or g["cache_inactive"] or contract_failed)
+                   or g["disagree"] or split or g["capped"] or g["cache_inactive"] or contract_failed
+                   or g["engine_faults"] or g["residency_missing"])
         if overall and not invalid:
             rows_for_tradeoff.append((label(key), free / 1024, med(overall)))
 
@@ -413,7 +425,8 @@ def main():
     # --- the template contract ----------------------------------------------------
     print("\n## Template contract\n")
     print("Coverage is per cell and loaded pass. A pass succeeds only when bare chat and "
-          "every effort return non-empty, clean content with no reasoning block. Older "
+          "every effort return non-empty, clean content with no reasoning block, except for the "
+          "efforts a Strata sweep lets reason, and any tool call parses. Older "
           "sweeps checked only their first loaded cell; untested cells remain unverified.\n")
     print("| cell | loaded passes checked | passed | failures |")
     print("|---|---:|---:|---|")

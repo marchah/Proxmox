@@ -10,6 +10,8 @@ Use component READMEs for deployment commands, defaults, and measurements.
 - [pro-v620/](pro-v620/README.md): CT 120, GPU passthrough and Qwen3.6 serving.
 - [qwen38-flash-next/](pro-v620/qwen38-flash-next/README.md): CT 123 and the optional
   two-card CT 120 configuration, placement measurements and cutover procedure.
+- [strata/](pro-v620/strata/README.md): the Strata engine (HIP, ROCm 10.0) in CT 123 beside
+  llama.cpp for Flash-Next; `use-engine.sh` switches the unit and the watchdog map together.
 - [glm53-flash/](pro-v620/glm53-flash/README.md): GLM-5.3-Flash model notes and test
   records; not deployed.
 - [mimo-v26-pro/](pro-v620/mimo-v26-pro/README.md): MiMo-V2.6-Pro-RL model notes, RAM fit

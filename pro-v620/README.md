@@ -132,6 +132,10 @@ pct stop 120 && pct start 120
 pct exec 120 -- /usr/local/bin/llamacpp-wait-health   # blocks until serving (guard passes)
 ```
 
+CT 123 takes the same repair for `0000:83:00.0`. Its DRM cgroup rule also names the two
+minors, for HIP: `strata/use-engine.sh strata` rewrites it
+([Strata](strata/README.md#what-is-installed)).
+
 ## Benchmarks
 
 Run endpoint benchmarks from the repo root with `make bench`; see

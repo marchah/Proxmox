@@ -1,0 +1,9 @@
+# Cells for runs/2026-10-16-strata.md, the screen's confirming passes, on CT 123 (GPU 2 alone)
+# through ../../strata/strata-sweep.sh at PASSES=3. The cells that beat both control loads by
+# more than 2% in the one-pass screen (sweep 20261016T192822Z): mmqkq (prefill +60% at d8000,
+# +47% at d32000) and chunk16k (+11% at d32000). mmqkq-chunk16k measures the two together,
+# which is what stage 7 would inherit if both are kept. No drafts.
+ctl             MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0'
+mmqkq           MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_MMQ_KQ=1
+chunk16k        MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' MODEL_PREFILL=auto:16384
+mmqkq-chunk16k  MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_MMQ_KQ=1 MODEL_PREFILL=auto:16384

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Restart Strata at a context length and slot count, then wait until it serves. The same
+# interface as llamacpp-qwen38fn-reload, so make bench can reload either engine.
+# Installed as /usr/local/bin/strata-qwen38fn-reload in CT 123 by install.sh.
+#
+#   strata-qwen38fn-reload <context-length> <parallel>
+#
+# llama.cpp splits <context-length> across the slots; Strata gives each slot its own session
+# of <context-length> tokens (docs/BATCHING.md in the Strata source).
+set -Eeuo pipefail
+
+usage='usage: strata-qwen38fn-reload <context-length> <parallel>'
+ctx="${1:?${usage}}"
+parallel="${2:?${usage}}"
+[[ ${ctx} =~ ^[0-9]+$ && ${parallel} =~ ^[0-9]+$ ]] || { echo "${usage}" >&2; exit 2; }
+
+env_file=/etc/strata-qwen38fn.env
+sed -i \
+  -e "s/^MODEL_CONTEXT_LENGTH=.*/MODEL_CONTEXT_LENGTH=\"${ctx}\"/" \
+  -e "s/^MODEL_PARALLEL=.*/MODEL_PARALLEL=\"${parallel}\"/" \
+  "${env_file}"
+systemctl restart strata-qwen38fn.service
+
+# shellcheck disable=SC1090  # runtime-only env file
+port="$(. "${env_file}"; printf '%s' "${MODEL_SERVER_PORT:-1234}")"
+# /v1/models lists the model only once the engine has said READY; /health answers before.
+for _ in $(seq 1 360); do
+  if curl -fsS "http://127.0.0.1:${port}/v1/models" 2>/dev/null | grep -q '"id"'; then
+    exit 0
+  fi
+  if systemctl is-failed --quiet strata-qwen38fn.service; then
+    echo "strata-qwen38fn-reload: the server failed to start; see journalctl -u strata-qwen38fn" >&2
+    exit 1
+  fi
+  sleep 5
+done
+echo "strata-qwen38fn-reload: the server was not serving after 30 min" >&2
+exit 1

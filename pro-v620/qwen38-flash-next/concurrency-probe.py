@@ -75,7 +75,9 @@ def one(base: str, prompt: str, n_predict: int, chat: bool = False) -> dict:
         # The same text as one user turn through the chat template (placement-probe.py --chat).
         r = post(base + "/v1/chat/completions",
                  {"messages": [{"role": "user", "content": prompt}], "max_tokens": n_predict,
-                  "temperature": 0, "top_k": 1, "cache_prompt": False, "stream": False})
+                  "temperature": 0, "top_k": 1, "cache_prompt": False, "stream": False,
+                  # Strata ignores cache_prompt; llama.cpp ignores this.
+                  "strata_checkpoint": False})
         choice = r["choices"][0]
         content = (choice.get("message") or {}).get("content") or ""
         stop = {"length": "limit", "stop": "eos"}.get(choice.get("finish_reason"),
@@ -83,7 +85,7 @@ def one(base: str, prompt: str, n_predict: int, chat: bool = False) -> dict:
     else:
         r = post(base + "/completion",
                  {"prompt": prompt, "n_predict": n_predict, "temperature": 0, "top_k": 1,
-                  "cache_prompt": False, "stream": False})
+                  "cache_prompt": False, "stream": False, "strata_checkpoint": False})
         content = r.get("content") or ""
         # b11505 reports `stop_type`; older builds set stopped_eos / stopped_limit.
         stop = r.get("stop_type") or ("eos" if r.get("stopped_eos") else
