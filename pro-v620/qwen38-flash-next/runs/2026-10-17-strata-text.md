@@ -1,6 +1,6 @@
 # Qwen3.8-Flash-Next: why greedy text changes between starts with pipeline windows (Strata)
 
-Plan committed 2026-10-17 · Run — · Status: planned
+Plan committed 2026-10-17 · Run 2026-10-17 · Status: running
 
 ## Question
 
@@ -143,13 +143,97 @@ CELLS=runs/2026-10-17-strata-text-1-freeze.cells ../strata/strata-sweep.sh      
 
 ## Environment
 
-As in the [pipeline record](2026-10-17-strata-pipeline.md#environment), to be replaced by stage A's
-`environment.json`: Strata v0.1.44.1 (`296b59d`) on gfx1030, ROCm 10.0, both V620s at the 250 W
-cap and 0 mV.
+From stage A's `environment.json` (`capture-env.sh`, 2026-10-17 13:27 UTC):
+- Host: Proxmox VE 9.2.21, kernel 7.0.14-22-pve, firmware 3.18-7; EPYC 7532 with 8 × 64 GB
+  DDR4-3200 (M393A8K40B22-CAE), one per channel; `schedutil` governor.
+- GPU 1: V620 `0000:03:00.0`, `unique_id` 150e6a6800f84ebe. GPU 2: V620 `0000:83:00.0`,
+  `unique_id` 99b104541144b36c. Both: VBIOS 113-D6030500-100, 30,704 MiB, 250 W cap, 0 mV
+  offset, PCIe 16 GT/s x16.
+- CT 123: Ubuntu 24.04, 24 cores, 122,880 MiB memory, 4 GiB swap.
+- Strata: v0.1.44.1 (`296b59d`) with ggml from llama.cpp `3cf0325`; engine SHA-256
+  `3a97b4b0…0de2`. ROCm `amdrocm-core-dev10.0-gfx1030` 10.0.0-4, HIP runtime
+  `libamdhip64.so.7.15.26333`. Two V620s, gfx1030, 30.0 GiB each, wave32.
+- Model: the four UD-Q4_K_XL shards, each with its SHA-256 stamp verified; the MTP draft layer
+  at `/models/strata/mtp/rt`.
+- Engine switches from the env file: `STRATA_HIP_PROMPT_F16=1`, `STRATA_SH_STREAM=1`,
+  `STRATA_HIP_ADAPT_KERNEL_COPY=1`, `STRATA_ROUTE_TAIL_SKIP=0`.
 
 ---
 
 ## Results
+
+### Stage A: freezing and guessed windows
+
+Run 2026-10-17 09:27–10:13 ET, harness `8c1f733`, three interleaved passes of the five cells,
+in CT 123 holding both cards; raw data in `/root/qwen38-flash-next/strata-sweep-20261017T132745Z/`.
+Texts are from `text-repeat.py --against pw2-frozen-noguess`. Decode is the median of the passes'
+medians across the nine class-and-depth rows, with the passes' range in brackets.
+
+| Cell | Pipeline windows | Frozen | Rows with one text in all passes | Same text as `pw2-frozen-noguess` | Decode, t/s | Acceptance | Decode hit rate | Prefill d8000 / d32000 |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pw2` | 2 | no | 1 of 9 | 0 of 9 | 67.5 (66.8–67.9) | 79.1% | 97.6% | 969 / 1,431 |
+| `serial` | off | no | 9 of 9 | 1 of 9 | 60.2 (60.1–60.2) | 79.7% | 97.8% | 959 / 1,415 |
+| `pw2-frozen` | 2 | yes | **9 of 9** | **9 of 9** | **70.8 (70.6–70.9)** | 79.9% | 89.4% | 969 / 1,432 |
+| `serial-frozen` | off | yes | 9 of 9 | 0 of 9 | 58.4 (58.3–58.4) | 79.2% | 89.8% | 960 / 1,414 |
+| `pw2-frozen-noguess` | 2, no guessed windows | yes | 9 of 9 | | 64.8 (64.6–64.9) | 81.5% | 89.2% | 969 / 1,432 |
+
+**The reading is the plan's first row:** `pw2-frozen` repeats, and matches
+`pw2-frozen-noguess` on all nine rows.
+- Guessed windows give the same tokens as the same windows run without guessing, on the same
+  caches. The pipeline's own computation does not change the text.
+- What changes it is one or more of the frozen choices. Stage B applies and names which.
+- `pw2` gave three different texts on 8 of its 9 rows.
+- Without pipeline windows, the text repeats frozen or not.
+- `serial-frozen` matches `pw2-frozen-noguess` on 0 rows. As the plan noted, this is not
+  decisive: pipeline windows leave 143 fewer expert slots (15,796 against 15,939), so the two run
+  on different caches.
+
+**Speed:**
+- **Freezing with pipeline windows** decodes 4.9% faster: 70.8 against 67.5 t/s, with the
+  ranges clear of each other.
+- **Freezing without them** decodes 3.0% slower: 58.4 against 60.2.
+- **The expert cache:** the frozen cells keep the experts the profile loads at start. Their
+  decode hit rate is 89.2–89.8%, against 97.6–97.8%, and no expert is read over PCIe (1.2–1.3%
+  unfrozen).
+- **Guessed windows** are worth 9.3%: `pw2-frozen` decodes 70.8 t/s, against 64.8 for
+  `pw2-frozen-noguess`.
+- **Pass to pass:** pipeline-windows cells varied 1.1 t/s unfrozen and 0.3 t/s frozen.
+- **Prefill:** pipeline-windows cells read 1.0–1.3% faster than serial ones at both depths.
+  Freezing does not change it. First token at d32000 took 16.1–16.4 s in every cell.
+
+**The cards in decode**, GPU 1 (the second stage) / GPU 2:
+
+| Cell | Busy % | Power, W |
+| --- | ---: | ---: |
+| `pw2` | 90 / 86 | 174 / 147 |
+| `serial` | 56 / 41 | 129 / 103 |
+| `pw2-frozen` | 88 / 80 | 177 / 148 |
+| `serial-frozen` | 54 / 38 | 129 / 101 |
+| `pw2-frozen-noguess` | 92 / 40 | 160 / 102 |
+
+**The engine read θ.** No log line prints θ or the pipeline's window counts; those print only
+with decode timing on. In the source, a guessed window starts only when `B.p_on >= theta`
+(`src/program/generate.cpp:12324`, `:12359`). With suffix drafts off, `p_on` starts at 1 and is
+multiplied only by draft probabilities (`:12306`–`:12318`, `:12059`), so θ = 2 starts none. The measurements show it took effect:
+- decode fell from 70.8 to 64.8 t/s;
+- GPU 2, the first stage, fell from 80% to 40% busy in decode.
+
+**Hang.** There were no `#267` lines, engine restarts, stalls or fallbacks to the serial loop in
+the nine pipeline-windows loads: 153 requests, 17 per load. With the pipeline record that makes
+765 requests across 45 starts, which rules out a per-request hang rate above about 0.4%, at 95%.
+
+**Checks:**
+- Each pipeline-windows load's log shows the pipeline on, with 272 MiB of CUDA0 kept out of the
+  expert cache. No serial load shows it.
+- Chat contract and tool calls: 15 of 15 loads.
+- Rows: of 135, none empty, degenerate or cut off. Twenty-two ended on end-of-sequence at
+  239–254 tokens, all `list`: at d0 in every cell, and at d32000 in the three frozen cells.
+- Memory: 0 MiB outside VRAM on either card, at load and after the probe. The samplers saw no
+  gap between requested and resident VRAM in 2,509 samples on GPU 2 and 2,507 on GPU 1. Another
+  29 and 30 samples had only one counter and are left out.
+- Thermal: the hottest DIMM read 53 °C; the hottest junction 85 °C, in prefill. There was no
+  thermal trip.
+- Drift: `pw2` decodes 67.5 t/s, inside the pipeline record's soak range (64.8–70.3).
 
 ## Deviations
 
