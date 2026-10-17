@@ -8,7 +8,8 @@ every pass, and how many different texts each row gave across the passes. With -
 also how many rows each cell shares with REF: a row counts when both cells repeated it and their
 texts are the same. Texts are compared by the probe's content_sha.
 
-A row counts only when every pass has a successful reading of it. The passes and cells are the
+A row counts only when every pass has a successful reading of it: a request that succeeded, in
+a load that passed its gates (`probe_ok` in <cell>-r<pass>.json). The passes and cells are the
 manifest's (1 to its reps), or without one every pass and cell any rows file shows; the rows are
 every row any cell reported. A row missing from a pass, or failed there, is counted as missing,
 not as a repeat, and the tool then exits 2.
@@ -22,9 +23,18 @@ import statistics
 import sys
 
 
+def passed(result):
+    """Whether a load's result file says it passed: the probe's checks and strata-cell.py's gates."""
+    try:
+        return json.loads(result.read_text()).get("probe_ok") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def readings(sweep_dir):
     """{cell: {(depth, class): {pass: {content_sha, ...}}}} from <cell>-r<pass>.rows.jsonl, with
-    every row and pass seen. A failed request names its row but gives it no text."""
+    every row and pass seen. A failed request, or any request of a failed load, names its row but
+    gives it no text."""
     cells = collections.defaultdict(lambda: collections.defaultdict(lambda: collections.defaultdict(set)))
     rows, passes = set(), set()
     for f in sorted(pathlib.Path(sweep_dir).glob("*-r*.rows.jsonl")):
@@ -34,6 +44,7 @@ def readings(sweep_dir):
         n = int(m.group(2))
         passes.add(n)
         cell = cells[m.group(1)]
+        ok = passed(f.with_name("%s-r%d.json" % (m.group(1), n)))
         for line in f.read_text(errors="replace").splitlines():
             try:
                 r = json.loads(line)
@@ -43,7 +54,7 @@ def readings(sweep_dir):
                 continue
             k = (r["depth_target"], r["class"])
             rows.add(k)
-            if r.get("content_sha") and not r.get("error"):
+            if ok and r.get("content_sha") and not r.get("error"):
                 cell[k][n].add(r["content_sha"])
     return cells, rows, passes
 

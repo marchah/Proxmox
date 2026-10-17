@@ -215,9 +215,10 @@ class StrataSummaryTests(unittest.TestCase):
 
 
 class TextRepeatTests(unittest.TestCase):
-    def run_tool(self, passes, against=None, manifest=None, code=0):
+    def run_tool(self, passes, against=None, manifest=None, code=0, failed=()):
         """text-repeat.py over {cell: [rows per pass]}, a row being (depth, class, sha), a dict or a
-        raw line, and None a pass with no rows file; returns its table rows."""
+        raw line, and None a pass with no rows file; `failed` names the (cell, pass) loads that did
+        not pass their gates. Returns the tool's table rows."""
         with tempfile.TemporaryDirectory() as directory:
             d = Path(directory)
             for c, runs in passes.items():
@@ -226,6 +227,7 @@ class TextRepeatTests(unittest.TestCase):
                         (d / ("%s-r%d.rows.jsonl" % (c, n))).write_text("".join(
                             (r if isinstance(r, str) else json.dumps(r if isinstance(r, dict) else
                              {"depth_target": r[0], "class": r[1], "content_sha": r[2]})) + "\n" for r in rows))
+                        (d / ("%s-r%d.json" % (c, n))).write_text(json.dumps({"probe_ok": (c, n) not in failed}))
             if manifest:
                 (d / "manifest.json").write_text(json.dumps(
                     {"reps": manifest[0], "cells": json.dumps([{"label": c} for c in manifest[1]])}))
@@ -277,6 +279,12 @@ class TextRepeatTests(unittest.TestCase):
                                                  {"depth_target": 0, "class": "list", "error": "ReadTimeout()"}]]},
                               code=2)
         self.assertIn("| 1 of 3 | 1 / 1 | 2 |", table["`cell`"])
+
+    def test_a_load_that_failed_its_gates_gives_no_reading(self):
+        # Pass 2's load failed (an engine restart, say): its texts are not a reading of the cell.
+        row = [(0, "code", "a")]
+        table = self.run_tool({"cell": [row, row, row]}, failed={("cell", 2)}, code=2)
+        self.assertIn("| 0 of 1 | — | 1 |", table["`cell`"])
 
 
 if __name__ == "__main__":
