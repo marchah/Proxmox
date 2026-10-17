@@ -1,0 +1,12 @@
+# Cells for runs/2026-10-16-maya.md, stage 2, after 2c-nospec with the engine's split search (see the
+# record's Deviations): the two-card cells again with the split given, then 1c's closing load. One
+# pass each (PASSES=1), over ../../maya/maya-glm53f.env, in CT 123 holding both cards. 0000:83:00.0 is
+# GPU 2, first; 0000:03:00.0 is GPU 1.
+#
+# MODEL_LAYER_SPLIT=24: layers 0-23 on GPU 2 (the three dense layers and 21 MoE layers), 24-44 and the
+# output head on GPU 1 (21 MoE layers), and the MTP block on GPU 1 in 2c. By UD-Q4_K_XL's tensor sizes,
+# each card's pool then has the same room per MoE layer within 2%. Both two-card cells use the same
+# split, so they differ only in the MTP block.
+2c-nospec  MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=24 STRATA_GLM_NO_MTP=1
+2c         MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=24
+1c-end     MODEL_GPUS=0000:83:00.0
