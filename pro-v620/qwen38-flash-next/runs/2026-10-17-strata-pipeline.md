@@ -312,5 +312,14 @@ starts. That rules out a per-request hang rate above about 0.9%, at 95%.
 - Stage B took 51 minutes, not the plan's estimate of about 30. The plan's rule picked six cells
   rather than the two or three the estimate assumed. The owner chose the full rule over trimming
   it to `s5`, `s3p7-pw2` and `s2p7-pw2`.
+- **Stage B2, added at the owner's request after stage B.**
+  - **What runs:** `s4p7-pw2`, stage B's fastest cell, against the same cell with the draft
+    layer on the first card (`s4p7-pw2-st0`). Three interleaved passes,
+    `2026-10-17-strata-pipeline-2b-st0.cells`, about 20 minutes.
+  - **Decision:** `s4p7-pw2-st0` becomes stage C's cell only if it is better by stage B's rule:
+    a median more than 2% above `s4p7-pw2`'s, with no overlap between the ranges. Otherwise
+    stage C soaks `s4p7-pw2`.
+  - **Why it is worth one run:** the screen and stage B measured the draft layer's placement only
+    at `--spec 3`.
 
 ## Conclusion

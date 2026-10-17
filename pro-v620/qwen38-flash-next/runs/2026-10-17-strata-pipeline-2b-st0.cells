@@ -1,0 +1,6 @@
+# Cells for runs/2026-10-17-strata-pipeline.md, stage B2 (added at the owner's request after
+# stage B), in CT 123 holding both cards, at PASSES=3: stage B's fastest cell, s4p7-pw2
+# (68.1 t/s), against the same cell with the draft layer on the first card
+# (STRATA_MTP_STAGE0=1), interleaved. The better of the two by stage B's rule is stage C's cell.
+s4p7-pw2      MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+s4p7-pw2-st0  MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 STRATA_MTP_STAGE0=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
