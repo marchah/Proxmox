@@ -285,8 +285,8 @@ and 65.7–69.5. The screen's leader, `s3p7-pw2`, has the lowest median of the t
 - As the plan set, this is reported, not a gate. What causes it was not tested.
 
 **Hang.** There were no `#267` lines, engine restarts or stalls in the 15 pipeline-windows loads:
-255 requests across 15 engine starts. Over stages A and B that makes 340 requests across 20
-starts. That rules out a per-request hang rate above about 0.9%, at 95%.
+255 requests across 15 engine starts. Over stages A and B, each of the five pipeline-windows
+cells ran 68 requests across 4 starts without one.
 
 **The cards in decode**, GPU 1 / GPU 2:
 
@@ -351,9 +351,19 @@ start; raw data in `/root/qwen38-flash-next/strata-sweep-20261017T124059Z/`.
 | Requests / engine starts | 170 / 10 |
 | `#267` lines, engine restarts, stalls | 0 |
 
-**The hang count over every pipeline-windows load** (stages A, B, B2 and C): 612 requests across
-36 engine starts, with no `#267` line, engine restart or stall. That rules out a per-request hang
-rate above about 0.5%, at 95%.
+**The hang count over every pipeline-windows load** (stages A, B, B2 and C): no `#267` line,
+engine restart or stall in 612 requests across 36 engine starts, in six configurations.
+
+| Configuration | Engine starts | Requests |
+| --- | ---: | ---: |
+| `s4p7-pw2` | 17 | 289 |
+| `s2p7-pw2`, `s3p7-pw2`, `s5-pw2`, `s3p7-pw2-st0` | 4 each | 68 each |
+| `s4p7-pw2-st0` | 3 | 51 |
+
+These counts do not pool into one hang rate: the configurations differ, and requests in one start
+share its engine. For `s4p7-pw2` alone, zero in 289 would bound the per-request rate at about 1.0%
+(95%) only if its requests were independent trials with one rate. Counting starts instead, zero in
+17 bounds the rate of a start that hangs at about 16%.
 
 **Greedy text:** over the ten starts, each row gave 3 to 9 different texts. The median was 8.
 
@@ -414,9 +424,11 @@ greedy 256-token replies:
    - The stricter draft alone loses 3.5% (screen), although its acceptance rises from 64% to 85%.
 
    The 6900 XT report found the same pattern.
-3. **Stability.** 612 requests across 36 pipeline-windows starts showed no #2245 hang (`#267`),
-   engine restart or stall. That rules out a per-request rate above about 0.5%. Rarer hangs are
-   not ruled out, and neither are long sessions. #2245's setup differed from these runs:
+3. **Stability.** 612 requests across 36 pipeline-windows starts, in six configurations, showed
+   no #2245 hang (`#267`), engine restart or stall. The soaked `s4p7-pw2` ran 289 of them across
+   17 starts. Even if its requests were independent trials, that would bound its hang rate only at
+   about 1% per request (95%), and requests in one start are not independent. Rarer hangs and long
+   sessions are not ruled out. #2245's setup differed from these runs:
 
    | | #2245 | These runs |
    | --- | --- | --- |

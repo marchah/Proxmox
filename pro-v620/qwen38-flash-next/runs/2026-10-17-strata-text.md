@@ -179,8 +179,9 @@ medians across the nine class-and-depth rows, with the passes' range in brackets
 
 **The reading is the plan's first row:** `pw2-frozen` repeats, and matches
 `pw2-frozen-noguess` on all nine rows.
-- Guessed windows give the same tokens as the same windows run without guessing, on the same
-  caches. The pipeline's own computation does not change the text.
+- With the four switches frozen, the greedy text with guessed windows matched the text without
+  them on all nine rows. Both cells run the pipeline, so this tests guessed windows. It is not a
+  comparison with the serial loop on the same expert caches.
 - What changes it is one or more of the frozen choices. Stage B applies and names which.
 - `pw2` gave three different texts on 8 of its 9 rows.
 - Without pipeline windows, the text repeats frozen or not.
@@ -219,8 +220,9 @@ multiplied only by draft probabilities (`:12306`–`:12318`, `:12059`), so θ = 
 - GPU 2, the first stage, fell from 80% to 40% busy in decode.
 
 **Hang.** There were no `#267` lines, engine restarts, stalls or fallbacks to the serial loop in
-the nine pipeline-windows loads: 153 requests, 17 per load. With the pipeline record that makes
-765 requests across 45 starts, which rules out a per-request hang rate above about 0.4%, at 95%.
+the nine pipeline-windows loads: 153 requests, 17 per load, so 51 requests across 3 starts per
+cell. `pw2` is the pipeline record's `s4p7-pw2`, which now has 340 requests across 20 starts
+without one.
 
 **Checks:**
 - Each pipeline-windows load's log shows the pipeline on, with 272 MiB of CUDA0 kept out of the
@@ -259,9 +261,10 @@ A's `pw2` and `pw2-frozen`, run in the session before, are the comparison.
 
 **Speed**, against stage A's `pw2`:
 - `--adapt-swaps 0` alone is 4.0% slower, with the ranges clear of each other.
-- `--pcie-frac 0` alone is 3.6% faster, also with clear ranges. Strata's `docs/DETAILS.md` says
-  that `--pcie-frac 0` costs decode speed. Without pipeline windows, stage A agrees: there the
-  four switches together were 3.0% slower.
+- `--pcie-frac 0` alone is 3.6% faster, also with clear ranges. The comparison is with stage A's
+  `pw2`, not an interleaved control. Strata's `docs/DETAILS.md` says that `--pcie-frac 0` costs
+  decode speed. Without pipeline windows, this record did not run it alone: only the four switches
+  together, 3.0% slower.
 - `STRATA_IQ_MT_MIN=1` alone is within `pw2`'s spread. Its passes spread 4.9 t/s.
 - All four together are the fastest pipeline-windows cell measured, and repeat.
 - Prefill is unchanged: 968–969 t/s at d8000, 1,431–1,433 at d32000.
@@ -270,9 +273,18 @@ A's `pw2` and `pw2-frozen`, run in the session before, are the comparison.
 three cells.
 
 **Hang.** There were no `#267` lines, engine restarts, stalls or fallbacks to the serial loop in
-the nine loads: 153 requests, 17 per load. Over this record that makes 306 requests across 18
-pipeline-windows starts. With the pipeline record, it makes 918 across 54, which rules out a
-per-request hang rate above about 0.3%, at 95%.
+the nine loads: 153 requests, 17 per load. Over both records, no pipeline-windows load hung: 918
+requests across 54 starts, in eleven configurations.
+
+| Configuration | Engine starts | Requests | 95% bound, independent requests |
+| --- | ---: | ---: | ---: |
+| `pw2` (the pipeline record's `s4p7-pw2`) | 20 | 340 | 0.9% |
+| `s2p7-pw2`, `s3p7-pw2`, `s5-pw2`, `s3p7-pw2-st0` (pipeline record) | 4 each | 68 each | 4.3% |
+| `s4p7-pw2-st0` (pipeline record) and this record's other five cells | 3 each | 51 each | 5.7% |
+
+The bound is the rate that zero hangs would rule out at 95%, if every request were an independent
+trial with one hang rate. Requests in one start share its engine, so the bound is optimistic, and
+the counts do not pool into one rate across configurations.
 
 **Checks:**
 - Each load's log shows the pipeline on, with 272 MiB of CUDA0 kept out of the expert cache.
@@ -309,9 +321,10 @@ starts per configuration.
    - Without pipeline windows, the text repeats with the tier on (`serial`, 9 of 9).
    - In the source, the tier runs beside the pipeline on a thread of its own. Its copies wait
      for the windows in flight (`src/program/generate.cpp:11988`).
-2. **The pipeline's tokens are exact.** With all four switches, guessed windows give the same
-   text as the same configuration that never starts one (`STRATA_PIPELINE_THETA=2`), on 9 of 9
-   rows.
+2. **Guessed windows did not change the text.** With all four switches frozen, the greedy text
+   with guessed windows matched the same configuration that never starts one
+   (`STRATA_PIPELINE_THETA=2`) on 9 of 9 rows. Both run the pipeline; this record has no serial
+   run on the same expert caches.
 3. **Speed:**
 
    | Configuration | Text across starts | Decode, t/s |
@@ -322,12 +335,17 @@ starts per configuration.
    | `pw2` + all four switches | repeats | 70.8 (70.6–70.9) |
    | `serial` | repeats | 60.2 (60.1–60.2) |
 
-   - With pipeline windows, `--pcie-frac 0` makes decode faster on these cards. Strata's
-     documentation says it costs speed, which held without pipeline windows.
+   - With pipeline windows, `--pcie-frac 0` alone decoded 3.6% faster than `pw2` on these cards,
+     compared with the previous stage's `pw2`, not an interleaved control. Strata's documentation
+     says it costs speed. Without pipeline windows it was not run alone; the four switches
+     together were 3.0% slower.
    - With all four switches, guessed windows add 9.3%.
    - Prefill is unchanged.
-4. **Stability.** In 306 requests across 18 pipeline-windows starts there was no #2245 hang,
-   engine restart or stall. With the pipeline record, that makes 918 requests across 54 starts.
+4. **Stability.** There was no #2245 hang, engine restart or stall in 918 pipeline-windows
+   requests across 54 starts, over both records and eleven configurations. Each configuration's
+   exposure is small: 340 requests across 20 starts for `pw2`, and 51 across 3 for `pw2-frozen`.
+   Even if requests were independent, zero in 51 would bound the frozen configuration's rate only
+   at 5.7% (95%).
 5. **Checks.** Every load passed:
    - the chat contract, the tool calls and the row checks;
    - nothing outside VRAM;
