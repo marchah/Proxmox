@@ -69,7 +69,7 @@ CELLS="$(readlink -f "$CELLS")"
 cd "$(dirname "$(readlink -f "$0")")"
 PROBES=../qwen38-flash-next
 for f in "$PROBES/placement-probe.py" "$PROBES/concurrency-probe.py" "$PROBES/summarize-sweep.py" \
-         ./strata-summary.py ../capture-env.sh; do
+         ./strata-summary.py ./strata-cell.py ../capture-env.sh; do
   [ -x "$f" ] || die "${f} not found or not executable"
 done
 [ ! -e "$TRIP_FILE" ] || die "thermal trip recorded in ${TRIP_FILE}; check cooling, then remove it"
@@ -158,7 +158,8 @@ ct_mem() {
 # The engine's own memory per card from the kernel's per-client counters, as JSON:
 # {pci: {requested, resident, evicted}} in MiB. Requested minus resident is memory the engine
 # asked to have in VRAM that sits elsewhere: the spill check, since Strata fills VRAM on
-# purpose and a free-VRAM threshold would flag every cell.
+# purpose and a free-VRAM threshold would flag every cell. A counter the kernel did not print
+# is left out, so strata-cell.py sees a missing reading, never a zero.
 residency() {
   python3 - "${CARDS[@]}" <<'PY'
 import glob, json, re, sys
@@ -180,12 +181,12 @@ for f in glob.glob("/proc/[0-9]*/fdinfo/*"):
     if not pdev or pdev.group(1) not in cards or not cid or (pid, cid.group(1)) in seen:
         continue
     seen.add((pid, cid.group(1)))
-    r = kib.setdefault(pdev.group(1), {"requested": 0, "resident": 0, "evicted": 0})
+    r = kib.setdefault(pdev.group(1), {})
     for key, name in (("requested", "amd-requested-vram"), ("resident", "drm-resident-vram"),
                       ("evicted", "amd-evicted-vram")):
         m = re.search(r"^%s:\s*(\d+)[ \t]*([KMG]iB)?[ \t]*$" % name, text, re.M)
         if m:
-            r[key] += int(m.group(1)) * UNIT_KIB[m.group(2) or ""]
+            r[key] = r.get(key, 0) + int(m.group(1)) * UNIT_KIB[m.group(2) or ""]
 for pci, r in kib.items():
     out[pci] = {key: int(v) // 1024 for key, v in r.items()}
 print(json.dumps(out))
@@ -306,9 +307,10 @@ json.dump({
 }, open(path, "w"), indent=1)
 PY
 
-# Start one cell's server from the base env plus the cell's keys. Sets LOAD_OK, LOAD_S and
-# LOG_OFFSET (the engine log's size before this start, so the cell reads only its own lines).
-LOAD_OK=false; LOAD_S=0; LOG_OFFSET=0
+# Start one cell's server from the base env plus the cell's keys. Sets LOAD_OK, LOAD_S,
+# LOG_OFFSET (the engine log's size before this start, so the cell reads only its own lines)
+# and ACTIVE_GPUS (the cell's MODEL_GPUS).
+LOAD_OK=false; LOAD_S=0; LOG_OFFSET=0; ACTIVE_GPUS=""
 start_server() {
   local label="$1" key val waited=0 card busy t0
   [ ! -e "$TRIP_FILE" ] || die "thermal trip recorded in ${TRIP_FILE}; stopping the sweep"
@@ -335,6 +337,9 @@ start_server() {
     pct set "$VMID" -memory "$val"
     log "CT ${VMID} memory -> ${val} MiB"
   fi
+  # The cards this cell runs on: strata-cell.py expects a residency reading for each.
+  # shellcheck disable=SC2016  # expands inside the container
+  ACTIVE_GPUS="$(in_ct bash -c 'set -a; . "$1"; printf %s "${MODEL_GPUS:-}"' _ "$ENVFILE")"
   LOG_OFFSET="$(in_ct stat -c %s "$ENGINE_LOG" 2>/dev/null || echo 0)"
   in_ct systemctl start "$UNIT"
   log "waiting for /v1/models (the engine loads the 77 GB arena)"
@@ -421,130 +426,10 @@ PYFAIL
     in_ct systemctl stop "$UNIT" 2>/dev/null || true
 
     cards_csv="$(printf '%s\n' "${CARDS[@]}" | paste -sd, -)"
-    python3 - "${OUT_DIR}/${tag}.json" "$label" "$(cell_json "$label")" "$LOAD_S" "$cards_csv" \
+    ./strata-cell.py "${OUT_DIR}/${tag}.json" "$label" "$(cell_json "$label")" "$LOAD_S" "$cards_csv" \
       "${c_used[*]}" "${c_gtt[*]}" "${c_total[*]}" "${p_used[*]}" "${p_gtt[*]}" "$res_load" "$res_probe" \
       "$mem" "$cmdline" "${OUT_DIR}/${tag}.dimm.tsv" "${OUT_DIR}/${tag}.gpu.tsv" "${OUT_DIR}/${tag}.rows.jsonl" \
-      "${OUT_DIR}/${tag}.concurrency.json" "$conc_span" "${OUT_DIR}/${tag}.engine.log" <<'PYADD'
-import json, pathlib, re, statistics, sys
-(path, label, settings, load_s, cards, vs, gs, ts, pvs, pgs, res_load, res_probe, mem, cmdline,
- dimm_log, gpu_log, rows_log, conc_path, conc_span, engine_log) = sys.argv[1:21]
-cards = cards.split(",")
-vs, gs, ts, pvs, pgs = ([int(x) for x in s.split()] for s in (vs, gs, ts, pvs, pgs))
-res_load, res_probe = json.loads(res_load or "{}"), json.loads(res_probe or "{}")
-p = pathlib.Path(path)
-try:
-    d = json.loads(p.read_text())
-except Exception as e:
-    d = {"error": "probe produced no parsable output: %r" % (e,)}
-cell = json.loads(settings)
-held = [c for c in cards if (res_load.get(c) or {}).get("requested", 0) > 1024]
-# Memory the engine asked to have in VRAM that sits elsewhere, at load or after the probe.
-outside = max([max(0, r["requested"] - r["resident"]) for res in (res_load, res_probe) for r in res.values()] or [0])
-pl = {
-    "label": label, "cell": cell, "gpus": len(held), "load_s": int(load_s), "cards": cards,
-    "cards_held": held,
-    "vram_total_mib": sum(vs), "vram_free_for_a_guest_mib": sum(t - v for t, v in zip(ts, vs)),
-    "vram_free_after_probe_mib": sum(t - v for t, v in zip(ts, pvs)),
-    "vram_outside_mib": outside,
-    "possible_gtt_spill": outside > 64 or any(b - a > 256 for a, b in zip(gs, pgs)),
-    "residency_at_load": res_load, "residency_after_probe": res_probe,
-    "server_cmdline": cmdline.strip() or None,
-}
-if len(held) == 1:
-    pl["active_card"] = held[0]
-pl["ct_mem_mib"], pl["ct_anon_mib"], pl["ct_file_mib"] = (int(x) for x in mem.split())
-for i, name in enumerate(("gpu1", "gpu2")):
-    if i < len(cards):
-        pl[name + "_vram_mib"], pl[name + "_gtt_mib"], pl[name + "_card_mib"] = vs[i], gs[i], ts[i]
-        pl[name + "_vram_after_probe_mib"], pl[name + "_gtt_after_probe_mib"] = pvs[i], pgs[i]
-temps = []
-if pathlib.Path(dimm_log).exists():
-    for line in pathlib.Path(dimm_log).read_text().splitlines():
-        f = line.split("\t")
-        if len(f) == 2 and f[1].strip().isdigit() and int(f[1]) > 0:
-            temps.append(int(f[1]))
-pl["dimm_max_c"] = max(temps) if temps else None
-pl["dimm_samples"] = len(temps)
-pl["dimm_samples_at_cap"] = sum(1 for t in temps if t >= 66)
-conc = pathlib.Path(conc_path)
-if conc.exists():
-    try:
-        c = json.loads(conc.read_text())
-        pl["concurrency"] = {k: c.get(k) for k in ("streams", "total_slots", "n_ctx_per_slot",
-                             "per_stream_tps", "aggregate_tps", "wall_aggregate_tps",
-                             "any_degenerate", "total_failed", "accept_pct", "reps", "complete_rounds")}
-    except Exception as e:
-        pl["concurrency"] = {"error": "unparsable: %r" % (e,)}
-# The engine's own account of this start and of each request.
-text = pathlib.Path(engine_log).read_text(errors="replace") if pathlib.Path(engine_log).exists() else ""
-def num(pattern, cast=float):
-    m = re.search(pattern, text)
-    return cast(m.group(1).replace(",", "")) if m else None
-hits = [float(x) for x in re.findall(r"decode expert cache hit rate: ([\d.]+)%", text)]
-pcie = [float(x) for x in re.findall(r"more read by the GPU over PCIe or from another GPU \(([\d.]+)% of all", text)]
-pl["strata"] = {
-    "expert_cache_slots": [int(x) for x in re.findall(r"expert cache (\d+) slots, [\d.]+ GiB of VRAM", text)],
-    "expert_cache_gib": [float(x) for x in re.findall(r"expert cache \d+ slots, ([\d.]+) GiB of VRAM", text)],
-    "vram_free_loaded_mib": [int(x) for x in re.findall(r"(\d+) MiB of VRAM free with everything loaded", text)],
-    "draft_layer_mib": num(r"draft layer loaded, (\d+) MiB of VRAM", int),
-    "arena_load": (re.search(r"loaded ([\d.]+ GiB at [\d.]+ GiB/s)", text) or [None, None])[1],
-    "pool": (re.search(r"(\d+ pool workers on logical processors [\d,]+)", text) or [None, None])[1],
-    "layer_split": re.findall(r"(?i)(layers? \d+-\d+ on [^\n]{0,80})", text)[:4],
-    "tail_skip_on": "STRATA_ROUTE_TAIL_SKIP=" in text and "is ON" in text,
-    "requests": len(hits),
-    "decode_hit_pct_median": round(statistics.median(hits), 1) if hits else None,
-    "decode_hit_pct_last": hits[-1] if hits else None,
-    "pcie_share_pct_median": round(statistics.median(pcie), 1) if pcie else None,
-    "stall_lines": len(re.findall(r"stall report|timed out at layer|no progress for", text)),
-    "nonfinite_lines": len(re.findall(r"non-finite logits", text)),
-    "warning_lines": [l for l in text.splitlines() if "WARNING" in l][:10],
-}
-samples = []
-if pathlib.Path(gpu_log).exists():
-    for line in pathlib.Path(gpu_log).read_text().splitlines():
-        f = line.split("\t")
-        if len(f) == 8:
-            samples.append((float(f[0]), f[1], *(int(x) for x in f[2:8])))
-windows = {"prefill": [], "decode": [], "streams": []}
-if pathlib.Path(rows_log).exists():
-    for line in pathlib.Path(rows_log).read_text().splitlines():
-        try:
-            r = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not (r.get("t0") and r.get("prompt_ms") is not None and r.get("predicted_ms") is not None):
-            continue
-        a, b = r["t0"], r["t0"] + r["prompt_ms"] / 1000
-        if r.get("depth_target"):
-            windows["prefill"].append((a, b))
-        windows["decode"].append((b, b + r["predicted_ms"] / 1000))
-if len(conc_span.split()) == 2:
-    windows["streams"].append(tuple(float(x) for x in conc_span.split()))
-util = {}
-for phase, wins in windows.items():
-    inside = [s for s in samples if any(a <= s[0] <= b for a, b in wins)]
-    if not inside:
-        continue
-    u = {"samples": len(inside)}
-    for card in sorted({s[1] for s in inside} & set(held or cards)):
-        cs = [s for s in inside if s[1] == card]
-        busy = [s[2] for s in cs if s[2] >= 0]
-        mbusy = [s[3] for s in cs if s[3] >= 0]
-        u[card] = {"busy_pct": statistics.median(busy) if busy else None,
-                   "mem_busy_pct": statistics.median(mbusy) if mbusy else None,
-                   "sclk_mhz": statistics.median(s[4] for s in cs),
-                   "power_w": statistics.median(s[5] for s in cs),
-                   "junction_max_c": max(s[6] for s in cs)}
-    first = inside[0][1]
-    seq = sorted((s[0], s[7]) for s in samples if s[1] == first)
-    rates = [(c2 - c1) / 1e6 / (t2 - t1) for (t1, c1), (t2, c2) in zip(seq, seq[1:])
-             if t2 > t1 and any(a <= t2 <= b for a, b in wins)]
-    u["cpu_cores"] = round(statistics.median(rates), 1) if rates else None
-    util[phase] = u
-pl["utilization"] = util
-d["placement"] = pl
-p.write_text(json.dumps(d, indent=1))
-PYADD
+      "${OUT_DIR}/${tag}.concurrency.json" "$conc_span" "${OUT_DIR}/${tag}.engine.log" "$ACTIVE_GPUS"
   done
 done
 

@@ -58,7 +58,8 @@ def main():
                                 "hit": [], "dimm": [], "capped": 0, "cache_inactive": 0,
                                 "shas": {}, "load_failed": 0, "load_s": [], "gpus": None,
                                 "cell": pl.get("cell"), "conc": [], "turns": [], "mem": [], "util": [],
-                                "contracts": [], "loaded_passes": 0})
+                                "contracts": [], "loaded_passes": 0,
+                                "engine_faults": 0, "residency_missing": 0})
         if pl.get("load_failed"):
             g["load_failed"] += 1
             continue
@@ -86,6 +87,10 @@ def main():
         g["free"].append(pl.get("vram_free_for_a_guest_mib") or 0)
         g["gtt"].append(max(pl.get("gpu1_gtt_mib") or 0, pl.get("gpu2_gtt_mib") or 0))
         g["spill"] |= bool(pl.get("possible_gtt_spill"))
+        # strata-cell.py: engine stall or non-finite lines, and cards whose VRAM residency was
+        # not read. Both leave the measurements in place and the run unusable.
+        g["engine_faults"] += bool(pl.get("engine_faults"))
+        g["residency_missing"] += bool(pl.get("residency_missing"))
         g["degen"] |= bool(j.get("any_degenerate"))
         g["disagree"] |= (j.get("all_reps_agree") is False)
         if pl.get("moe_cache_spec"):
@@ -207,6 +212,10 @@ def main():
             flags.append("⚠️ GTT spill")
         if g["degen"]:
             flags.append("🔴 degenerate output")
+        if g["engine_faults"]:
+            flags.append("🔴 engine stall or non-finite logits in %d run(s)" % g["engine_faults"])
+        if g["residency_missing"]:
+            flags.append("⚠️ VRAM residency not measured in %d run(s)" % g["residency_missing"])
         split = sorted(k for k, s in g["shas"].items() if len(s) > 1)
         if g["disagree"] or split:
             flags.append("⚠️ reps disagree" + (" (%s)" % ", ".join(split) if split else ""))
@@ -236,7 +245,8 @@ def main():
         # Keep failed/invalid measurements visible above, but do not choose one as
         # the fastest reference or quote its performance trade as a usable option.
         invalid = (g["errors"] or g["load_failed"] or g["spill"] or g["degen"]
-                   or g["disagree"] or split or g["capped"] or g["cache_inactive"] or contract_failed)
+                   or g["disagree"] or split or g["capped"] or g["cache_inactive"] or contract_failed
+                   or g["engine_faults"] or g["residency_missing"])
         if overall and not invalid:
             rows_for_tradeoff.append((label(key), free / 1024, med(overall)))
 

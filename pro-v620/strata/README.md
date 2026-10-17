@@ -117,9 +117,18 @@ and exports the env file's `STRATA_*` switches to the engine. The starting value
 
 [`strata-sweep.sh`](strata-sweep.sh) measures cells of env-file settings with the probes in
 `../qwen38-flash-next/` in chat mode, the placement sweep's telemetry and gates, and the
-engine's own account of each request. [`strata-summary.py`](strata-summary.py) adds the
-engine's expert cache, VRAM residency and log lines to the speed tables. Its header lists the
-cell keys; the [test record](../qwen38-flash-next/runs/2026-10-16-strata.md) has the commands.
+engine's own account of each request. Its header lists the cell keys; the
+[test record](../qwen38-flash-next/runs/2026-10-16-strata.md) has the commands.
+
+[`strata-cell.py`](strata-cell.py) turns each loaded cell's readings into its result:
+- the expert cache on every card the engine uses;
+- the VRAM the engine requested against the VRAM resident, on each card the cell runs on;
+- the engine log's stall and non-finite lines.
+
+A missing residency reading or an engine fault fails the cell, and the summary leaves it out
+of the reference. [`strata-summary.py`](strata-summary.py) adds the engine's account to the
+speed tables. `test_strata_cell.py` checks both offline (`python3 -m unittest
+test_strata_cell`).
 
 [`strata-vs-llamacpp.sh`](strata-vs-llamacpp.sh) interleaves the two engines on CT 123. Each
 round is a llama.cpp pass of `placement-sweep.sh` on GPU 2, then a Strata pass of
@@ -128,10 +137,14 @@ and ends with Strata on GPU 2 alone.
 
 [`strata-yardstick.sh`](strata-yardstick.sh) runs on the host with the server stopped, and
 starts it again on exit. It runs Strata's quality yardstick (`tools/quant_quality.py`) on the
-server's last config and env file: teacher-forced perplexity with the experts on the CPU
-(upstream's method) and with the experts in the VRAM cache, and the prompt path's
-next-token KL with `STRATA_HIP_PROMPT_F16=1` against the default path. Results land in
-`/models/strata/quality/` in CT 123.
+server's last config and env file:
+- teacher-forced perplexity, with the experts on the CPU (upstream's method) and with the
+  experts in the VRAM cache;
+- the prompt path's next-token KL with `STRATA_HIP_PROMPT_F16=1` against the default path.
+
+Results land in `/models/strata/quality/` in CT 123. The script refuses to start while the
+thermal guard's trip file exists, and leaves the server stopped if a trip happens during its
+runs. `strata-yardstick-test.sh` checks that against a mocked `pct`.
 
 ## Differences from llama.cpp that matter to the tooling here
 

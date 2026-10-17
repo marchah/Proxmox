@@ -372,6 +372,26 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("Reference: `control`", report)
         self.assertNotIn("Reference: `mtp`", report)
 
+    def test_summary_never_picks_a_faulty_or_unmeasured_cell_as_reference(self):
+        # strata-cell.py marks engine stall/non-finite lines and missing residency readings.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for label, rate, extra in [("control", 14, {}), ("valid", 15, {}),
+                                       ("faulty", 99, {"engine_faults": 1}),
+                                       ("unmeasured", 98, {"residency_missing": ["0000:83:00.0 at load"]})]:
+                (root / (label + "-r1.json")).write_text(json.dumps({
+                    "placement": dict({"label": label}, **extra),
+                    "summary": {"d0/code": {"decode_tps_median": rate}}}))
+            out = io.StringIO()
+            with patch.object(sys, "argv", ["summary", directory]), contextlib.redirect_stdout(out):
+                summary.main()
+            report = out.getvalue()
+        self.assertIn("🔴 engine stall or non-finite logits in 1 run(s)", report)
+        self.assertIn("⚠️ VRAM residency not measured in 1 run(s)", report)
+        self.assertIn("Reference: `valid`", report)
+        self.assertNotIn("| faulty | 99.0 t/s", report)
+        self.assertNotIn("| unmeasured | 98.0 t/s", report)
+
     def test_summary_prints_turns_and_flags_uncached_passes(self):
         turn = {"context_tokens": 30000, "summary": {"32": {"prompt_s_median": 2.3},
                                                      "256": {"prompt_s_median": 7.6}},
