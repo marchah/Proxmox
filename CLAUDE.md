@@ -14,6 +14,8 @@ Use component READMEs for deployment commands, defaults, and measurements.
   llama.cpp for Flash-Next; `use-engine.sh` switches the unit and the watchdog map together.
 - [glm53-flash/](pro-v620/glm53-flash/README.md): GLM-5.3-Flash model notes and test
   records; not deployed.
+- [maya/](pro-v620/maya/README.md): Project Maya (HIP) for GLM-5.3-Flash in CT 123, for its
+  test records; `ct123-test-host.sh` with `TEST_ENGINE=maya` sets the container up.
 - [mimo-v26-pro/](pro-v620/mimo-v26-pro/README.md): MiMo-V2.6-Pro-RL model notes, RAM fit
   and test records; not deployed.
 - [hermes/](hermes/README.md): CT 121 agent gateway.

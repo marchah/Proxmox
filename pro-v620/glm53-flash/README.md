@@ -60,8 +60,13 @@ VMID=123 ./install-llamacpp-release.sh   # another pinned release beside b11505,
 - `ct123-test-host.sh` keeps CT 120 from autostarting onto GPU 1 while CT 123 holds it,
   and points the thermal watchdog's map at the unit that owns each card. It never starts
   CT 120. `TEST_MODEL=mimo` sets CT 123 up for
-  [MiMo-V2.6-Pro-RL](../mimo-v26-pro/README.md#test-setup) instead. `restore` retires
-  either model's unit.
+  [MiMo-V2.6-Pro-RL](../mimo-v26-pro/README.md#test-setup) instead, and `TEST_ENGINE=maya` for
+  GLM on [Project Maya](../maya/README.md); `engine` hands the cards to the other GLM engine
+  without a restart. A test retires Flash-Next's engine, llama.cpp or Strata, and `restore`
+  retires every test unit and enables the Flash-Next engine that was enabled before.
+- Once CT 123's config narrows the DRM cgroup rule to its cards' minors (HIP needs it; see
+  [Strata](../strata/README.md#what-is-installed)), every card change rewrites the rule to the
+  cards CT 123 then binds.
 - **CPUs:** Proxmox gives a container a random set of `cores` CPUs at every start, and CPU
   n and n+32 share one of the 7532's 32 cores.
   - At 48 CPUs that can leave cores out. CT 123's start on 2026-10-13 covered 30 of 32.

@@ -143,7 +143,8 @@ set -Eeuo pipefail
 src="$GATE_LLAMACPP_DIR"
 b="${src}/build-cpu"
 dump="${src}/llm_logits_dump"
-if [ -x "$dump" ] && [ -x "$b/bin/llama-tokenize" ] && [ "$(cat "$dump.SOURCE" 2>/dev/null)" = "$MAYA_COMMIT" ]; then
+stamp="${MAYA_COMMIT} DUMP_THREADS"
+if [ -x "$dump" ] && [ -x "$b/bin/llama-tokenize" ] && [ "$(cat "$dump.SOURCE" 2>/dev/null)" = "$stamp" ]; then
   echo "gate tools already built"
   exit 0
 fi
@@ -151,10 +152,21 @@ cmake -S "$src" -B "$b" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=
   -DGGML_VULKAN=OFF -DGGML_HIP=OFF -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_SERVER=OFF \
   -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
 nice -n 19 cmake --build "$b" -j "$JOBS" --target llama llama-tokenize
-# Maya's tool, built out of tree against that build (its header lists the command).
-nice -n 19 g++ -O2 -std=c++17 -I "$src/include" -I "$src/ggml/include" "${MAYA_HOME}/tools/llm_logits_dump.cpp" \
+# Maya's tool, built out of tree against that build (its header lists the command). It decodes
+# one token per call on llama.cpp's default 4 threads; this copy takes DUMP_THREADS (default 32),
+# else the reference pass takes hours on the CPU.
+python3 - "${MAYA_HOME}/tools/llm_logits_dump.cpp" "${dump}.cpp" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+anchor = "    cp.no_perf  = true;"
+assert src.count(anchor) == 1, "llm_logits_dump.cpp changed: no single 'cp.no_perf' line to patch"
+line = ('    cp.n_threads = cp.n_threads_batch = std::getenv("DUMP_THREADS") ? '
+        'std::atoi(std::getenv("DUMP_THREADS")) : 32;\n')
+open(sys.argv[2], "w").write(src.replace(anchor, line + anchor))
+PY
+nice -n 19 g++ -O2 -std=c++17 -I "$src/include" -I "$src/ggml/include" "${dump}.cpp" \
   -o "$dump" -L "$b/bin" -Wl,-rpath,"$b/bin" -lllama -lggml -lggml-base -lggml-cpu -lm -pthread
-echo "$MAYA_COMMIT" >"$dump.SOURCE"
+echo "$stamp" >"$dump.SOURCE"
 "$b/bin/llama-tokenize" --help >/dev/null 2>&1 || true
 ls -l "$dump" "$b/bin/llama-tokenize"
 CONTAINER_SCRIPT

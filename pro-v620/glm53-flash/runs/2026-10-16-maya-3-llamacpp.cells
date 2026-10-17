@@ -1,0 +1,7 @@
+# Cells for runs/2026-10-16-maya.md, stage 3: the long-tasks record's winner (glm53f-long.env) on
+# CT 123 through ../../qwen38-flash-next/placement-sweep.sh with PROBE_CHAT=true, REPS=1 per round, in
+# the container holding both cards. VK_DEVICES=1 shows llama-server only GPU 2 (0000:83:00.0), which
+# Vulkan numbers second there, so it is Vulkan0 to the server. b11583, GGML_OP_OFFLOAD_MIN_BATCH=512,
+# -ncmoe 45 at micro-batch 2048, MTP n-max 2 at p-min 0.2, dio, f16 KV, one 64k slot, 32 threads
+# pinned one per physical core (CPU set 0-47).
+llamacpp  MODE=1gpu NCMOE=45 VK_DEVICES=1 KV=f16 CTX=65536 UBATCH=2048 PARALLEL=1 LOAD_MODE=dio THREADS=32 EXTRA='--spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-p-min 0.2 --cpu-mask 0xffffffff --cpu-strict 1' ENV='LLAMACPP_DIR=/opt/llamacpp/llama-b11583 GGML_OP_OFFLOAD_MIN_BATCH=512'

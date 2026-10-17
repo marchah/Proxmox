@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Sweep Strata server configurations for Qwen3.8-Flash-Next in CT 123 and report, per cell,
-# decode and prefill by prompt class and context depth, with the engine's expert cache, VRAM
-# residency, card and CPU use and the hottest DIMM. The Strata counterpart of
+# Sweep Strata server configurations for Qwen3.8-Flash-Next in CT 123, or Project Maya's for
+# GLM-5.3-Flash (UNIT=maya-glm53f), and report, per cell, decode and prefill by prompt class
+# and context depth, with the engine's expert cache, VRAM residency, card and CPU use and the
+# hottest DIMM. The Strata counterpart of
 # ../qwen38-flash-next/placement-sweep.sh: the same probes in chat mode, telemetry, gates and
 # summary. Runs on the Proxmox HOST as root, from a harness staged with ../push-harness.sh.
 #
@@ -11,7 +12,7 @@
 #
 # A CELLS file holds one cell per line, `LABEL KEY=VALUE ...` with shell-quoted values, run in
 # file order (# starts a comment). Keys:
-#   MODEL_* / STRATA_*  any key of /etc/strata-qwen38fn.env, written over the env file the
+#   MODEL_* / STRATA_*  any key of /etc/<UNIT>.env, written over the env file the
 #                  sweep found. An empty STRATA_* value removes that switch, so the engine
 #                  never sees it; an empty MODEL_* value is written empty (an empty
 #                  MODEL_MTP runs without the draft layer).
@@ -23,8 +24,9 @@
 # stays). Each load gets one excluded warm-up request, then the probes: Strata's first fresh
 # prompt after a start reads slower than the ones after it.
 #
-# The env file the sweep starts from must equal ../strata/strata-qwen38fn.env at the harness
-# commit (BASE_ENV_CHECK=false skips that), so a record's base settings are in git.
+# The env file the sweep starts from must equal BASE_ENV at the harness commit (strata-qwen38fn.env
+# here, or ../maya/maya-glm53f.env; BASE_ENV_CHECK=false skips that), so a record's base settings
+# are in git.
 set -Eeuo pipefail
 
 VMID="${VMID:-123}"
@@ -37,9 +39,12 @@ CONC_REPS="${CONC_REPS:-3}"
 # Probe depth targets; the filler gives about 0.72 prompt tokens per unit (d8000 is ~5.8k).
 DEPTHS="${DEPTHS:-0,8000,32000}"
 PROBE_CLASSES="${PROBE_CLASSES:-}"
-# Strata takes these efforts and honours the caller's: the three that think may reason.
-EFFORTS="${EFFORTS:-none,low,medium,high}"
-THINKING_EFFORTS="${THINKING_EFFORTS:-low,medium,high}"
+# Both engines honour the caller's effort: the ones that think may reason. Strata takes
+# none/low/medium/high; Maya takes GLM's none/low/high/max.
+case "$UNIT" in
+  maya-*) ENGINE=maya; EFFORTS="${EFFORTS:-none,low,high,max}"; THINKING_EFFORTS="${THINKING_EFFORTS:-low,high,max}" ;;
+  *)      ENGINE=strata; EFFORTS="${EFFORTS:-none,low,medium,high}"; THINKING_EFFORTS="${THINKING_EFFORTS:-low,medium,high}" ;;
+esac
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-1800}"
 # No cell starts while the hottest DIMM is above this; the BMC caps memory bandwidth at 66 °C.
 DIMM_START_MAX_C="${DIMM_START_MAX_C:-58}"
@@ -48,7 +53,10 @@ BASE_ENV_CHECK="${BASE_ENV_CHECK:-true}"
 RESTORE="${RESTORE:-true}"
 # thermal-guard.sh writes this on a trip: no further cell starts and the server stays stopped.
 TRIP_FILE="${TRIP_FILE:-/root/qwen38-flash-next/THERMAL_TRIP}"
-OUT_DIR="${OUT_DIR:-/root/qwen38-flash-next/strata-sweep-$(date -u +%Y%m%dT%H%M%SZ)}"
+case "$ENGINE" in
+  maya) OUT_DIR="${OUT_DIR:-/root/glm53-flash/maya-sweep-$(date -u +%Y%m%dT%H%M%SZ)}" ;;
+  *)    OUT_DIR="${OUT_DIR:-/root/qwen38-flash-next/strata-sweep-$(date -u +%Y%m%dT%H%M%SZ)}" ;;
+esac
 CELLS="${CELLS:-}"
 
 readonly ENVFILE="/etc/${UNIT}.env"
@@ -59,7 +67,7 @@ log() { printf '==> %s\n' "$*"; }
 in_ct() { pct exec "$VMID" -- "$@"; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"
-[[ "$UNIT" =~ ^strata-[a-z0-9-]+$ ]] || die "UNIT must name a strata-* unit"
+[[ "$UNIT" =~ ^(strata|maya)-[a-z0-9-]+$ ]] || die "UNIT must name a strata-* or maya-* unit"
 for v in PASSES REPS N_PREDICT CONC_REPS DIMM_START_MAX_C; do
   [[ "${!v}" =~ ^[1-9][0-9]*$ ]] || die "${v} must be a positive whole number"
 done
@@ -67,6 +75,10 @@ done
 CELLS="$(readlink -f "$CELLS")"
 [ -f "$CELLS" ] || die "CELLS file ${CELLS} not found"
 cd "$(dirname "$(readlink -f "$0")")"
+case "$ENGINE" in
+  maya) BASE_ENV="${BASE_ENV:-../maya/${UNIT}.env}" ;;
+  *)    BASE_ENV="${BASE_ENV:-./${UNIT}.env}" ;;
+esac
 PROBES=../qwen38-flash-next
 for f in "$PROBES/placement-probe.py" "$PROBES/concurrency-probe.py" "$PROBES/summarize-sweep.py" \
          ./strata-summary.py ./strata-cell.py ../capture-env.sh; do
@@ -88,8 +100,9 @@ fi
 [ "$(pct status "$VMID" | awk '{print $2}')" = "running" ] || die "CT ${VMID} is not running"
 in_ct test -f "/etc/systemd/system/${UNIT}.service" || die "CT ${VMID} has no ${UNIT}; run install.sh"
 if [ "$BASE_ENV_CHECK" = "true" ]; then
-  in_ct cat "$ENVFILE" | cmp -s - ./strata-qwen38fn.env \
-    || die "${ENVFILE} in CT ${VMID} differs from strata-qwen38fn.env at ${HARNESS_COMMIT:0:12}; run install.sh from this harness, or BASE_ENV_CHECK=false"
+  [ -f "$BASE_ENV" ] || die "no base env file ${BASE_ENV}"
+  in_ct cat "$ENVFILE" | cmp -s - "$BASE_ENV" \
+    || die "${ENVFILE} in CT ${VMID} differs from ${BASE_ENV} at ${HARNESS_COMMIT:0:12}; run install.sh from this harness, or BASE_ENV_CHECK=false"
 fi
 mapfile -t CARDS < <(pct config "$VMID" | grep -oE 'pci-0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]-render' \
                      | sed 's/^pci-//; s/-render$//' | sort -u)
@@ -292,12 +305,13 @@ import datetime, json, os, sys
 (path, commit, vmid, cards, unit, passes, reps, n_predict, conc_reps, depths, classes, efforts,
  thinking, dimm_max, cells_file, cells, env_path) = sys.argv[1:18]
 env = json.load(open(env_path))["guest"]
-s = env.get("strata") or {}
+s = env.get("strata") or env.get("maya") or {}
 json.dump({
     "when": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "harness_commit": commit, "vmid": int(vmid), "cards": cards, "unit": unit,
     "model": env["env"].get("MODEL_ALIAS"),
-    "engine": "Strata %s (%s)" % (s.get("release"), (s.get("built_commit") or "?")[:7]),
+    "engine": "%s %s (%s)" % ("Maya" if env.get("maya") else "Strata", s.get("release"),
+                              (s.get("built_commit") or "?")[:7]),
     "probe_chat": True, "ctx": env["env"].get("MODEL_CONTEXT_LENGTH"),
     "parallel": env["env"].get("MODEL_PARALLEL"), "reps": int(passes), "probe_reps": int(reps),
     "n_predict": int(n_predict), "conc_reps": int(conc_reps), "depths": depths,
@@ -342,7 +356,7 @@ start_server() {
   ACTIVE_GPUS="$(in_ct bash -c 'set -a; . "$1"; printf %s "${MODEL_GPUS:-}"' _ "$ENVFILE")"
   LOG_OFFSET="$(in_ct stat -c %s "$ENGINE_LOG" 2>/dev/null || echo 0)"
   in_ct systemctl start "$UNIT"
-  log "waiting for /v1/models (the engine loads the 77 GB arena)"
+  log "waiting for /v1/models (the engine loads its experts into RAM)"
   t0="$(date +%s)"; LOAD_OK=false; LOAD_S=0
   until curl -fsS --max-time 5 "${BASE}/v1/models" 2>/dev/null | grep -q '"id"'; do
     if ! in_ct systemctl is-active --quiet "$UNIT"; then

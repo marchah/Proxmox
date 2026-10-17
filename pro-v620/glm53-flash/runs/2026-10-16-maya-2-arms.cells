@@ -1,0 +1,12 @@
+# Cells for runs/2026-10-16-maya.md, stage 2, one pass each (PASSES=1), over ../../maya/maya-glm53f.env
+# (the starting configuration), in CT 123 holding both cards (TEST_ENGINE=maya ct123-test-host.sh
+# two-card). Cards are named by PCI address: 0000:83:00.0 is GPU 2, the card every one-card cell
+# uses; 0000:03:00.0 is GPU 1. Two-card cells put GPU 2 first and let the engine's split search
+# place the layers (MODEL_LAYER_SPLIT=auto in the env file); the second card runs the MTP block.
+#
+# 1c runs first and last; the difference between its two loads bounds the drift.
+1c         MODEL_GPUS=0000:83:00.0
+1c-mtp     MODEL_GPUS=0000:83:00.0 STRATA_GLM_MTP_DECODE=1
+2c-nospec  MODEL_GPUS=0000:83:00.0,0000:03:00.0 STRATA_GLM_NO_MTP=1
+2c         MODEL_GPUS=0000:83:00.0,0000:03:00.0
+1c-end     MODEL_GPUS=0000:83:00.0

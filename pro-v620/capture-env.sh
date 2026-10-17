@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Print, as JSON, the software and hardware a model-server guest (llama.cpp or Strata) runs on.
+# Print, as JSON, the software and hardware a model-server guest (llama.cpp, Strata or Maya) runs on.
 # Runs on the Proxmox HOST as root and changes nothing. Test records paste its output
 # (see TEST-RECORDS.md); placement-sweep.sh and `make bench` save it with every run.
 #
 #   ./capture-env.sh 123                         # CT 123, its active llama.cpp unit
 #   ./capture-env.sh 120 llamacpp                # name the unit
 #   ./capture-env.sh 123 strata-qwen38fn         # Strata (../strata/)
+#   ./capture-env.sh 123 maya-glm53f             # Project Maya (../maya/)
 #   GUEST_SSH=root@rocm-vm ./capture-env.sh 310  # a VM: guest commands go over ssh
 #   HASH_MODELS=true ./capture-env.sh 123        # also sha256 each model file (minutes)
 #
@@ -35,13 +36,13 @@ else
 fi
 
 if [ -z "$UNIT" ]; then
-  for u in llamacpp-qwen38fn strata-qwen38fn llamacpp-glm53f llamacpp-mimo llamacpp llama-swap; do
+  for u in llamacpp-qwen38fn strata-qwen38fn llamacpp-glm53f maya-glm53f llamacpp-mimo llamacpp llama-swap; do
     if guest "systemctl is-active --quiet $u" 2>/dev/null; then UNIT="$u"; break; fi
   done
 fi
-# Each llama.cpp and Strata unit's launcher sources /etc/<unit>.env.
+# Each llama.cpp, Strata and Maya unit's launcher sources /etc/<unit>.env.
 case "$UNIT" in
-  llamacpp | llamacpp-* | strata-*) ENVFILE="/etc/${UNIT}.env" ;;
+  llamacpp | llamacpp-* | strata-* | maya-*) ENVFILE="/etc/${UNIT}.env" ;;
   *)                                ENVFILE="" ;;
 esac
 
@@ -80,8 +81,10 @@ out["env"] = env
 out["unit_active"] = sh("systemctl is-active %s" % out["unit"]) if out["unit"] else None
 
 strata = (out["unit"] or "").startswith("strata-")
+# The Maya engine is a Strata-derived binary, also named strata.
+maya = (out["unit"] or "").startswith("maya-")
 argv = []
-pid = sh("pgrep -o -x strata" if strata else "pgrep -o -x llama-server")
+pid = sh("pgrep -o -x strata" if strata or maya else "pgrep -o -x llama-server")
 if pid.isdigit():
     try:
         argv = [a.decode() for a in open("/proc/%s/cmdline" % pid, "rb").read().split(b"\0") if a]
@@ -120,6 +123,29 @@ if strata:
                        ("STRATA_RELEASE", "STRATA_COMMIT", "STRATA_GGML_COMMIT", "STRATA_HOME",
                         "STRATA_GGML_DIR", "STRATA_VENV")},
     }
+elif maya:
+    # The engine runs under the Maya Python server (serve/server.py), which reads the config.
+    home = env.get("MAYA_HOME", "")
+    rocm = env.get("ROCM_ROOT", "")
+    spid = sh("pgrep -of 'serve/server.py --engine strata'")
+    cfg_path = "/var/lib/%s/config.json" % out["unit"]
+    out["maya"] = {
+        "release": env.get("MAYA_RELEASE"),
+        "built_commit": (open(home + "/build/BUILT_COMMIT").read().strip()
+                         if os.path.exists(home + "/build/BUILT_COMMIT") else None),
+        "source_head": sh("git -C %s rev-parse HEAD 2>/dev/null" % shlex.quote(home)) or None,
+        "ggml_head": sh("git -C %s/third_party/llama.cpp rev-parse HEAD 2>/dev/null" % shlex.quote(home)) or None,
+        "strata_sha256": sh("sha256sum %s/build/strata | cut -c1-64" % shlex.quote(home)) or None,
+        "server_cmdline": cmdline_of(spid),
+        "config": json.load(open(cfg_path)) if os.path.exists(cfg_path) else None,
+        # The Maya strata-device prints HIP device 0 only.
+        "devices": sh("LD_LIBRARY_PATH=%s/lib %s/build/strata-device 2>&1 | head -6"
+                      % (shlex.quote(rocm), shlex.quote(home))),
+        "rocm_package": sh("dpkg-query -W -f='${Package}=${Version}' %s 2>/dev/null"
+                           % shlex.quote(env.get("ROCM_PACKAGE", "amdrocm-runtime10.0"))) or None,
+        "hip_runtime": sh("readlink -f %s/lib/libamdhip64.so 2>/dev/null" % shlex.quote(rocm)) or None,
+        "engine_env": {k: v for k, v in env.items() if k.startswith("STRATA_")},
+    }
 else:
     bindir = os.path.dirname(argv[0]) if argv else os.path.realpath(env.get("LLAMACPP_DIR", "/opt/llamacpp/current"))
     bindir = os.path.realpath(bindir)
@@ -148,6 +174,10 @@ def opt(*names):
 if strata:
     # The GGUF shards Strata reads its experts from; the pack and MTP layer are rebuilt from them.
     paths = [opt("--native") or env.get("MODEL_GGUF")]
+elif maya:
+    # Maya reads the GGUF shards in the parent folder of its pack (for UD-Q4_K_XL, symlinks to the llama.cpp ones).
+    pack = opt("--glm-pack") or env.get("MODEL_PACK") or ""
+    paths = sorted(glob.glob(os.path.join(os.path.dirname(pack.rstrip("/")), "*-00001-of-*.gguf")))[:1]
 else:
     paths = [opt("-m", "--model") or env.get("MODEL_PATH"), opt("--mmproj") or env.get("MODEL_MMPROJ"),
              opt("-md", "--model-draft")]
@@ -160,7 +190,7 @@ for f in files:
     rec = {"path": f, "exists": os.path.exists(f)}
     if rec["exists"]:
         rec["bytes"] = os.path.getsize(f)
-        rec["verified_stamp"] = os.path.exists(f + ".verified")
+        rec["verified_stamp"] = os.path.exists(os.path.realpath(f) + ".verified")
         if os.environ.get("HASH_MODELS") == "true":
             h = hashlib.sha256()
             with open(f, "rb") as fh:
