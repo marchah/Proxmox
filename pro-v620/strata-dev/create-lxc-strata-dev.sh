@@ -290,7 +290,8 @@ install_opencode() {
   pct exec "${VMID}" -- bash -s -- "${OPENCODE_VERSION}" "${OPENCODE_SHA256}" "${OPENCODE_URL}" "${AGENT_USER}" <<'CONTAINER_SCRIPT'
 set -Eeuo pipefail
 version="$1"; sha="$2"; url="$3"; user="$4"
-if ! /usr/local/bin/opencode --version 2>/dev/null | grep -qxF "$version"; then
+# It prints `opencode v2.0.32`.
+if ! /usr/local/bin/opencode --version 2>/dev/null | grep -qxF "opencode v${version}"; then
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
   curl -fsSL -o "${tmp}/opencode.tgz" "$url"
