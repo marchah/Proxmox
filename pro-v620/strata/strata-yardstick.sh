@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Strata's quality yardstick on CT 123, run on the host with strata-qwen38fn stopped; starts it
-# again on exit. LABEL names the outputs in /models/strata/quality/ (default stage1).
+# again on exit unless the thermal guard tripped. LABEL names the outputs in
+# /models/strata/quality/ (default stage1).
 #
 # - run: teacher-forced perplexity with the experts on the CPU (upstream's method), then with
 #   the experts in the VRAM cache (--gpu-experts auto);
@@ -10,17 +11,36 @@
 # The engine runs get the server's last config and its env file, so the STRATA_* switches reach
 # them. The comparisons read only files and run without systemd-run, whose --pipe output does
 # not survive pct exec.
+#
+# thermal-guard.sh writes TRIP_FILE on a trip. The script will not start with it present,
+# checks it before each engine run, and leaves the server stopped when it appears: a trip
+# warrants checking cooling before anything restarts.
 set -Eeuo pipefail
 LABEL="${LABEL:-stage1}"
+TRIP_FILE="${TRIP_FILE:-/root/qwen38-flash-next/THERMAL_TRIP}"
 Q=/models/strata/quality
 CFG=/var/lib/strata-qwen38fn/config.json
 STRATA_HOME=/opt/strata/strata-v0.1.44.1
 PY=/opt/strata/venv/bin/python
 
-restart() { pct exec 123 -- systemctl start strata-qwen38fn || true; echo "==> strata-qwen38fn restarted"; }
-trap restart EXIT
+no_trip() {
+  [ ! -e "$TRIP_FILE" ] || { echo "ERROR: thermal trip recorded in ${TRIP_FILE}; check cooling, then remove it" >&2; exit 1; }
+}
+restart() {
+  if [ -e "$TRIP_FILE" ]; then
+    echo "==> thermal trip recorded in ${TRIP_FILE}: strata-qwen38fn stays stopped until cooling is checked" >&2
+    exit 1
+  fi
+  if pct exec 123 -- systemctl start strata-qwen38fn; then
+    echo "==> strata-qwen38fn restarted"
+  else
+    echo "ERROR: strata-qwen38fn did not start" >&2
+    exit 1
+  fi
+}
 
 yq() {
+  no_trip
   pct exec 123 -- systemd-run --wait --pipe --collect -q \
     -p User=llamacpp -p SupplementaryGroups=render -p LimitMEMLOCK=infinity \
     -p EnvironmentFile=/etc/strata-qwen38fn.env \
@@ -32,6 +52,8 @@ yc() {
   pct exec 123 -- runuser -u llamacpp -- env -C "${STRATA_HOME}" "${PY}" tools/quant_quality.py "$@"
 }
 
+no_trip
+trap restart EXIT
 pct exec 123 -- systemctl stop strata-qwen38fn
 pct exec 123 -- install -d -o llamacpp -g llamacpp "$Q"
 pct exec 123 -- install -o llamacpp -g llamacpp -m 644 "$CFG" "$Q/${LABEL}-config.json"
