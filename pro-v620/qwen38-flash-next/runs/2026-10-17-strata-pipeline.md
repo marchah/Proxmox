@@ -1,6 +1,6 @@
 # Qwen3.8-Flash-Next: pipeline windows and a shorter draft on two cards (Strata)
 
-Plan committed 2026-10-17 · Run 2026-10-17 · Status: running
+Plan committed 2026-10-17 · Run 2026-10-17 · Status: done
 
 ## Question
 
@@ -337,6 +337,45 @@ harness `2dcdaea`, three interleaved passes; raw data in
   `s4p7-pw2-st0`.
 - No thermal trip.
 
+### Stage C: soak
+
+Run 2026-10-17 08:41–09:11 ET, harness `cbfc0c9`. `s4p7-pw2` ran alone for ten passes, each a cold
+start; raw data in `/root/qwen38-flash-next/strata-sweep-20261017T124059Z/`.
+
+| Measure | Value |
+| --- | --- |
+| Decode, median of the ten passes | **67.7 t/s** (64.8–70.3) |
+| Each pass | 70.3, 68.9, 65.8, 66.6, 65.5, 64.8, 69.2, 68.1, 68.0, 67.4 |
+| Acceptance | 78.0% |
+| Prefill d8000 / d32000 | 968 (958–972) / 1,431 (1,428–1,435) |
+| Requests / engine starts | 170 / 10 |
+| `#267` lines, engine restarts, stalls | 0 |
+
+**The hang count over every pipeline-windows load** (stages A, B, B2 and C): 612 requests across
+36 engine starts, with no `#267` line, engine restart or stall. That rules out a per-request hang
+rate above about 0.5%, at 95%.
+
+**Greedy text:** over the ten starts, each row gave 3 to 9 different texts. The median was 8.
+
+**The cards in decode:** GPU 1 at 91% busy and 174 W, GPU 2 at 86% and 151 W.
+
+**Checks:**
+- Pipeline windows were on in all ten loads.
+- Chat contract and tool calls: 10 of 10 loads.
+- Rows: of 90, none empty, degenerate or cut off; 13 ended on end-of-sequence before 256 tokens.
+- Memory: 0 MiB outside VRAM at load and after the probe. The samplers saw no gap in 1,695
+  samples per card; 21 more per card had only one counter.
+- Thermal: the hottest DIMM read 53 °C; the hottest junction 84 °C, in prefill. There was no
+  thermal trip.
+
+**End state.**
+- At 09:12 ET, `use-engine.sh strata` returned CT 123 to GPU 2 alone. Strata serves there with the
+  unchanged env file: `--spec 4`, no `STRATA_MMQ_KQ`, no pipeline windows.
+- The watchdog maps `0000:03:00.0` back to `120:llamacpp`.
+- CT 120 is stopped with `onboot=1`.
+- The guard and the samplers are stopped.
+- The other guests are still stopped, waiting for the owner.
+
 ## Deviations
 
 - Stage B took 51 minutes, not the plan's estimate of about 30. The plan's rule picked six cells
@@ -353,3 +392,63 @@ harness `2dcdaea`, three interleaved passes; raw data in
     at `--spec 3`.
 
 ## Conclusion
+
+Measured on two V620s in a layer split, Strata v0.1.44.1 (`296b59d`), UD-Q4_K_XL, chat mode,
+greedy 256-token replies:
+
+1. **Speed.** With `--pipeline-windows 2` and the stricter draft (`--spec-min-p 0.7`, `--spec` 2
+   to 4), Strata decodes 12–14% faster than with `--spec 5`. Each run's ranges stay clear of
+   `s5`'s:
+
+   | Run | Pipeline windows | `s5` |
+   | --- | ---: | ---: |
+   | Stage B, three passes | 66.9–68.1 t/s | 59.6 (59.5–59.6) |
+   | Stage C soak, ten starts, `s4p7-pw2` | 67.7 (64.8–70.3) | |
+
+   - The three lengths cannot be told apart.
+   - Prefill and first-token times are unchanged.
+   - Speed varies more between starts: up to 5.5 t/s apart over the soak's ten starts, against
+     0.1 for `s5`.
+2. **It needs both changes.**
+   - Pipeline windows alone add 4.9% (screen) and 9.2% (stage B).
+   - The stricter draft alone loses 3.5% (screen), although its acceptance rises from 64% to 85%.
+
+   The 6900 XT report found the same pattern.
+3. **Stability.** 612 requests across 36 pipeline-windows starts showed no #2245 hang (`#267`),
+   engine restart or stall. That rules out a per-request rate above about 0.5%. Rarer hangs are
+   not ruled out, and neither are long sessions. #2245's setup differed from these runs:
+
+   | | #2245 | These runs |
+   | --- | --- | --- |
+   | Strata | 0.1.43.1 | 0.1.44.1 |
+   | Model | IQ3_S | UD-Q4_K_XL |
+   | Layer split | 25 | auto (24) |
+   | ROCm | TheRock 7.14 | 10.0 |
+4. **It ran.** Every pipeline-windows load logged two verifiers per stage, and no request fell back
+   to the serial loop.
+5. **Correctness.** Every load passed the chat contract, the tool calls and the row checks.
+   - With pipeline windows, greedy text changes between server starts: 3 to 9 different texts
+     per row over the soak's ten starts. `s5` repeated its text exactly in every pass.
+   - The cause was not tested. Strata's documentation says the pipeline moves a few experts to
+     the CPU, which rounds differently, and that the text matches the serial loop bit for bit only
+     with `STRATA_IQ_MT_MIN=1 --pcie-frac 0 --adapt-every 0`.
+6. **Memory.** Nothing landed outside VRAM.
+   - Pipeline windows keep 272 MiB of the first card's VRAM out of its cache, about 140 expert
+     slots across both cards. The decode hit rate stays at 97–98%.
+   - In decode, both cards run 85–95% busy, at about 175 W on GPU 1 and 150 W on GPU 2, against
+     140 W and 108 W without pipeline windows.
+
+**The draft layer on the first card** (`STRATA_MTP_STAGE0=1`, new in 0.1.44) is slower on these
+cards:
+- at `--spec 3`, 60.7 against 66.9 t/s;
+- at `--spec 4`, 64.0 against 65.8 t/s;
+- prefill at 23k tokens is 3–4% slower.
+
+**Not measured:**
+- two concurrent streams: pipeline windows turn off with `--batch` slots;
+- sampling above temperature 0;
+- agent sessions and long tasks;
+- one card: pipeline windows need a layer split.
+
+CT 123 still serves the starting configuration on GPU 2 alone. Whether to use the second card,
+pipeline windows or the stricter draft is the owner's decision.

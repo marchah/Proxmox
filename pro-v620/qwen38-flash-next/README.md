@@ -34,6 +34,9 @@ read a 23k-token prompt at 1,008 t/s against 340. Both were measured in chat mod
 256-token replies, `--spec 5` and `STRATA_MMQ_KQ=1`. With both cards in a layer split,
 Strata decoded 59.7 t/s and read that prompt at 1,423 t/s
 ([record](runs/2026-10-16-strata.md#stage-8-against-llamacpp)).
+On the same split, `--pipeline-windows 2` with `--spec 4 --spec-min-p 0.7` decoded 67.7 t/s
+over ten starts, against 59.6 for `--spec 5`, with the same prefill. With it, the greedy text changes
+between server starts ([record](runs/2026-10-17-strata-pipeline.md#conclusion)).
 Measurements live in the [test records](#test-records), each with its build and
 hardware.
 
@@ -159,7 +162,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [The prefill slowdown with `dio` and the MTP head](runs/2026-10-10-prefill-slowdown.md) | done |
 | 2026-10-10 | b11505 | Vulkan, Mesa 26.2.4 | [Short-reply decode with `dio` and the MTP head](runs/2026-10-10-short-reply-decode.md) | done |
 | 2026-10-16 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Strata in place of llama.cpp on one card](runs/2026-10-16-strata.md) | done |
-| 2026-10-17 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Pipeline windows and a shorter draft on two cards](runs/2026-10-17-strata-pipeline.md) | planned |
+| 2026-10-17 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Pipeline windows and a shorter draft on two cards](runs/2026-10-17-strata-pipeline.md) | done |
 
 ## Benchmark tools
 
