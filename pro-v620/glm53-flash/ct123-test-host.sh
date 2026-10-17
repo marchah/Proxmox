@@ -272,6 +272,19 @@ preflight() {  # [two-card]
     [ "$st" = "stopped" ] || die "CT 120 is '${st}'; shut it down first (stop Hermes, CT 121, before it)"
     [ -e "${DRI_BY_PATH}/pci-${GPU1_PCI}-render" ] || die "GPU 1 by-path render node missing on the host"
   fi
+  # What ensure_kfd and sync_drm_cgroup will read, for the cards CT 123 is about to bind.
+  if [ "$TEST_ENGINE" = maya ]; then
+    is_chardev "$KFD_NODE" || die "the host has no ${KFD_NODE}, which HIP needs"
+  fi
+  if [ "$TEST_ENGINE" = maya ] || grep -qE '^lxc.cgroup2.devices.allow: c 226:[0-9]+ ' "$CONF"; then
+    local pci kind
+    for pci in "$GPU2_PCI" ${1:+"$GPU1_PCI"}; do
+      for kind in card render; do
+        drm_minor "${DRI_BY_PATH}/pci-${pci}-${kind}" >/dev/null \
+          || die "${DRI_BY_PATH}/pci-${pci}-${kind} does not resolve to a device node"
+      done
+    done
+  fi
 }
 
 # The Flash-Next engine enabled before the first change, which restore enables again.

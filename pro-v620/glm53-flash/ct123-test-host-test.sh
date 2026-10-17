@@ -314,5 +314,25 @@ run restore || { bad "restore exited non-zero"; tail_log; }
 [ "$(unit 123 llamacpp-qwen38fn)" = "enabled active" ] && ok "Flash-Next llama.cpp serving again" || bad "Flash-Next is $(unit 123 llamacpp-qwen38fn)"
 rm -rf "$T"
 
+untouched() {  # a refusal leaves the serving model and the host configuration as found
+  [ "$(unit 123 llamacpp-qwen38fn)" = "enabled active" ] && ok "Flash-Next untouched" || bad "Flash-Next is $(unit 123 llamacpp-qwen38fn)"
+  [ "$(onboot 120)" = 1 ] && ok "CT 120 autostart untouched" || bad "CT 120 onboot is $(onboot 120)"
+  diff -q "$T/123.conf.orig" "$T/lxc/123.conf" >/dev/null && ok "CT 123 config untouched" \
+    || { bad "CT 123 config changed:"; diff "$T/123.conf.orig" "$T/lxc/123.conf" | sed 's/^/      /'; }
+  [ "$(map)" = "${GPU1}=120:llamacpp,${GPU2}=123:llamacpp-qwen38fn" ] && ok "watchdog map untouched" || bad "map is $(map)"
+}
+
+echo "=== 10. TEST_ENGINE=maya two-card refuses on a host without /dev/kfd, and changes nothing ==="
+new_host; rm "$T/kfd"
+TEST_ENGINE=maya run two-card && bad "set up Maya without /dev/kfd" || ok "refused"
+untouched
+rm -rf "$T"
+
+echo "=== 11. TEST_ENGINE=maya one-card refuses with a dangling DRM link, and changes nothing ==="
+new_host; rm "$T/dri/card1"
+TEST_ENGINE=maya run one-card && bad "set up Maya with GPU 2's card node missing" || ok "refused"
+untouched
+rm -rf "$T"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "ALL PASSED"; else echo "${fails} FAILED"; exit 1; fi
