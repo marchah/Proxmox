@@ -1,7 +1,9 @@
-# Strata → DeepSeek-V4.1-Flash: review and implementation plan
+# Strata → DeepSeek-V4.1-Flash: fork implementation plan
 
-Reviewed 2026-10-17. This is a plan for **local inference**, using a DeepSeek-only
-fork of Strata. Dropping Qwen compatibility simplifies the implementation, but
+Plan finalized 2026-10-17. **First of two separate forks: DeepSeek proceeds first;
+MiMo is second and its implementation remains deferred.**
+This is a plan for **local inference**, using a DeepSeek-only fork of Strata.
+Dropping Qwen compatibility simplifies the implementation, but
 the work still includes a new model execution path. Keep Strata's useful systems
 infrastructure and replace the Qwen mathematics, artifacts, and conversation
 format. Avoid building a general multi-model framework as part of this port.
@@ -21,6 +23,11 @@ pinned Q2 artifact at short context, one request at a time. Then add the text/to
 API, performance tuning, and Q4. CUDA, other GPU generations, other operating
 systems, vision, and DSpark are outside the first release. There is no requirement
 to implement native FP4/FP8 GPU arithmetic or a catalog of weight formats.
+The Q2 release uses exact full-forward prefill; approximate SWA bounded replay
+requires its own later acceptance and cache identity. One 8K slot is the release
+target. Two isolated 8K slots are a later qualification target, not a release gate.
+Reuse HTTP admission/queueing, but exclude inherited Qwen multi-slot execution
+and `--parallel > 1` until DeepSeek state ownership and batching pass dedicated tests.
 
 Initial correctness means agreement with a reference using the **same quantized
 weights**. Quantization's loss of model accuracy is accepted for bring-up; a
@@ -30,10 +37,11 @@ to be caught. No implementation or deployment has been performed during this rev
 
 **Sources and reproducibility.** The reviewed Strata main commit is
 [`477ac13cbe8e582c20484871ce459d20d82df09d`](https://github.com/Niko1221/Strata/tree/477ac13cbe8e582c20484871ce459d20d82df09d).
-This is also the commit behind the latest
+This is also the commit behind the reviewed
 [v0.1.45 release](https://github.com/Niko1221/Strata/releases/tag/v0.1.45), published
 2026-10-17. The lab measurements below used v0.1.44.1. Choose the reviewed commit
-as the development baseline and pin its dependencies too.
+as the frozen development baseline; do not track `main`. Pin its dependencies too,
+including ggml `3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 
 The initial weight target is
 [antirez/deepseek-v4.1-flash-gguf](https://huggingface.co/antirez/deepseek-v4.1-flash-gguf/tree/dd8a266f7145edc19e2334b46e19b6821f221dc7)
@@ -85,11 +93,18 @@ dispatch layer would add work without removing DeepSeek's kernel requirements.
 
 There is already an open
 [DeepSeek V4 Flash port, PR #1518](https://github.com/Niko1221/Strata/pull/1518),
-reviewed at `6e326aab2f9679d34be36020fd1a8d7021c8ccce`. It adds a separate
+originally reviewed at `6e326aab2f9679d34be36020fd1a8d7021c8ccce`. It adds a separate
 `dsv4_ext` engine targeting the older V4 model. Its README describes 43 layers and
 256 experts, unlike V4.1. Evaluate its dequantization utilities, tiny fixtures,
-and serving protocol for reuse. Its test reports do not establish V4.1 or HIP
-correctness; do not merge it as if it supplies this implementation. The upstream
+and serving protocol for reuse. The PR author reports Ubuntu/CUDA testing; a
+separate Windows/CUDA report at `6f9382f` found missing `dq_traits.hpp` scalar
+definitions and about 0.26 logit error for GPU prefill chunks of two or more.
+Those are historical failures to regression-test, not verified defects in every
+later head. The API resolved the head to `bd6fc62a377acb06fc5fb1d800262a4e6731a935`
+on 2026-10-17; re-check and pin any reused code at step 1. Its
+chunking, ring snapshots and summation order merit inspection before step 4.
+No cited report establishes V4.1, HIP or multi-GPU correctness; do not merge it
+as if it supplies this implementation. The upstream
 maintainer also explains the model-specific scope in
 [issue #479](https://github.com/Niko1221/Strata/issues/479).
 
@@ -100,19 +115,26 @@ explicit per-layer plan, validated against checkpoint metadata. Do not retain
 | Component | Required behavior |
 | --- | --- |
 | Backbone | 40 layers; hidden width 5120; vocabulary 129280; 20 encoder and 20 decoder layers. |
-| Attention | 64 heads of width 512; 64 rotary dimensions; query rank 1280; grouped output rank 1024 across 8 groups; local window 128. |
+| Attention | 64 query heads of width 512; one compressed KV head; no attention bias; 64 rotary dimensions; query rank 1280; grouped output rank 1024 across 8 groups; local window 128. |
+| RoPE / YaRN | `rope_theta=10000`, `compress_rope_theta=160000`; YaRN factor 16, original context 65536, beta-fast 32 / beta-slow 1; maximum position 1048576. Apply the reference's per-layer frequency policy, including at short context. |
 | CSA2 | Backbone compression ratios: layers 0–1: 0; 2–19: 2; 20–39: 1. Global KV sources at 2, 8, 14, 20; index sources at 2, 8, 14, 20, 24, 28, 32, 36. |
 | Index selection | 32 index heads of width 128; top 512 positions; decoder candidate source at layer 20 with 2048 blocks of 8 positions. |
 | MoE | 384 routed experts, 6 selected, one shared expert; FFN width 2304; square-root-softplus scores, correction bias for selection, normalized unbiased weights scaled by 1.5. |
-| Residual and activation | Four mHC streams; single-pass mixing with Sinkhorn; RMS epsilon 1e-20; model-specific SwiGLU clamps. |
-| Engram | Layers 1 and 14; compressed tokenizer vocabulary; n-grams through length 4; 8 heads per n-gram size, rows of width 256. |
-| DSpark | Three draft layers, block size 5, target layers 37/38/39, 128 draft experts and top-3 routing. |
+| Residual and activation | Four mHC streams; single-pass mixing with 20 Sinkhorn iterations and `hc_eps=1e-6`; RMS epsilon 1e-20; `swiglu_limit=10.0` (up clamped both ways, gate above only), including the shared expert. |
+| Engram | Layers 1 and 14; compressed vocab 99092, pad ID 2; n-grams through length 4; 8 heads per n-gram size, width 256. Table rows 384006168 / 384016682, each 264 bytes, totaling 188.83 GiB. |
+| DSpark (deferred) | Three draft layers, block size 5, target layers 37/38/39, 128 draft experts and top-3 routing; noise token ID 128799; Markov rank 256. |
 
 Source: the pinned
 [checkpoint configuration](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/blob/1bae0e1088993b9b82de08f59de5be5a34e42170/config.json).
 The official configuration's compression array has 43 entries because it includes
 the three draft layers; the selected GGUF records the 40 backbone entries. Accept
 the pinned artifact's explicit contract and do not execute draft layers as backbone.
+
+The pinned [attention implementation](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/blob/1bae0e1088993b9b82de08f59de5be5a34e42170/inference/model.py)
+applies YaRN when the compressed-attention path has a nonzero original context;
+pure SWA layers disable it. The value 65536 is a frequency-construction parameter,
+not a token-position switch. Test both paths below 8K as well as at later context
+boundaries; postponing all YaRN work until long-context qualification is incorrect.
 
 **Memory feasibility and the first artifact.** Strata's execution strategy is
 appropriate for this machine: dense weights and hot experts in VRAM, the rest
@@ -144,6 +166,10 @@ values and eight scales. These bytes need a row decoder, not an FP8 GEMM backend
 
 For Q2 bring-up, keep both routed experts and Engram in RAM. Use a provisional
 384–416 GiB process budget with bounded scratch and no second full-file copy.
+Keeping Engram resident deliberately differs from DwarfStar's SSD row-streaming
+policy: it spends RAM to simplify early execution. Benchmark token-derived row
+reads on the local NVMe in step 1 (cold/warm latency, bytes and bounded prefetch),
+so Q4's SSD-backed policy is tested before the final milestone.
 Place dense weights and hot experts on the GPU. The approximately 142 GiB expert
 arena is below the recorded approximately 252 GiB amdgpu GTT ceiling, so the
 existing pinned-arena approach is worth trying first; keep Engram outside GPU
@@ -212,14 +238,112 @@ that report. This supports feasibility, not a transferable throughput claim.
 Audit those components before writing equivalent kernels from scratch; it does
 not require changing the chosen Strata-based scheduling design.
 
+**Fork maintenance and validation.** Use `ModelFamily::DeepSeekV41` and focused
+`src/deepseek/` modules, following upstream's per-family engine pattern. Adapt
+shared plumbing at narrow boundaries instead of rewriting shared files wholesale.
+Qwen support is not a product requirement; retain it only as needed to qualify the
+base/donor, then remove unused model paths after replacement coverage exists.
+Maintain `docs/FORK-PATCHES.md` in the fork with its base/dependency pins, changed
+upstream files and reasons. The implementer checks each upstream release touching
+HIP, kernels, memory or serving, and before each release candidate; port relevant
+correctness/security fixes promptly. Change the frozen base only in a separate
+reviewable update that reruns CPU, gfx1030 and service gates. Offer generic loader,
+session-versioning and dispatch fixes upstream without coupling the two model forks.
+
+Build and run AVX2 fixtures in CT 123 under `/opt/strata-ds41/`; macOS is the
+authoring machine. HIP tests require both cards free of serving processes. Add an
+x86-64 AVX2 CPU-only GitHub Actions build and small deterministic fixtures on every
+change, without full model downloads. In the fork, provide one documented
+`tools/deepseek/validate-gfx1030.sh` entry point for CT 123: device enumeration,
+required operator/loader/prefill/session fixtures and scratch-boundary checks.
+Run CPU scratch tests under supported address/undefined-behavior sanitizers and
+device fixtures with guard checks. List inherited WMMA/hipBLASLt/AVX-512 skips;
+PLE fixtures are removed with PLE, not substituted for Engram tests. No required
+DeepSeek test may silently skip. Record reference revision, seed, activation policy,
+error metric and predeclared tolerance in `tests/deepseek/tolerances.json` with a
+README explaining reference repeatability and CPU/GPU deltas. These are proposed
+fork deliverables, not existing commands or tests in this repository.
+
+**Lab integration and campaign safety.** Parameterize `use-engine.sh` and
+`../glm53-flash/ct123-test-host.sh` once for engine root, unit, model and restore
+target; MiMo will reuse the same plumbing. Implement the test subset before the
+first full-model run, with final packaging in step 7. Planned names are
+`TEST_MODEL=deepseek41`, `TEST_ENGINE=strata`, root `/opt/strata-ds41/`, unit/env
+`strata-ds41`, launcher `strata-serve-ds41`. Update all test-unit and `Conflicts=`
+lists, readiness/device checks, `/dev/kfd`, DRM cgroups, CT 120 autostart and the
+watchdog map together. Derive `TEST_MEMORY_MIB` from step 1's peak allocation
+ledger plus container overhead, reserving host memory; 488 GiB is not a fixed
+DeepSeek requirement. Set `--memory-limit-mib` below the CT limit by the declared
+container reserve; the existing 118784 MiB launcher default is inappropriate.
+Before a full load, fix the host minimum-MemFree and CT runtime-reserve thresholds
+in the campaign record. Reject a configuration with swap, expert paging, VRAM
+spill, or a breached reserve; do not count resident file-backed experts as free
+just because MemAvailable includes reclaimable pages.
+
+The EPYC has 32 physical cores / 64 threads (siblings n/n+32). A random 48-CPU
+set can omit physical cores; use explicit `TEST_CPUSET` and measure worker count
+and affinity with the actual expert widths. The MiMo baseline used about 30 busy
+cores with 32 pinned workers; Flash-Next's smaller allocation peaked near 16 in
+STREAM. Neither is a DeepSeek worker default.
+
+Each campaign's Safety section must requalify the inherited
+[gfx1030 constraints](README.md#known-gfx1030-issues-upstream):
+`STRATA_HIP_ADAPT_KERNEL_COPY=1` for #884, `STRATA_HIP_PROMPT_F16`,
+`STRATA_SH_STREAM` where shared experts apply, `STRATA_MMQ_KQ`, #2457's corruption
+regression class and #1103's ROCm runtime issue. Preserve the ROCm 10.0 pin until
+qualified; dense GEMMs use rocBLAS, not unavailable gfx1030 WMMA/hipBLASLt paths.
+Do not assume Qwen switches retain either meaning or speed gains in the new engine.
+Record the 10 s setting from `../amdgpu-lockup-timeout.sh`, the ROMED8-2T thermal
+guard, watchdog ownership, `vram-residency-sampler.py`, `vram-release-trace.sh`,
+and `capture-env.sh`. DIMM risk analysis/new thermal gates are excluded by the
+recorded owner decision; retain existing guard behavior and DIMM telemetry.
+
+Use [TEST-RECORDS.md](../TEST-RECORDS.md), committed plans, `push-harness.sh`,
+`environment.json`, and adapted `strata-sweep.sh`/probes. Start on GPU 2, then both
+cards; record why CPU-only or resource-saving arms are omitted if not useful.
+DSpark exists but is deferred until its own implementation; quote no-draft controls
+and explain that exclusion. Revalidate cold requests/token counting tracked by
+[#112](https://github.com/marchah/Proxmox/issues/112) before usage benchmarks, and
+check the Hermes provider against the endpoint before a deployment decision.
+Restore the saved Flash-Next engine, device ownership, limits and watchdog map
+with one command; DeepSeek need not run in llama.cpp for that restore to work.
+Other guests stay off after a campaign until the owner asks to start them.
+Model-store capacity remains owner-managed; retain pinned downloads and SHA-256
+verification (`.verified`), without a storage-capacity planning gate.
+
+**Storage format × execution path audit.** Step 1 fills in exact source symbols,
+fixture IDs and peak scratch for this matrix; these are required paths, not claims
+that upstream already implements them. Audit GGUF reading, CPU dot traits and HIP
+decode **and** prompt paths separately, including CPU activation-width rejection,
+`native_expert`/worker-array caps and MMVQ dispatch.
+
+| Storage type (Q2 count) | GGUF contract | CPU path to qualify | gfx1030 path to qualify | Scratch / bounded fallback |
+| --- | --- | --- | --- | --- |
+| IQ2_XXS (80) | Gate/up block reader | Pinned ggml dot/dequant at width 5120 | Decode and grouped prompt dispatch | Geometry-sized activation buffers; tile dequant + BLAS |
+| Q2_K (40) | Down block reader | Pinned ggml dot/dequant at width 2304 | Decode and grouped prompt dispatch | Audit 5120×2304 matrices in both orientations; tile dequant + BLAS |
+| Q8_0 (321) | Dense/shared/output blocks | ggml dot/dequant at actual tensor shapes | MMVQ and prompt GEMM | Bound dense conversions; tile dequant + rocBLAS |
+| F16 (110), F32 (493) | Typed spans and shapes | Typed operators / reference BLAS | HIP operators / rocBLAS | Ledger covers actual dimensions; unfused bounded reference path |
+| I8 Engram (2) | Opaque row264 bytes, not signed-int8 weights | e4m3/e8m0 row decode | Upload decoded rows; native row decode optional | Bounded row batches outside expert pinning; CPU decode fallback |
+
+Enter step 2 with every path and fallback assigned; complete it only after real
+block decode and the bounded reference execution paths pass. Native fast kernels
+can follow in steps 3–4. Missing support is implementation work, not permission to
+silently re-quantize the selected artifact or claim all six types already work.
+
 **Implementation sequence and acceptance gates.** Each item is a separate
 reviewable change or small series. Work inside a fork; the user's permission to
 drop Qwen supersedes upstream's policy of preserving Qwen defaults. Keep license
 notices for reused Strata, ggml, and DeepSeek code.
 
+0. **Qualify the frozen base before porting.** Build v0.1.45 / `477ac13` separately
+   from the installed v0.1.44.1. Run the existing Flash-Next UD-Q4_K_XL yardstick
+   and chat/tool gates from the 2026-10-16 record on the same card/configuration.
+   Gate: no correctness regression, and any speed/memory change explained. Keep
+   the installed service as the restore target; this is not an automatic upgrade.
+
 1. **Freeze references and build numerical fixtures.** Pin the source, checkpoint,
    tokenizer, codec, and compiler/runtime inputs. Add a metadata-only inspector
-   that emits the tensor inventory and RAM/VRAM/storage ledger. Build small,
+   that emits the tensor inventory and peak RAM/VRAM/pinned-memory ledger. Build small,
    deterministic reference fixtures with initialized weights for each component,
    using the official Python implementation as the mathematical specification
    and dequantizing the selected GGUF's exact blocks for the test oracle. Use
@@ -229,15 +353,28 @@ notices for reused Strata, ggml, and DeepSeek code.
    same quant and activation policy; do not require Q2 to match original-checkpoint
    logits or to meet a perplexity/benchmark accuracy threshold.
 
+   Resolve llama.cpp support for this exact `deepseek41` metadata and Engram
+   encoding at a pinned commit. If supported, capture same-quant no-draft
+   correctness and performance baselines, matching context per slot (Strata is
+   per slot; llama.cpp's total is shared). If unsupported, record that outcome;
+   retain independent initialized same-quant fixtures and a bounded CPU oracle
+   for selected real-model layer traces/logits. Do not infer that the fork is the
+   only possible runtime. Inspect/pin DwarfStar and Lucebox reuse candidates and
+   complete the format/path audit and early Engram row-read experiment.
+
    Gate: all expected tensors, dtypes, dimensions, scale layouts, and layer
    dependencies accounted for; fixture provenance recorded; target allocations
-   fit the proposed hardware budget. This is the first implementation task.
+   fit the proposed hardware budget. The campaign must record a numerical usable
+   decode/TTFT threshold agreed with the owner before performance qualification
+   if no same-quant engine baseline exists; the 15–30 t/s forecast is not that
+   threshold. This does not block metadata/fixture development now.
 
 2. **Load the selected Q2 artifact.** Replace the Qwen
    geometry/layout entry points with `DeepSeekV41Config`, `LayerPlan`, and
    explicit `TensorSpec` records. Add a versioned index/manifest containing
    original names, shapes, encoding, offsets, hashes, and model/tokenizer
-   revisions. Support this artifact's `deepseek41.*` metadata dialect and tensor
+   revisions, including Engram pad ID and compressed-vocabulary/hash identities.
+   Support this artifact's `deepseek41.*` metadata dialect and tensor
    names. Read the packed GGUF tensors directly, reusing existing IQ2_XXS/Q2_K
    and Q8_0 readers and kernels where valid. Add only the missing dimension and
    model-specific operations. Engram's two opaque I8 tensors need the declared
@@ -260,8 +397,8 @@ notices for reused Strata, ggml, and DeepSeek code.
    artifacts; loading has a bounded peak-memory footprint without a duplicate
    mapping/page-cache copy consuming the available headroom.
 
-3. **Implement a correct single-token backbone.** Replace the model-specific
-   contents of `src/core/layer.cpp` and `session.cpp`, supported by focused new
+3. **Implement a correct single-token backbone.** Route the model-specific
+   execution through narrow hooks in `src/core/layer.cpp` and `session.cpp`, with new
    `src/deepseek/` and `include/strata/deepseek/` modules. Implement mHC mixing
    and its carried pre-mix, latent attention projections, compressor, shared
    KV/index state, hierarchical selection, attention sinks, rotary transforms
@@ -279,7 +416,7 @@ notices for reused Strata, ggml, and DeepSeek code.
    only after the unfused operators pass. Keep graph capture and speculation off.
 
    Gate: operator traces, selected expert IDs, index selections, state updates,
-   and full logits agree with the same-quant oracle under documented numerical
+   and full logits agree with the independent same-quant oracle under documented numerical
    tolerances. Run a short real-model greedy CLI completion with finite logits.
    Linguistic quality can be poor at this stage; apparent fluency is also not
    evidence that the computation is correct.
@@ -304,8 +441,9 @@ notices for reused Strata, ggml, and DeepSeek code.
    short, 4K, and 8K prompts with cold/warm storage and CPU/GPU placement
    controls. Extend to 16K/64K only in later context qualification. Record
    prefill, decode, TTFT, expert hit rates, DMA/SSD bytes, RAM,
-   requested/resident VRAM, and DIMM/GPU temperatures. Set performance targets
-   from these measurements, not from Strata's Qwen throughput.
+   requested/resident VRAM, and DIMM/GPU temperatures. Evaluate performance
+   against the predeclared decision below; use these measurements
+   to select optimizations, not to move the acceptance threshold after the run.
 
 5. **Replace conversation encoding and expose the text API.** Preserve the HTTP
    lifecycle, authentication, queues, cancellation, monitoring, and engine IPC.
@@ -338,9 +476,9 @@ notices for reused Strata, ggml, and DeepSeek code.
    before running the same cases against real weights.
 
 6. **Implement exact session reuse.**
-   Replace `SessionState`, `conversation_snapshot.cpp`, `conversation_state.cpp`,
-   and associated size/restore checks with owned source KV/index buffers,
-   per-layer SWA rings, compressor partial state, Engram token history, and
+   Add family-specific state behind `SessionState`, `conversation_snapshot.cpp`,
+   `conversation_state.cpp`, and associated size/restore checks: owned source
+   KV/index buffers, per-layer SWA rings, compressor partial state, Engram token history, and
    explicit positions. Keep scratch selection/candidate state request-local;
    never copy the reference implementation's process-global mutable attention
    object into a concurrent server. Version the cache format and bind it to
@@ -360,9 +498,11 @@ notices for reused Strata, ggml, and DeepSeek code.
    two-card Q2 results before changing quantization. Add the matching Q4 artifact's
    Q4_K expert path, keeping its dense tensor precision and Engram contract.
    Validate Q4 against its own dequantized reference; Q4 need not produce Q2's
-   output. Support the publisher's split-file distribution without requiring an
-   extra full concatenated copy. Q4 expert residency must use ordinary RAM with
-   bounded pinned transfers or a capped registered subset; it cannot assume the
+   output. The publisher's Q4 files are binary transport parts of one GGUF, not
+   standalone GGUF shards. Provide a validated virtual byte-span reader across
+   parts (including cross-part reads and whole-file identity) or an in-place
+   verified join; avoid retaining a second complete copy. Q4 expert residency must
+   use ordinary RAM with bounded pinned transfers or a capped registered subset; it cannot assume the
    whole expert arena fits under the observed GTT limit. Start with SSD-backed
    Engram and measure its cache behavior.
 
@@ -374,9 +514,10 @@ notices for reused Strata, ggml, and DeepSeek code.
    gfx1030 and Zen 2 AVX2; fail explicitly for unsupported backends and formats.
    CUDA, Metal, other AMD targets, and native FP4/FP8 GEMMs are not release work.
 
-   For homelab deployment, create a separate launcher/env/unit and model artifact
-   directory. Integrate the existing GPU ownership, thermal watchdog, and engine
-   switch procedures when deployment is actually requested. Qualify service
+   Finish the `strata-ds41` launcher/env/unit and model artifact directory, using
+   the shared test/switch plumbing established before full-model tests. Update
+   the root README inventory and CLAUDE.md's "Where to look" when the service is
+   installed. Qualify service
    restart, model readiness, shutdown/cancellation, RAM limits, and recovery.
    Gate: publish reproducible Q2/Q4 prefill, decode, TTFT, memory and cache results
    on this host, with model/quant/context/draft status explicit. Qualify the Q2
@@ -386,6 +527,10 @@ notices for reused Strata, ggml, and DeepSeek code.
 8. **Optional work after the measured Q2/Q4 text service.** Prioritize these from
    observed bottlenecks rather than treating them as prerequisites:
 
+   - Two 8K slots. Reuse upstream admission and batch scheduling only after the
+     DeepSeek adapter passes interleaved-session, cancellation and shared-state
+     ownership tests. Compare lone-request latency with aggregate throughput;
+     keep one slot as the default unless the measured workload benefits.
    - Physically packed main KV (E2M1 with E4M3 scales per 16 channels), preserving
      values already emulated by the correctness path. Compare packed/unpacked
      representations at their quantization boundary. Raise context through
@@ -411,11 +556,26 @@ notices for reused Strata, ggml, and DeepSeek code.
    - Other hardware, including CUDA. Add a backend only when there is a concrete
      target and a way to validate it. Do not maintain untested compatibility now.
 
-The principal uncertainties are gfx1030 expert throughput at the larger matrix
-sizes, effective CPU bandwidth and GPU cache hit rate, cross-card shared attention
-state, and Q4's Engram random-read latency. Q2's published 340.60 GiB file makes
-the existing 512 GB host a credible development target without model-capacity
-experiments dominating bring-up. Its process peak and speed still need measurement.
-Strata's hybrid scheduling is the part to retain; the model execution graph must
-be ported. The next task is the pinned Q2 tensor ledger and same-quant component
-oracle, followed by one real DeepSeek block on AVX2/HIP and then full-model decode.
+**Performance decision and risk register.** Correctness gates always apply.
+With a runnable same-quant llama.cpp baseline, retain the fork as a serving
+candidate only if at least three interleaved passes show an improvement beyond
+the observed spread on the predeclared primary workload, while meeting its
+TTFT/memory limits. Without that baseline, judge the fixture-qualified fork
+against the owner's predeclared usable decode/TTFT thresholds. A cross-model
+Flash-Next comparison and the 23.4 t/s traffic anchor cannot substitute for either
+gate. If a gate fails after the bounded optimization campaign, retain the existing
+deployment and document the result before funding optional features. Qualify Q2
+and Q4 independently; failing Q4 does not invalidate a qualified Q2 release.
+
+| Unknown | Measurement | Fallback | Stop / scope limit |
+| --- | --- | --- | --- |
+| Format support and 5120×2304 expert throughput | Step-1 path audit; AVX2/HIP real-block fixtures and microbenchmarks | Bounded tile dequantization + BLAS | No full-model milestone without correct, bounded paths; no promotion if final workload gate fails |
+| Host service time, affinity and overlap | Worker/cpuset sweep, per-phase CPU time, transfer stalls | Smaller worker pool and conservative serialized scheduling | Reject configurations that breach reserves; stop tuning at the campaign's decision gate |
+| Expert cache locality | Per-layer route traces, held-out hit rate, CPU bytes and cache-refresh bytes | Static measured placement, CPU misses | Do not budget gains from unmeasured hits; drop adaptations whose total latency regresses |
+| Shared attention across cards | Source/consumer ownership traces and one-card/two-card parity | One card or bounded host transfers | No two-card release with state divergence or unbounded duplication |
+| Engram row latency / Q4 fit | Early cold/warm NVMe probe; peak RAM and pinned-memory ledger | Bounded prefetch/cache, capped registration, retain Q2 | Defer Q4 if its memory or workload gate fails; intentional Engram reads are distinct from expert paging |
+| Numerical or session divergence | Independent layer/logit fixtures, chunk parity, save/restore and cancellation | Unfused exact path and cold recomputation | Block the affected milestone; fluent output cannot waive it |
+
+The next work is base qualification followed by the pinned Q2 tensor ledger,
+path audit and same-quant component oracle. Full-model performance remains an
+implementation measurement, not a result established by this plan.
