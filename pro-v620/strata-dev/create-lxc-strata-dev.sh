@@ -206,6 +206,8 @@ tools=(build-essential cmake ninja-build git curl ca-certificates gnupg python3-
   python3-pip ccache tmux openssh-server sudo gh jq htop)
 apt-get update -q
 apt-get install -y -q --no-install-recommends "${tools[@]}"
+# SSH clients pass LANG=en_US.UTF-8; without the locale every login warns.
+locale -a | grep -qx 'en_US.utf8' || locale-gen en_US.UTF-8 >/dev/null
 
 if [ "$(dpkg-query -W -f='${Version}' "$ROCM_PACKAGE" 2>/dev/null || true)" != "$ROCM_VERSION" ]; then
   install -d -m 0755 /etc/apt/keyrings
@@ -272,6 +274,9 @@ if [ -n "$pubkey" ]; then
 fi
 chown "$user:$user" "$keys"
 chmod 0600 "$keys"
+# Ubuntu 24.04 starts sshd from a socket, so its runtime directory is missing until the
+# first connection, and `sshd -t` refuses to run without it.
+install -d -m 0755 /run/sshd
 sshd -t
 systemctl enable --now ssh >/dev/null
 systemctl restart ssh
