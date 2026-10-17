@@ -35,6 +35,23 @@ HELPER_LOG = (
     "strata generate: expert cache 7921 slots, 23.12 GiB of VRAM; policy is\n"
     "strata generate: CUDA1: 10086 additional experts, 29.43 GiB; results return through pinned host rows\n")
 
+# Maya's lines as its engine prints them (issue #156's report, one card; a split's second card).
+MAYA_LOG = (
+    "glm fast: CUDA0 layers [0,45) expert pool 7.04 GB, 25-32 slots/layer (1063 total)\n"
+    "glm fast: CUDA0 RAM tier 78.03 GB pinned, 11779 slots\n"
+    "glm fast: CUDA0 CPU lane: 16 threads, an expert 0.211 ms on the CPU vs 0.061 ms over PCIe -> of 0..8\n"
+    "maya serve: CUDA0: 3114 MiB of VRAM free with everything loaded\n"
+    "glm stat: decode 93.52 ms/tok (10.69 tok/s) | vram hit 50.39% | ram fetches 141.66/tok | disk 0.00 reads/tok "
+    "in 7.41 waits/tok, 0.02 ms/tok | promotions 59.75/tok | cpu lane 14.05/tok in 6.04 ms/tok | prompt 123.8 "
+    "ms/tok | vram 999/1063 ram 11045/11779\n"
+    "glm stat: decode 106.49 ms/tok (9.39 tok/s) | vram hit 32.30% | ram fetches 187.46/tok | disk 0.00 reads/tok "
+    "in 9.94 waits/tok, 0.02 ms/tok | promotions 62.65/tok | cpu lane 27.82/tok in 11.11 ms/tok | prompt 110.3 "
+    "ms/tok | vram 1002/1063 ram 11039/11779\n"
+    "glm spec: 120 of 160 drafts accepted (75.0%)\n")
+MAYA_SPLIT_LOG = MAYA_LOG + (
+    "glm fast: CUDA1 layers [24,45) expert pool 21.50 GB, 90-120 slots/layer (2310 total)\n"
+    "glm fast: CUDA1 RAM tier 60.00 GB pinned, 9000 slots\n")
+
 
 def reading(requested=29726, resident=29726):
     return {"requested": requested, "resident": resident, "evicted": 0}
@@ -115,6 +132,29 @@ class CellTests(unittest.TestCase):
         self.assertEqual({d: c["slots"] for d, c in account["expert_caches"].items()},
                          {"CUDA0": 7921, "CUDA1": 10086})
 
+    def test_maya_account(self):
+        account = cell.engine_account(MAYA_LOG)
+        self.assertEqual(account["engine"], "maya")
+        self.assertEqual(account["expert_caches"], {"CUDA0": {"slots": 1063, "gb": 7.04, "role": "layers 0-44"}})
+        self.assertEqual(account["ram_tier"], {"CUDA0": {"gb": 78.03, "slots": 11779}})
+        self.assertEqual(account["vram_free_loaded_mib"], [3114])
+        self.assertEqual(account["requests"], 2)
+        self.assertEqual(account["decode_hit_pct_last"], 32.3)
+        self.assertEqual(account["ram_fetches_per_tok_median"], 164.56)
+        self.assertAlmostEqual(account["cpu_lane_per_tok_median"], 20.935, delta=0.006)
+        self.assertEqual(account["disk_reads_per_tok_max"], 0.0)
+        self.assertEqual(account["spec_accept_pct_median"], 75.0)
+
+    def test_maya_split_counts_both_cards(self):
+        account = cell.engine_account(MAYA_SPLIT_LOG)
+        self.assertEqual(account["expert_cache_slots_total"], 3373)
+
+    def test_maya_stall_and_nonfinite_fail_the_cell(self):
+        out = run_cell(MAYA_LOG + "maya serve: stall report (engine 1234): stage \"layer 12\" for 95 s\n"
+                       "glm router: layer 7 decode invalid expert ID or non-finite score\n")
+        self.assertFalse(out["probe_ok"])
+        self.assertEqual(out["placement"]["engine_faults"], 2)
+
 
 class StrataSummaryTests(unittest.TestCase):
     def report(self, cells):
@@ -134,6 +174,12 @@ class StrataSummaryTests(unittest.TestCase):
         report = self.report([("ctl", {"strata": cell.engine_account(""), "vram_outside_mib": None,
                                        "residency_missing": [GPU2 + " at load"]})])
         self.assertIn("| unmeasured in 1 |", report)
+
+    def test_maya_table(self):
+        report = self.report([("2c", {"strata": cell.engine_account(MAYA_SPLIT_LOG), "vram_outside_mib": 0})])
+        self.assertIn("## Maya engine", report)
+        self.assertIn("| 3373 (1063 + 2310) |", report)
+        self.assertIn("| 138.0 |", report)
 
 
 if __name__ == "__main__":

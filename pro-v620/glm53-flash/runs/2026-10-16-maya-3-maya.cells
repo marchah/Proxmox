@@ -1,0 +1,6 @@
+# Cells for runs/2026-10-16-maya.md, stage 3: Maya's side of each round in ../../maya/maya-vs-llamacpp.sh,
+# one pass per round (PASSES=1), over ../../maya/maya-glm53f.env, in CT 123 holding both cards. Written
+# from stage 2's arms: the one-card arm is 1c-mtp (GPU 2, 0000:83:00.0, the MTP block drafting); no
+# two-card arm passed, because both two-card cells logged watchdog stalls. Maya-L runs on the one-card arm.
+maya-1c  MODEL_GPUS=0000:83:00.0 STRATA_GLM_MTP_DECODE=1
+maya-l   MODEL_GPUS=0000:83:00.0 STRATA_GLM_MTP_DECODE=1 MODEL_PACK=/models/maya/Maya-L/pack

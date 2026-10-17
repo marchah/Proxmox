@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# GLM-5.3-Flash through Project Maya on the V620s passed through to CT 123, every expert the
+# VRAM does not hold pinned in RAM. Installed as /usr/local/bin/maya-serve-glm53f in CT 123 by
+# install.sh. Writes the server's JSON config from /etc/maya-glm53f.env as Maya's setup writes
+# it (maya.py write_config), then runs Maya's server, which starts the engine. The STRATA_*
+# switches in the env file reach the engine through the environment.
+#
+# MODEL_GPUS names the cards by PCI address, resolved to HIP's numbering at every start. One
+# address runs on that card (STRATA_GLM_SPLIT=0, as setup writes for one GPU). Two run a layer
+# split in the order given, at MODEL_LAYER_SPLIT.
+set -Eeuo pipefail
+set -a
+# shellcheck disable=SC1091  # runtime-only env file
+source /etc/maya-glm53f.env
+set +a
+
+die() { echo "FATAL: $*" >&2; exit 1; }
+
+engine="${MAYA_HOME}/build/strata"
+[ -x "${engine}" ] || die "no engine at ${engine}; run install.sh on the host"
+[ -c /dev/kfd ] || die "/dev/kfd is not in the container; on the host: TEST_ENGINE=maya ./ct123-test-host.sh one-card"
+[ -r /dev/kfd ] && [ -w /dev/kfd ] || die "/dev/kfd is not readable and writable by $(id -un) (group render)"
+# Count with [ -c ]: the nodes are bind mounts over files LXC creates, so find's directory
+# entry type reads them as regular files.
+renders=0
+for node in /dev/dri/renderD*; do [ -c "${node}" ] && renders=$((renders + 1)); done
+[ "${renders}" -ge 1 ] || die "no /dev/dri/renderD* node; see pro-v620/README.md 'Recovering after a DRM renumber'"
+
+export LD_LIBRARY_PATH="${ROCM_ROOT}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+# HIP's device 0 must be a gfx1030 (Maya's strata-device prints device 0 only); the config step
+# below checks that HIP sees as many devices as the container holds render nodes.
+device0="$("${MAYA_HOME}/build/strata-device" 2>&1 || true)"
+if ! printf '%s\n' "${device0}" | grep -q 'gfx1030'; then
+  echo "FATAL: strata-device did not report a gfx1030:" >&2
+  printf '%s\n' "${device0}" >&2
+  exit 1
+fi
+
+[ -f "${MODEL_PACK}/native_experts.txt" ] || die "no pack at ${MODEL_PACK}; run install.sh on the host"
+[ -f "${MODEL_PACK}/tokenizer/vocab.json" ] || die "no tokenizer in ${MODEL_PACK}"
+
+# Kept after the server stops: one-off engine runs (maya-gate.sh) read it.
+config="${STATE_DIRECTORY:-/var/lib/maya-glm53f}/config.json"
+log_dir="${LOGS_DIRECTORY:-/var/log/maya-glm53f}"
+ENGINE="${engine}" CONFIG="${config}" LOG="${log_dir}/engine.log" RENDERS="${renders}" python3 -I - <<'PY'
+import ctypes
+import json
+import os
+import sys
+
+e = os.environ
+
+
+def hip_index_of():
+    """{PCI address: HIP device index}, from the runtime itself."""
+    hip = ctypes.CDLL(e["ROCM_ROOT"] + "/lib/libamdhip64.so")
+    n = ctypes.c_int(0)
+    if hip.hipGetDeviceCount(ctypes.byref(n)) != 0:
+        sys.exit("FATAL: hipGetDeviceCount failed")
+    out = {}
+    for i in range(n.value):
+        buf = ctypes.create_string_buffer(64)
+        if hip.hipDeviceGetPCIBusId(buf, 64, i) != 0:
+            sys.exit("FATAL: hipDeviceGetPCIBusId failed for device %d" % i)
+        out[buf.value.decode().lower()] = i
+    return out
+
+
+index = hip_index_of()
+# Fewer devices than render nodes means a card the DRM cgroup rule or /dev/kfd lost.
+if len(index) != int(e["RENDERS"]):
+    sys.exit("FATAL: CT holds %s render node(s), HIP sees %s" % (e["RENDERS"], index))
+cards = [c.strip().lower() for c in e["MODEL_GPUS"].split(",") if c.strip()]
+missing = [c for c in cards if c not in index]
+if not cards or missing or len(set(cards)) != len(cards):
+    sys.exit("FATAL: MODEL_GPUS %r: HIP has %s" % (e["MODEL_GPUS"], index))
+gpus = [index[c] for c in cards]
+args = ["--glm-pack", e["MODEL_PACK"], "--max-context", e["MODEL_CONTEXT_LENGTH"],
+        "--expert-cache", e["MODEL_EXPERT_CACHE"], "--prefill", e["MODEL_PREFILL"],
+        "--kv-streaming", e["MODEL_KV_STREAMING"],
+        "--expert-profile", e["MAYA_HOME"] + "/data/expert-profile-glm.bin"]
+if int(e["MODEL_PARALLEL"]) > 1:
+    args += ["--parallel", e["MODEL_PARALLEL"]]
+args += e.get("MODEL_EXTRA_ARGS", "").split()
+cfg = {
+    "exe": e["ENGINE"],
+    "args": args,
+    "cwd": e["MAYA_HOME"],
+    "tokenizer": e["MODEL_PACK"] + "/tokenizer",
+    "model_name": e["MODEL_ALIAS"],
+    "log": e["LOG"],
+    "backend": "hip",
+    # The server sets HIP_VISIBLE_DEVICES to these, in this order: the engine's device 0 is
+    # the first card named.
+    "gpu": gpus,
+    "lib_dirs": [e["ROCM_ROOT"] + "/lib"],
+    "reasoning_effort": e["MODEL_REASONING_EFFORT"],
+    "sampling": json.loads(e["MODEL_SAMPLING"]),
+    "port": int(e["MODEL_SERVER_PORT"]),
+}
+if len(gpus) > 1:
+    cfg["layer_split"] = e.get("MODEL_LAYER_SPLIT") or "auto"
+elif "STRATA_GLM_SPLIT" not in e:
+    cfg["env"] = {"STRATA_GLM_SPLIT": "0"}
+print("maya-serve-glm53f: cards %s -> HIP %s%s" % (cards, gpus, " (layer split %s)" % cfg["layer_split"]
+      if len(gpus) > 1 else ""), file=sys.stderr)
+with open(e["CONFIG"], "w", encoding="utf-8") as f:
+    json.dump(cfg, f, indent=1)
+PY
+
+cd "${MAYA_HOME}"
+exec "${MAYA_VENV}/bin/python" serve/server.py --engine strata --config "${config}" \
+  --host "${MODEL_SERVER_BIND}" --port "${MODEL_SERVER_PORT}"

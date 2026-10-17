@@ -58,8 +58,55 @@ def expert_caches(text):
     return caches
 
 
+def maya_account(text):
+    """Project Maya's account (../maya/), from the `glm fast:`, `glm stat:` and `glm spec:` lines.
+
+    Each card prints `glm fast: CUDA<n> layers [a,b) expert pool G GB, x-y slots/layer (N total)`
+    and `glm fast: CUDA<n> RAM tier G GB pinned, N slots`; each request with tokens prints one
+    `glm stat:` line and, while drafting, one `glm spec:` line.
+    """
+    caches, ram = {}, {}
+    for dev, a, b, gb, total in re.findall(
+            r"glm fast: (CUDA\d+) layers \[(\d+),(\d+)\) expert pool ([\d.]+) GB, [^\n]*?\((\d+) total\)", text):
+        caches[dev] = {"slots": int(total), "gb": float(gb), "role": "layers %s-%s" % (a, int(b) - 1)}
+    for dev, gb, slots in re.findall(r"glm fast: (CUDA\d+) RAM tier ([\d.]+) GB pinned, (\d+) slots", text):
+        ram[dev] = {"gb": float(gb), "slots": int(slots)}
+    stats = [tuple(float(x) for x in m) for m in re.findall(
+        r"glm stat: decode [\d.]+ ms/tok \(([\d.]+) tok/s\) \| vram hit ([\d.]+)% \| ram fetches ([\d.]+)/tok \| "
+        r"disk ([\d.]+) reads/tok[^|]*\|[^|]*\| cpu lane ([\d.]+)/tok", text)]
+    spec = [float(x) for x in re.findall(r"glm spec: \d+ of \d+ drafts accepted \(([\d.]+)%\)", text)]
+
+    def median(i):
+        xs = [s[i] for s in stats]
+        return round(statistics.median(xs), 2) if xs else None
+    return {
+        "engine": "maya",
+        "expert_caches": caches,
+        "expert_cache_slots_total": sum(c["slots"] for c in caches.values()) if caches else None,
+        "ram_tier": ram,
+        "vram_free_loaded_mib": [int(x) for x in re.findall(r"(\d+) MiB of VRAM free with everything loaded", text)],
+        "cpu_lane": re.findall(r"glm fast: (CUDA\d+ CPU lane: [^\n]{0,160})", text)[:2],
+        "layer_split": re.findall(r"(glm split[^\n]{0,160})", text)[:4],
+        "requests": len(stats),
+        "decode_hit_pct_median": median(1),
+        "decode_hit_pct_last": stats[-1][1] if stats else None,
+        "ram_fetches_per_tok_median": median(2),
+        "disk_reads_per_tok_max": max((s[3] for s in stats), default=None),
+        "cpu_lane_per_tok_median": median(4),
+        "spec_accept_pct_median": round(statistics.median(spec), 1) if spec else None,
+        "pcie_share_pct_median": None,
+        "draft_layer_mib": None,
+        "stall_lines": len(re.findall(r"stall report|timed out at layer|no progress for", text)),
+        "nonfinite_lines": len(re.findall(r"non-finite (?:logits|score)", text)),
+        "warning_lines": [l for l in text.splitlines() if "WARNING" in l][:10],
+    }
+
+
 def engine_account(text):
     """The engine's own account of this start and of each request, from its log."""
+    if "glm fast:" in text or "maya serve:" in text:
+        return maya_account(text)
+
     def num(pattern, cast=float):
         m = re.search(pattern, text)
         return cast(m.group(1).replace(",", "")) if m else None

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Put CT 123 into a model test's configurations and back: GLM-5.3-Flash by default, or
-# MiMo-V2.6-Pro-RL with TEST_MODEL=mimo. Runs on the Proxmox HOST as root, from this
-# directory, after the model's install.sh.
+# MiMo-V2.6-Pro-RL with TEST_MODEL=mimo; GLM on llama.cpp by default, or on Project Maya with
+# TEST_ENGINE=maya. Runs on the Proxmox HOST as root, from this directory, after the model's
+# install.sh (and ../maya/install.sh for Maya).
 #
 #   ./ct123-test-host.sh one-card   # the GLM unit owns GPU 2; Flash-Next disabled; 240 GiB, 48 cores
 #   ./ct123-test-host.sh two-card   # also GPU 1, while CT 120 stays stopped with autostart off
@@ -11,10 +12,18 @@
 #   TEST_CPUSET=0-47 ./ct123-test-host.sh one-card   # also fix CT 123's CPUs; a run without
 #                                                    # it, and restore, drop the fixed set
 #   TEST_MODEL=mimo ./ct123-test-host.sh two-card    # the MiMo unit on both cards; 488 GiB
+#   TEST_ENGINE=maya ./ct123-test-host.sh two-card   # GLM's Maya unit; /dev/kfd passed through
+#   TEST_ENGINE=llamacpp ./ct123-test-host.sh engine # in a test setup, hand the cards to the other
+#                                                    # GLM engine: the watchdog map follows, no restart
 #
-# restore retires every test unit, whichever TEST_MODEL set the container up. State is kept
-# in one directory for every model, so a switch from one test to another restores the
-# limits from before the first.
+# restore retires every test unit, whichever TEST_MODEL set the container up, and gives the
+# card back to the Flash-Next engine that was enabled before the test (llama.cpp or Strata).
+# State is kept in one directory for every model, so a switch from one test to another
+# restores the limits from before the first.
+#
+# HIP (Strata, Maya) needs a DRM cgroup rule that allows only the bound cards' minors
+# (../strata/README.md). Once the config carries such a rule, or with TEST_ENGINE=maya, every
+# card change rewrites it to the cards CT 123 then binds; llama.cpp serves under it too.
 #
 # Every transition keeps two invariants: no two containers own a card, including after a
 # host reboot, and the thermal watchdog maps each card to the unit that runs on it.
@@ -31,13 +40,16 @@ readonly STATE_DIR="${STATE_DIR:-/root/glm53-flash}"
 readonly DRI_BY_PATH="${DRI_BY_PATH:-/dev/dri/by-path}"
 readonly WATCHDOG_ENV="${WATCHDOG_ENV:-/etc/gpu-thermal-watchdog.env}"
 readonly CPU_ONLINE="${CPU_ONLINE:-/sys/devices/system/cpu/online}"
+readonly KFD_NODE="${KFD_NODE:-/dev/kfd}"
 
 readonly GPU1_PCI='0000:03:00.0'
 readonly GPU2_PCI='0000:83:00.0'
-readonly PROD_UNIT=llamacpp-qwen38fn
+# Flash-Next's engines; restore enables the one that was enabled before the test.
+readonly PROD_UNITS='llamacpp-qwen38fn strata-qwen38fn'
+readonly PROD_DEFAULT=llamacpp-qwen38fn
 readonly CT120_UNIT=llamacpp
 # Every model unit a test installs in CT 123; restore retires all of them.
-readonly TEST_UNITS='llamacpp-glm53f llamacpp-mimo'
+readonly TEST_UNITS='llamacpp-glm53f llamacpp-mimo maya-glm53f'
 
 # Each test's unit, model files and memory limit. Room for 32 threads without the
 # threads = cores collapse seen on CT 123 at 24/24 sets the cores for both.
@@ -45,21 +57,30 @@ readonly TEST_UNITS='llamacpp-glm53f llamacpp-mimo'
 # - mimo: 480.5 GiB of experts at -ncmoe 68 in anonymous memory, 482.9 GiB in all, out of
 #   503.6 GiB on the host; the baseline record measured 2.9 GiB left under the CT's limit.
 #   488 GiB leaves the host 15.5 GiB, with every other guest shut down.
+# - maya (GLM only): the same files, every expert outside VRAM pinned in RAM (~160 GiB).
+# VK_UNIT is the model's llama.cpp unit, whose llama-server counts the cards CT 123 offers.
 readonly TEST_MODEL="${TEST_MODEL:-glm53f}"
+readonly TEST_ENGINE="${TEST_ENGINE:-llamacpp}"
 case "$TEST_MODEL" in
   glm53f)
-    readonly TEST_UNIT=llamacpp-glm53f TEST_MEMORY_MIB=245760
+    readonly VK_UNIT=llamacpp-glm53f TEST_MEMORY_MIB=245760
     readonly MODEL_DIR=/models/hf/glm-5.3-flash MODEL_FILES=7 ;;
   mimo)
-    readonly TEST_UNIT=llamacpp-mimo TEST_MEMORY_MIB=499712
+    readonly VK_UNIT=llamacpp-mimo TEST_MEMORY_MIB=499712
     readonly MODEL_DIR=/models/hf/mimo-v2.6-pro-rl MODEL_FILES=9 ;;
   *) echo "ERROR: TEST_MODEL must be glm53f or mimo" >&2; exit 1 ;;
+esac
+case "${TEST_ENGINE}/${TEST_MODEL}" in
+  llamacpp/*) readonly TEST_UNIT="$VK_UNIT" ;;
+  maya/glm53f) readonly TEST_UNIT=maya-glm53f ;;
+  *) echo "ERROR: TEST_ENGINE must be llamacpp, or maya with TEST_MODEL=glm53f" >&2; exit 1 ;;
 esac
 readonly TEST_CORES=48
 readonly TEST_CPUSET="${TEST_CPUSET:-}"
 
 readonly LIMITS_FILE="${STATE_DIR}/123.limits.before-test"
 readonly CT120_ONBOOT_FILE="${STATE_DIR}/120.onboot.before-test"
+readonly PROD_FILE="${STATE_DIR}/123.engine.before-test"
 readonly CPUSET_KEY='lxc.cgroup2.cpuset.cpus'
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -118,8 +139,11 @@ restart_ct() {
 }
 
 require_model_installed() {
-  pct exec "$VMID" -- test -f "/etc/systemd/system/${TEST_UNIT}.service" \
-    || die "${TEST_UNIT} not installed in CT ${VMID}; run VMID=${VMID} ./install.sh first"
+  local u
+  for u in $(printf '%s\n' "$TEST_UNIT" "$VK_UNIT" | sort -u); do
+    pct exec "$VMID" -- test -f "/etc/systemd/system/${u}.service" \
+      || die "${u} not installed in CT ${VMID}; run VMID=${VMID} ./install.sh first"
+  done
   # shellcheck disable=SC2016  # expands inside the container
   pct exec "$VMID" -- bash -c '
     n=$(ls "$1"/*.verified 2>/dev/null | wc -l)
@@ -234,7 +258,7 @@ devices_offered() {
   # shellcheck disable=SC2016  # expands inside the container
   pct exec "$VMID" -- bash -c '
     D=$(. "/etc/$1.env" && printf "%s" "$LLAMACPP_DIR")
-    LD_LIBRARY_PATH=$D $D/llama-server --list-devices 2>/dev/null | grep -c V620' _ "$TEST_UNIT" 2>/dev/null || true
+    LD_LIBRARY_PATH=$D $D/llama-server --list-devices 2>/dev/null | grep -c V620' _ "$VK_UNIT" 2>/dev/null || true
 }
 
 # Every check before the first change, so a refusal leaves the host as it was.
@@ -248,12 +272,81 @@ preflight() {  # [two-card]
     [ "$st" = "stopped" ] || die "CT 120 is '${st}'; shut it down first (stop Hermes, CT 121, before it)"
     [ -e "${DRI_BY_PATH}/pci-${GPU1_PCI}-render" ] || die "GPU 1 by-path render node missing on the host"
   fi
+  # What ensure_kfd and sync_drm_cgroup will read, for the cards CT 123 is about to bind.
+  if [ "$TEST_ENGINE" = maya ]; then
+    is_chardev "$KFD_NODE" || die "the host has no ${KFD_NODE}, which HIP needs"
+  fi
+  if [ "$TEST_ENGINE" = maya ] || grep -qE '^lxc.cgroup2.devices.allow: c 226:[0-9]+ ' "$CONF"; then
+    local pci kind
+    for pci in "$GPU2_PCI" ${1:+"$GPU1_PCI"}; do
+      for kind in card render; do
+        drm_minor "${DRI_BY_PATH}/pci-${pci}-${kind}" >/dev/null \
+          || die "${DRI_BY_PATH}/pci-${pci}-${kind} does not resolve to a device node"
+      done
+    done
+  fi
+}
+
+# The Flash-Next engine enabled before the first change, which restore enables again.
+save_prod_unit() {
+  local u
+  [ -f "$PROD_FILE" ] && return 0
+  for u in $PROD_UNITS; do
+    if pct exec "$VMID" -- systemctl is-enabled "$u" >/dev/null 2>&1; then echo "$u" >"$PROD_FILE"; break; fi
+  done
+  [ -f "$PROD_FILE" ] || echo "$PROD_DEFAULT" >"$PROD_FILE"
+  log "Flash-Next engine before the test: $(cat "$PROD_FILE")"
+}
+
+prod_unit() { if [ -f "$PROD_FILE" ]; then cat "$PROD_FILE"; else echo "$PROD_DEFAULT"; fi; }
+
+is_chardev() { [ "$(stat -L -c %F "$1" 2>/dev/null)" = "character special file" ]; }
+
+# HIP needs /dev/kfd. Proxmox's passthrough resolves its dynamic major at every start.
+ensure_kfd() {
+  local n=0 gid
+  grep -qE '^dev[0-9]+: /dev/kfd' "$CONF" && return 0
+  is_chardev "$KFD_NODE" || die "the host has no ${KFD_NODE}"
+  while grep -q "^dev${n}:" "$CONF"; do n=$((n + 1)); done
+  gid="$(stat -L -c %g "$KFD_NODE")"
+  pct set "$VMID" "--dev${n}" "/dev/kfd,gid=${gid},mode=0660" || die "pct set --dev${n} failed"
+  log "/dev/kfd passed into CT ${VMID} as dev${n} (gid ${gid})"
+}
+
+drm_minor() {  # <node>: its minor number; fails unless it is a character device
+  is_chardev "$1" || return 1
+  echo $((16#$(stat -L -c %T "$1")))
+}
+
+# KFD shows a process every GPU whose render node its device cgroup allows; with `c 226:*`
+# that includes a card CT 123 has no node for, and HIP then finds no device. Allow exactly the
+# minors of the cards CT 123 binds (as ../strata/use-engine.sh does). Applied once the config
+# carries such a rule, or for Maya; a config without one is left as it is.
+sync_drm_cgroup() {
+  local rules=() link minor have
+  [ "$TEST_ENGINE" = maya ] || grep -qE '^lxc.cgroup2.devices.allow: c 226:[0-9]+ ' "$CONF" || return 0
+  while read -r link; do
+    minor="$(drm_minor "${DRI_BY_PATH}/${link}")" || die "${DRI_BY_PATH}/${link} does not resolve to a device node"
+    rules+=("lxc.cgroup2.devices.allow: c 226:${minor} rwm")
+  done < <(grep -oE 'pci-0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]-(card|render)' "$CONF" | sort -u)
+  [ "${#rules[@]}" -ge 2 ] || die "CT ${VMID} binds no card and render node"
+  have="$(grep '^lxc.cgroup2.devices.allow: c 226:' "$CONF" | sort || true)"
+  [ "$have" = "$(printf '%s\n' "${rules[@]}" | sort)" ] && return 0
+  cp -a "$CONF" "${STATE_DIR}/123.conf.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+  {
+    grep -v '^lxc.cgroup2.devices.allow: c 226:' "$CONF" || true
+    printf '%s\n' "${rules[@]}"
+  } >"${STATE_DIR}/123.conf.new"
+  cat "${STATE_DIR}/123.conf.new" >"$CONF"
+  log "CT ${VMID} DRM cgroup -> $(printf '%s\n' "${rules[@]}" | awk '{print $3}' | paste -sd' ' -)"
 }
 
 prepare_ct123() {
   save_limits
-  log "retiring ${PROD_UNIT} in CT ${VMID} for the test"
-  retire_unit "$VMID" "$PROD_UNIT"
+  save_prod_unit
+  log "retiring Flash-Next's engines (${PROD_UNITS}) in CT ${VMID} for the test"
+  local u
+  for u in $PROD_UNITS; do retire_unit "$VMID" "$u"; done
   retire_test_units
   pct set "$VMID" --memory "$TEST_MEMORY_MIB" --cores "$TEST_CORES"
   if [ -n "$TEST_CPUSET" ]; then set_cpuset; else drop_cpuset; fi
@@ -271,7 +364,7 @@ status() {
     echo "--- CT ${VMID} CPUs: ${cpus:-unknown} ($(grep -q "^${CPUSET_KEY}:" "$CONF" && echo fixed || echo "picked by Proxmox"))"
     [ -n "$cpus" ] && echo "    physical cores covered: $(cpuset_cores "$cpus") of $(lscpu -p=CORE | grep -v '^#' | sort -u | wc -l)"
     echo "--- V620s llama-server sees in CT ${VMID}: $(devices_offered) ---"
-    for u in "$TEST_UNIT" "$PROD_UNIT"; do
+    for u in $(printf '%s\n' "$TEST_UNIT" "$VK_UNIT" $PROD_UNITS | awk '!seen[$0]++'); do
       printf '  %-20s enabled=%-10s active=%s\n' "$u" \
         "$(pct exec "$VMID" -- systemctl is-enabled "$u" 2>&1 | head -1)" \
         "$(pct exec "$VMID" -- systemctl is-active "$u" 2>&1 | head -1)"
@@ -304,6 +397,8 @@ main() {
       preflight
       prepare_ct123
       gpu1_attached && detach_gpu1
+      [ "$TEST_ENGINE" = maya ] && ensure_kfd
+      sync_drm_cgroup
       restart_ct
       ct120_restore
       set_watchdog_map "${GPU1_PCI}=120:${CT120_UNIT},${GPU2_PCI}=${VMID}:${TEST_UNIT}"
@@ -315,6 +410,8 @@ main() {
       ct120_release_gpu1
       prepare_ct123
       gpu1_attached || attach_gpu1
+      [ "$TEST_ENGINE" = maya ] && ensure_kfd
+      sync_drm_cgroup
       restart_ct
       set_watchdog_map "${GPU1_PCI}=${VMID}:${TEST_UNIT},${GPU2_PCI}=${VMID}:${TEST_UNIT}"
       [ "$(devices_offered)" -eq 2 ] || die "llama-server does not see two V620s in CT ${VMID}"
@@ -322,10 +419,27 @@ main() {
       pct exec "$VMID" -- bash -c "vulkaninfo --summary 2>/dev/null | grep -E '^GPU[0-9]+:|deviceName|deviceUUID'" \
         | sed 's/^/  /' || true
       ;;
+    engine)
+      # Within a test setup: stop the other test units and point the watchdog at TEST_UNIT for
+      # the cards CT 123 holds. The sweep that follows starts TEST_UNIT itself.
+      require_root
+      [ -f "$LIMITS_FILE" ] || die "CT ${VMID} is not in a test setup; run one-card or two-card first"
+      require_model_installed
+      local u
+      for u in $TEST_UNITS; do
+        [ "$u" = "$TEST_UNIT" ] || pct exec "$VMID" -- systemctl stop "$u" 2>/dev/null || true
+      done
+      if gpu1_attached; then
+        set_watchdog_map "${GPU1_PCI}=${VMID}:${TEST_UNIT},${GPU2_PCI}=${VMID}:${TEST_UNIT}"
+      else
+        set_watchdog_map "${GPU1_PCI}=120:${CT120_UNIT},${GPU2_PCI}=${VMID}:${TEST_UNIT}"
+      fi
+      ;;
     restore)
       require_root; mkdir -p "$STATE_DIR"
       [ "$(ct_state "$VMID")" = "running" ] && retire_test_units
       gpu1_attached && detach_gpu1
+      sync_drm_cgroup
       if [ -f "$LIMITS_FILE" ]; then
         local k v
         while read -r k v; do pct set "$VMID" "--${k}" "$v"; done <"$LIMITS_FILE"
@@ -334,12 +448,15 @@ main() {
       drop_cpuset
       restart_ct
       ct120_restore
-      set_watchdog_map "${GPU1_PCI}=120:${CT120_UNIT},${GPU2_PCI}=${VMID}:${PROD_UNIT}"
-      pct exec "$VMID" -- systemctl enable --now "$PROD_UNIT"
-      log "${PROD_UNIT} enabled and loading; check its VRAM once it serves"
+      local prod
+      prod="$(prod_unit)"
+      set_watchdog_map "${GPU1_PCI}=120:${CT120_UNIT},${GPU2_PCI}=${VMID}:${prod}"
+      pct exec "$VMID" -- systemctl enable --now "$prod"
+      rm -f "$PROD_FILE"
+      log "${prod} enabled and loading; check its VRAM once it serves"
       ;;
     status) ;;
-    *) die "usage: $0 {one-card|two-card|restore|status}" ;;
+    *) die "usage: $0 {one-card|two-card|engine|restore|status}" ;;
   esac
   status
 }

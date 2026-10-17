@@ -45,10 +45,28 @@ EOF
   set_unit 123 llamacpp-qwen38fn enabled active
   set_unit 123 llamacpp-glm53f disabled inactive
   set_unit 123 llamacpp-mimo disabled inactive
+  set_unit 123 strata-qwen38fn disabled inactive
+  set_unit 123 maya-glm53f disabled inactive
   # by-path links resolve to the real node names, as udev's do
   : >"$T/dri/renderD128"; : >"$T/dri/card1"; : >"$T/dri/renderD129"; : >"$T/dri/card2"
   ln -s renderD128 "$T/dri/pci-${GPU2}-render"; ln -s card1 "$T/dri/pci-${GPU2}-card"
   ln -s renderD129 "$T/dri/pci-${GPU1}-render"; ln -s card2 "$T/dri/pci-${GPU1}-card"
+  : >"$T/kfd"
+  # stat for the device checks: the mock nodes are files, read as character devices with the
+  # minors their names give (renderD128 -> 128, card1 -> 1); /dev/kfd's group is render's.
+  cat >"$T/bin/stat" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = -L ] && shift
+fmt="$2"; f="$3"
+case "$f" in "$T"/dri/* | "$T"/kfd) ;; *) echo "mock stat: unexpected $*" >&2; exit 1 ;; esac
+[ -e "$f" ] || exit 1
+name="$(basename "$(readlink "$f" || echo "$f")")"
+case "$fmt" in
+  %F) echo "character special file" ;;
+  %T) printf '%x\n' "${name//[!0-9]/}" ;;
+  %g) echo 993 ;;
+esac
+EOF
   cat >"$T/bin/id" <<'EOF'
 #!/usr/bin/env bash
 [ "${1:-}" = -u ] && echo 0 || echo root
@@ -109,6 +127,7 @@ case "$sub" in
           enable)  [ "$unit" = --now ] && unit="$4"
                    sed -i "s/^$vm $unit [a-z]* /$vm $unit enabled /" "$T/units"
                    [ "$3" = --now ] && sed -i "s/^$vm $unit \([a-z]*\) .*/$vm $unit \1 active/" "$T/units"; : ;;
+          stop)    sed -i "s/^$vm $unit \([a-z]*\) .*/$vm $unit \1 inactive/" "$T/units"; : ;;
           disable) [ "$unit" = --now ] && unit="$4"
                    sed -i "s/^$vm $unit [a-z]* /$vm $unit disabled /" "$T/units"
                    sed -i "s/^$vm $unit \([a-z]*\) .*/$vm $unit \1 inactive/" "$T/units"; : ;;
@@ -124,7 +143,7 @@ PCT
 set_unit() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >>"$T/units"; }
 run() {  # <action>
   PATH="$T/bin:$PATH" CONF="$T/lxc/123.conf" STATE_DIR="$T/state" WATCHDOG_ENV="$T/wd.env" \
-    DRI_BY_PATH="$T/dri" CPU_ONLINE="$T/cpu-online" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
+    DRI_BY_PATH="$T/dri" CPU_ONLINE="$T/cpu-online" KFD_NODE="$T/kfd" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
 }
 tail_log() { echo "--- tail of out.log ---"; tail -12 "$T/out.log" | sed 's/^/      /'; }
 onboot()   { awk -F': ' '$1 == "onboot" {print $2}' "$T/lxc/$1.conf"; }
@@ -244,6 +263,75 @@ run restore || { bad "restore exited non-zero"; tail_log; }
 diff -q "$T/123.conf.orig" "$T/lxc/123.conf" >/dev/null && ok "CT 123 config exactly as found" \
   || { bad "CT 123 config differs:"; diff "$T/123.conf.orig" "$T/lxc/123.conf" | sed 's/^/      /'; }
 [ "$(map)" = "${GPU1}=120:llamacpp,${GPU2}=123:llamacpp-qwen38fn" ] && ok "watchdog map as found" || bad "map is $(map)"
+rm -rf "$T"
+
+echo "=== 7. from Strata serving, TEST_ENGINE=maya two-card, engine switches, restore ==="
+drm()    { grep '^lxc.cgroup2.devices.allow: c 226:' "$T/lxc/123.conf" | awk '{print $3}' | sort | paste -sd' ' -; }
+strata_host() {  # CT 123 as ../strata/use-engine.sh strata leaves it
+  new_host
+  printf '%s\n' 'dev0: /dev/kfd,gid=993,mode=0660' 'lxc.cgroup2.devices.allow: c 226:1 rwm' \
+    'lxc.cgroup2.devices.allow: c 226:128 rwm' >>"$T/lxc/123.conf"
+  cp "$T/lxc/123.conf" "$T/123.conf.orig"
+  sed -i.bak 's/^123 llamacpp-qwen38fn .*/123 llamacpp-qwen38fn disabled inactive/; s/^123 strata-qwen38fn .*/123 strata-qwen38fn enabled active/' "$T/units"
+  echo "GPU_SERVICE_MAP=${GPU1}=120:llamacpp,${GPU2}=123:strata-qwen38fn" >"$T/wd.env"
+}
+strata_host
+TEST_ENGINE=maya run two-card || { bad "maya two-card exited non-zero"; tail_log; }
+[ "$(unit 123 strata-qwen38fn)" = "disabled inactive" ] && ok "Strata retired" || bad "Strata is $(unit 123 strata-qwen38fn)"
+[ "$(drm)" = "226:1 226:128 226:129 226:2" ] && ok "DRM cgroup allows both cards' minors" || bad "DRM cgroup is '$(drm)'"
+[ "$(grep -c '^dev[0-9]*: /dev/kfd' "$T/lxc/123.conf")" = 1 ] && ok "/dev/kfd passed through once" || bad "kfd lines: $(grep -c /dev/kfd "$T/lxc/123.conf")"
+[ "$(map)" = "${GPU1}=123:maya-glm53f,${GPU2}=123:maya-glm53f" ] && ok "watchdog: both cards -> Maya unit" || bad "map is $(map)"
+double_binding_possible && bad "TWO CONTAINERS COULD HOLD GPU 1" || ok "exclusivity holds"
+sed -i.bak "s/^123 maya-glm53f .*/123 maya-glm53f disabled active/" "$T/units"
+TEST_ENGINE=llamacpp run engine || { bad "engine llamacpp exited non-zero"; tail_log; }
+[ "$(unit 123 maya-glm53f)" = "disabled inactive" ] && ok "Maya stopped" || bad "Maya is $(unit 123 maya-glm53f)"
+[ "$(map)" = "${GPU1}=123:llamacpp-glm53f,${GPU2}=123:llamacpp-glm53f" ] && ok "watchdog: both cards -> GLM llama.cpp" || bad "map is $(map)"
+TEST_ENGINE=maya run engine || { bad "engine maya exited non-zero"; tail_log; }
+[ "$(map)" = "${GPU1}=123:maya-glm53f,${GPU2}=123:maya-glm53f" ] && ok "watchdog back to Maya" || bad "map is $(map)"
+run restore || { bad "restore exited non-zero"; tail_log; }
+diff -q "$T/123.conf.orig" "$T/lxc/123.conf" >/dev/null && ok "CT 123 config exactly as found" \
+  || { bad "CT 123 config differs:"; diff "$T/123.conf.orig" "$T/lxc/123.conf" | sed 's/^/      /'; }
+[ "$(unit 123 strata-qwen38fn)" = "enabled active" ] && ok "Strata serving again" || bad "Strata is $(unit 123 strata-qwen38fn)"
+[ "$(unit 123 llamacpp-qwen38fn)" = "disabled inactive" ] && ok "llama.cpp Flash-Next left off" || bad "llama.cpp Flash-Next is $(unit 123 llamacpp-qwen38fn)"
+[ "$(map)" = "${GPU1}=120:llamacpp,${GPU2}=123:strata-qwen38fn" ] && ok "watchdog map as found" || bad "map is $(map)"
+[ "$(onboot 120)" = 1 ] && ok "CT 120 autostart restored" || bad "CT 120 onboot is $(onboot 120)"
+rm -rf "$T"
+
+echo "=== 8. engine refuses outside a test setup; maya refuses MiMo ==="
+new_host
+TEST_ENGINE=maya run engine && bad "switched engines outside a test setup" || ok "refused outside a test setup"
+TEST_ENGINE=maya TEST_MODEL=mimo run status && bad "accepted Maya with MiMo" || ok "refused Maya with MiMo"
+rm -rf "$T"
+
+echo "=== 9. TEST_ENGINE=maya one-card on a host without HIP, then restore ==="
+new_host
+TEST_ENGINE=maya run one-card || { bad "maya one-card exited non-zero"; tail_log; }
+[ "$(drm)" = "226:1 226:128" ] && ok "DRM cgroup allows GPU 2's minors" || bad "DRM cgroup is '$(drm)'"
+grep -q '^dev0: /dev/kfd,gid=993,mode=0660$' "$T/lxc/123.conf" && ok "/dev/kfd passed through" || bad "no kfd line"
+[ "$(map)" = "${GPU1}=120:llamacpp,${GPU2}=123:maya-glm53f" ] && ok "watchdog: GPU 2 -> Maya unit" || bad "map is $(map)"
+run restore || { bad "restore exited non-zero"; tail_log; }
+[ "$(drm)" = "226:1 226:128" ] && ok "restore keeps GPU 2's rule (Strata and llama.cpp serve under it)" || bad "DRM cgroup is '$(drm)'"
+[ "$(unit 123 llamacpp-qwen38fn)" = "enabled active" ] && ok "Flash-Next llama.cpp serving again" || bad "Flash-Next is $(unit 123 llamacpp-qwen38fn)"
+rm -rf "$T"
+
+untouched() {  # a refusal leaves the serving model and the host configuration as found
+  [ "$(unit 123 llamacpp-qwen38fn)" = "enabled active" ] && ok "Flash-Next untouched" || bad "Flash-Next is $(unit 123 llamacpp-qwen38fn)"
+  [ "$(onboot 120)" = 1 ] && ok "CT 120 autostart untouched" || bad "CT 120 onboot is $(onboot 120)"
+  diff -q "$T/123.conf.orig" "$T/lxc/123.conf" >/dev/null && ok "CT 123 config untouched" \
+    || { bad "CT 123 config changed:"; diff "$T/123.conf.orig" "$T/lxc/123.conf" | sed 's/^/      /'; }
+  [ "$(map)" = "${GPU1}=120:llamacpp,${GPU2}=123:llamacpp-qwen38fn" ] && ok "watchdog map untouched" || bad "map is $(map)"
+}
+
+echo "=== 10. TEST_ENGINE=maya two-card refuses on a host without /dev/kfd, and changes nothing ==="
+new_host; rm "$T/kfd"
+TEST_ENGINE=maya run two-card && bad "set up Maya without /dev/kfd" || ok "refused"
+untouched
+rm -rf "$T"
+
+echo "=== 11. TEST_ENGINE=maya one-card refuses with a dangling DRM link, and changes nothing ==="
+new_host; rm "$T/dri/card1"
+TEST_ENGINE=maya run one-card && bad "set up Maya with GPU 2's card node missing" || ok "refused"
+untouched
 rm -rf "$T"
 
 echo

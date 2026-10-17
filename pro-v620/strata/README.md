@@ -117,7 +117,8 @@ and exports the env file's `STRATA_*` switches to the engine. The starting value
 
 [`strata-sweep.sh`](strata-sweep.sh) measures cells of env-file settings with the probes in
 `../qwen38-flash-next/` in chat mode, the placement sweep's telemetry and gates, and the
-engine's own account of each request. Its header lists the cell keys; the
+engine's own account of each request. `UNIT=maya-glm53f` runs it on
+[Project Maya](../maya/README.md), Strata's GLM-5.3-Flash derivative. Its header lists the cell keys; the
 [test record](../qwen38-flash-next/runs/2026-10-16-strata.md) has the commands.
 
 [`strata-cell.py`](strata-cell.py) turns each loaded cell's readings into its result:
