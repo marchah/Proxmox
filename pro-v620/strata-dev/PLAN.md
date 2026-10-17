@@ -70,9 +70,9 @@ CT 121 8 GiB, CT 140 4 GiB and VM 300 4 GiB: 32 GiB. So CT 124 runs at 64 GiB wh
 `strata-dev-host.sh dev` stops CT 123. Keep the engine's `--memory-limit-mib` below the
 container limit by the reserve the DeepSeek plan declares.
 
-The DeepSeek plan's provisional Q2 budget, 384–416 GiB with routed experts (142.4 GiB) and
-Engram (188.8 GiB) both in RAM, comes from the September artifact; step 1 recomputes it for
-Unsloth's 1017 files. At those sizes Q4 does not fit with Engram in RAM: its routed experts
+The DeepSeek plan's provisional Q2 budget is 384–416 GiB, with routed experts (142.4 GiB)
+and Engram (188.8 GiB) both in RAM; step 1's ledger replaces it. Q4 does not fit with
+Engram in RAM: its routed experts
 and Engram alone are 284.8 + 188.8 = 473.6 GiB, before dense weights, KV, scratch and
 runtime. The MiMo tests' 488 GiB container limit left the host 15.5 GiB with every other
 guest stopped. The DeepSeek plan reads Q4's Engram rows from the NVMe, which keeps a Q4 run
@@ -217,9 +217,10 @@ first, code staged by commit, environment from `capture-env.sh`. Afterwards,
    (124 unused), the other guests' memory limits, and `../strata/use-engine.sh status` (the
    Flash-Next engine to restore).
 2. GitHub: the private repository at `477ac13`, the token, and the frontier agent's issues.
-3. When Unsloth publishes the 1017 Q2 GGUF, download it to
-   `/mnt/models/store/hf/deepseek-v4.1-flash-1017/` with a pinned revision, SHA-256 and
-   `.verified`, like the other models.
+3. [`ds41-download.sh`](ds41-download.sh) on the host fetches the pinned September V4.1 Q2
+   (340.6 GiB, same architecture as 1017) to `/mnt/models/store/hf/deepseek-v4.1-flash/`,
+   with SHA-256 and `.verified` like the other models; CT 124 reads it at
+   `/models/hf/deepseek-v4.1-flash/`.
 4. The watchdog's `@container` form, with its README and env file, tested in `warn` mode.
 5. `create-lxc-strata-dev.sh`: container, `/mnt/models/store/dev` (owned by
    `101000:101000`), firewall, ROCm, toolchain, `agent`, sshd, OpenCode, the tmux unit.

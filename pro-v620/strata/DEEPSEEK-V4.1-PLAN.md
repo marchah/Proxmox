@@ -45,33 +45,31 @@ This is also the commit behind the reviewed
 as the frozen development baseline; do not track `main`. Pin its dependencies too,
 including ggml `3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 
-**Weights: DeepSeek-V4.1-Flash-1017, from Unsloth's GGUF (owner decision,
-2026-10-17).** The target is
-[`DeepSeek-V4.1-Flash-1017`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/tree/1bae0e1088993b9b82de08f59de5be5a34e42170)
-at revision `1bae0e1088993b9b82de08f59de5be5a34e42170`, released 2026-10-17, as
-quantized by [unsloth/DeepSeek-V4.1-Flash-1017-GGUF](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF).
-On 2026-10-17 that repository held only a README announcing the quants; its files,
-format and Q2/Q4 rungs are not known yet. Step 1 pins its revision and SHA-256s and
-re-derives the artifact contract below from its header: metadata dialect, tensor
-names, storage types and Engram encoding.
-
-The figures below were taken from the September V4.1 artifact this plan was first
-written against:
+**Weights: the September V4.1 Q2 for development (owner decision, 2026-10-17).** The
+development artifact is
 [antirez/deepseek-v4.1-flash-gguf](https://huggingface.co/antirez/deepseek-v4.1-flash-gguf/tree/dd8a266f7145edc19e2334b46e19b6821f221dc7)
-at revision `dd8a266f7145edc19e2334b46e19b6821f221dc7`, `DeepSeek-V4.1-Flash-Q2.gguf`,
-built for DwarfStar (source revision `df42c109f1defefcbfcedbe7d905718a12266e40`).
-Its matching Q4 uses the same architecture and dense precision, adding Q4_K routed
-experts. Other 1017 GGUFs published the same day use other formats: llama.cpp PR
-[#28696](https://github.com/ggml-org/llama.cpp/pull/28696)'s `deepseek41`, with
-Engram quantized like other weights (mrfakename's Q2_K, 246 GiB), and Lucebox's
-custom ROCMFP types. Whatever Unsloth ships, the fork implements that loader
-contract rather than assuming Strata already loads it.
-The original V4.1 release was inspected at
-[`314113f8a7dadb388215396ba5fbee2c610a04d6`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/tree/314113f8a7dadb388215396ba5fbee2c610a04d6).
-Their configs, all 48 safetensors headers, and the inspected model/kernel/Engram
-and prompt-encoding Python files are identical. Their weight contents were not
-downloaded or compared. Model revision and tensor hashes must remain part of every
-artifact and cache identity.
+at revision `dd8a266f7145edc19e2334b46e19b6821f221dc7`, specifically
+`DeepSeek-V4.1-Flash-Q2.gguf` (SHA-256 `1ce6a8f8…6f42`, fetched by
+`../strata-dev/ds41-download.sh`). The source model revision recorded in its header is
+`df42c109f1defefcbfcedbe7d905718a12266e40`. Its matching Q4 uses the same architecture
+and dense precision, adding Q4_K routed experts. These artifacts were published
+for DwarfStar; we must implement their loader contract in the fork rather than
+assume Strata already loads them.
+
+[`DeepSeek-V4.1-Flash-1017`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/tree/1bae0e1088993b9b82de08f59de5be5a34e42170),
+released 2026-10-17 at revision `1bae0e1088993b9b82de08f59de5be5a34e42170`, changes the
+weights only. Against the original V4.1 at
+[`314113f8a7dadb388215396ba5fbee2c610a04d6`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/tree/314113f8a7dadb388215396ba5fbee2c610a04d6),
+these files are byte-identical: `config.json`, `inference/config.json`, `model.py`,
+`kernel.py`, `engram.py`, `convert.py`, the tokenizer files, the encoding code and tests,
+and `model.safetensors.index.json` (every tensor name and its shard). All 48 safetensors
+shards have identical sizes. Model quality is not tested during development, so the
+September file serves until a 1017 build in the same format exists; that swap changes
+weight values, not code. Other 1017 GGUFs use other formats: llama.cpp PR
+[#28696](https://github.com/ggml-org/llama.cpp/pull/28696)'s `deepseek41` with Engram
+quantized like other weights (mrfakename's Q2_K, 246 GiB), Lucebox's custom ROCMFP
+types, and Unsloth's, announced but not yet published. Model revision and tensor hashes
+must remain part of every artifact and cache identity.
 
 The official
 [model code](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/blob/1bae0e1088993b9b82de08f59de5be5a34e42170/inference/model.py),
