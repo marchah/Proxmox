@@ -12,8 +12,10 @@
 # The agent's GPU runs belong to no unit, so CT 124's map entry is `124:@container`: a
 # trip stops the whole container. Two-card tests come after the one-card work (PLAN.md).
 #
-# CT 124 is unprivileged and takes GPU 2 through Proxmox device entries, which allow only
-# those device numbers in its cgroup: the narrow DRM rule HIP needs (../strata/README.md).
+# CT 124 is unprivileged and takes GPU 2 through Proxmox device entries. Its device cgroup
+# still allows every device no rule denies, and KFD reports every GPU whose render node the
+# cgroup allows; with GPU 1 in that list ROCm 10 fails ("Failed to set mem policy for
+# GPU") and finds no device (../strata/README.md). So `dev` also denies GPU 1's DRM nodes.
 set -Eeuo pipefail
 
 readonly VMID="${VMID:-124}"
@@ -112,6 +114,31 @@ attach_gpu2() {
   return 1
 }
 
+# Rewrite in place from a filtered copy: /etc/pve is the cluster filesystem.
+strip_drm_denies() {
+  grep -v '^lxc.cgroup2.devices.deny: c 226:' "$CONF" >"${STATE_DIR}/${VMID}.conf.new" || true
+  cat "${STATE_DIR}/${VMID}.conf.new" >"$CONF"
+  rm -f "${STATE_DIR}/${VMID}.conf.new"
+}
+
+# Deny GPU 1's render and card nodes, at their current minors. Returns 1 when it changed
+# the rules, which a container restart applies.
+deny_gpu1() {
+  local kind node want="" have
+  for kind in render card; do
+    node="$(readlink -f "${DRI_BY_PATH}/pci-${GPU1_PCI}-${kind}")"
+    [ -c "$node" ] || die "${DRI_BY_PATH}/pci-${GPU1_PCI}-${kind} does not resolve to a device node"
+    want+="lxc.cgroup2.devices.deny: c 226:$((16#$(stat -c %T "$node"))) rwm"$'\n'
+  done
+  have="$(grep '^lxc.cgroup2.devices.deny: c 226:' "$CONF" || true)"
+  [ "${have}"$'\n' = "$want" ] && return 0
+  cp -a "$CONF" "${STATE_DIR}/${VMID}.conf.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+  strip_drm_denies
+  printf '%s' "$want" >>"$CONF"
+  log "CT ${VMID} denies GPU 1's DRM nodes: $(grep -o 'c 226:[0-9]*' <<<"$want" | paste -sd' ' -)"
+  return 1
+}
+
 detach_gpus() {
   local keys
   keys="$(grep -E '^dev[0-9]+: (/dev/kfd|/dev/dri/)' "$CONF" | cut -d: -f1 || true)"
@@ -161,6 +188,7 @@ dev() {
 
   set_watchdog_map "$(gpu1_entry),${GPU2_PCI}=${VMID}:@container"
   attach_gpu2 || restart=true
+  deny_gpu1 || restart=true
   mem="$(dev_memory_mib)"
   [ "$mem" -gt "$SHARED_MEMORY_MIB" ] || die "only ${mem} MiB left for CT ${VMID}; check the other guests' limits"
   pct set "$VMID" --memory "$mem" --onboot 1
@@ -178,6 +206,7 @@ restore() {
   fi
   pct set "$VMID" --onboot 0 --memory "$SHARED_MEMORY_MIB"
   detach_gpus
+  strip_drm_denies
   if [ -s "$MAP_FILE" ]; then
     set_watchdog_map "$(cat "$MAP_FILE")"
   else
@@ -195,7 +224,7 @@ status() {
   local d pci
   printf -- '--- CT %s: %s, onboot=%s, memory=%s MiB ---\n' "$VMID" "$(ct_state "$VMID")" \
     "$(onboot_of "$VMID")" "$(pct config "$VMID" | awk -F': ' '$1 == "memory" {print $2}')"
-  grep -E '^dev[0-9]+: ' "$CONF" | sed 's/^/  /' || echo "  (no devices)"
+  grep -E '^(dev[0-9]+: |lxc.cgroup2.devices.deny: )' "$CONF" | sed 's/^/  /' || echo "  (no devices)"
   if [ "$(ct_state "$VMID")" = running ] && holds_gpu; then
     echo "  ROCm lists $(hip_devices) GPU(s)"
   fi

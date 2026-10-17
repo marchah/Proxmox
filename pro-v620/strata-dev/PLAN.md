@@ -49,7 +49,7 @@ access to the host or to the other guests.
 | Cores | 24 | As CT 123. Owner tests set an explicit `TEST_CPUSET` (siblings n/n+32). |
 | Memory | 64 GiB while CT 123 still runs; raised when GPU 2 moves (see [Memory](#memory)); swap 0 | The fork plans reject runs that swap. |
 | Root disk | 200 GB on `local-lvm` | |
-| Devices | `dev0: /dev/kfd`; `dev1`, `dev2`: GPU 2's render and card nodes at their real names; group `render`, mode 0660 | Proxmox allows exactly these device numbers in the cgroup: the narrow rule HIP needs ([Strata README](../strata/README.md)). Resolve the names from `/dev/dri/by-path/pci-0000:83:00.0-{render,card}` at every switch. |
+| Devices | `dev0: /dev/kfd`; `dev1`, `dev2`: GPU 2's render and card nodes at their real names; group `render` (`video` for the card), mode 0660; `lxc.cgroup2.devices.deny` for GPU 1's render and card nodes | An unprivileged container's device cgroup allows every device no rule denies, and KFD reports every GPU whose render node the cgroup allows. With GPU 1 visible, ROCm 10 fails with `Failed to set mem policy for GPU` and finds no device ([Strata README](../strata/README.md)); denying GPU 1's nodes leaves one gfx1030 (2026-10-17). Names and minors come from `/dev/dri/by-path/` at every switch. |
 | Mounts | `mp0: /mnt/models/store,mp=/models,ro=1`; `mp1: /mnt/models/store/dev,mp=/models-dev` | The agent reads every GGUF and cannot change one. `/models-dev` holds derived files: fixtures, manifests, converted tables. |
 | onboot | 1 while it holds GPU 2, 0 after `restore` | |
 | Firewall | On | See [Network](#network). |
@@ -89,7 +89,7 @@ near 300 GiB.
 ```
 
 `dev` passes `/dev/kfd` and GPU 2's render and card nodes into CT 124 as device entries,
-at their real names, sets CT 124's memory (see [Memory](#memory)), maps GPU 2 to
+at their real names, denies GPU 1's nodes in its device cgroup, sets CT 124's memory (see [Memory](#memory)), maps GPU 2 to
 `124:@container` in the watchdog, and checks that ROCm lists exactly one GPU in CT 124.
 Both directions keep the lab's two invariants, including across a host reboot: no two
 containers own a card, and the watchdog maps each card to the workload on it. CT 123's
