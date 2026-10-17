@@ -1,0 +1,7 @@
+# Cells for runs/2026-10-17-strata-text.md, stage B, in CT 123 holding both cards, at PASSES=3.
+# Stage A's pw2 with one of the frozen switches each, to find one that alone makes the greedy
+# text repeat across starts. --prompt-cache 0 is left out: the probe's cold rows already skip
+# the prompt cache.
+pw2-mtmin   MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_IQ_MT_MIN=1 STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+pw2-noswap  MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2 --adapt-swaps 0' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+pw2-nopcie  MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2 --pcie-frac 0' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto

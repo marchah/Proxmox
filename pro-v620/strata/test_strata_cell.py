@@ -23,6 +23,7 @@ def load(name, path):
 
 cell = load("strata_cell", HERE / "strata-cell.py")
 strata_summary = load("strata_summary", HERE / "strata-summary.py")
+text_repeat = load("text_repeat", HERE / "text-repeat.py")
 
 GPU1, GPU2 = "0000:03:00.0", "0000:83:00.0"
 # Start lines as the engine prints them (stage 2's split21 and helper cells).
@@ -31,6 +32,9 @@ SPLIT_LOG = (
     "strata generate: layer split: CUDA1 runs layers 24-47, expert cache 7993 slots (23.32 GiB), "
     "7993 of its 12288 profiled pairs; slot 0 verified\n"
     "strata generate: token graph hit path: 16220 resident experts, decided on the device\n")
+# The line Strata's server writes into the engine log for each engine it starts.
+START = ("[strata] 2026-10-17 13:39:08 engine started: /opt/strata/strata-v0.1.44.1/build-hip/strata --serve "
+         "--pack /models/strata/packs/ud-q4_k_xl\n")
 HELPER_LOG = (
     "strata generate: expert cache 7921 slots, 23.12 GiB of VRAM; policy is\n"
     "strata generate: CUDA1: 10086 additional experts, 29.43 GiB; results return through pinned host rows\n")
@@ -87,6 +91,34 @@ class CellTests(unittest.TestCase):
         out = run_cell("strata serve: stall report: layer 12, 3 workers waiting\n")
         self.assertFalse(out["probe_ok"])
         self.assertEqual(out["placement"]["engine_faults"], 1)
+
+    def test_a_hung_pipelined_window_fails_the_cell(self):
+        out = run_cell(START + SPLIT_LOG +
+                       "strata serve: pipelined decode: verify: the window never finished; its GPU waits were "
+                       "released but the GPU did not finish within 5 s (#267)\n")
+        self.assertFalse(out["probe_ok"])
+        self.assertEqual(out["placement"]["engine_faults"], 1)
+
+    def test_an_engine_restart_fails_the_cell(self):
+        # The server replaced an engine that died: a second start line in the cell's engine log.
+        # Its "the engine had stopped" goes to the journal, which strata-cell.py does not read.
+        out = run_cell(START + SPLIT_LOG + START + SPLIT_LOG)
+        self.assertFalse(out["probe_ok"])
+        self.assertEqual(out["placement"]["strata"]["engine_restarts"], 1)
+        self.assertEqual(out["placement"]["engine_faults"], 1)
+
+    def test_one_engine_start_is_not_a_restart(self):
+        out = run_cell(START + SPLIT_LOG)
+        self.assertTrue(out["probe_ok"])
+        self.assertEqual(out["placement"]["engine_faults"], 0)
+
+    def test_pipeline_lines_are_kept(self):
+        on = ("strata generate: --pipeline-windows 2: 160 MiB of CUDA0 kept out of the expert cache\n"
+              "strata serve: --pipeline-windows 2: two verifiers per stage, 2 stages overlap across windows\n")
+        account = cell.engine_account(SPLIT_LOG + on)
+        self.assertEqual(len(account["pipeline_lines"]), 2)
+        self.assertTrue(account["pipeline_lines"][1].startswith("--pipeline-windows 2: two verifiers"))
+        self.assertEqual(account["stall_lines"], 0)
 
     def test_nonfinite_logits_fail_the_cell(self):
         out = run_cell("strata: non-finite logits at position 812\n")
@@ -180,6 +212,79 @@ class StrataSummaryTests(unittest.TestCase):
         self.assertIn("## Maya engine", report)
         self.assertIn("| 3373 (1063 + 2310) |", report)
         self.assertIn("| 138.0 |", report)
+
+
+class TextRepeatTests(unittest.TestCase):
+    def run_tool(self, passes, against=None, manifest=None, code=0, failed=()):
+        """text-repeat.py over {cell: [rows per pass]}, a row being (depth, class, sha), a dict or a
+        raw line, and None a pass with no rows file; `failed` names the (cell, pass) loads that did
+        not pass their gates. Returns the tool's table rows."""
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory)
+            for c, runs in passes.items():
+                for n, rows in enumerate(runs, 1):
+                    if rows is not None:
+                        (d / ("%s-r%d.rows.jsonl" % (c, n))).write_text("".join(
+                            (r if isinstance(r, str) else json.dumps(r if isinstance(r, dict) else
+                             {"depth_target": r[0], "class": r[1], "content_sha": r[2]})) + "\n" for r in rows))
+                        (d / ("%s-r%d.json" % (c, n))).write_text(json.dumps({"probe_ok": (c, n) not in failed}))
+            if manifest:
+                (d / "manifest.json").write_text(json.dumps(
+                    {"reps": manifest[0], "cells": json.dumps([{"label": c} for c in manifest[1]])}))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(text_repeat.main([str(d)] + (["--against", against] if against else [])), code)
+            return {line.split("|")[1].strip(): line for line in out.getvalue().splitlines()[2:]}
+
+    def test_repeats_and_agreement(self):
+        same = [(0, "code", "a"), (0, "list", "b")]
+        table = self.run_tool({
+            "miss": [same, same, same],
+            "pw2": [[(0, "code", "a"), (0, "list", "b")], [(0, "code", "a"), (0, "list", "c")],
+                    [(0, "code", "a"), (0, "list", "d")]],
+            "pw2-frozen": [same, same, same],
+        }, against="miss")
+        self.assertIn("| 2 of 2 | 1 / 1 | 0 | 2 of 2 |", table["`pw2-frozen`"])
+        # list varies in every pass: code still repeats and matches the reference, list counts for neither
+        self.assertIn("| 1 of 2 | 2 / 3 | 0 | 1 of 2 |", table["`pw2`"])
+
+    def test_a_cell_whose_label_contains_r_and_digits_keeps_its_passes(self):
+        row = [(8000, "prose", "x")]
+        table = self.run_tool({"s4p7-pw2-r2x": [row, row], "s4p7-pw2": [row, [(8000, "prose", "y")]]})
+        self.assertIn("| 1 of 1 | 1 / 1 | 0 |", table["`s4p7-pw2-r2x`"])
+        self.assertIn("| 0 of 1 | 2 / 2 | 0 |", table["`s4p7-pw2`"])
+
+    def test_a_row_missing_from_a_pass_is_missing_not_repeated(self):
+        runs = [[(0, "code", "a"), (0, "prose", "b")], [(0, "code", "a")], [(0, "code", "a")]]
+        table = self.run_tool({"ref": runs, "cand": runs}, against="ref", code=2)
+        self.assertIn("| 1 of 2 | 1 / 1 | 1 | 1 of 2 |", table["`cand`"])
+
+    def test_a_missing_pass_counts_against_the_manifest_or_the_other_cells(self):
+        row = [(0, "code", "a")]
+        table = self.run_tool({"whole": [row, row, row], "short": [row, row, None]}, code=2)
+        self.assertIn("| 1 of 1 | 1 / 1 | 0 |", table["`whole`"])
+        self.assertIn("| 0 of 1 | — | 1 |", table["`short`"])
+        # The manifest sets three passes where every cell has two, and names a cell with none.
+        table = self.run_tool({"whole": [row, row], "short": [row, row]}, manifest=(3, ["whole", "short", "gone"]),
+                              code=2)
+        self.assertIn("| 0 of 1 | — | 1 |", table["`whole`"])
+        self.assertIn("| 0 of 1 | — | 1 |", table["`gone`"])
+
+    def test_a_failed_request_is_missing_not_a_text(self):
+        # An empty completion keeps the empty text's hash, the same in every pass; a request that
+        # raised has none; the probe's stderr also carries other lines.
+        empty = {"depth_target": 0, "class": "prose", "content_sha": "e3b0c44298fc", "error": "empty completion"}
+        ok = [(0, "code", "a"), empty, (0, "list", "b")]
+        table = self.run_tool({"cell": [ok, ok, [(0, "code", "a"), empty, "Traceback (most recent call last):",
+                                                 {"depth_target": 0, "class": "list", "error": "ReadTimeout()"}]]},
+                              code=2)
+        self.assertIn("| 1 of 3 | 1 / 1 | 2 |", table["`cell`"])
+
+    def test_a_load_that_failed_its_gates_gives_no_reading(self):
+        # Pass 2's load failed (an engine restart, say): its texts are not a reading of the cell.
+        row = [(0, "code", "a")]
+        table = self.run_tool({"cell": [row, row, row]}, failed={("cell", 2)}, code=2)
+        self.assertIn("| 0 of 1 | — | 1 |", table["`cell`"])
 
 
 if __name__ == "__main__":

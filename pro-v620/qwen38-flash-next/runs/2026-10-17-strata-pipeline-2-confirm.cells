@@ -1,0 +1,11 @@
+# Cells for runs/2026-10-17-strata-pipeline.md, stage B's confirming passes, in CT 123 holding
+# both cards, at PASSES=3. The plan's rule, from stage A (sweep 20261017T103338Z): s5, the
+# fastest pipeline-windows cell (s3p7-pw2, 67.7 t/s) and every other cell more than 2% over
+# s5's 59.7 t/s (s2p7-pw2 67.3, s4p7-pw2 65.5, s5-pw2 62.6, s3p7-pw2-st0 62.3). The same
+# lines as the screen's.
+s5            MODEL_SPEC=5 MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+s3p7-pw2      MODEL_SPEC=3 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+s5-pw2        MODEL_SPEC=5 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+s2p7-pw2      MODEL_SPEC=2 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+s3p7-pw2-st0  MODEL_SPEC=3 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 STRATA_MTP_STAGE0=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+s4p7-pw2      MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto

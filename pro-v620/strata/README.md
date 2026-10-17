@@ -124,11 +124,19 @@ engine's own account of each request. `UNIT=maya-glm53f` runs it on
 [`strata-cell.py`](strata-cell.py) turns each loaded cell's readings into its result:
 - the expert cache on every card the engine uses;
 - the VRAM the engine requested against the VRAM resident, on each card the cell runs on;
-- the engine log's stall and non-finite lines.
+- the engine log's stall and non-finite lines, a verify window that never finished (#267,
+  Strata #2245), and an engine restart: a second start line in the cell's slice of the engine
+  log;
+- the engine's `--pipeline-windows` lines: on, off and why, or a request decoded serially.
 
 A missing residency reading or an engine fault fails the cell, and the summary leaves it out
 of the reference. [`strata-summary.py`](strata-summary.py) adds the engine's account to the
-speed tables. `test_strata_cell.py` checks both offline (`python3 -m unittest
+speed tables. [`text-repeat.py`](text-repeat.py) counts, per cell of a sweep, the probe rows
+whose greedy text is the same in every pass, and with `--against CELL` the rows two cells
+share. A row counts only when each of the manifest's passes has a successful reading of it,
+from a load that passed its gates.
+Missing or failed rows are reported in their own column, and the tool then exits 2.
+`test_strata_cell.py` checks all three offline (`python3 -m unittest
 test_strata_cell`).
 
 [`strata-vs-llamacpp.sh`](strata-vs-llamacpp.sh) interleaves the two engines on CT 123. Each
