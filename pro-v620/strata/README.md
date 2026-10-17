@@ -130,7 +130,9 @@ engine's own account of each request. `UNIT=maya-glm53f` runs it on
 
 A missing residency reading or an engine fault fails the cell, and the summary leaves it out
 of the reference. [`strata-summary.py`](strata-summary.py) adds the engine's account to the
-speed tables. `test_strata_cell.py` checks both offline (`python3 -m unittest
+speed tables. [`text-repeat.py`](text-repeat.py) counts, per cell of a sweep, the probe rows
+whose greedy text is the same in every pass, and with `--against CELL` the rows two cells
+share. `test_strata_cell.py` checks all three offline (`python3 -m unittest
 test_strata_cell`).
 
 [`strata-vs-llamacpp.sh`](strata-vs-llamacpp.sh) interleaves the two engines on CT 123. Each

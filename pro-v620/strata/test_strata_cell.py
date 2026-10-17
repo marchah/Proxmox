@@ -23,6 +23,7 @@ def load(name, path):
 
 cell = load("strata_cell", HERE / "strata-cell.py")
 strata_summary = load("strata_summary", HERE / "strata-summary.py")
+text_repeat = load("text_repeat", HERE / "text-repeat.py")
 
 GPU1, GPU2 = "0000:03:00.0", "0000:83:00.0"
 # Start lines as the engine prints them (stage 2's split21 and helper cells).
@@ -196,6 +197,40 @@ class StrataSummaryTests(unittest.TestCase):
         self.assertIn("## Maya engine", report)
         self.assertIn("| 3373 (1063 + 2310) |", report)
         self.assertIn("| 138.0 |", report)
+
+
+class TextRepeatTests(unittest.TestCase):
+    def run_tool(self, passes, against=None):
+        """text-repeat.py over {cell: [[(depth, class, sha), ...] per pass]}; returns its table rows."""
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory)
+            for c, runs in passes.items():
+                for n, rows in enumerate(runs, 1):
+                    (d / ("%s-r%d.rows.jsonl" % (c, n))).write_text("".join(
+                        json.dumps({"depth_target": depth, "class": cls, "content_sha": sha}) + "\n"
+                        for depth, cls, sha in rows))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(text_repeat.main([str(d)] + (["--against", against] if against else [])), 0)
+            return {line.split("|")[1].strip(): line for line in out.getvalue().splitlines()[2:]}
+
+    def test_repeats_and_agreement(self):
+        same = [(0, "code", "a"), (0, "list", "b")]
+        table = self.run_tool({
+            "miss": [same, same, same],
+            "pw2": [[(0, "code", "a"), (0, "list", "b")], [(0, "code", "a"), (0, "list", "c")],
+                    [(0, "code", "a"), (0, "list", "d")]],
+            "pw2-frozen": [same, same, same],
+        }, against="miss")
+        self.assertIn("| 2 of 2 | 1 / 1 | 2 of 2 |", table["`pw2-frozen`"])
+        # list varies in every pass: code still repeats and matches the reference, list counts for neither
+        self.assertIn("| 1 of 2 | 2 / 3 | 1 of 2 |", table["`pw2`"])
+
+    def test_a_cell_whose_label_contains_r_and_digits_keeps_its_passes(self):
+        row = [(8000, "prose", "x")]
+        table = self.run_tool({"s4p7-pw2-r2x": [row, row], "s4p7-pw2": [row, [(8000, "prose", "y")]]})
+        self.assertIn("| 1 of 1 | 1 / 1 |", table["`s4p7-pw2-r2x`"])
+        self.assertIn("| 0 of 1 | 2 / 2 |", table["`s4p7-pw2`"])
 
 
 if __name__ == "__main__":
