@@ -215,18 +215,23 @@ class StrataSummaryTests(unittest.TestCase):
 
 
 class TextRepeatTests(unittest.TestCase):
-    def run_tool(self, passes, against=None):
-        """text-repeat.py over {cell: [[(depth, class, sha), ...] per pass]}; returns its table rows."""
+    def run_tool(self, passes, against=None, manifest=None, code=0):
+        """text-repeat.py over {cell: [rows per pass]}, a row being (depth, class, sha), a dict or a
+        raw line, and None a pass with no rows file; returns its table rows."""
         with tempfile.TemporaryDirectory() as directory:
             d = Path(directory)
             for c, runs in passes.items():
                 for n, rows in enumerate(runs, 1):
-                    (d / ("%s-r%d.rows.jsonl" % (c, n))).write_text("".join(
-                        json.dumps({"depth_target": depth, "class": cls, "content_sha": sha}) + "\n"
-                        for depth, cls, sha in rows))
+                    if rows is not None:
+                        (d / ("%s-r%d.rows.jsonl" % (c, n))).write_text("".join(
+                            (r if isinstance(r, str) else json.dumps(r if isinstance(r, dict) else
+                             {"depth_target": r[0], "class": r[1], "content_sha": r[2]})) + "\n" for r in rows))
+            if manifest:
+                (d / "manifest.json").write_text(json.dumps(
+                    {"reps": manifest[0], "cells": json.dumps([{"label": c} for c in manifest[1]])}))
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                self.assertEqual(text_repeat.main([str(d)] + (["--against", against] if against else [])), 0)
+                self.assertEqual(text_repeat.main([str(d)] + (["--against", against] if against else [])), code)
             return {line.split("|")[1].strip(): line for line in out.getvalue().splitlines()[2:]}
 
     def test_repeats_and_agreement(self):
@@ -237,15 +242,41 @@ class TextRepeatTests(unittest.TestCase):
                     [(0, "code", "a"), (0, "list", "d")]],
             "pw2-frozen": [same, same, same],
         }, against="miss")
-        self.assertIn("| 2 of 2 | 1 / 1 | 2 of 2 |", table["`pw2-frozen`"])
+        self.assertIn("| 2 of 2 | 1 / 1 | 0 | 2 of 2 |", table["`pw2-frozen`"])
         # list varies in every pass: code still repeats and matches the reference, list counts for neither
-        self.assertIn("| 1 of 2 | 2 / 3 | 1 of 2 |", table["`pw2`"])
+        self.assertIn("| 1 of 2 | 2 / 3 | 0 | 1 of 2 |", table["`pw2`"])
 
     def test_a_cell_whose_label_contains_r_and_digits_keeps_its_passes(self):
         row = [(8000, "prose", "x")]
         table = self.run_tool({"s4p7-pw2-r2x": [row, row], "s4p7-pw2": [row, [(8000, "prose", "y")]]})
-        self.assertIn("| 1 of 1 | 1 / 1 |", table["`s4p7-pw2-r2x`"])
-        self.assertIn("| 0 of 1 | 2 / 2 |", table["`s4p7-pw2`"])
+        self.assertIn("| 1 of 1 | 1 / 1 | 0 |", table["`s4p7-pw2-r2x`"])
+        self.assertIn("| 0 of 1 | 2 / 2 | 0 |", table["`s4p7-pw2`"])
+
+    def test_a_row_missing_from_a_pass_is_missing_not_repeated(self):
+        runs = [[(0, "code", "a"), (0, "prose", "b")], [(0, "code", "a")], [(0, "code", "a")]]
+        table = self.run_tool({"ref": runs, "cand": runs}, against="ref", code=2)
+        self.assertIn("| 1 of 2 | 1 / 1 | 1 | 1 of 2 |", table["`cand`"])
+
+    def test_a_missing_pass_counts_against_the_manifest_or_the_other_cells(self):
+        row = [(0, "code", "a")]
+        table = self.run_tool({"whole": [row, row, row], "short": [row, row, None]}, code=2)
+        self.assertIn("| 1 of 1 | 1 / 1 | 0 |", table["`whole`"])
+        self.assertIn("| 0 of 1 | — | 1 |", table["`short`"])
+        # The manifest sets three passes where every cell has two, and names a cell with none.
+        table = self.run_tool({"whole": [row, row], "short": [row, row]}, manifest=(3, ["whole", "short", "gone"]),
+                              code=2)
+        self.assertIn("| 0 of 1 | — | 1 |", table["`whole`"])
+        self.assertIn("| 0 of 1 | — | 1 |", table["`gone`"])
+
+    def test_a_failed_request_is_missing_not_a_text(self):
+        # An empty completion keeps the empty text's hash, the same in every pass; a request that
+        # raised has none; the probe's stderr also carries other lines.
+        empty = {"depth_target": 0, "class": "prose", "content_sha": "e3b0c44298fc", "error": "empty completion"}
+        ok = [(0, "code", "a"), empty, (0, "list", "b")]
+        table = self.run_tool({"cell": [ok, ok, [(0, "code", "a"), empty, "Traceback (most recent call last):",
+                                                 {"depth_target": 0, "class": "list", "error": "ReadTimeout()"}]]},
+                              code=2)
+        self.assertIn("| 1 of 3 | 1 / 1 | 2 |", table["`cell`"])
 
 
 if __name__ == "__main__":

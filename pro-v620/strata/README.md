@@ -133,7 +133,9 @@ A missing residency reading or an engine fault fails the cell, and the summary l
 of the reference. [`strata-summary.py`](strata-summary.py) adds the engine's account to the
 speed tables. [`text-repeat.py`](text-repeat.py) counts, per cell of a sweep, the probe rows
 whose greedy text is the same in every pass, and with `--against CELL` the rows two cells
-share. `test_strata_cell.py` checks all three offline (`python3 -m unittest
+share. A row counts only when each of the manifest's passes has a successful reading of it.
+Missing or failed rows are reported in their own column, and the tool then exits 2.
+`test_strata_cell.py` checks all three offline (`python3 -m unittest
 test_strata_cell`).
 
 [`strata-vs-llamacpp.sh`](strata-vs-llamacpp.sh) interleaves the two engines on CT 123. Each
