@@ -1,6 +1,6 @@
 # Qwen3.8-Flash-Next: pipeline windows and a shorter draft on two cards (Strata)
 
-Plan committed 2026-10-17 · Run — · Status: planned
+Plan committed 2026-10-17 · Run 2026-10-17 · Status: running
 
 ## Question
 
@@ -180,6 +180,74 @@ As in the [Strata record](2026-10-16-strata.md#environment), to be replaced by s
 ---
 
 ## Results
+
+### Stage A: screen
+
+Run 2026-10-17 06:33–06:59 ET, harness `e46a65f`, one pass, in CT 123 holding both cards; raw
+data in `/root/qwen38-flash-next/strata-sweep-20261017T103338Z/`. Decode is the median across the
+nine class-and-depth rows, and acceptance is the median of the same nine rows.
+
+| Cell | Pipeline windows | Draft | Decode, t/s | vs `s5` | Acceptance | Prefill d8000 / d32000 |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| `nodraft` | off | none | 37.3 | −37.5% | | 1,011 / 1,510 |
+| `s5` | off | 5, min-p 0.5 | 59.7 | | 64.0% | 970 / 1,425 |
+| `s3p7` | off | 3, min-p 0.7 | 57.6 | −3.5% | 84.8% | 954 / 1,396 |
+| `s5-pw2` | 2 | 5, min-p 0.5 | 62.6 | +4.9% | 62.7% | 968 / 1,427 |
+| `s2p7-pw2` | 2 | 2, min-p 0.7 | 67.3 | +12.7% | 86.1% | 963 / 1,425 |
+| `s3p7-pw2` | 2 | 3, min-p 0.7 | **67.7** | +13.4% | 80.1% | 969 / 1,431 |
+| `s4p7-pw2` | 2 | 4, min-p 0.7 | 65.5 | +9.7% | 79.7% | 965 / 1,424 |
+| `s3p7-pw2-st0` | 2, draft layer on the first card | 3, min-p 0.7 | 62.3 | +4.4% | 78.9% | 959 / 1,375 |
+
+**The gain needs both changes, as in the 6900 XT report.**
+- Together, pipeline windows and the shorter draft decode 13.4% faster than `s5`.
+- Pipeline windows alone add 4.9%. The shorter draft alone loses 3.5%, though its acceptance
+  rises from 64.0% to 84.8%.
+- On code, `s3p7-pw2` decodes 70.2 / 73.9 / 77.1 t/s at d0 / d8000 / d32000, against 62.8 /
+  70.0 / 71.1 for `s5`.
+- Prefill is unchanged (−0.2% and +0.4%).
+
+**Draft length with pipeline windows**, at min-p 0.7: 67.3, 67.7 and 65.5 t/s at 2, 3 and 4. The
+peak is at 3, so the plan's extension to 5 and 6 does not apply.
+
+**The draft layer on the first card** (`STRATA_MTP_STAGE0=1`) is slower than on the last card:
+62.3 against 67.7 t/s. It also reads a 23k-token prompt 3.6% slower.
+
+**The cards in decode**, GPU 1 (the second stage) / GPU 2:
+
+| Cell | Busy % | Power, W | sclk, MHz |
+| --- | ---: | ---: | ---: |
+| `s5` | 49 / 30 | 133 / 106 | 1,857 / 1,122 |
+| `s3p7-pw2` | 95 / 92 | 177 / 148 | 2,394 / 2,081 |
+| `s3p7-pw2-st0` | 75 / 97 | 132 / 179 | 1,945 / 2,316 |
+
+With pipeline windows, GPU 2 goes from 30% to 92% busy in decode, and GPU 1 from 49% to 95%.
+
+**Expert cache.** Pipeline windows kept 272 MiB of the first card's VRAM out of its cache, more
+than the 160 MiB the documentation gives:
+- The first card fell from 8,227 slots to 8,139, and the second from 7,712 to 7,657 (15,939 →
+  15,796 in total).
+- With `st0`, the draft layer's slots moved to the first card: 7,775 + 7,930.
+- The decode hit rate stayed at 97.3–97.8% in every cell.
+
+**Hang.** There were no `#267` lines, engine restarts or stalls in the five pipeline-windows loads:
+85 requests across 5 engine starts, 17 per load. No request fell back to the serial loop. The
+`STRATA_ATTN_LANECELL=1` rerun therefore does not apply.
+
+**Checks:**
+- Each pipeline-windows log shows `--pipeline-windows 2: two verifiers per stage, 2 stages overlap
+  across windows (decode too; …)`.
+- Chat contract and tool calls: 8 of 8 loads. Rows: none flagged.
+- Memory: 0 MiB outside VRAM on either card, at load and after the probe. The samplers saw no
+  gap between requested and resident VRAM in 1,439 samples per card; 14 more per card had only
+  one counter and are left out.
+- Thermal: the hottest DIMM read 55 °C; the hottest junction 85 °C, in prefill. There was no
+  thermal trip.
+- Drift: `s5` decodes 59.7 t/s, as in stage 8, and `nodraft` 37.3, as in stage 7.
+- Greedy text:
+  - It differs between draft settings even without pipeline windows: `s3p7` matches `s5` on 2 of
+    9 rows, and `nodraft` on 1.
+  - So matching `s5`'s text cannot single out pipeline windows: `s3p7-pw2` matches it on 1 row.
+  - Stage B's three passes show whether each cell repeats its own text across starts.
 
 ## Deviations
 
