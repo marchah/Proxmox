@@ -12,7 +12,8 @@
 # Steps (maya-gate.py has each one's detail), outputs in /models/maya/gate/ in CT 123:
 # - the texts: eight of this repository's READMEs, PER tokens of each (default 512), one sequence;
 # - the reference: llama.cpp on the CPU over the sequence, kept as top-64 log-probs per position
-#   after the first CTX tokens (default 64); reused when present for the same tokens;
+#   after the first CTX tokens (default 64); reused only when its manifest matches the model's
+#   shards, the dumper build, the tokens and CTX (maya-gate.py check-ref);
 # - Maya's score of the same positions on GPU 2, and the verdict against the plan's thresholds.
 #
 # Both servers stay stopped: the gate needs the card and the RAM. thermal-guard.sh writes
@@ -68,13 +69,13 @@ log "tokens: ${PER} of each of ${#TEXTS[@]} texts, with ${MODEL##*/}'s tokenizer
 gate tokens --tokenize "$LLAMA/build-cpu/bin/llama-tokenize" --model "$MODEL" --texts "$G/texts" \
   --per "$PER" --out "$G/${LABEL}-tokens.json"
 
-if in_ct test -f "$G/${LABEL}-ref.json" && in_ct cmp -s "$G/${LABEL}-tokens.json" "$G/${LABEL}-ref.tokens.json"; then
-  log "reference present for these tokens: $G/${LABEL}-ref.json"
+if gate check-ref --ref "$G/${LABEL}-ref" --model "$MODEL" --dump "$LLAMA/llm_logits_dump" \
+  --tokens "$G/${LABEL}-tokens.json" --ctx "$CTX"; then
+  log "reference reused: $G/${LABEL}-ref.json"
 else
   log "reference: llama.cpp ${LLAMA##*/} on the CPU, one token at a time"
   gate reference --dump "$LLAMA/llm_logits_dump" --model "$MODEL" --tokens "$G/${LABEL}-tokens.json" \
     --ctx "$CTX" --out "$G/${LABEL}-ref"
-  in_ct cp "$G/${LABEL}-tokens.json" "$G/${LABEL}-ref.tokens.json"
 fi
 
 log "Maya's score on GPU 2"
@@ -85,9 +86,9 @@ rc=0
 gate verdict --ref "$G/${LABEL}-ref.json" --score "$G/${LABEL}-maya.json" | tee "$HOST_OUT/verdict.json" || rc=$?
 
 if [ -n "$ALSO_REF" ]; then
-  # The same tokens are required: the comparison is position by position.
-  in_ct cmp -s "$G/${LABEL}-tokens.json" "$G/${ALSO_REF}-ref.tokens.json" \
-    || die "${LABEL}'s tokens differ from ${ALSO_REF}'s reference tokens; no cross comparison"
+  # The same tokens and CTX are required: the comparison is position by position.
+  gate check-ref --ref "$G/${ALSO_REF}-ref" --tokens "$G/${LABEL}-tokens.json" --ctx "$CTX" \
+    || die "${ALSO_REF}'s reference does not match ${LABEL}'s tokens and CTX; no cross comparison"
   log "Maya on ${LABEL} against ${ALSO_REF}'s llama.cpp reference (quoted, not gated)"
   gate score --config "$CFG" --pack "$PACK" --tokens "$G/${LABEL}-tokens.json" --ctx "$CTX" \
     --topk "$G/${ALSO_REF}-ref.topk" --out "$G/${LABEL}-maya-vs-${ALSO_REF}"

@@ -81,7 +81,9 @@ on long prompts ([test record](../glm53-flash/runs/2026-10-16-maya.md#stage-2-ar
   `strata-cell.py` reads Maya's start and request lines (`glm fast:`, `glm stat:`,
   `glm spec:`), and a stall or non-finite line fails the cell.
 - [`maya-gate.sh`](maya-gate.sh) compares Maya's next-token distributions with llama.cpp's on the
-  same GGUF and tokens, and gives the test record's verdict. [`maya-gate.py`](maya-gate.py) has
+  same GGUF and tokens, and gives the test record's verdict. A reference is reused only while its
+  manifest matches the model's shards, the dumper build, the tokens and the context. A score counts
+  only if the engine exits 0 and scores every position. [`maya-gate.py`](maya-gate.py) has
   each step.
 - [`maya-vs-llamacpp.sh`](maya-vs-llamacpp.sh) interleaves llama.cpp's GLM unit and Maya in
   rounds, with the watchdog's map following the engine that runs.
@@ -99,4 +101,5 @@ on long prompts ([test record](../glm53-flash/runs/2026-10-16-maya.md#stage-2-ar
 ```bash
 shellcheck -S warning ./*.sh ./maya-serve-glm53f
 python3 -m py_compile maya-gate.py
+python3 test_maya_gate.py     # the score and reference checks, offline
 ```
