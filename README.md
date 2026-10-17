@@ -12,6 +12,7 @@ Deployment recorded 2026-09-18:
 | CT 120 | `llamacpp` | Qwen3.6-35B-A3B on V620 `0000:03:00.0`, API `:1234` | [GPU runtime](pro-v620/README.md) |
 | CT 121 | `hermes` | Hermes Agent using CT 120; gateway/API `:8642` | [Hermes](hermes/README.md) |
 | CT 123 | `gpu2` | Qwen3.8-Flash-Next on V620 `0000:83:00.0`, API `:1234` | [Flash-Next](pro-v620/qwen38-flash-next/README.md) |
+| CT 124 | `strata-dev` | Development container for the DeepSeek fork of Strata; holds V620 `0000:83:00.0` while CT 123 is stopped | [Dev container](pro-v620/strata-dev/PLAN.md) |
 | CT 140 | `kb-rag` | Markdown KB hybrid search, REST + MCP `:8770` | [Retrieval service](kb-rag/README.md) |
 | CT 200 | `bench-runner` | Disposable OpenAI-compatible endpoint benchmarks | [Benchmark runner](bench-runner/README.md) |
 | VM 300 | `docker-host` | Docker + Compose; MealDeal `:4000`, work-board `:4100`, Project Planner `:4200`, Portainer `:9443` | [Docker host](docker-host/README.md) |

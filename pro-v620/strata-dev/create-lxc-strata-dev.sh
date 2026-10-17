@@ -33,11 +33,10 @@ ROCM_PACKAGE="${ROCM_PACKAGE:-amdrocm-core-dev10.0-gfx1030}"
 ROCM_VERSION="${ROCM_VERSION:-10.0.0-4}"
 ROCM_ROOT="${ROCM_ROOT:-/opt/rocm/core-10.0}"
 
-# OpenCode 2, from the npm tarball its own installer uses. Bump VERSION and SHA256
-# together: curl -fsSL "${OPENCODE_URL}" | sha256sum
-OPENCODE_VERSION="${OPENCODE_VERSION:-2.0.32}"
-OPENCODE_SHA256="${OPENCODE_SHA256:-64a1f4b381c2d2efc18c8d76b2ce399141778b421b54c98b94be8e80803606dc}"
-OPENCODE_URL="https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-${OPENCODE_VERSION}.tgz"
+# OpenCode 2, latest release, updating itself (the owner's choice). Its installer puts the
+# binary in ~/.opencode/bin, which is also how OpenCode recognises an install it may
+# upgrade in place.
+OPENCODE_INSTALLER="${OPENCODE_INSTALLER:-https://opencode.ai/v2/install}"
 
 AGENT_USER="${AGENT_USER:-agent}"
 AGENT_UID="${AGENT_UID:-1000}"
@@ -63,7 +62,7 @@ host as root.
   ENABLE_DATACENTER_FIREWALL=1 ./create-lxc-strata-dev.sh   # re-run: also enforce the rules
 
 Creates an unprivileged Ubuntu 24.04 LXC with ROCm (ROCM_PACKAGE), build tools, gh,
-tmux, OpenCode (OPENCODE_VERSION), the user `agent` (passwordless sudo inside the
+tmux, OpenCode (latest, updating itself), the user `agent` (passwordless sudo inside the
 container), key-only sshd, and a tmux session `agent` started at boot. The model store
 is mounted read-only at /models; /models-dev is writable. Its firewall allows SSH in
 from the LAN and, out, DNS to the router and the internet only.
@@ -286,30 +285,31 @@ CONTAINER_SCRIPT
 }
 
 install_opencode() {
-  log "OpenCode ${OPENCODE_VERSION}"
-  pct exec "${VMID}" -- bash -s -- "${OPENCODE_VERSION}" "${OPENCODE_SHA256}" "${OPENCODE_URL}" "${AGENT_USER}" <<'CONTAINER_SCRIPT'
+  log "OpenCode: latest, updating itself"
+  pct exec "${VMID}" -- bash -s -- "${OPENCODE_INSTALLER}" "${AGENT_USER}" <<'CONTAINER_SCRIPT'
 set -Eeuo pipefail
-version="$1"; sha="$2"; url="$3"; user="$4"
-# It prints `opencode v2.0.32`.
-if ! /usr/local/bin/opencode --version 2>/dev/null | grep -qxF "opencode v${version}"; then
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
-  curl -fsSL -o "${tmp}/opencode.tgz" "$url"
-  printf '%s  %s\n' "$sha" "${tmp}/opencode.tgz" | sha256sum --check --quiet -
-  tar -xzf "${tmp}/opencode.tgz" -C "$tmp"
-  install -m 0755 "${tmp}/package/bin/opencode" /usr/local/bin/opencode
-fi
-
-# Updates stay with this script's pin. Force pushes are refused: the private repository
-# has no branch rules to stop one.
+installer="$1"; user="$2"
 home="$(getent passwd "$user" | cut -d: -f6)"
+binary="${home}/.opencode/bin/opencode"
+if [ ! -x "$binary" ]; then
+  # The same installer OpenCode runs to upgrade itself.
+  curl -fsSL "$installer" | runuser -u "$user" -- env HOME="$home" bash -s -- --no-modify-path
+fi
+# On every user's PATH, through the binary OpenCode replaces when it updates.
+ln -sfn "$binary" /usr/local/bin/opencode
+
+# Force pushes are refused: the private repository has no branch rules to stop one.
 install -d -o "$user" -g "$user" "${home}/.config" "${home}/.config/opencode"
 config="${home}/.config/opencode/opencode.json"
-if [ ! -e "$config" ]; then
+if [ -e "$config" ]; then
+  # Keep the owner's later settings; only the update policy is this script's.
+  jq '.update = "auto"' "$config" >"${config}.new" && mv "${config}.new" "$config"
+  chown "$user:$user" "$config"
+else
   cat >"$config" <<'JSON'
 {
   "$schema": "https://opencode.ai/config.json",
-  "update": "disable",
+  "update": "auto",
   "permission": {
     "bash": {
       "*": "allow",
@@ -401,7 +401,7 @@ print_summary() {
 
   IP (this boot):   ${ip:-unknown}  (reserve MAC ${MAC} on the router)
   Login:            ssh ${AGENT_USER}@${LXC_HOSTNAME}.lan  (key only)
-  Agent session:    tmux attach -t agent  (OpenCode ${OPENCODE_VERSION} in ${WORKDIR})
+  Agent session:    tmux attach -t agent  (OpenCode in ${WORKDIR})
   Models:           /models read-only, /models-dev writable
   Firewall:         $(pve-firewall status 2>/dev/null | head -1)
 

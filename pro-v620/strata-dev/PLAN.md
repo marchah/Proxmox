@@ -55,9 +55,9 @@ access to the host or to the other guests.
 | Firewall | On | See [Network](#network). |
 
 [`create-lxc-strata-dev.sh`](create-lxc-strata-dev.sh) creates it without the GPU, and
-installs, pinned: ROCm `amdrocm-core-dev10.0-gfx1030=10.0.0-4` (the values in
-`../strata/strata-qwen38fn.env`, on every login's paths); build tools, ccache, Python venv
-support, `gh` and tmux from Ubuntu; OpenCode 2.0.32. The agent makes its own Python
+installs: ROCm `amdrocm-core-dev10.0-gfx1030=10.0.0-4`, pinned to the values in
+`../strata/strata-qwen38fn.env` and on every login's paths; build tools, ccache, Python venv
+support, `gh` and tmux from Ubuntu; the latest OpenCode 2. The agent makes its own Python
 environments, such as CPU PyTorch for the reference implementations. The DeepSeek checkout
 lives in `/opt/strata-ds41/`, owned by `agent`.
 
@@ -80,25 +80,25 @@ near 300 GiB.
 
 ## GPU ownership: `strata-dev-host.sh`
 
-A host script in this directory, written like `../glm53-flash/ct123-test-host.sh`:
+[`strata-dev-host.sh`](strata-dev-host.sh), on the host:
 
 ```bash
-./strata-dev-host.sh dev        # GPU 2 to CT 124; CT 123 stopped, Flash-Next units disabled, onboot 0
-./strata-dev-host.sh two-card   # also GPU 1; CT 120 stopped, its autostart off
-./strata-dev-host.sh restore    # CT 124 stopped and off the cards; Flash-Next back on GPU 2
+./strata-dev-host.sh dev        # GPU 2 to CT 124; CT 123 stopped with autostart off
+./strata-dev-host.sh restore    # CT 124 stopped and off the card; CT 123 started on GPU 2
 ./strata-dev-host.sh status
-TEST_CPUSET=0-47 ./strata-dev-host.sh two-card   # an owner test with a fixed CPU set
 ```
 
-Every transition keeps the lab's two invariants, including across a host reboot: no two
-containers own a card, and the watchdog maps each card to the workload on it. State lives in
-`/root/strata-dev/`: CT 123's enabled engine, CT 120's onboot, and both containers' memory and
-cores before the first switch. The script never starts CT 120.
+`dev` passes `/dev/kfd` and GPU 2's render and card nodes into CT 124 as device entries,
+at their real names, sets CT 124's memory (see [Memory](#memory)), maps GPU 2 to
+`124:@container` in the watchdog, and checks that ROCm lists exactly one GPU in CT 124.
+Both directions keep the lab's two invariants, including across a host reboot: no two
+containers own a card, and the watchdog maps each card to the workload on it. CT 123's
+onboot and the watchdog map from before the first `dev` live in `/root/strata-dev/`, and
+`restore` puts them back. A `two-card` mode, which also takes GPU 1 from CT 120, comes with
+the owner's two-card tests.
 
-The existing switches must refuse to attach a card that another container holds.
-`use-engine.sh`, `ct123-test-host.sh` and `ct120-cutover.sh` each check every
-`/etc/pve/lxc/*.conf` for the card's nodes before attaching. Otherwise a habitual
-`use-engine.sh strata` gives GPU 2 to two containers.
+`use-engine.sh`, `ct123-test-host.sh` and `ct120-cutover.sh` refuse to change the cards while
+CT 124 holds one, so a habitual `use-engine.sh strata` cannot give GPU 2 to two containers.
 
 ## Thermal safety
 
@@ -115,10 +115,11 @@ sessions on disk. As for any trip, the owner checks cooling before starting CT 1
 
 ## Agent runtime: OpenCode 2
 
-- OpenCode 2.0.32 comes from the npm tarball its own v2 installer downloads
-  (`@opencode/cli-linux-x64`), checked against a pinned SHA-256. The agent's config sets
-  `update: "disable"`, so the version changes only with the provisioner's pin. No plugins:
-  a plugin runs with the agent's rights.
+- OpenCode 2 runs at its latest release and updates itself (owner's choice). The
+  provisioner runs OpenCode's v2 installer as `agent`, which puts the binary in
+  `~agent/.opencode/bin`; OpenCode upgrades an install there in place, and the agent's
+  config sets `update: "auto"`. `/usr/local/bin/opencode` links to it. No plugins: a plugin
+  runs with the agent's rights.
 - The model is the owner's choice of free Zen model, pinned in
   `~agent/.config/opencode/opencode.json`; the owner logs in once as `agent`.
 - Permission prompts are acceptable: the TUI stays attached inside tmux, so a prompt waits on
@@ -203,10 +204,10 @@ ccache. vzdump skips the bind mounts, as for CT 120 and CT 123.
 
 ## Owner tests
 
-When a step is ready, the owner stops the guests the test does not use and keeps `dev`
-for a one-card measurement, or runs `strata-dev-host.sh two-card` once the one-card work
-is complete, with a fixed `TEST_CPUSET`. The owner starts the ROMED8-2T thermal guard (`../qwen38-flash-next/thermal-guard.sh`)
-for a sweep. Measurement campaigns follow [TEST-RECORDS.md](../TEST-RECORDS.md): plan committed
+When a step is ready, the owner stops the guests the test does not use and measures in
+`dev`, with a fixed CPU set; two-card tests come once the one-card work is complete. The
+owner starts the ROMED8-2T thermal guard (`../qwen38-flash-next/thermal-guard.sh`) for a
+sweep. Measurement campaigns follow [TEST-RECORDS.md](../TEST-RECORDS.md): plan committed
 first, code staged by commit, environment from `capture-env.sh`. Afterwards,
 `strata-dev-host.sh dev` hands GPU 2 back to the agent.
 
@@ -222,8 +223,8 @@ first, code staged by commit, environment from `capture-env.sh`. Afterwards,
 4. The watchdog's `@container` form, with its README and env file, tested in `warn` mode.
 5. `create-lxc-strata-dev.sh`: container, `/mnt/models/store/dev` (owned by
    `101000:101000`), firewall, ROCm, toolchain, `agent`, sshd, OpenCode, the tmux unit.
-6. The card guards in `use-engine.sh`, `ct123-test-host.sh` and `ct120-cutover.sh`; then
-   `strata-dev-host.sh`, with a mocked-`pct` test like `ct123-test-host-test.sh`.
+6. The card guards in `use-engine.sh`, `ct123-test-host.sh` and `ct120-cutover.sh`, and
+   `strata-dev-host.sh`.
 7. `strata-dev-host.sh dev`, then verify:
    - HIP in CT 124 lists exactly one gfx1030, and a page-locked allocation works unprivileged.
    - Strata v0.1.44.1's `ctest` passes in CT 124, as in the [Strata README](../strata/README.md#validation).

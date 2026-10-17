@@ -44,6 +44,15 @@ require_root() { [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"; 
 
 gpu2_attached() { grep -q "${GPU2_PCI}-render" "$CONF"; }
 
+# CT 124 holds GPU 2 between ../strata-dev/strata-dev-host.sh dev and restore; both
+# directions here hand GPU 2 to a server (CT 120's, or CT 123's on the way back).
+readonly STRATA_DEV_CONF="${STRATA_DEV_CONF:-/etc/pve/lxc/124.conf}"
+assert_strata_dev_off_cards() {
+  if grep -qE '^dev[0-9]+: /dev/dri/' "$STRATA_DEV_CONF" 2>/dev/null; then
+    die "CT 124 (strata-dev) holds a V620; ../strata-dev/strata-dev-host.sh restore first"
+  fi
+}
+
 # 🔴 Retiring the OUTGOING workload is a precondition, not a courtesy. This was
 # `systemctl disable --now X 2>/dev/null || true` in both directions, which swallowed a
 # FAILED retirement: the script carried on attaching GPU 2, restarting the container,
@@ -170,6 +179,7 @@ set_watchdog_map() {
   log "watchdog map -> ${want} (service restarted)"
 }
 
+[ "${1:-status}" = status ] || assert_strata_dev_off_cards
 case "${1:-status}" in
   to-qwen38fn)
     require_root
