@@ -249,6 +249,68 @@ than the 160 MiB the documentation gives:
   - So matching `s5`'s text cannot single out pipeline windows: `s3p7-pw2` matches it on 1 row.
   - Stage B's three passes show whether each cell repeats its own text across starts.
 
+### Stage B: confirming passes
+
+Run 2026-10-17 07:04–07:55 ET, harness `aa7cc22`, three interleaved passes of the six cells the
+plan's rule took from the screen (`2026-10-17-strata-pipeline-2-confirm.cells`); raw data in
+`/root/qwen38-flash-next/strata-sweep-20261017T110427Z/`. Decode is the median of the passes'
+medians across the nine class-and-depth rows, with the passes' range in brackets.
+
+| Cell | Decode, t/s | vs `s5` | Acceptance | Prefill d8000 | Prefill d32000 | First token d32000 | Rows with the same text in all passes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `s5` | 59.6 (59.5–59.6) | | 64.0% | 961 (955–970) | 1,420 (1,415–1,428) | 16.3 s | 9 of 9 |
+| `s5-pw2` | 65.1 (62.3–65.7) | +9.2% | 61.8% | 965 (954–970) | 1,424 (1,420–1,431) | 16.2 s | 0 of 9 |
+| `s2p7-pw2` | 67.8 (65.0–67.8) | +13.8% | 85.5% | 966 (957–967) | 1,425 (1,421–1,432) | 16.2 s | 0 of 9 |
+| `s3p7-pw2` | 66.9 (66.9–68.4) | +12.2% | 80.2% | 967 (964–969) | 1,424 (1,422–1,430) | 16.2 s | 0 of 9 |
+| `s4p7-pw2` | **68.1 (65.7–69.5)** | +14.3% | 77.5% | 965 (962–972) | 1,426 (1,423–1,429) | 16.2 s | 1 of 9 |
+| `s3p7-pw2-st0` | 60.7 (60.4–64.7) | +1.8% | 80.2% | 959 (958–964) | 1,377 (1,373–1,381) | 16.8 s | 0 of 9 |
+
+**Against the rule** (more than 2% over `s5`, with no overlap between the ranges):
+- **Faster:** `s4p7-pw2`, `s2p7-pw2`, `s3p7-pw2` and `s5-pw2`. Their slowest passes, 62.3–66.9
+  t/s, all beat `s5`'s fastest, 59.6.
+- **Not faster:** `s3p7-pw2-st0`. Its median is only 1.8% above `s5`.
+
+**No order among `--spec` 2, 3 and 4 at min-p 0.7.** Their ranges overlap: 65.0–67.8, 66.9–68.4
+and 65.7–69.5. The screen's leader, `s3p7-pw2`, has the lowest median of the three here.
+- Pipeline-windows cells vary 1.5–4.3 t/s between passes; `s5` varies 0.1.
+- With pipeline windows, `--spec 5 --spec-min-p 0.5` gains 9.2%, against 12–14% for the stricter
+  draft.
+- Prefill is unchanged, except with the draft layer on the first card: 3% slower at d32000.
+
+**Greedy text changes between server starts with pipeline windows.**
+- `s5` gave the same text in all three passes on 9 of 9 rows.
+- Every pipeline-windows cell did so on 0 or 1 rows, with two or three different texts per row.
+  The summary flags these cells `reps disagree` and leaves them out of its trade table.
+- The 6900 XT report saw the same thing.
+- As the plan set, this is reported, not a gate. What causes it was not tested.
+
+**Hang.** There were no `#267` lines, engine restarts or stalls in the 15 pipeline-windows loads:
+255 requests across 15 engine starts. Over stages A and B that makes 340 requests across 20
+starts. That rules out a per-request hang rate above about 0.9%, at 95%.
+
+**The cards in decode**, GPU 1 / GPU 2:
+
+| Cell | Busy % | Power, W |
+| --- | ---: | ---: |
+| `s5` | 59 / 40 | 140 / 108 |
+| `s3p7-pw2` | 93 / 76 | 182 / 154 |
+| `s4p7-pw2` | 91 / 86 | 176 / 154 |
+| `s3p7-pw2-st0` | 53 / 97 | 131 / 180 |
+
+**Checks:**
+- Each pipeline-windows load's log shows the pipeline on.
+- Chat contract and tool calls: 18 of 18 loads.
+- Rows: of 162, none empty, degenerate or cut off. Fourteen ended on end-of-sequence at 241–254
+  tokens, all `list` at d0, including all three of `s5`'s.
+- Memory: 0 MiB outside VRAM on either card, at load and after the probe. The samplers saw no
+  gap in 2,763 samples per card; 34 more per card had only one counter.
+- Thermal: the hottest DIMM read 56 °C; the hottest junction 87 °C, in prefill. There was no
+  thermal trip.
+
 ## Deviations
+
+- Stage B took 51 minutes, not the plan's estimate of about 30. The plan's rule picked six cells
+  rather than the two or three the estimate assumed. The owner chose the full rule over trimming
+  it to `s5`, `s3p7-pw2` and `s2p7-pw2`.
 
 ## Conclusion
