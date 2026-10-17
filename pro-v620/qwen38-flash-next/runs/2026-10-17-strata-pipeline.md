@@ -307,6 +307,36 @@ starts. That rules out a per-request hang rate above about 0.9%, at 95%.
 - Thermal: the hottest DIMM read 56 °C; the hottest junction 87 °C, in prefill. There was no
   thermal trip.
 
+### Stage B2: the draft layer on the first card at `--spec 4`
+
+This stage was added at the owner's request (see Deviations). Run 2026-10-17 08:21–08:40 ET,
+harness `2dcdaea`, three interleaved passes; raw data in
+`/root/qwen38-flash-next/strata-sweep-20261017T122133Z/`.
+
+| Cell | Decode, t/s | Passes | Acceptance | Prefill d8000 | Prefill d32000 | First token d32000 |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| `s4p7-pw2` | **65.8 (65.7–68.4)** | 68.4, 65.8, 65.7 | 77.2% | 969 | 1,432 | 16.1 s |
+| `s4p7-pw2-st0` | 64.0 (61.6–64.3) | 64.0, 64.3, 61.6 | 78.4% | 963 | 1,383 | 16.7 s |
+
+- **Not better:** `s4p7-pw2-st0` decodes 2.7% slower than `s4p7-pw2`, so stage C soaks
+  `s4p7-pw2`. This matches the result at `--spec 3` in stages A and B.
+- **Prefill:** with the draft layer on the first card, a 23k-token prompt reads 3.4% slower.
+- **Between sessions:** `s4p7-pw2`'s median here, 65.8, lies inside its stage B range (65.7–69.5).
+- **The cards in decode**, GPU 1 / GPU 2:
+  - `s4p7-pw2`: 91 / 85% busy, 172 / 150 W.
+  - `s4p7-pw2-st0`: 56 / 97% busy, 125 / 177 W. With the draft layer on GPU 2, GPU 2 carries the
+    load and GPU 1 idles about half the time.
+- **Cache:** the draft layer's slots moved to the first card, 8,139 + 7,657 → 7,775 + 7,930.
+
+**Checks:**
+- Pipeline windows were on in all six loads.
+- No `#267` line, engine restart or stall in 102 requests: 51 per cell, over 6 starts.
+- Chat contract and tool calls: 6 of 6 loads.
+- 0 MiB outside VRAM.
+- Greedy text was the same in all three passes on 0 of 9 rows for `s4p7-pw2`, and on 1 of 9 for
+  `s4p7-pw2-st0`.
+- No thermal trip.
+
 ## Deviations
 
 - Stage B took 51 minutes, not the plan's estimate of about 30. The plan's rule picked six cells
