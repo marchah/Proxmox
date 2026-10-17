@@ -121,6 +121,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-12 | b11505 | Vulkan, Mesa 26.2.4 | [The full benchmark batch on the best configuration](runs/2026-10-12-bench.md) | done |
 | 2026-10-13 | b11505 | Vulkan, Mesa 26.2.4 | [The batch's ingestion notes and brief VRAM rises](runs/2026-10-13-findings.md) | done |
 | 2026-10-13 | b11505, b11583 | Vulkan, Mesa 26.2.4 | [Tuning one 64k slot for long tasks (#106)](runs/2026-10-13-long-tasks.md) | done |
+| 2026-10-16 | Project Maya v1.1.15; b11583 | HIP, ROCm 10.0; Vulkan, Mesa 26.2.4 | [Project Maya in place of llama.cpp](runs/2026-10-16-maya.md) | planned |
 
 ## Local validation
 
