@@ -166,7 +166,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-16 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Strata in place of llama.cpp on one card](runs/2026-10-16-strata.md) | done |
 | 2026-10-17 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Pipeline windows and a shorter draft on two cards](runs/2026-10-17-strata-pipeline.md) | done |
 | 2026-10-17 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Why greedy text changes between starts with pipeline windows](runs/2026-10-17-strata-text.md) | done |
-| 2026-10-17 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Strata's benchmark suite on one and two V620s, for Strata's community reports](runs/2026-10-17-strata-community-bench.md) | planned |
+| 2026-10-17 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Strata's benchmark suite on one and two V620s, for Strata's community reports](runs/2026-10-17-strata-community-bench.md) | done |
 
 ## Benchmark tools
 
