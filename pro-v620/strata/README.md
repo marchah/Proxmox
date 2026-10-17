@@ -125,7 +125,8 @@ engine's own account of each request. `UNIT=maya-glm53f` runs it on
 - the expert cache on every card the engine uses;
 - the VRAM the engine requested against the VRAM resident, on each card the cell runs on;
 - the engine log's stall and non-finite lines, a verify window that never finished (#267,
-  Strata #2245) and the server restarting a dead engine;
+  Strata #2245), and an engine restart: a second start line in the cell's slice of the engine
+  log;
 - the engine's `--pipeline-windows` lines: on, off and why, or a request decoded serially.
 
 A missing residency reading or an engine fault fails the cell, and the summary leaves it out

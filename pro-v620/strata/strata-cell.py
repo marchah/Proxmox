@@ -7,7 +7,8 @@ paths of the cell's DIMM, GPU, row, concurrency and engine logs. It adds to the 
 - `vram_outside_mib`, the memory the engine asked to have in VRAM that sits elsewhere;
 - `residency_missing`, the cards the cell runs on that had no requested and resident reading
   at a checkpoint (no evidence, so not a fit: the cell fails);
-- `engine_faults`, the engine log's stall and non-finite lines (the cell fails);
+- `engine_faults`, the engine log's stall and non-finite lines, counting an engine restart as a
+  stall (the cell fails);
 - the expert cache per device, the decode hit rate and PCIe share, and phase utilization.
 
     strata-cell.py CELL.json LABEL SETTINGS LOAD_S CARDS VRAM GTT TOTAL VRAM_AFTER GTT_AFTER \\
@@ -113,6 +114,10 @@ def engine_account(text):
     hits = [float(x) for x in re.findall(r"decode expert cache hit rate: ([\d.]+)%", text)]
     pcie = [float(x) for x in re.findall(r"more read by the GPU over PCIe or from another GPU \(([\d.]+)% of all", text)]
     caches = expert_caches(text)
+    # The server writes a start line into the engine log for each engine it starts; its own "the
+    # engine had stopped" goes to the journal. The cell's slice of the log begins at its start, so
+    # a second start line is the server replacing an engine that died.
+    restarts = max(0, len(re.findall(r"(?m)^\[strata\] \S+ \S+ engine started: ", text)) - 1)
     return {
         "expert_caches": caches,
         "expert_cache_slots_total": sum(c["slots"] for c in caches.values()) if caches else None,
@@ -129,10 +134,11 @@ def engine_account(text):
         # Whether --pipeline-windows ran: on (with its VRAM kept out of the cache), off and why,
         # or a request that fell back to the serial loop.
         "pipeline_lines": re.findall(r"(--pipeline-windows[^\n]{0,200})", text)[:6],
-        # A verify window that never finished on the GPU (#267, Strata #2245) and the server
-        # restarting a dead engine count as stalls.
-        "stall_lines": len(re.findall(r"stall report|timed out at layer|no progress for|never finished"
-                                      r"|the engine had stopped", text)),
+        # A verify window that never finished on the GPU (#267, Strata #2245) and an engine restart
+        # count as stalls.
+        "stall_lines": len(re.findall(r"stall report|timed out at layer|no progress for|never finished", text))
+                       + restarts,
+        "engine_restarts": restarts,
         "nonfinite_lines": len(re.findall(r"non-finite logits", text)),
         "warning_lines": [l for l in text.splitlines() if "WARNING" in l][:10],
     }

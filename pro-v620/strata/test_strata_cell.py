@@ -32,6 +32,9 @@ SPLIT_LOG = (
     "strata generate: layer split: CUDA1 runs layers 24-47, expert cache 7993 slots (23.32 GiB), "
     "7993 of its 12288 profiled pairs; slot 0 verified\n"
     "strata generate: token graph hit path: 16220 resident experts, decided on the device\n")
+# The line Strata's server writes into the engine log for each engine it starts.
+START = ("[strata] 2026-10-17 13:39:08 engine started: /opt/strata/strata-v0.1.44.1/build-hip/strata --serve "
+         "--pack /models/strata/packs/ud-q4_k_xl\n")
 HELPER_LOG = (
     "strata generate: expert cache 7921 slots, 23.12 GiB of VRAM; policy is\n"
     "strata generate: CUDA1: 10086 additional experts, 29.43 GiB; results return through pinned host rows\n")
@@ -89,13 +92,25 @@ class CellTests(unittest.TestCase):
         self.assertFalse(out["probe_ok"])
         self.assertEqual(out["placement"]["engine_faults"], 1)
 
-    def test_a_hung_pipelined_window_and_the_engine_restart_fail_the_cell(self):
-        out = run_cell(
-            "strata serve: pipelined decode: verify: the window never finished; its GPU waits were released "
-            "but the GPU did not finish within 5 s (#267)\n"
-            "[strata] the engine had stopped (exit code -15); starting it again (a minute or two) ...\n")
+    def test_a_hung_pipelined_window_fails_the_cell(self):
+        out = run_cell(START + SPLIT_LOG +
+                       "strata serve: pipelined decode: verify: the window never finished; its GPU waits were "
+                       "released but the GPU did not finish within 5 s (#267)\n")
         self.assertFalse(out["probe_ok"])
-        self.assertEqual(out["placement"]["engine_faults"], 2)
+        self.assertEqual(out["placement"]["engine_faults"], 1)
+
+    def test_an_engine_restart_fails_the_cell(self):
+        # The server replaced an engine that died: a second start line in the cell's engine log.
+        # Its "the engine had stopped" goes to the journal, which strata-cell.py does not read.
+        out = run_cell(START + SPLIT_LOG + START + SPLIT_LOG)
+        self.assertFalse(out["probe_ok"])
+        self.assertEqual(out["placement"]["strata"]["engine_restarts"], 1)
+        self.assertEqual(out["placement"]["engine_faults"], 1)
+
+    def test_one_engine_start_is_not_a_restart(self):
+        out = run_cell(START + SPLIT_LOG)
+        self.assertTrue(out["probe_ok"])
+        self.assertEqual(out["placement"]["engine_faults"], 0)
 
     def test_pipeline_lines_are_kept(self):
         on = ("strata generate: --pipeline-windows 2: 160 MiB of CUDA0 kept out of the expert cache\n"
