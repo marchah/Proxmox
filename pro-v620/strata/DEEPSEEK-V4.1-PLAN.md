@@ -275,8 +275,8 @@ README explaining reference repeatability and CPU/GPU deltas. These are proposed
 fork deliverables, not existing commands or tests in this repository.
 
 **Lab integration and campaign safety.** `../strata-dev/strata-dev-host.sh` moves
-the cards: `dev` gives GPU 2 to CT 124 with Flash-Next stopped, `two-card` adds GPU 1
-with CT 120 stopped, and `restore` returns both. It changes passthrough, `/dev/kfd`,
+the cards: `dev` gives GPU 2 to CT 124 with Flash-Next stopped, and `restore` returns
+it; a `two-card` mode, which adds GPU 1 with CT 120 stopped, is added for step 8. It changes passthrough, `/dev/kfd`,
 DRM cgroups, autostart and the watchdog map together. Steps 0–7 run on GPU 2 alone,
 for Q2 and then Q4; two-card work waits for step 8, which keeps whole-host runs to
 one-card measurements and that step. The owner decides when each is due. Step 7
@@ -366,12 +366,20 @@ notices for reused Strata, ggml, and DeepSeek code.
    same quant and activation policy; do not require Q2 to match original-checkpoint
    logits or to meet a perplexity/benchmark accuracy threshold.
 
-   Resolve llama.cpp support for this exact `deepseek41` metadata and Engram
-   encoding at a pinned commit. If supported, capture same-quant no-draft
-   correctness and performance baselines, matching context per slot (Strata is
-   per slot; llama.cpp's total is shared). If unsupported, record that outcome;
-   retain independent initialized same-quant fixtures and a bounded CPU oracle
-   for selected real-model layer traces/logits. Do not infer that the fork is the
+   No runnable engine on this host loads this exact file today (headers read
+   2026-10-17). llama.cpp PR
+   [#28696](https://github.com/ggml-org/llama.cpp/pull/28696), unmerged, also
+   declares `deepseek41` and shares 1,040 of the 1,046 tensor names, but its
+   metadata uses llama.cpp's key names (5 `deepseek41.*` keys in common) and its
+   Engram tables are ordinary quantized tensors (`engram_embd` as Q2_K, with
+   `engram_q`/`engram_k`/`engram_wkv`) instead of this file's I8
+   `e4m3_e8m0_32_row264` rows with `engram_q_norm`/`engram_k_norm`/`engram_kv`.
+   DwarfStar runs V4.1 on Metal and CUDA only; its ROCm build targets Strix Halo.
+   So build independent initialized same-quant fixtures and a bounded CPU oracle
+   for selected real-model layer traces/logits. A llama.cpp-format file run by
+   that PR can later serve as a same-quant baseline for the fork once the fork
+   also reads that dialect, matching context per slot (Strata is per slot;
+   llama.cpp's total is shared). Do not infer that the fork is the
    only possible runtime. Inspect/pin DwarfStar and Lucebox reuse candidates and
    complete the format/path audit and early Engram row-read experiment.
 
