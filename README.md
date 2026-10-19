@@ -14,7 +14,6 @@ Deployment recorded 2026-09-18:
 | CT 123 | `gpu2` | Qwen3.8-Flash-Next on V620 `0000:83:00.0`, API `:1234` | [Flash-Next](pro-v620/qwen38-flash-next/README.md) |
 | CT 140 | `kb-rag` | Markdown KB hybrid search, REST + MCP `:8770` | [Retrieval service](kb-rag/README.md) |
 | CT 200 | `bench-runner` | Disposable OpenAI-compatible endpoint benchmarks | [Benchmark runner](bench-runner/README.md) |
-| VM 300 | `docker-host` | Docker + Compose; MealDeal `:4000`, work-board `:4100`, Project Planner `:4200`, Portainer `:9443` | [Docker host](docker-host/README.md) |
 
 Both V620s have 32 GB VRAM and CPU-direct Gen4 x16 slots on the ROMED8-2T.
 Each has a blower driven by [IPMI fan control](pro-v620/gpu-blower-control/README.md),
@@ -79,8 +78,6 @@ bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/be
 - [Idea capture](hermes/idea-capture/README.md): Slack `#ideas` messages saved to the
   Project Planner board by a Hermes plugin on CT 121.
 - [Host notifications](host-notifications/README.md): Proxmox events to Slack.
-- [Docker stacks](docker-host/stacks/): Compose definitions; secrets are Portainer
-  stack environment variables.
 
 Keep downloaded models and generated results out of git. Guest networking and
 backup requirements are in [CLAUDE.md](CLAUDE.md#host-networking-and-backups).
@@ -94,8 +91,6 @@ backup requirements are in [CLAUDE.md](CLAUDE.md#host-networking-and-backups).
 | 140–159 | Databases |
 | 200–299 | Test/temporary containers |
 | 300+ | VMs |
-
-Docker apps share VM 300 and do not consume individual VMIDs.
 
 ## Reference recipes
 
