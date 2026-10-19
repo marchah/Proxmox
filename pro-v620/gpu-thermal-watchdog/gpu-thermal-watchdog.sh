@@ -51,6 +51,8 @@ RESUME_CMD="${RESUME_CMD:-}"
 # Map PCI=VMID:service entries to their owning workload. An unmapped hot card
 # stops every mapped service. An explicit empty map uses LLM_CT_VMID/LLM_SERVICE;
 # PROTECT_CMD/RESUME_CMD override both. Keep this aligned with container passthrough.
+# The service `@container` stands for the whole container (pct stop), for a workload no
+# unit owns, such as CT 124's development runs.
 GPU_SERVICE_MAP="${GPU_SERVICE_MAP-0000:03:00.0=120:llamacpp,0000:83:00.0=123:llamacpp-qwen38fn}"
 # Leave the server DOWN after a trip (default) or auto-restart it once cooled.
 # Default false: reaching the trip temp means cooling could not keep up, so resuming
@@ -133,20 +135,35 @@ read_temp_c() {  # $1 = hwmon dir, $2 = label ; echoes °C or returns 1
 # PCI address that owns a hwmon dir (its `device` symlink basename). Empty if unresolvable.
 addr_of_hwmon() { basename "$(readlink -f "$1/device" 2>/dev/null)" 2>/dev/null; }
 
+# Stop or start one mapped workload. `@container` is the whole container. The stop is
+# re-issued every poll while the card is hot, so an already-stopped container counts as
+# stopped rather than as a failed stop.
+stop_workload() {  # <vmid> <service>
+  if [ "$2" = "@container" ]; then
+    [ "$(pct status "$1" 2>/dev/null | awk '{print $2}')" = stopped ] && return 0
+    pct stop "$1"; return $?
+  fi
+  pct exec "$1" -- systemctl stop "$2"
+}
+start_workload() {  # <vmid> <service>
+  if [ "$2" = "@container" ]; then pct start "$1"; return $?; fi
+  pct exec "$1" -- systemctl start "$2"
+}
+
 # Stop the workload OWNING the over-temp card ($1 = its PCI addr). An unmapped card
 # stops EVERY mapped service (conservative). PROTECT_CMD overrides (gets PROTECT_ADDR).
 do_protect() {  # $1 = PCI addr of the over-temp card
   local addr="${1:-}" a rc=0
   if [ -n "$PROTECT_CMD" ]; then PROTECT_ADDR="$addr" bash -c "$PROTECT_CMD"; return $?; fi
   if [ -n "${SVC_VMID[$addr]:-}" ]; then
-    pct exec "${SVC_VMID[$addr]}" -- systemctl stop "${SVC_NAME[$addr]}"; return $?
+    stop_workload "${SVC_VMID[$addr]}" "${SVC_NAME[$addr]}"; return $?
   fi
   # Unmapped card. If ANY services are mapped, stop them all (conservative). If the map is
   # EMPTY (e.g. auto-discovery + legacy mode, where no addresses were known up front), fall
   # straight to the legacy single service — never return "stopped" having stopped nothing.
   if (( ${#SVC_VMID[@]} > 0 )); then
     log "WARN: over-temp card '${addr}' not in GPU_SERVICE_MAP — stopping ALL mapped services"
-    for a in "${!SVC_VMID[@]}"; do pct exec "${SVC_VMID[$a]}" -- systemctl stop "${SVC_NAME[$a]}" || rc=1; done
+    for a in "${!SVC_VMID[@]}"; do stop_workload "${SVC_VMID[$a]}" "${SVC_NAME[$a]}" || rc=1; done
     return "$rc"
   fi
   if [ -n "$LLM_CT_VMID" ] && [ -n "$LLM_SERVICE" ]; then
@@ -160,10 +177,10 @@ do_resume() {  # $1 = PCI addr of the cooled card
   local addr="${1:-}" a rc=0
   if [ -n "$RESUME_CMD" ]; then RESUME_ADDR="$addr" bash -c "$RESUME_CMD"; return $?; fi
   if [ -n "${SVC_VMID[$addr]:-}" ]; then
-    pct exec "${SVC_VMID[$addr]}" -- systemctl start "${SVC_NAME[$addr]}"; return $?
+    start_workload "${SVC_VMID[$addr]}" "${SVC_NAME[$addr]}"; return $?
   fi
   if (( ${#SVC_VMID[@]} > 0 )); then
-    for a in "${!SVC_VMID[@]}"; do pct exec "${SVC_VMID[$a]}" -- systemctl start "${SVC_NAME[$a]}" || rc=1; done
+    for a in "${!SVC_VMID[@]}"; do start_workload "${SVC_VMID[$a]}" "${SVC_NAME[$a]}" || rc=1; done
     return "$rc"
   fi
   if [ -n "$LLM_CT_VMID" ] && [ -n "$LLM_SERVICE" ]; then

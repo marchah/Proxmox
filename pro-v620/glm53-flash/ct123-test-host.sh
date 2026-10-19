@@ -88,6 +88,14 @@ log() { printf '==> %s\n' "$*"; }
 
 require_root() { [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"; }
 ct_state() { pct status "$1" 2>/dev/null | awk '{print $2}'; }
+
+# CT 124 holds GPU 2 between ../strata-dev/strata-dev-host.sh dev and restore.
+readonly STRATA_DEV_CONF="${STRATA_DEV_CONF:-/etc/pve/lxc/124.conf}"
+assert_strata_dev_off_cards() {
+  if grep -qE '^dev[0-9]+: /dev/dri/' "$STRATA_DEV_CONF" 2>/dev/null; then
+    die "CT 124 (strata-dev) holds a V620; ../strata-dev/strata-dev-host.sh restore first"
+  fi
+}
 gpu1_attached() { grep -q "pci-${GPU1_PCI}-render" "$CONF"; }
 
 # Disable and stop a unit, then check it is gone: a unit that survives would fight the
@@ -391,6 +399,7 @@ status() {
 }
 
 main() {
+  [ "${1:-status}" = status ] || assert_strata_dev_off_cards
   case "${1:-status}" in
     one-card)
       require_root; mkdir -p "$STATE_DIR"

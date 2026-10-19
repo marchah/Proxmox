@@ -143,7 +143,8 @@ PCT
 set_unit() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >>"$T/units"; }
 run() {  # <action>
   PATH="$T/bin:$PATH" CONF="$T/lxc/123.conf" STATE_DIR="$T/state" WATCHDOG_ENV="$T/wd.env" \
-    DRI_BY_PATH="$T/dri" CPU_ONLINE="$T/cpu-online" KFD_NODE="$T/kfd" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
+    DRI_BY_PATH="$T/dri" CPU_ONLINE="$T/cpu-online" KFD_NODE="$T/kfd" \
+    STRATA_DEV_CONF="$T/lxc/124.conf" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
 }
 tail_log() { echo "--- tail of out.log ---"; tail -12 "$T/out.log" | sed 's/^/      /'; }
 onboot()   { awk -F': ' '$1 == "onboot" {print $2}' "$T/lxc/$1.conf"; }

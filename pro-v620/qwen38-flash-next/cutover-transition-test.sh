@@ -111,7 +111,7 @@ PCT
 set_unit() { sed -i.bak "/^$1 $2 /d" "$T/units" 2>/dev/null || true; printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >>"$T/units"; }
 run_cutover() {
   PATH="$T/bin:$PATH" CONF="$T/lxc/120.conf" BAK_DIR="$T/bak" WATCHDOG_ENV="$T/wd.env" \
-    LXC_CONF_DIR="$T/lxc" DRI_BY_PATH="$T/dri" VMID=120 FAIL_DISABLE="${FAIL_DISABLE:-}" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
+    LXC_CONF_DIR="$T/lxc" DRI_BY_PATH="$T/dri" STRATA_DEV_CONF="$T/lxc/124.conf" VMID=120 FAIL_DISABLE="${FAIL_DISABLE:-}" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
 }
 gpu2_on_120() { grep -q "pci-${GPU2}-render" "$T/lxc/120.conf"; }
 onboot_123()  { awk '/^onboot:/{print $2}' "$T/lxc/123.conf"; }
