@@ -160,6 +160,8 @@ create_container() {
 
   log "Creating kb-rag LXC ${VMID} (${LXC_HOSTNAME})"
 
+  # nesting=1 lets Debian 12's systemd (252) sandbox its units in an unprivileged
+  # container; without it systemd-logind, systemd-networkd, logrotate and man-db fail.
   create_args=(
     "${VMID}"
     "${ostemplate}"
@@ -169,6 +171,7 @@ create_container() {
     --swap "${SWAP_MB}"
     --rootfs "${rootfs}"
     --net0 "${net0}"
+    --features nesting=1
     --unprivileged 1
     --onboot "${START_ON_BOOT}"
     --ostype debian
