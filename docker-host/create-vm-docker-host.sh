@@ -2,8 +2,8 @@
 
 set -Eeuo pipefail
 
-# Create the homelab's Docker host: a Debian VM running Docker + Compose + Portainer CE, which
-# hosts the small self-contained web apps (MealDeal and friends) as Compose stacks.
+# Create a Docker host: a Debian VM running Docker + Compose + Portainer CE, which hosts small
+# self-contained web apps as Compose stacks.
 #
 # WHY A VM, NOT AN LXC — the rest of this repo is LXCs, so this is the deliberate exception.
 # Proxmox recommends Docker in a VM, and Docker-in-LXC needs nesting=1 + keyctl=1 (and is often
@@ -18,7 +18,7 @@ set -Eeuo pipefail
 # host, a new project is a compose file plus a stack in the Portainer UI, and app updates are a
 # UI action (or a git webhook) instead of a rebuild pipeline. See docker-host/README.md.
 #
-# VMID 300: this repo's 100-119/120-139/... ranges allocate CONTAINERS. VMs get their own
+# VMID 300 by default: this repo's 100-119/120-139/... ranges allocate CONTAINERS. VMs get their own
 # 300+ range so the two numbering schemes never collide.
 #
 # Run this script on the Proxmox host as root. Idempotent-ish: it refuses to clobber an
@@ -68,13 +68,13 @@ REINSTALL_DOCKER=0
 
 usage() {
   cat <<'USAGE'
-Create the Docker host VM (VM 300): Debian + Docker + Compose + Portainer CE, the home for
-small self-contained app stacks (MealDeal and future projects).
+Create a Docker host VM: Debian + Docker + Compose + Portainer CE, a home for small
+self-contained app stacks.
 
 Run this script on the Proxmox host as root.
 
 Useful overrides:
-  VMID=300 VM_NAME=docker-host ./create-vm-docker-host.sh
+  VMID=310 VM_NAME=apps ./create-vm-docker-host.sh
   MEMORY_MB=8192 CORES=6 DISK_SIZE=80G ./create-vm-docker-host.sh
   DEBIAN_IMAGE_VERSION=<ver> DEBIAN_IMAGE_SHA512=<sha> ./create-vm-docker-host.sh
   PORTAINER_HTTPS_PORT=9443 ./create-vm-docker-host.sh

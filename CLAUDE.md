@@ -22,7 +22,7 @@ Use component READMEs for deployment commands, defaults, and measurements.
 - [kb-rag/](kb-rag/README.md): CT 140 retrieval API and corpus policy.
 - [bench-runner/](bench-runner/README.md) and [ansible/](ansible/README.md): endpoint
   benchmarks, telemetry and reports.
-- [docker-host/](docker-host/README.md): VM 300, Compose stacks and Portainer.
+- [docker-host/](docker-host/README.md): provisioner for a Debian VM with Docker, Compose and Portainer.
 - [host-notifications/](host-notifications/README.md): Proxmox notifications to Slack.
 
 The retired Hermes coding loop remains under [hermes/config/](hermes/config/README.md)
