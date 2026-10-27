@@ -54,10 +54,10 @@ tool calls, +17% on prose, +35–39% at 16k–48k depth, and +2–38% combined a
 two concurrent streams. The A/B, its controls and the rejected arms (draft length 4,
 DFlash) are in [spec-ab/](spec-ab/README.md).
 
-Run from this directory on the Proxmox host as root, using an unused VMID:
+Run from this directory on the Proxmox host as root, using an unused VMID, once the
+[model store](../README.md#host-storage) is mounted:
 
 ```bash
-./create-models-store.sh   # once per host; idempotent
 ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
 # Example resource overrides:
 VMID=124 MEMORY_MB=24576 CORES=8 ./create-lxc-llamacpp-qwen3.6-35b-a3b.sh
