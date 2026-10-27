@@ -28,11 +28,15 @@ with [undervolting](pro-v620/undervolt/README.md) and a
 | `models` (thin) | BIWIN NV7400 2 TB, NVMe Gen4 x4 | The shared GGUF store |
 | `Synology-Backup` (NFS) | Synology NAS | Weekly vzdump archives |
 
-[`create-models-store.sh`](pro-v620/create-models-store.sh) builds the GGUF store:
-an LVM-thin pool on the whole NVMe, one ext4 volume `models/shared` mounted at
-`/mnt/models`, and `/mnt/models/store`, which CT 120 and CT 123 both bind at
-`/models`. Each GGUF is stored once, and survives `pct destroy`. It is not ZFS: the
-ARC would cache the mmapped GGUFs a second time next to the page cache.
+The GGUF store is an LVM-thin pool on the whole NVMe holding one ext4 volume,
+`models/shared`, sized to the whole pool and mounted at `/mnt/models`. CT 120 and
+CT 123 both bind `/mnt/models/store` (owned by UID 1000) at `/models`. Each GGUF is
+stored once, and survives `pct destroy`. It is not ZFS: the ARC would cache the
+mmapped GGUFs a second time next to the page cache. Its `/etc/fstab` entry:
+
+```text
+/dev/models/shared /mnt/models ext4 defaults,noatime,nofail,x-systemd.before=pve-guests.service 0 2
+```
 
 - A bind mount blocks `pct snapshot` for both containers. vzdump skips it.
 - `llamacpp` is UID 1000 in both containers, so either one can write the store. Don't
@@ -42,7 +46,7 @@ ARC would cache the mmapped GGUFs a second time next to the page cache.
   empty `/models`. `nofail` also drops the mount's boot ordering, so the entry adds
   `x-systemd.before=pve-guests.service` to make guest autostart wait for it.
 - Proxmox offers `models` as a target for guest disks. Keep them off it: the store
-  volume takes nearly the whole pool, so another volume would overcommit it.
+  volume takes the whole pool, so another volume would overcommit it.
 
 `df -h /mnt/models` shows current use.
 
