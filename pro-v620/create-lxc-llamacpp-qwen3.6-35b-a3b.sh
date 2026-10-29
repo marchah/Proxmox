@@ -70,7 +70,8 @@ MODELS_DIR="${MODELS_DIR:-/mnt/models/store}"
 # only if you run with --no-mmap.
 MEMORY_MB="${MEMORY_MB:-16384}"
 SWAP_MB="${SWAP_MB:-4096}"
-CORES="${CORES:-8}"
+# Every layer runs on the card; decode at 4 CPUs matches 8.
+CORES="${CORES:-4}"
 BRIDGE="${BRIDGE:-vmbr0}"
 IP_CONFIG="${IP_CONFIG:-dhcp}"
 PASSWORD="${PASSWORD:-}"

@@ -236,7 +236,7 @@ case "${1:-status}" in
       log "GPU 2 already detached"
     fi
 
-    pct set "$VMID" --cores 8 --memory 16384 --swap 4096
+    pct set "$VMID" --cores 4 --memory 16384 --swap 4096
 
     log "restarting CT ${VMID}"
     pct stop "$VMID"; sleep 4; pct start "$VMID"; sleep 15
