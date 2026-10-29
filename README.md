@@ -12,7 +12,7 @@ Deployment recorded 2026-09-18:
 | CT 120 | `llamacpp` | Qwen3.6-35B-A3B on V620 `0000:03:00.0`, API `:1234` | [GPU runtime](pro-v620/README.md) |
 | CT 121 | `hermes` | Hermes Agent using CT 120; gateway/API `:8642` | [Hermes](hermes/README.md) |
 | CT 123 | `gpu2` | Qwen3.8-Flash-Next on V620 `0000:83:00.0`, API `:1234` | [Flash-Next](pro-v620/qwen38-flash-next/README.md) |
-| CT 140 | `kb-rag` | Markdown KB hybrid search, REST + MCP `:8770` | [Retrieval service](kb-rag/README.md) |
+| CT 140 | `kb-rag` | Markdown KB hybrid search, REST + MCP `:8770`; runs on a second, CPU-only Proxmox host | [Retrieval service](kb-rag/README.md) |
 | CT 200 | `bench-runner` | Disposable OpenAI-compatible endpoint benchmarks | [Benchmark runner](bench-runner/README.md) |
 
 Both V620s have 32 GB VRAM and CPU-direct Gen4 x16 slots on the ROMED8-2T.
