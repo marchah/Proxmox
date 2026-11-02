@@ -18,6 +18,9 @@ Use component READMEs for deployment commands, defaults, and measurements.
   test records; `ct123-test-host.sh` with `TEST_ENGINE=maya` sets the container up.
 - [mimo-v26-pro/](pro-v620/mimo-v26-pro/README.md): MiMo-V2.6-Pro-RL model notes, RAM fit
   and test records; not deployed.
+- [deepseek41-flash/](pro-v620/deepseek41-flash/README.md): CT 125, which serves
+  DeepSeek-V4.1-Flash on GPU 2 with the engine from the private fork `marchah/strata-v620`,
+  and CT 126, its llama.cpp comparison; `create-lxc-ds41-engine.sh` creates both.
 - [hermes/](hermes/README.md): CT 121 agent gateway.
 - [kb-rag/](kb-rag/README.md): CT 140 retrieval API and corpus policy. CT 140 runs on a
   second Proxmox host, not on this one.
@@ -72,7 +75,7 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
 | PCI address | Workload | Blower |
 | --- | --- | --- |
 | `0000:03:00.0` | CT 120 `llamacpp` | FAN5 |
-| `0000:83:00.0` | CT 123 `llamacpp-qwen38fn` | FAN4 |
+| `0000:83:00.0` | CT 125 `strata-deepseek` (CT 123 Flash-Next stopped) | FAN4 |
 
 - The two cards are not interchangeable for measurements: compare a result only with
   others taken on the same card.
@@ -86,7 +89,9 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   two-card alternative: it changes passthrough, CT 123's `onboot` and the watchdog
   service map together. `glm53-flash/ct123-test-host.sh` does the same in the other
   direction for the GLM-5.3-Flash and MiMo-V2.6-Pro-RL tests, giving CT 123 both cards
-  while CT 120 stays off.
+  while CT 120 stays off. CT 125 and CT 126 pass GPU 2 through for DeepSeek, one running
+  at a time; strata-v620's host scripts move the card between them. `ct120-cutover.sh`,
+  `ct123-test-host.sh` and `strata/use-engine.sh` refuse to run while either holds it.
 - Both servers use `--reasoning off --reasoning-format auto`. The first disables
   thinking; the second removes empty think tags from response content. Revalidate
   response content and tool calls when changing these flags or the KV cache type.
@@ -94,7 +99,7 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   q8_0 KV. Keep q8_0: at 262k, f16 KV spills ~2 GiB to GTT and decodes slower than no
   speculation. Measure a spec change at two concurrent streams too, not just one; see
   `pro-v620/spec-ab/`.
-- CT 123 runs Flash-Next's Q4_K_M MTP head at n-max 3 with `--load-mode dio` at
+- On GPU 2, CT 123 runs Flash-Next's Q4_K_M MTP head at n-max 3 with `--load-mode dio` at
   `-ncmoe 37`. `dio` pins the CPU experts as about 57 GiB of GTT, so the GTT total is not
   spill there; read requested minus resident VRAM (`vram-residency-sampler.py`).
 - [gpu-blower-control/](pro-v620/gpu-blower-control/README.md) drives FAN4/FAN5 via

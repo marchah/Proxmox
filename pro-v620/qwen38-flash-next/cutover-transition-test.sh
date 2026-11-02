@@ -111,7 +111,8 @@ PCT
 set_unit() { sed -i.bak "/^$1 $2 /d" "$T/units" 2>/dev/null || true; printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >>"$T/units"; }
 run_cutover() {
   PATH="$T/bin:$PATH" CONF="$T/lxc/120.conf" BAK_DIR="$T/bak" WATCHDOG_ENV="$T/wd.env" \
-    LXC_CONF_DIR="$T/lxc" DRI_BY_PATH="$T/dri" VMID=120 FAIL_DISABLE="${FAIL_DISABLE:-}" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
+    LXC_CONF_DIR="$T/lxc" DRI_BY_PATH="$T/dri" DS41_CONFS="$T/lxc/125.conf $T/lxc/126.conf" VMID=120 \
+    FAIL_DISABLE="${FAIL_DISABLE:-}" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
 }
 gpu2_on_120() { grep -q "pci-${GPU2}-render" "$T/lxc/120.conf"; }
 onboot_123()  { awk '/^onboot:/{print $2}' "$T/lxc/123.conf"; }
@@ -126,6 +127,16 @@ new_host
 run_cutover to-qwen38fn && bad "cut over while CT 123 was running — two servers, one card" \
   || ok "refused to cut over while CT 123 was running"
 gpu2_on_120 && bad "GPU 2 was attached despite the refusal" || ok "no mutation on refusal"
+rm -rf "$T"
+
+echo "=== 0b. it must REFUSE while CT 125 passes GPU 2 through for DeepSeek ==="
+new_host; echo stopped >"$T/status.123"
+printf 'dev1: /dev/dri/renderD128,gid=993,mode=0660\n' >"$T/lxc/125.conf"
+run_cutover to-qwen38fn && bad "cut over while CT 125 held GPU 2" || ok "refused"
+gpu2_on_120 && bad "GPU 2 was attached despite the refusal" || ok "no mutation on refusal"
+[ "$(onboot_123)" = 1 ] && ok "CT 123 autostart untouched" || bad "CT 123 onboot is $(onboot_123)"
+grep -q "CT 125 passes a V620 through" "$T/out.log" && ok "names CT 125" || bad "refusal does not name CT 125"
+run_cutover status && ok "status still runs" || bad "status refused"
 rm -rf "$T"
 
 echo "=== 1. forward cutover: CT 123 must be released BEFORE GPU 2 is attached ==="

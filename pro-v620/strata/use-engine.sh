@@ -27,6 +27,8 @@ DRI_BY_PATH="${DRI_BY_PATH:-/dev/dri/by-path}"
 WATCHDOG_ENV="${WATCHDOG_ENV:-/etc/gpu-thermal-watchdog.env}"
 BAK_DIR="${BAK_DIR:-/root/strata-backups}"
 CT120_ONBOOT_FILE="${BAK_DIR}/120.onboot.before-two-card"
+# CT 125 and CT 126 pass GPU 2 through for DeepSeek-V4.1-Flash (../deepseek41-flash/).
+DS41_CONFS="${DS41_CONFS:-/etc/pve/lxc/125.conf /etc/pve/lxc/126.conf}"
 PORT="${PORT:-1234}"
 LLAMACPP_UNIT=llamacpp-qwen38fn
 STRATA_UNIT=strata-qwen38fn
@@ -50,6 +52,12 @@ assert_owns_gpu2() {
   if grep -q "pci-${GPU2_PCI}-render" /etc/pve/lxc/120.conf 2>/dev/null; then
     die "CT 120 also passes ${GPU2_PCI} through; resolve that before switching engines"
   fi
+  local c
+  for c in $DS41_CONFS; do
+    if grep -qE '^dev[0-9]+: /dev/dri/' "$c" 2>/dev/null; then
+      die "CT $(basename "$c" .conf) passes a V620 through for DeepSeek; take it off the card first (../deepseek41-flash/README.md)"
+    fi
+  done
 }
 
 # Proxmox's device passthrough resolves /dev/kfd's (dynamic) major number at every start, and

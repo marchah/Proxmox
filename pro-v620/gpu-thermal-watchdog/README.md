@@ -30,7 +30,7 @@ check the blower, wiring and airflow before restarting. See
 
 - Watches `junction` + `mem` on every configured V620 every `POLL_SECS` (default 2 s).
 - On a trip: stops the service that **owns the over-temp card** (per `GPU_SERVICE_MAP`:
-  GPU 1 → `llamacpp` in CT 120, GPU 2 → `llamacpp-qwen38fn` in CT 123) — **both if both are
+  GPU 1 → `llamacpp` in CT 120, GPU 2 → the whole of CT 125) — **both if both are
   hot**, so it never sheds the wrong card's load. An over-temp card not in the map stops
   **every** mapped service (conservative). Logs `CRITICAL`, keeps the stop asserted while
   hot (idempotent).
@@ -76,7 +76,7 @@ journalctl -u gpu-thermal-watchdog -f          # watch it live
 | `RESUME_C` | `95` | re-arm / auto-resume below this (°C) |
 | `POLL_SECS` | `2` | poll interval |
 | `WATCHDOG_ACTION` | `stop` | `stop` the owning service, or `warn` (log only — for testing) |
-| `GPU_SERVICE_MAP` | `0000:03:00.0=120:llamacpp,0000:83:00.0=123:llamacpp-qwen38fn` | per-GPU `PCI=VMID:service` — stop the card's OWNING service (unmapped card → stop all) |
+| `GPU_SERVICE_MAP` | `0000:03:00.0=120:llamacpp,0000:83:00.0=125:@container` | per-GPU `PCI=VMID:service` — stop the card's OWNING service (unmapped card → stop all). The service `@container` stops the whole container (`pct stop`), for a container whose GPU work is not all one unit's, such as [CT 125 and CT 126's measurement runs](../deepseek41-flash/README.md); an already-stopped container counts as stopped |
 | `LLM_CT_VMID` / `LLM_SERVICE` | `120` / `llamacpp` | **legacy** single service, used only if `GPU_SERVICE_MAP` is empty |
 | `PROTECT_CMD` / `RESUME_CMD` | *(empty)* | override the stop/start command (run via `bash -c`) |
 | `AUTO_RESUME` | `false` | restart the service once cooled instead of leaving it down |

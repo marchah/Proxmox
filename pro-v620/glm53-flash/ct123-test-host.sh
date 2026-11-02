@@ -88,6 +88,17 @@ log() { printf '==> %s\n' "$*"; }
 
 require_root() { [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"; }
 ct_state() { pct status "$1" 2>/dev/null | awk '{print $2}'; }
+
+# CT 125 and CT 126 pass GPU 2 through for DeepSeek-V4.1-Flash (../deepseek41-flash/).
+readonly DS41_CONFS="${DS41_CONFS:-/etc/pve/lxc/125.conf /etc/pve/lxc/126.conf}"
+assert_ds41_off_cards() {
+  local c
+  for c in $DS41_CONFS; do
+    if grep -qE '^dev[0-9]+: /dev/dri/' "$c" 2>/dev/null; then
+      die "CT $(basename "$c" .conf) passes a V620 through for DeepSeek; take it off the card first (../deepseek41-flash/README.md)"
+    fi
+  done
+}
 gpu1_attached() { grep -q "pci-${GPU1_PCI}-render" "$CONF"; }
 
 # Disable and stop a unit, then check it is gone: a unit that survives would fight the
@@ -391,6 +402,7 @@ status() {
 }
 
 main() {
+  [ "${1:-status}" = status ] || assert_ds41_off_cards
   case "${1:-status}" in
     one-card)
       require_root; mkdir -p "$STATE_DIR"

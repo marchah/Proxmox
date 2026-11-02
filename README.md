@@ -11,7 +11,9 @@ Deployment recorded 2026-09-18:
 | --- | --- | --- | --- |
 | CT 120 | `llamacpp` | Qwen3.6-35B-A3B on V620 `0000:03:00.0`, API `:1234` | [GPU runtime](pro-v620/README.md) |
 | CT 121 | `hermes` | Hermes Agent using CT 120; gateway/API `:8642` | [Hermes](hermes/README.md) |
-| CT 123 | `gpu2` | Qwen3.8-Flash-Next on V620 `0000:83:00.0`, API `:1234` | [Flash-Next](pro-v620/qwen38-flash-next/README.md) |
+| CT 123 | `gpu2` | Qwen3.8-Flash-Next on V620 `0000:83:00.0`; stopped while CT 125 holds the card | [Flash-Next](pro-v620/qwen38-flash-next/README.md) |
+| CT 125 | `ds41-strata` | DeepSeek-V4.1-Flash on V620 `0000:83:00.0` (Strata, strata-v620 build), API `:1234` | [DeepSeek-V4.1-Flash](pro-v620/deepseek41-flash/README.md) |
+| CT 126 | `ds41-llama` | llama.cpp on DeepSeek-V4.1-Flash, the comparison; started only for a run, in CT 125's place | [DeepSeek-V4.1-Flash](pro-v620/deepseek41-flash/README.md) |
 | CT 140 | `kb-rag` | Markdown KB hybrid search, REST + MCP `:8770`; runs on a second, CPU-only Proxmox host | [Retrieval service](kb-rag/README.md) |
 | CT 200 | `bench-runner` | Disposable OpenAI-compatible endpoint benchmarks | [Benchmark runner](bench-runner/README.md) |
 
@@ -30,7 +32,8 @@ with [undervolting](pro-v620/undervolt/README.md) and a
 
 The GGUF store is an LVM-thin pool on the whole NVMe holding one ext4 volume,
 `models/shared`, sized to the whole pool and mounted at `/mnt/models`. CT 120 and
-CT 123 both bind `/mnt/models/store` (owned by UID 1000) at `/models`. Each GGUF is
+CT 123 both bind `/mnt/models/store` (owned by UID 1000) at `/models`; the unprivileged
+CT 125 and CT 126 bind it read-only. Each GGUF is
 stored once, and survives `pct destroy`. It is not ZFS: the ARC would cache the
 mmapped GGUFs a second time next to the page cache. Its `/etc/fstab` entry:
 
