@@ -32,7 +32,7 @@ CORES="${CORES:-48}"
 MEMORY_MB="${MEMORY_MB:-65536}"
 SWAP_MB="${SWAP_MB:-0}"
 BRIDGE="${BRIDGE:-vmbr0}"
-# Fixed MAC so the router's DHCP reservation is deterministic: BC:24:11:C0:DE:<VMID>.
+# Fixed MAC so the router's DHCP reservation is deterministic: BC:24:11:C0:DE:<VMID's last two digits>.
 MAC="${MAC:-BC:24:11:C0:DE:${VMID: -2}}"
 # ds41-host.sh take turns autostart on for the container holding GPU 2.
 START_ON_BOOT="${START_ON_BOOT:-0}"

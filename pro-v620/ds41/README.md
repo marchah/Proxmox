@@ -40,7 +40,7 @@ On the Proxmox host, as root:
 | Mounts | `/models` (the model store, read-only), `/models-dev` (`/mnt/models/store/dev`, writable), `/owner-telemetry` (`/mnt/ds41-telemetry`, read-only) |
 | Limits | `lxc.prlimit.memlock: unlimited`: both engines page-lock host memory |
 | User | `agent`, passwordless sudo inside the container, groups `video` and `render`; key-only SSH with the other container's authorized keys plus `AGENT_SSH_PUBKEY`. No GitHub credentials: results come back through `/models-dev`. |
-| MAC | `BC:24:11:C0:DE:<VMID>`, reserved on the router |
+| MAC | `BC:24:11:C0:DE:` and the VMID's last two digits (`:25`, `:26`), reserved on the router |
 
 `/mnt/ds41-telemetry` is a host tmpfs, where a start gate publishes host telemetry to the
 container. The provisioner refuses to run without it; `/etc/fstab` holds:
@@ -85,7 +85,8 @@ refuse to change the cards while CT 125 or CT 126 holds one.
 
 `ds41-host-test.sh` runs `ds41-host.sh` against a mocked host.
 
-strata-v620's `tools/v620/host/` scripts run on pve as `/root/ds41-211-<name>`:
+strata-v620's `tools/v620/host/` scripts run on pve from `/root`, the `host-*.sh` ones as
+`/root/ds41-211-host-*.sh`:
 
 - `host-to-125-2gpu.sh` gives CT 125 GPU 1 as well, with CT 120 stopped, and maps both
   cards to `125:@container`. `take` refuses while CT 125 holds GPU 1.
@@ -93,8 +94,6 @@ strata-v620's `tools/v620/host/` scripts run on pve as `/root/ds41-211-<name>`:
   it starts. It also writes GPU 1's deny rules into CT 126, which does no harm.
 - `ds41-211-gate.sh` gates every full-model run: the other DeepSeek container stopped, the
   target holding GPU 2, the watchdog mapping GPU 2 to it, and the host memory reserves.
-- `host-switch-gpu2.sh` expects both containers to keep GPU 2 in their configs, and refuses
-  now that the released one has no GPU entries. `take` replaces it.
 
 ### Memory
 
