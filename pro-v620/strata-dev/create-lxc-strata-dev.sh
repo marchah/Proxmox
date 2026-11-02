@@ -6,8 +6,10 @@ set -Eeuo pipefail
 VMID="${VMID:-124}"
 LXC_HOSTNAME="${LXC_HOSTNAME:-strata-dev}"
 TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
-# AMD's ROCm 10.0 repository targets ubuntu2404, as in CT 123.
-TEMPLATE="${TEMPLATE:-ubuntu-24.04-standard_24.04-2_amd64.tar.zst}"
+# The newest build of this release's standard template, unless TEMPLATE names one. AMD's
+# ROCm repository has a path per Ubuntu release, which the container's own release picks.
+UBUNTU_RELEASE="${UBUNTU_RELEASE:-24.04}"
+TEMPLATE="${TEMPLATE:-}"
 ROOT_STORAGE="${ROOT_STORAGE:-local-lvm}"
 ROOT_SIZE_GB="${ROOT_SIZE_GB:-200}"
 # The starting limit while CT 123 still runs Flash-Next. Handing GPU 2 to this container
@@ -15,7 +17,12 @@ ROOT_SIZE_GB="${ROOT_SIZE_GB:-200}"
 # runs that swap.
 MEMORY_MB="${MEMORY_MB:-65536}"
 SWAP_MB="${SWAP_MB:-0}"
-CORES="${CORES:-24}"
+# Cores 8-31 with their SMT siblings 40-63, shared with CT 125 and CT 126:
+# strata-dev-host.sh lets one of them hold GPU 2 and run. CT 120 and CT 121 keep cores 0-7:
+# Proxmox's balancer moves `cores` guests off the CPUs of a running container with its own
+# cpuset.
+CPUSET="${CPUSET:-8-31,40-63}"
+CORES="${CORES:-48}"
 BRIDGE="${BRIDGE:-vmbr0}"
 # Fixed MAC so the router's DHCP reservation for strata-dev is deterministic.
 MAC="${MAC:-BC:24:11:C0:DE:24}"
@@ -26,12 +33,12 @@ START_ON_BOOT="${START_ON_BOOT:-1}"
 MODELS_DIR="${MODELS_DIR:-/mnt/models/store}"
 DEV_DIR="${DEV_DIR:-/mnt/models/store/dev}"
 DEV_DIR_OWNER="${DEV_DIR_OWNER:-101000:101000}"
+# The owner's telemetry, a host tmpfs, read-only in the container.
+TELEMETRY_DIR="${TELEMETRY_DIR:-/mnt/ds41-telemetry}"
 
-# ROCm userspace for gfx1030. Keep these equal to ../strata/strata-qwen38fn.env, so CT 123
-# and this container run one runtime.
-ROCM_PACKAGE="${ROCM_PACKAGE:-amdrocm-core-dev10.0-gfx1030}"
-ROCM_VERSION="${ROCM_VERSION:-10.0.0-4}"
-ROCM_ROOT="${ROCM_ROOT:-/opt/rocm/core-10.0}"
+# The newest amdrocm-core-dev<series>-<ROCM_GFX> in AMD's repository. A container that has
+# one keeps it: a newer series installs beside it under its own /opt/rocm/core-<series>.
+ROCM_GFX="${ROCM_GFX:-gfx1030}"
 
 # OpenCode 2, latest release, updating itself (the owner's choice). Its installer puts the
 # binary in ~/.opencode/bin, which is also how OpenCode recognises an install it may
@@ -61,14 +68,17 @@ host as root.
   AGENT_SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" ./create-lxc-strata-dev.sh
   ENABLE_DATACENTER_FIREWALL=1 ./create-lxc-strata-dev.sh   # re-run: also enforce the rules
 
-Creates an unprivileged Ubuntu 24.04 LXC with ROCm (ROCM_PACKAGE), build tools, gh,
+Creates an unprivileged Ubuntu LXC (the newest UBUNTU_RELEASE template) with the newest
+ROCm for ROCM_GFX, build tools, gh,
 tmux, OpenCode (latest, updating itself), the user `agent` (passwordless sudo inside the
 container), key-only sshd, and a tmux session `agent` started at boot. The model store
-is mounted read-only at /models; /models-dev is writable. Its firewall allows SSH in
-from the LAN and, out, DNS to the router and the internet only.
+is mounted read-only at /models, the owner telemetry read-only at /owner-telemetry, and
+/models-dev is writable. Its firewall allows SSH in from the LAN and, out, DNS to the router
+and the internet only. CPUs are shared with CT 125 and CT 126 (CPUSET).
 
-The GPU is not attached here: handing GPU 2 to this container also stops CT 123 and
-changes the thermal watchdog's map, which strata-dev-host.sh does.
+The GPU is not attached here: handing GPU 2 to this container also stops CT 123 and the
+other DeepSeek containers and changes the thermal watchdog's map, which
+strata-dev-host.sh dev does.
 
 Re-running is safe: an existing container is configured, not recreated.
 USAGE
@@ -99,17 +109,26 @@ container_exists() {
   pct status "${VMID}" >/dev/null 2>&1
 }
 
+resolve_template() {
+  [[ -n ${TEMPLATE} ]] && return
+  pveam update >/dev/null
+  TEMPLATE="$(pveam available --section system | awk '{print $2}' \
+    | grep -E "^ubuntu-${UBUNTU_RELEASE}-standard_.*_amd64\.tar\.zst$" | sort -V | tail -1)"
+  [[ -n ${TEMPLATE} ]] || die "pveam lists no ubuntu-${UBUNTU_RELEASE}-standard template"
+}
+
 download_template_if_missing() {
   if [[ -f "/var/lib/vz/template/cache/${TEMPLATE}" ]]; then
     return
   fi
   log "Downloading LXC template ${TEMPLATE}"
-  pveam update
   pveam download "${TEMPLATE_STORAGE}" "${TEMPLATE}"
 }
 
 prepare_dev_dir() {
   [[ -d ${MODELS_DIR} ]] || die "${MODELS_DIR} is missing; is the models store mounted?"
+  mountpoint -q "${TELEMETRY_DIR}" || die "${TELEMETRY_DIR} is not mounted; /etc/fstab needs:
+  tmpfs ${TELEMETRY_DIR} tmpfs size=64m,mode=0755,nosuid,nodev,noexec,x-systemd.before=pve-guests.service 0 0"
   log "Writable model directory ${DEV_DIR} (owner ${DEV_DIR_OWNER})"
   install -d -m 0755 "${DEV_DIR}"
   chown "${DEV_DIR_OWNER}" "${DEV_DIR}"
@@ -121,7 +140,7 @@ create_container() {
     return
   fi
 
-  log "Creating LXC ${VMID} (${LXC_HOSTNAME}) mac=${MAC}"
+  log "Creating LXC ${VMID} (${LXC_HOSTNAME}) from ${TEMPLATE}, mac=${MAC}"
   # nesting=1: systemd in an unprivileged container cannot start logind without it,
   # and every SSH login then waits 25 s on D-Bus (see coder-runner).
   pct create "${VMID}" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
@@ -139,16 +158,27 @@ create_container() {
 }
 
 configure_container() {
-  local conf="/etc/pve/lxc/${VMID}.conf"
+  local conf="/etc/pve/lxc/${VMID}.conf" tmp
 
-  log "Mounts: ${MODELS_DIR} read-only at /models, ${DEV_DIR} at /models-dev"
-  pct set "${VMID}" --mp0 "${MODELS_DIR},mp=/models,ro=1" --mp1 "${DEV_DIR},mp=/models-dev"
+  log "Mounts: ${MODELS_DIR} read-only at /models, ${DEV_DIR} at /models-dev, ${TELEMETRY_DIR} read-only at /owner-telemetry"
+  pct set "${VMID}" --mp0 "${MODELS_DIR},mp=/models,ro=1" --mp1 "${DEV_DIR},mp=/models-dev" \
+    --mp2 "${TELEMETRY_DIR},mp=/owner-telemetry,ro=1"
 
   # Strata page-locks its expert arena and HIP pins transfer buffers. An unprivileged
   # container cannot raise RLIMIT_MEMLOCK itself, so LXC sets it for the container.
   if ! grep -q '^lxc.prlimit.memlock:' "${conf}"; then
     log "lxc.prlimit.memlock: unlimited"
     printf 'lxc.prlimit.memlock: unlimited\n' >>"${conf}"
+  fi
+
+  # Rewritten from a filtered copy: /etc/pve is the cluster filesystem.
+  if ! grep -qxF "lxc.cgroup2.cpuset.cpus: ${CPUSET}" "${conf}"; then
+    log "lxc.cgroup2.cpuset.cpus: ${CPUSET} (applies at the next start)"
+    tmp="$(mktemp)"
+    grep -v '^lxc.cgroup2.cpuset.cpus:' "${conf}" >"${tmp}" || true
+    printf 'lxc.cgroup2.cpuset.cpus: %s\n' "${CPUSET}" >>"${tmp}"
+    cat "${tmp}" >"${conf}"
+    rm -f "${tmp}"
   fi
 }
 
@@ -196,9 +226,8 @@ start_container() {
 }
 
 install_packages() {
-  log "Base packages, ${ROCM_PACKAGE} ${ROCM_VERSION}"
-  pct exec "${VMID}" -- env ROCM_PACKAGE="${ROCM_PACKAGE}" ROCM_VERSION="${ROCM_VERSION}" \
-    ROCM_ROOT="${ROCM_ROOT}" bash -s <<'CONTAINER_SCRIPT'
+  log "Base packages; ROCm for ${ROCM_GFX}"
+  pct exec "${VMID}" -- env ROCM_GFX="${ROCM_GFX}" bash -s <<'CONTAINER_SCRIPT'
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 tools=(build-essential cmake ninja-build git curl ca-certificates gnupg python3-venv python3-dev
@@ -208,34 +237,44 @@ apt-get install -y -q --no-install-recommends "${tools[@]}"
 # SSH clients pass LANG=en_US.UTF-8; without the locale every login warns.
 locale -a | grep -qx 'en_US.utf8' || locale-gen en_US.UTF-8 >/dev/null
 
-if [ "$(dpkg-query -W -f='${Version}' "$ROCM_PACKAGE" 2>/dev/null || true)" != "$ROCM_VERSION" ]; then
-  install -d -m 0755 /etc/apt/keyrings
-  [ -s /etc/apt/keyrings/amdrocm.gpg ] \
-    || curl -fsSL https://stable.repo.amd.com/rocm/gpg/packages.gpg | gpg --dearmor -o /etc/apt/keyrings/amdrocm.gpg
-  cat >/etc/apt/sources.list.d/amdrocm-stable.sources <<'SRC'
+. /etc/os-release
+install -d -m 0755 /etc/apt/keyrings
+[ -s /etc/apt/keyrings/amdrocm.gpg ] \
+  || curl -fsSL https://stable.repo.amd.com/rocm/gpg/packages.gpg | gpg --dearmor -o /etc/apt/keyrings/amdrocm.gpg
+cat >/etc/apt/sources.list.d/amdrocm-stable.sources <<SRC
 X-Repo-Id: amdrocm-stable
 Types: deb
-URIs: https://stable.repo.amd.com/rocm/core/packages/ubuntu2404/
+URIs: https://stable.repo.amd.com/rocm/core/packages/ubuntu${VERSION_ID//./}/
 Suites: stable
 Components: main
 Architectures: amd64
 Signed-By: /etc/apt/keyrings/amdrocm.gpg
 Enabled: yes
 SRC
+
+# The series is part of the package name (amdrocm-core-dev10.1-gfx1030), so the newest
+# series is the newest name. Its dependencies are pinned to its version by the package.
+# Installed means the status letter is i, whatever the selection (a held package is hi).
+pattern="^amdrocm-core-dev[0-9]+\.[0-9]+-${ROCM_GFX}\$"
+pkg="$(dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 'amdrocm-core-dev*' 2>/dev/null \
+  | awk 'substr($1, 2, 1) == "i" {print $2}' | grep -E "$pattern" | sort -V | tail -1 || true)"
+if [ -z "$pkg" ]; then
   apt-get update -q
-  apt-get install -y -q --no-install-recommends "${ROCM_PACKAGE}=${ROCM_VERSION}"
-  # Its dependencies are pinned to the same version by the package itself.
-  apt-mark hold "$ROCM_PACKAGE" >/dev/null
+  pkg="$(apt-cache pkgnames amdrocm-core-dev | grep -E "$pattern" | sort -V | tail -1 || true)"
+  [ -n "$pkg" ] || { echo "FATAL: AMD's ubuntu${VERSION_ID//./} repository has no ${ROCM_GFX} core package" >&2; exit 1; }
+  apt-get install -y -q --no-install-recommends "$pkg"
 fi
-[ -d "$ROCM_ROOT/lib" ] || { echo "FATAL: ${ROCM_ROOT}/lib missing after the install" >&2; exit 1; }
+series="${pkg#amdrocm-core-dev}"; series="${series%-"${ROCM_GFX}"}"
+root="/opt/rocm/core-${series}"
+[ -d "$root/lib" ] || { echo "FATAL: ${root}/lib missing after the install" >&2; exit 1; }
 
 # No Vulkan workload shares this container, so ROCm can sit on every login's paths.
 cat >/etc/profile.d/rocm.sh <<PROFILE
-export ROCM_PATH=${ROCM_ROOT}
+export ROCM_PATH=${root}
 export PATH="\${ROCM_PATH}/bin:\${PATH}"
 export LD_LIBRARY_PATH="\${ROCM_PATH}/lib\${LD_LIBRARY_PATH:+:\${LD_LIBRARY_PATH}}"
 PROFILE
-echo "rocm: $(dpkg-query -W -f='${Version}' "$ROCM_PACKAGE")"
+echo "rocm: ${pkg} $(dpkg-query -W -f='${Version}' "$pkg") at ${root}"
 CONTAINER_SCRIPT
 }
 
@@ -420,8 +459,11 @@ main() {
   require_command pveam
   require_command pve-firewall
 
-  download_template_if_missing
   prepare_dev_dir
+  if ! container_exists; then
+    resolve_template
+    download_template_if_missing
+  fi
   create_container
   configure_container
   write_guest_firewall

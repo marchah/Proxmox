@@ -52,7 +52,7 @@ RESUME_CMD="${RESUME_CMD:-}"
 # stops every mapped service. An explicit empty map uses LLM_CT_VMID/LLM_SERVICE;
 # PROTECT_CMD/RESUME_CMD override both. Keep this aligned with container passthrough.
 # The service `@container` stands for the whole container (pct stop), for a workload no
-# unit owns, such as CT 124's development runs.
+# unit owns, such as the DeepSeek containers' runs (CT 124-126).
 GPU_SERVICE_MAP="${GPU_SERVICE_MAP-0000:03:00.0=120:llamacpp,0000:83:00.0=123:llamacpp-qwen38fn}"
 # Leave the server DOWN after a trip (default) or auto-restart it once cooled.
 # Default false: reaching the trip temp means cooling could not keep up, so resuming

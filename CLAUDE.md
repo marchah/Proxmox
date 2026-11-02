@@ -19,8 +19,9 @@ Use component READMEs for deployment commands, defaults, and measurements.
 - [mimo-v26-pro/](pro-v620/mimo-v26-pro/README.md): MiMo-V2.6-Pro-RL model notes, RAM fit
   and test records; not deployed.
 - [strata-dev/](pro-v620/strata-dev/PLAN.md): CT 124, where an OpenCode agent develops the
-  DeepSeek-V4.1-Flash fork of Strata on GPU 2; `strata-dev-host.sh` moves the card between
-  it and CT 123.
+  DeepSeek-V4.1-Flash fork of Strata, and CT 125/126, which run upstream Strata's engine and
+  llama.cpp on that model; `strata-dev-host.sh dev <ct>` gives GPU 2 to one of them, `restore`
+  gives it back to CT 123.
 - [hermes/](hermes/README.md): CT 121 agent gateway.
 - [kb-rag/](kb-rag/README.md): CT 140 retrieval API and corpus policy.
 - [bench-runner/](bench-runner/README.md) and [ansible/](ansible/README.md): endpoint
@@ -74,7 +75,7 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
 | PCI address | Workload | Blower |
 | --- | --- | --- |
 | `0000:03:00.0` | CT 120 `llamacpp` | FAN5 |
-| `0000:83:00.0` | CT 123 Flash-Next, or CT 124 `strata-dev` after `strata-dev-host.sh dev` | FAN4 |
+| `0000:83:00.0` | CT 123 Flash-Next, or one of CT 124-126 after `strata-dev-host.sh dev <ct>` | FAN4 |
 
 - The two cards are not interchangeable for measurements: compare a result only with
   others taken on the same card.
@@ -88,8 +89,9 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   two-card alternative: it changes passthrough, CT 123's `onboot` and the watchdog
   service map together. `glm53-flash/ct123-test-host.sh` does the same in the other
   direction for the GLM-5.3-Flash and MiMo-V2.6-Pro-RL tests, giving CT 123 both cards
-  while CT 120 stays off. `strata-dev/strata-dev-host.sh` gives GPU 2 to CT 124 with CT 123
-  stopped; the other switches refuse to run while CT 124 holds a card.
+  while CT 120 stays off. `strata-dev/strata-dev-host.sh` gives GPU 2 to one of CT 124-126
+  with CT 123 and the other two stopped; the other switches refuse to run while any of them
+  holds a card.
 - Both servers use `--reasoning off --reasoning-format auto`. The first disables
   thinking; the second removes empty think tags from response content. Revalidate
   response content and tool calls when changing these flags or the KV cache type.

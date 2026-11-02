@@ -44,13 +44,17 @@ require_root() { [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"; 
 
 gpu2_attached() { grep -q "${GPU2_PCI}-render" "$CONF"; }
 
-# CT 124 holds GPU 2 between ../strata-dev/strata-dev-host.sh dev and restore; both
-# directions here hand GPU 2 to a server (CT 120's, or CT 123's on the way back).
-readonly STRATA_DEV_CONF="${STRATA_DEV_CONF:-/etc/pve/lxc/124.conf}"
+# A DeepSeek container (CT 124-126) holds GPU 2 between ../strata-dev/strata-dev-host.sh dev
+# and restore; both directions here hand GPU 2 to a server (CT 120's, or CT 123's on the
+# way back).
+readonly STRATA_DEV_CONFS="${STRATA_DEV_CONFS:-/etc/pve/lxc/124.conf /etc/pve/lxc/125.conf /etc/pve/lxc/126.conf}"
 assert_strata_dev_off_cards() {
-  if grep -qE '^dev[0-9]+: /dev/dri/' "$STRATA_DEV_CONF" 2>/dev/null; then
-    die "CT 124 (strata-dev) holds a V620; ../strata-dev/strata-dev-host.sh restore first"
-  fi
+  local conf
+  for conf in $STRATA_DEV_CONFS; do
+    if grep -qE '^dev[0-9]+: /dev/dri/' "$conf" 2>/dev/null; then
+      die "CT $(basename "$conf" .conf) (DeepSeek) holds a V620; ../strata-dev/strata-dev-host.sh restore first"
+    fi
+  done
 }
 
 # 🔴 Retiring the OUTGOING workload is a precondition, not a courtesy. This was

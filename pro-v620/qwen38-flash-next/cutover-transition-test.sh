@@ -111,7 +111,7 @@ PCT
 set_unit() { sed -i.bak "/^$1 $2 /d" "$T/units" 2>/dev/null || true; printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >>"$T/units"; }
 run_cutover() {
   PATH="$T/bin:$PATH" CONF="$T/lxc/120.conf" BAK_DIR="$T/bak" WATCHDOG_ENV="$T/wd.env" \
-    LXC_CONF_DIR="$T/lxc" DRI_BY_PATH="$T/dri" STRATA_DEV_CONF="$T/lxc/124.conf" VMID=120 FAIL_DISABLE="${FAIL_DISABLE:-}" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
+    LXC_CONF_DIR="$T/lxc" DRI_BY_PATH="$T/dri" STRATA_DEV_CONFS="$T/lxc/124.conf $T/lxc/125.conf $T/lxc/126.conf" VMID=120 FAIL_DISABLE="${FAIL_DISABLE:-}" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
 }
 gpu2_on_120() { grep -q "pci-${GPU2}-render" "$T/lxc/120.conf"; }
 onboot_123()  { awk '/^onboot:/{print $2}' "$T/lxc/123.conf"; }
@@ -125,6 +125,13 @@ echo "=== 0. it must REFUSE while CT 123 is still running ==="
 new_host
 run_cutover to-qwen38fn && bad "cut over while CT 123 was running — two servers, one card" \
   || ok "refused to cut over while CT 123 was running"
+gpu2_on_120 && bad "GPU 2 was attached despite the refusal" || ok "no mutation on refusal"
+rm -rf "$T"
+
+echo "=== 0b. it must REFUSE while a DeepSeek container (CT 126) holds GPU 2 ==="
+new_host; echo stopped >"$T/status.123"
+echo 'dev1: /dev/dri/renderD128,gid=993,mode=0660' >"$T/lxc/126.conf"
+run_cutover to-qwen38fn && bad "cut over while CT 126 held GPU 2" || ok "refused while CT 126 held GPU 2"
 gpu2_on_120 && bad "GPU 2 was attached despite the refusal" || ok "no mutation on refusal"
 rm -rf "$T"
 
