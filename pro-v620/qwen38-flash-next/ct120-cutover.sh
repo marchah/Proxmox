@@ -44,6 +44,18 @@ require_root() { [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"; 
 
 gpu2_attached() { grep -q "${GPU2_PCI}-render" "$CONF"; }
 
+# CT 125 or CT 126 holds GPU 2 between ../ds41/ds41-host.sh take and restore; both
+# directions here hand GPU 2 to a server (CT 120's, or CT 123's on the way back).
+readonly DS41_CONFS="${DS41_CONFS:-/etc/pve/lxc/125.conf /etc/pve/lxc/126.conf}"
+assert_ds41_off_cards() {
+  local conf
+  for conf in $DS41_CONFS; do
+    if grep -qE '^dev[0-9]+: /dev/dri/' "$conf" 2>/dev/null; then
+      die "CT $(basename "$conf" .conf) (DeepSeek) holds a V620; ../ds41/ds41-host.sh restore first"
+    fi
+  done
+}
+
 # 🔴 Retiring the OUTGOING workload is a precondition, not a courtesy. This was
 # `systemctl disable --now X 2>/dev/null || true` in both directions, which swallowed a
 # FAILED retirement: the script carried on attaching GPU 2, restarting the container,
@@ -170,6 +182,7 @@ set_watchdog_map() {
   log "watchdog map -> ${want} (service restarted)"
 }
 
+[ "${1:-status}" = status ] || assert_ds41_off_cards
 case "${1:-status}" in
   to-qwen38fn)
     require_root

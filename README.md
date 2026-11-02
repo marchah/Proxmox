@@ -11,7 +11,9 @@ Deployment recorded 2026-09-18:
 | --- | --- | --- | --- |
 | CT 120 | `llamacpp` | Qwen3.6-35B-A3B on V620 `0000:03:00.0`, API `:1234` | [GPU runtime](pro-v620/README.md) |
 | CT 121 | `hermes` | Hermes Agent using CT 120; gateway/API `:8642` | [Hermes](hermes/README.md) |
-| CT 123 | `gpu2` | Qwen3.8-Flash-Next on V620 `0000:83:00.0`, API `:1234` | [Flash-Next](pro-v620/qwen38-flash-next/README.md) |
+| CT 123 | `gpu2` | Qwen3.8-Flash-Next on V620 `0000:83:00.0`, API `:1234`; stopped while CT 125 or CT 126 holds the card | [Flash-Next](pro-v620/qwen38-flash-next/README.md) |
+| CT 125 | `ds41-strata` | DeepSeek-V4.1-Flash on upstream Strata's engine (`strata-dsv41`), API `:1234` | [DeepSeek containers](pro-v620/ds41/README.md) |
+| CT 126 | `ds41-llama` | DeepSeek-V4.1-Flash on llama.cpp, the comparison engine; started only for a run | [DeepSeek containers](pro-v620/ds41/README.md) |
 | CT 140 | `kb-rag` | Markdown KB hybrid search, REST + MCP `:8770`; runs on a second, CPU-only Proxmox host | [Retrieval service](kb-rag/README.md) |
 | CT 200 | `bench-runner` | Disposable OpenAI-compatible endpoint benchmarks | [Benchmark runner](bench-runner/README.md) |
 

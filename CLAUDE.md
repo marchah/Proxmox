@@ -18,6 +18,9 @@ Use component READMEs for deployment commands, defaults, and measurements.
   test records; `ct123-test-host.sh` with `TEST_ENGINE=maya` sets the container up.
 - [mimo-v26-pro/](pro-v620/mimo-v26-pro/README.md): MiMo-V2.6-Pro-RL model notes, RAM fit
   and test records; not deployed.
+- [ds41/](pro-v620/ds41/README.md): CT 125 and CT 126, DeepSeek-V4.1-Flash on upstream
+  Strata's engine and on llama.cpp; `ds41-host.sh take <ct>` gives one of them GPU 2,
+  `restore` gives it back to CT 123.
 - [hermes/](hermes/README.md): CT 121 agent gateway.
 - [kb-rag/](kb-rag/README.md): CT 140 retrieval API and corpus policy. CT 140 runs on a
   second Proxmox host, not on this one.
@@ -72,7 +75,7 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
 | PCI address | Workload | Blower |
 | --- | --- | --- |
 | `0000:03:00.0` | CT 120 `llamacpp` | FAN5 |
-| `0000:83:00.0` | CT 123 `llamacpp-qwen38fn` | FAN4 |
+| `0000:83:00.0` | CT 123 `llamacpp-qwen38fn`, or CT 125/126 after `ds41-host.sh take <ct>` | FAN4 |
 
 - The two cards are not interchangeable for measurements: compare a result only with
   others taken on the same card.
@@ -86,7 +89,8 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   two-card alternative: it changes passthrough, CT 123's `onboot` and the watchdog
   service map together. `glm53-flash/ct123-test-host.sh` does the same in the other
   direction for the GLM-5.3-Flash and MiMo-V2.6-Pro-RL tests, giving CT 123 both cards
-  while CT 120 stays off.
+  while CT 120 stays off. `ds41/ds41-host.sh` gives GPU 2 to CT 125 or CT 126 with CT 123
+  stopped; the other switches refuse to run while either holds a card.
 - Both servers use `--reasoning off --reasoning-format auto`. The first disables
   thinking; the second removes empty think tags from response content. Revalidate
   response content and tool calls when changing these flags or the KV cache type.
