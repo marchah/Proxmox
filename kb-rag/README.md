@@ -1,8 +1,9 @@
 # kb-rag — knowledge-base retrieval service (CT 140)
 
 An unprivileged Debian LXC that indexes the **CognitiveStack** Markdown knowledge base and
-serves hybrid (keyword + semantic) search to every agent on the server over one endpoint —
-REST **and** MCP-over-HTTP on port 8770.
+serves hybrid (keyword + semantic) search to the lab's agents over one endpoint —
+REST **and** MCP-over-HTTP on port 8770. CT 140 runs on a second, CPU-only Proxmox host, so
+CT 121 reaches it over the LAN; run the `pct` commands below on that host.
 
 **Markdown-in-git stays the source of truth.** This container holds only a derived,
 rebuildable index (`sqlite-vec` + FTS5), so a wipe + reindex reconstructs everything — back up

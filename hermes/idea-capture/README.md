@@ -1,7 +1,7 @@
 # idea-capture — Slack `#ideas` → Project Planner (CT 121)
 
 A Hermes plugin that turns every top-level message in the private `#ideas` Slack channel into an
-idea on the [Project Planner](https://github.com/marchah/project-planner) board on VM 300, then
+idea on the [Project Planner](https://github.com/marchah/project-planner) board, then
 replies in that message's thread with the title the board wrote and a link to the note. No agent
 turn runs: the gateway is told to skip the message.
 
@@ -9,7 +9,7 @@ turn runs: the gateway is told to skip the message.
 #ideas message ──▶ Slack gateway (CT 121) ──pre_gateway_dispatch──▶ idea-capture
                                                                      │ POST /api/ideas {text, source: SLACK, sourceUrl}
                                                                      ▼
-                                    thread reply ◀── title + link ── board (VM 300) ── title model (CT 120)
+                                    thread reply ◀── title + link ── board (Docker) ── title model (CT 120)
 ```
 
 ## Why a plugin, not a channel prompt
@@ -60,10 +60,9 @@ The Slack bot must be a member of the channel; with `require_mention: false` and
 
 ## Discussing an idea in its thread
 
-The board answers in the thread too: with `SLACK_BOT_TOKEN` on its stack (this bot's token, see
-[`docker-host/README.md`](../../docker-host/README.md#project-planner-specifics)), it posts the first
-plan with its questions, any plan change, and a research failure, as the same bot that confirmed
-the capture.
+The board answers in the thread too: with `SLACK_BOT_TOKEN` on its stack (this bot's token), it
+posts the first plan with its questions, any plan change, and a research failure, as the same bot
+that confirmed the capture.
 
 Thread replies reach the Hermes agent like in any channel. Two pieces of live CT 121 config, not in
 this repo, make that useful:
@@ -72,7 +71,7 @@ this repo, make that useful:
   ```yaml
   mcp_servers:
     project-planner:
-      url: http://docker-host.lan:4200/mcp/
+      url: http://<board host>:4200/mcp/
       timeout: 60
       connect_timeout: 15
   ```

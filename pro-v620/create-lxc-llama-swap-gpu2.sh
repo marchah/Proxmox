@@ -72,7 +72,7 @@ TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
 TEMPLATE="${TEMPLATE:-ubuntu-24.04-standard_24.04-2_amd64.tar.zst}"
 ROOT_STORAGE="${ROOT_STORAGE:-local-lvm}"
 ROOT_SIZE_GB="${ROOT_SIZE_GB:-32}"
-# Shared GGUF store from create-models-store.sh, bind-mounted at /models (CT 120 binds it too).
+# Shared GGUF store (../README.md#host-storage), bind-mounted at /models (CT 120 binds it too).
 MODELS_DIR="${MODELS_DIR:-/mnt/models/store}"
 MEMORY_MB="${MEMORY_MB:-16384}"
 SWAP_MB="${SWAP_MB:-4096}"
@@ -139,7 +139,7 @@ assert_gpu_devices_exist() {
 }
 
 assert_models_dir_exists() {
-  [[ -d ${MODELS_DIR} ]] || die "model store ${MODELS_DIR} not found; run ./create-models-store.sh first"
+  [[ -d ${MODELS_DIR} ]] || die "model store ${MODELS_DIR} not found; is /mnt/models mounted? See Host storage in the top-level README.md"
 }
 
 create_container() {

@@ -89,7 +89,7 @@ user allowlist (without an allowlist Hermes denies all incoming users).
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `VMID` / `LXC_HOSTNAME` | `121` / `hermes` | container id / hostname |
-| `ROOT_SIZE_GB` / `MEMORY_MB` / `SWAP_MB` / `CORES` | `30` / `8192` / `2048` / `4` | sizing (sized for Playwright Chromium + Node + uv/py3.11) |
+| `ROOT_SIZE_GB` / `MEMORY_MB` / `SWAP_MB` / `CORES` | `30` / `8192` / `2048` / `2` | sizing (sized for Playwright Chromium + Node + uv/py3.11) |
 | `TARGET_LXC_VMID` | `120` | CT to discover the model API from |
 | `TARGET_HOSTNAME` | `llamacpp` | CT 120's name; preferred over its IP (verified from the Hermes CT, falls back to the discovered IP) |
 | `TARGET_BASE_URL` | _(hostname, then IP)_ | pin the model endpoint directly (skips discovery) |

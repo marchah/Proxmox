@@ -1,0 +1,13 @@
+# Cells for runs/2026-10-17-strata-pipeline.md, stage A's one-pass screen, in CT 123 holding
+# both cards, at PASSES=1. Every cell is stage 8's strata-best-2 (the split21 layer split,
+# STRATA_MMQ_KQ=1, no suffix drafts) with the draft settings its name gives: sN = --spec N,
+# p7 = --spec-min-p 0.7 (else the env file's 0.5), pw2 = --pipeline-windows 2, st0 = the
+# draft layer on the first card. Cells with and without pipeline windows alternate.
+s5            MODEL_SPEC=5 MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+s3p7-pw2      MODEL_SPEC=3 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+nodraft       MODEL_MTP= MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+s5-pw2        MODEL_SPEC=5 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+s3p7          MODEL_SPEC=3 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+s2p7-pw2      MODEL_SPEC=2 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+s4p7-pw2      MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+s3p7-pw2-st0  MODEL_SPEC=3 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 STRATA_MTP_STAGE0=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto

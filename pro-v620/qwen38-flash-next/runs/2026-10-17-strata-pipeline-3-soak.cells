@@ -1,0 +1,4 @@
+# Cells for runs/2026-10-17-strata-pipeline.md, stage C's soak, in CT 123 holding both cards,
+# at PASSES=10: s4p7-pw2, stage B's fastest cell, which stage B2 kept against the draft layer
+# on the first card (65.8 against 64.0 t/s). Ten cold starts of the same line.
+s4p7-pw2      MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto

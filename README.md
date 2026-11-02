@@ -15,9 +15,8 @@ Deployment recorded 2026-09-18:
 | CT 124 | `strata-dev` | Development container for the DeepSeek fork of Strata | [Dev container](pro-v620/strata-dev/PLAN.md) |
 | CT 125 | `ds41-strata` | Upstream Strata's DeepSeek-V4.1-Flash engine (`strata-dsv41`), API `:1234` | [Dev container](pro-v620/strata-dev/PLAN.md#ct-125-and-ct-126) |
 | CT 126 | `ds41-llama` | llama.cpp on DeepSeek-V4.1-Flash, the comparison engine; started only for a run | [Dev container](pro-v620/strata-dev/PLAN.md#ct-125-and-ct-126) |
-| CT 140 | `kb-rag` | Markdown KB hybrid search, REST + MCP `:8770` | [Retrieval service](kb-rag/README.md) |
+| CT 140 | `kb-rag` | Markdown KB hybrid search, REST + MCP `:8770`; runs on a second, CPU-only Proxmox host | [Retrieval service](kb-rag/README.md) |
 | CT 200 | `bench-runner` | Disposable OpenAI-compatible endpoint benchmarks | [Benchmark runner](bench-runner/README.md) |
-| VM 300 | `docker-host` | Docker + Compose; MealDeal `:4000`, work-board `:4100`, Project Planner `:4200`, Portainer `:9443` | [Docker host](docker-host/README.md) |
 
 Both V620s have 32 GB VRAM and CPU-direct Gen4 x16 slots on the ROMED8-2T.
 Each has a blower driven by [IPMI fan control](pro-v620/gpu-blower-control/README.md),
@@ -32,11 +31,15 @@ with [undervolting](pro-v620/undervolt/README.md) and a
 | `models` (thin) | BIWIN NV7400 2 TB, NVMe Gen4 x4 | The shared GGUF store |
 | `Synology-Backup` (NFS) | Synology NAS | Weekly vzdump archives |
 
-[`create-models-store.sh`](pro-v620/create-models-store.sh) builds the GGUF store:
-an LVM-thin pool on the whole NVMe, one ext4 volume `models/shared` mounted at
-`/mnt/models`, and `/mnt/models/store`, which CT 120 and CT 123 both bind at
-`/models`. Each GGUF is stored once, and survives `pct destroy`. It is not ZFS: the
-ARC would cache the mmapped GGUFs a second time next to the page cache.
+The GGUF store is an LVM-thin pool on the whole NVMe holding one ext4 volume,
+`models/shared`, sized to the whole pool and mounted at `/mnt/models`. CT 120 and
+CT 123 both bind `/mnt/models/store` (owned by UID 1000) at `/models`. Each GGUF is
+stored once, and survives `pct destroy`. It is not ZFS: the ARC would cache the
+mmapped GGUFs a second time next to the page cache. Its `/etc/fstab` entry:
+
+```text
+/dev/models/shared /mnt/models ext4 defaults,noatime,nofail,x-systemd.before=pve-guests.service 0 2
+```
 
 - A bind mount blocks `pct snapshot` for both containers. vzdump skips it.
 - `llamacpp` is UID 1000 in both containers, so either one can write the store. Don't
@@ -46,7 +49,7 @@ ARC would cache the mmapped GGUFs a second time next to the page cache.
   empty `/models`. `nofail` also drops the mount's boot ordering, so the entry adds
   `x-systemd.before=pve-guests.service` to make guest autostart wait for it.
 - Proxmox offers `models` as a target for guest disks. Keep them off it: the store
-  volume takes nearly the whole pool, so another volume would overcommit it.
+  volume takes the whole pool, so another volume would overcommit it.
 
 `df -h /mnt/models` shows current use.
 
@@ -82,8 +85,6 @@ bash -c "$(wget -qLO - https://raw.githubusercontent.com/marchah/Proxmox/main/be
 - [Idea capture](hermes/idea-capture/README.md): Slack `#ideas` messages saved to the
   Project Planner board by a Hermes plugin on CT 121.
 - [Host notifications](host-notifications/README.md): Proxmox events to Slack.
-- [Docker stacks](docker-host/stacks/): Compose definitions; secrets are Portainer
-  stack environment variables.
 
 Keep downloaded models and generated results out of git. Guest networking and
 backup requirements are in [CLAUDE.md](CLAUDE.md#host-networking-and-backups).
@@ -97,8 +98,6 @@ backup requirements are in [CLAUDE.md](CLAUDE.md#host-networking-and-backups).
 | 140–159 | Databases |
 | 200–299 | Test/temporary containers |
 | 300+ | VMs |
-
-Docker apps share VM 300 and do not consume individual VMIDs.
 
 ## Reference recipes
 

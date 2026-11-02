@@ -23,7 +23,7 @@ ROOT_STORAGE="${ROOT_STORAGE:-local-lvm}"
 ROOT_SIZE_GB="${ROOT_SIZE_GB:-12}"
 MEMORY_MB="${MEMORY_MB:-4096}"
 SWAP_MB="${SWAP_MB:-1024}"
-CORES="${CORES:-4}"
+CORES="${CORES:-2}"
 BRIDGE="${BRIDGE:-vmbr0}"
 IP_CONFIG="${IP_CONFIG:-dhcp}"
 PASSWORD="${PASSWORD:-}"
@@ -160,6 +160,8 @@ create_container() {
 
   log "Creating kb-rag LXC ${VMID} (${LXC_HOSTNAME})"
 
+  # nesting=1 lets Debian 12's systemd (252) sandbox its units in an unprivileged
+  # container; without it systemd-logind, systemd-networkd, logrotate and man-db fail.
   create_args=(
     "${VMID}"
     "${ostemplate}"
@@ -169,6 +171,7 @@ create_container() {
     --swap "${SWAP_MB}"
     --rootfs "${rootfs}"
     --net0 "${net0}"
+    --features nesting=1
     --unprivileged 1
     --onboot "${START_ON_BOOT}"
     --ostype debian

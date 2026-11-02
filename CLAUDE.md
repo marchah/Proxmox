@@ -23,10 +23,11 @@ Use component READMEs for deployment commands, defaults, and measurements.
   llama.cpp on that model; `strata-dev-host.sh dev <ct>` gives GPU 2 to one of them, `restore`
   gives it back to CT 123.
 - [hermes/](hermes/README.md): CT 121 agent gateway.
-- [kb-rag/](kb-rag/README.md): CT 140 retrieval API and corpus policy.
+- [kb-rag/](kb-rag/README.md): CT 140 retrieval API and corpus policy. CT 140 runs on a
+  second Proxmox host, not on this one.
 - [bench-runner/](bench-runner/README.md) and [ansible/](ansible/README.md): endpoint
   benchmarks, telemetry and reports.
-- [docker-host/](docker-host/README.md): VM 300, Compose stacks and Portainer.
+- [docker-host/](docker-host/README.md): provisioner for a Debian VM with Docker, Compose and Portainer.
 - [host-notifications/](host-notifications/README.md): Proxmox notifications to Slack.
 
 The retired Hermes coding loop remains under [hermes/config/](hermes/config/README.md)
@@ -156,7 +157,7 @@ the router; prefer hostnames to copied IP addresses. The host address is
 The weekly backup job runs Sundays at 01:00 to `Synology-Backup` NFS, keeps three
 copies and covers all guests. `/models` is a bind mount of the shared model store,
 which vzdump skips; root disks remain included. To omit rebuildable bulk on a root
-disk, use the backup job's `--exclude-path` setting, e.g. `/opt/kb-rag` for CT 140.
+disk, use the backup job's `--exclude-path` setting.
 
 - `/etc/vzdump.conf` needs `tmpdir: /var/tmp`: the NAS rejects the mapped UID used
   for unprivileged LXC temporary files. Archives still stream to NFS.

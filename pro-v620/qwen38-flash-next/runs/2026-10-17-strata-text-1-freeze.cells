@@ -1,0 +1,12 @@
+# Cells for runs/2026-10-17-strata-text.md, stage A, in CT 123 holding both cards, at PASSES=3.
+# Every cell is the pipeline record's soaked s4p7-pw2 or its serial twin: the split21 layer
+# split, STRATA_MMQ_KQ=1, no suffix drafts, --spec 4 --spec-min-p 0.7. "frozen" adds Strata's
+# switches for byte-identical repeats (docs/DETAILS.md, #152 and #410): STRATA_IQ_MT_MIN=1,
+# --prompt-cache 0, --adapt-swaps 0, --pcie-frac 0. "noguess" keeps pipeline windows and their
+# VRAM layout but never starts a guessed window (STRATA_PIPELINE_THETA=2 is read only with
+# STRATA_PIPELINE_DEBUG=1).
+pw2                 MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+serial-frozen       MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --prompt-cache 0 --adapt-swaps 0 --pcie-frac 0' STRATA_IQ_MT_MIN=1 STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+pw2-frozen          MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2 --prompt-cache 0 --adapt-swaps 0 --pcie-frac 0' STRATA_IQ_MT_MIN=1 STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+serial              MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0' STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
+pw2-frozen-noguess  MODEL_SPEC=4 MODEL_SPEC_MIN_P=0.7 MODEL_EXTRA_ARGS='--suffix-draft 0 --pipeline-windows 2 --prompt-cache 0 --adapt-swaps 0 --pcie-frac 0' STRATA_IQ_MT_MIN=1 STRATA_PIPELINE_DEBUG=1 STRATA_PIPELINE_THETA=2 STRATA_MMQ_KQ=1 MODEL_GPUS=0000:83:00.0,0000:03:00.0 MODEL_LAYER_SPLIT=auto
