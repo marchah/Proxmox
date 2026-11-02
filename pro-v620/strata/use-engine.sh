@@ -27,8 +27,9 @@ DRI_BY_PATH="${DRI_BY_PATH:-/dev/dri/by-path}"
 WATCHDOG_ENV="${WATCHDOG_ENV:-/etc/gpu-thermal-watchdog.env}"
 BAK_DIR="${BAK_DIR:-/root/strata-backups}"
 CT120_ONBOOT_FILE="${BAK_DIR}/120.onboot.before-two-card"
-# CT 124 holds GPU 2 between ../strata-dev/strata-dev-host.sh dev and restore.
-STRATA_DEV_CONF="${STRATA_DEV_CONF:-/etc/pve/lxc/124.conf}"
+# A DeepSeek container (CT 124-126) holds GPU 2 between ../strata-dev/strata-dev-host.sh dev
+# and restore.
+STRATA_DEV_CONFS="${STRATA_DEV_CONFS:-/etc/pve/lxc/124.conf /etc/pve/lxc/125.conf /etc/pve/lxc/126.conf}"
 PORT="${PORT:-1234}"
 LLAMACPP_UNIT=llamacpp-qwen38fn
 STRATA_UNIT=strata-qwen38fn
@@ -52,9 +53,12 @@ assert_owns_gpu2() {
   if grep -q "pci-${GPU2_PCI}-render" /etc/pve/lxc/120.conf 2>/dev/null; then
     die "CT 120 also passes ${GPU2_PCI} through; resolve that before switching engines"
   fi
-  if grep -qE '^dev[0-9]+: /dev/dri/' "$STRATA_DEV_CONF" 2>/dev/null; then
-    die "CT 124 (strata-dev) holds a V620; ../strata-dev/strata-dev-host.sh restore first"
-  fi
+  local conf
+  for conf in $STRATA_DEV_CONFS; do
+    if grep -qE '^dev[0-9]+: /dev/dri/' "$conf" 2>/dev/null; then
+      die "CT $(basename "$conf" .conf) (DeepSeek) holds a V620; ../strata-dev/strata-dev-host.sh restore first"
+    fi
+  done
 }
 
 # Proxmox's device passthrough resolves /dev/kfd's (dynamic) major number at every start, and

@@ -1,38 +1,42 @@
 #!/usr/bin/env bash
-# Hand GPU 2 (0000:83:00.0) between Flash-Next on CT 123 and CT 124 strata-dev, where an
-# agent develops the DeepSeek fork of Strata (PLAN.md). Runs on the Proxmox HOST as root,
-# after create-lxc-strata-dev.sh.
+# Hand GPU 2 (0000:83:00.0) between Flash-Next on CT 123 and one of the DeepSeek containers
+# (PLAN.md): CT 124 strata-dev, where an agent develops the fork of Strata, CT 125
+# ds41-strata (upstream Strata's engine) or CT 126 ds41-llama (llama.cpp). Runs on the
+# Proxmox HOST as root, after their provisioners.
 #
-#   ./strata-dev-host.sh dev       # GPU 2 to CT 124; CT 123 stopped with autostart off
-#   ./strata-dev-host.sh restore   # CT 124 stopped and off the card; Flash-Next back on GPU 2
+#   ./strata-dev-host.sh dev [124|125|126]   # GPU 2 to that container (default 124); CT 123
+#                                            # and the other two stopped with autostart off
+#   ./strata-dev-host.sh restore             # all three stopped and off the card; Flash-Next back
 #   ./strata-dev-host.sh status
 #
 # Both directions keep the lab's two invariants, across a host reboot too: no two
 # containers own a card, and the thermal watchdog maps each card to the workload on it.
-# The agent's GPU runs belong to no unit, so CT 124's map entry is `124:@container`: a
-# trip stops the whole container. Two-card tests come after the one-card work (PLAN.md).
+# The DeepSeek containers' GPU runs belong to no unit, so the map entry is `<ct>:@container`:
+# a trip stops the whole container. Only the container holding GPU 2 starts at boot. The
+# other two can still be started by hand for CPU work, without the card and with
+# SHARED_MEMORY_MIB. Two-card tests come after the one-card work (PLAN.md).
 #
-# CT 124 is unprivileged and takes GPU 2 through Proxmox device entries. Its device cgroup
-# still allows every device no rule denies, and KFD reports every GPU whose render node the
-# cgroup allows; with GPU 1 in that list ROCm 10 fails ("Failed to set mem policy for
-# GPU") and finds no device (../strata/README.md). So `dev` also denies GPU 1's DRM nodes.
+# The containers are unprivileged and take GPU 2 through Proxmox device entries. Their device
+# cgroup still allows every device no rule denies, and KFD reports every GPU whose render
+# node the cgroup allows; with GPU 1 in that list ROCm 10 fails ("Failed to set mem policy
+# for GPU") and finds no device (../strata/README.md). So `dev` also denies GPU 1's DRM nodes.
 set -Eeuo pipefail
 
-readonly VMID="${VMID:-124}"
+readonly DS_CTS="124 125 126"
 readonly CT123=123
-readonly CONF="${CONF:-/etc/pve/lxc/${VMID}.conf}"
-readonly CT120_CONF="${CT120_CONF:-/etc/pve/lxc/120.conf}"
+readonly LXC_CONF_DIR="${LXC_CONF_DIR:-/etc/pve/lxc}"
+readonly CT120_CONF="${CT120_CONF:-${LXC_CONF_DIR}/120.conf}"
 readonly STATE_DIR="${STATE_DIR:-/root/strata-dev}"
 readonly DRI_BY_PATH="${DRI_BY_PATH:-/dev/dri/by-path}"
 readonly WATCHDOG_ENV="${WATCHDOG_ENV:-/etc/gpu-thermal-watchdog.env}"
 readonly KFD_NODE="${KFD_NODE:-/dev/kfd}"
+readonly MEMINFO="${MEMINFO:-/proc/meminfo}"
 readonly GPU1_PCI='0000:03:00.0'
 readonly GPU2_PCI='0000:83:00.0'
-# Left to the host after CT 124's limit and every other running guest's.
+# Left to the host after the GPU 2 container's limit and every other running guest's.
 readonly HOST_RESERVE_MIB="${HOST_RESERVE_MIB:-16384}"
-# CT 124's limit while CT 123 runs, as create-lxc-strata-dev.sh creates it.
+# A DeepSeek container's limit without GPU 2, as the provisioners create it.
 readonly SHARED_MEMORY_MIB="${SHARED_MEMORY_MIB:-65536}"
-readonly ROCMINFO=/opt/rocm/core-10.0/bin/rocminfo
 
 # Saved by the first `dev`, put back and removed by `restore`.
 readonly CT123_ONBOOT_FILE="${STATE_DIR}/123.onboot.before-dev"
@@ -43,13 +47,16 @@ log() { printf '==> %s\n' "$*"; }
 
 require_root() { [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"; }
 ct_state() { pct status "$1" 2>/dev/null | awk '{print $2}'; }
+ct_exists() { [ -n "$(ct_state "$1")" ]; }
 onboot_of() { pct config "$1" | awk -F': ' '$1 == "onboot" {v = $2} END {print v + 0}'; }
+memory_of() { pct config "$1" | awk -F': ' '$1 == "memory" {print $2}'; }
 current_map() { grep -m1 '^GPU_SERVICE_MAP=' "$WATCHDOG_ENV" 2>/dev/null | cut -d= -f2-; }
-holds_gpu() { grep -qE '^dev[0-9]+: /dev/dri/' "$CONF"; }
+conf_of() { echo "${LXC_CONF_DIR}/$1.conf"; }
+holds_gpu() { grep -qE '^dev[0-9]+: /dev/dri/' "$(conf_of "$1")"; }  # <ct>
 
 set_watchdog_map() {  # <map>
   local want="$1"
-  [ -f "$WATCHDOG_ENV" ] || die "${WATCHDOG_ENV} missing: no thermal watchdog to point at CT ${VMID}"
+  [ -f "$WATCHDOG_ENV" ] || die "${WATCHDOG_ENV} missing: no thermal watchdog to point at the container"
   [ "$(current_map)" = "$want" ] && return 0
   cp -a "$WATCHDOG_ENV" "${STATE_DIR}/gpu-thermal-watchdog.env.bak.$(date -u +%Y%m%dT%H%M%SZ)"
   if grep -q '^GPU_SERVICE_MAP=' "$WATCHDOG_ENV"; then
@@ -68,22 +75,29 @@ gpu1_entry() {
   echo "${e:-${GPU1_PCI}=120:llamacpp}"
 }
 
-node_of() {  # <card|render>: GPU 2's real node name, e.g. renderD128
+node_of() {  # <pci> <card|render>: the card's real node name, e.g. renderD128
   local n
-  n="$(basename "$(readlink -f "${DRI_BY_PATH}/pci-${GPU2_PCI}-$1")")"
-  [[ $n =~ ^(card|renderD)[0-9]+$ ]] || die "${DRI_BY_PATH}/pci-${GPU2_PCI}-$1 does not resolve to a DRM node"
+  n="$(basename "$(readlink -f "${DRI_BY_PATH}/pci-$1-$2")")"
+  [[ $n =~ ^(card|renderD)[0-9]+$ ]] || die "${DRI_BY_PATH}/pci-$1-$2 does not resolve to a DRM node"
   echo "$n"
 }
 
-ct_gid() { pct exec "$VMID" -- getent group "$1" | cut -d: -f3; }
+ct_gid() { pct exec "$1" -- getent group "$2" | cut -d: -f3; }  # <ct> <group>
 
-# The memory every running guest but CT 124 and CT 123 leaves, less the host reserve.
-dev_memory_mib() {
+# A two-card setup gives a DeepSeek container GPU 1 as well; this script only moves GPU 2.
+holds_gpu1() {  # <ct>
+  local render card
+  render="$(node_of "$GPU1_PCI" render)"; card="$(node_of "$GPU1_PCI" card)"
+  grep -qE "^dev[0-9]+: /dev/dri/(${render}|${card})," "$(conf_of "$1")"
+}
+
+# The memory every running guest but <ct> and CT 123 leaves, less the host reserve.
+dev_memory_mib() {  # <ct>
   local total others=0 id m
-  total=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024 ))
+  total=$(( $(awk '/^MemTotal:/ {print $2}' "$MEMINFO") / 1024 ))
   for id in $(pct list | awk 'NR > 1 && $2 == "running" {print $1}'); do
-    { [ "$id" = "$VMID" ] || [ "$id" = "$CT123" ]; } && continue
-    m="$(pct config "$id" | awk -F': ' '$1 == "memory" {print $2}')"
+    { [ "$id" = "$1" ] || [ "$id" = "$CT123" ]; } && continue
+    m="$(memory_of "$id")"
     others=$(( others + ${m:-512} ))
   done
   for id in $(qm list | awk 'NR > 1 && $3 == "running" {print $1}'); do
@@ -96,85 +110,111 @@ dev_memory_mib() {
 # /dev/kfd and GPU 2's nodes at their real names: HIP opens /dev/dri/renderD*, and a
 # different name inside the container breaks DRM authentication (../README.md).
 # Returns 1 when it changed the entries, which a container restart applies.
-attach_gpu2() {
-  local render card rgid vgid want have
-  render="$(node_of render)"; card="$(node_of card)"
-  rgid="$(ct_gid render)"; vgid="$(ct_gid video)"
-  [[ $rgid =~ ^[0-9]+$ && $vgid =~ ^[0-9]+$ ]] || die "CT ${VMID} has no render or video group"
+attach_gpu2() {  # <ct>
+  local ct="$1" conf render card rgid vgid want have
+  conf="$(conf_of "$ct")"
+  render="$(node_of "$GPU2_PCI" render)"; card="$(node_of "$GPU2_PCI" card)"
+  rgid="$(ct_gid "$ct" render)"; vgid="$(ct_gid "$ct" video)"
+  [[ $rgid =~ ^[0-9]+$ && $vgid =~ ^[0-9]+$ ]] || die "CT ${ct} has no render or video group"
   want="$(printf 'dev0: %s,gid=%s,mode=0660\ndev1: /dev/dri/%s,gid=%s,mode=0660\ndev2: /dev/dri/%s,gid=%s,mode=0660' \
     "$KFD_NODE" "$rgid" "$render" "$rgid" "$card" "$vgid")"
-  have="$(grep -E '^dev[0-9]+: ' "$CONF" || true)"
+  have="$(grep -E '^dev[0-9]+: ' "$conf" || true)"
   [ "$have" = "$want" ] && return 0
-  [ -z "$(grep -vE '^dev[0-9]+: (/dev/kfd|/dev/dri/)' <<<"$have" || true)" ] \
-    || die "CT ${VMID} passes through other devices; review ${CONF}"
-  detach_gpus
-  pct set "$VMID" --dev0 "${KFD_NODE},gid=${rgid},mode=0660" \
+  [ -z "$(grep -vE "^dev[0-9]+: (${KFD_NODE}|/dev/dri/)" <<<"$have" || true)" ] \
+    || die "CT ${ct} passes through other devices; review ${conf}"
+  detach_gpus "$ct"
+  pct set "$ct" --dev0 "${KFD_NODE},gid=${rgid},mode=0660" \
     --dev1 "/dev/dri/${render},gid=${rgid},mode=0660" --dev2 "/dev/dri/${card},gid=${vgid},mode=0660"
-  log "GPU 2 (${GPU2_PCI}) -> CT ${VMID} as ${render}, ${card}, with /dev/kfd"
+  log "GPU 2 (${GPU2_PCI}) -> CT ${ct} as ${render}, ${card}, with /dev/kfd"
   return 1
 }
 
 # Rewrite in place from a filtered copy: /etc/pve is the cluster filesystem.
-strip_drm_denies() {
-  grep -v '^lxc.cgroup2.devices.deny: c 226:' "$CONF" >"${STATE_DIR}/${VMID}.conf.new" || true
-  cat "${STATE_DIR}/${VMID}.conf.new" >"$CONF"
-  rm -f "${STATE_DIR}/${VMID}.conf.new"
+strip_drm_denies() {  # <ct>
+  local conf
+  conf="$(conf_of "$1")"
+  grep -q '^lxc.cgroup2.devices.deny: c 226:' "$conf" || return 0
+  grep -v '^lxc.cgroup2.devices.deny: c 226:' "$conf" >"${STATE_DIR}/$1.conf.new" || true
+  cat "${STATE_DIR}/$1.conf.new" >"$conf"
+  rm -f "${STATE_DIR}/$1.conf.new"
 }
 
 # Deny GPU 1's render and card nodes, at their current minors. Returns 1 when it changed
 # the rules, which a container restart applies.
-deny_gpu1() {
-  local kind node want="" have
+deny_gpu1() {  # <ct>
+  local ct="$1" conf kind node want="" have
+  conf="$(conf_of "$ct")"
   for kind in render card; do
     node="$(readlink -f "${DRI_BY_PATH}/pci-${GPU1_PCI}-${kind}")"
-    [ -c "$node" ] || die "${DRI_BY_PATH}/pci-${GPU1_PCI}-${kind} does not resolve to a device node"
+    [ "$(stat -L -c %F "$node" 2>/dev/null)" = "character special file" ] \
+      || die "${DRI_BY_PATH}/pci-${GPU1_PCI}-${kind} does not resolve to a device node"
     want+="lxc.cgroup2.devices.deny: c 226:$((16#$(stat -c %T "$node"))) rwm"$'\n'
   done
-  have="$(grep '^lxc.cgroup2.devices.deny: c 226:' "$CONF" || true)"
+  have="$(grep '^lxc.cgroup2.devices.deny: c 226:' "$conf" || true)"
   [ "${have}"$'\n' = "$want" ] && return 0
-  cp -a "$CONF" "${STATE_DIR}/${VMID}.conf.bak.$(date -u +%Y%m%dT%H%M%SZ)"
-  strip_drm_denies
-  printf '%s' "$want" >>"$CONF"
-  log "CT ${VMID} denies GPU 1's DRM nodes: $(grep -o 'c 226:[0-9]*' <<<"$want" | paste -sd' ' -)"
+  cp -a "$conf" "${STATE_DIR}/${ct}.conf.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+  strip_drm_denies "$ct"
+  printf '%s' "$want" >>"$conf"
+  log "CT ${ct} denies GPU 1's DRM nodes: $(grep -o 'c 226:[0-9]*' <<<"$want" | paste -sd' ' -)"
   return 1
 }
 
-detach_gpus() {
+detach_gpus() {  # <ct>
   local keys
-  keys="$(grep -E '^dev[0-9]+: (/dev/kfd|/dev/dri/)' "$CONF" | cut -d: -f1 || true)"
+  keys="$(grep -E "^dev[0-9]+: (${KFD_NODE}|/dev/dri/)" "$(conf_of "$1")" | cut -d: -f1 || true)"
   [ -n "$keys" ] || return 0
-  pct set "$VMID" --delete "$(paste -sd, - <<<"$keys")"
-  log "CT ${VMID}: removed $(paste -sd' ' - <<<"$keys")"
+  pct set "$1" --delete "$(paste -sd, - <<<"$keys")"
+  log "CT $1: removed $(paste -sd' ' - <<<"$keys")"
 }
 
-restart_ct124() {
-  log "restarting CT ${VMID}"
-  if [ "$(ct_state "$VMID")" = running ]; then pct shutdown "$VMID" --timeout 60 || pct stop "$VMID"; fi
-  pct start "$VMID"
+stop_ct() {  # <ct>
+  [ "$(ct_state "$1")" = running ] || return 0
+  log "stopping CT $1"
+  pct shutdown "$1" --timeout 60 || pct stop "$1"
+}
+
+start_ct() {  # <ct>
+  [ "$(ct_state "$1")" = running ] || { log "starting CT $1"; pct start "$1"; }
   for _ in $(seq 1 30); do
-    pct exec "$VMID" -- test -d /run/systemd/system 2>/dev/null && return 0
+    pct exec "$1" -- test -d /run/systemd/system 2>/dev/null && return 0
     sleep 2
   done
-  die "CT ${VMID} did not come back"
+  die "CT $1 did not come up"
 }
 
-hip_devices() {  # the GPUs ROCm lists in CT 124 for the agent user
-  pct exec "$VMID" -- runuser -u agent -- "$ROCMINFO" 2>/dev/null \
+hip_devices() {  # <ct>: the GPUs ROCm lists for the agent user, on its login PATH
+  pct exec "$1" -- runuser -u agent -- bash -lc rocminfo 2>/dev/null \
     | grep -cE '^[[:space:]]+Name:[[:space:]]+gfx[0-9a-f]+[[:space:]]*$' || true
 }
 
-preflight_dev() {
-  [ "$(ct_state "$VMID")" = running ] || die "CT ${VMID} is not running; create-lxc-strata-dev.sh starts it"
+# A DeepSeek container without the card: stopped, no autostart, the shared memory limit,
+# no GPU entries and no deny rules.
+release() {  # <ct>
+  ct_exists "$1" || return 0
+  stop_ct "$1"
+  pct set "$1" --onboot 0 --memory "$SHARED_MEMORY_MIB"
+  detach_gpus "$1"
+  strip_drm_denies "$1"
+}
+
+preflight_dev() {  # <ct>
+  local ct="$1" other
+  [[ " ${DS_CTS} " == *" ${ct} "* ]] || die "dev takes one of: ${DS_CTS}"
+  ct_exists "$ct" || die "CT ${ct} does not exist; its provisioner creates it (PLAN.md)"
   if grep -q "pci-${GPU2_PCI}-render" "$CT120_CONF" 2>/dev/null; then
     die "CT 120 holds GPU 2 (two-card cutover); ../qwen38-flash-next/ct120-cutover.sh to-qwen36 first"
   fi
+  for other in $DS_CTS; do
+    ct_exists "$other" || continue
+    ! holds_gpu1 "$other" || die "CT ${other} holds GPU 1 (two-card setup); undo it first"
+  done
   [ "$(stat -L -c %F "$KFD_NODE" 2>/dev/null)" = "character special file" ] || die "the host has no ${KFD_NODE}"
-  node_of render >/dev/null; node_of card >/dev/null
+  node_of "$GPU2_PCI" render >/dev/null; node_of "$GPU2_PCI" card >/dev/null
 }
 
-dev() {
-  local restart=false mem
-  preflight_dev
+dev() {  # <ct>
+  local ct="$1" other restart=false mem
+  preflight_dev "$ct"
   install -d -m 0700 "$STATE_DIR"
   [ -f "$CT123_ONBOOT_FILE" ] || onboot_of "$CT123" >"$CT123_ONBOOT_FILE"
   [ -f "$MAP_FILE" ] || current_map >"$MAP_FILE"
@@ -185,28 +225,30 @@ dev() {
   fi
   pct set "$CT123" --onboot 0
   log "CT ${CT123} stopped, autostart off (was onboot=$(cat "$CT123_ONBOOT_FILE"))"
+  for other in $DS_CTS; do
+    [ "$other" = "$ct" ] || release "$other"
+  done
 
-  set_watchdog_map "$(gpu1_entry),${GPU2_PCI}=${VMID}:@container"
-  attach_gpu2 || restart=true
-  deny_gpu1 || restart=true
-  mem="$(dev_memory_mib)"
-  [ "$mem" -gt "$SHARED_MEMORY_MIB" ] || die "only ${mem} MiB left for CT ${VMID}; check the other guests' limits"
-  pct set "$VMID" --memory "$mem" --onboot 1
-  log "CT ${VMID} memory -> ${mem} MiB"
-  [ "$restart" = true ] && restart_ct124
-  [ "$(hip_devices)" = 1 ] || die "ROCm does not list exactly one GPU in CT ${VMID}"
+  set_watchdog_map "$(gpu1_entry),${GPU2_PCI}=${ct}:@container"
+  # The device entries take the container's own group IDs.
+  start_ct "$ct"
+  attach_gpu2 "$ct" || restart=true
+  deny_gpu1 "$ct" || restart=true
+  mem="$(dev_memory_mib "$ct")"
+  [ "$mem" -gt "$SHARED_MEMORY_MIB" ] || die "only ${mem} MiB left for CT ${ct}; check the other guests' limits"
+  pct set "$ct" --memory "$mem" --onboot 1
+  log "CT ${ct} memory -> ${mem} MiB, autostart on"
+  if [ "$restart" = true ]; then
+    stop_ct "$ct"
+    start_ct "$ct"
+  fi
+  [ "$(hip_devices "$ct")" = 1 ] || die "ROCm does not list exactly one GPU in CT ${ct}"
 }
 
 restore() {
-  local onboot=1
+  local ct onboot=1
   install -d -m 0700 "$STATE_DIR"
-  if [ "$(ct_state "$VMID")" = running ]; then
-    log "stopping CT ${VMID}"
-    pct shutdown "$VMID" --timeout 60 || pct stop "$VMID"
-  fi
-  pct set "$VMID" --onboot 0 --memory "$SHARED_MEMORY_MIB"
-  detach_gpus
-  strip_drm_denies
+  for ct in $DS_CTS; do release "$ct"; done
   if [ -s "$MAP_FILE" ]; then
     set_watchdog_map "$(cat "$MAP_FILE")"
   else
@@ -217,17 +259,20 @@ restore() {
   log "starting CT ${CT123}; its enabled Flash-Next engine loads"
   pct start "$CT123"
   rm -f "$CT123_ONBOOT_FILE" "$MAP_FILE"
-  log "CT ${VMID} stays stopped; start it without the GPU, or run dev again"
+  log "CT ${DS_CTS// /, } stay stopped; start one without the GPU, or run dev again"
 }
 
 status() {
-  local d pci
-  printf -- '--- CT %s: %s, onboot=%s, memory=%s MiB ---\n' "$VMID" "$(ct_state "$VMID")" \
-    "$(onboot_of "$VMID")" "$(pct config "$VMID" | awk -F': ' '$1 == "memory" {print $2}')"
-  grep -E '^(dev[0-9]+: |lxc.cgroup2.devices.deny: )' "$CONF" | sed 's/^/  /' || echo "  (no devices)"
-  if [ "$(ct_state "$VMID")" = running ] && holds_gpu; then
-    echo "  ROCm lists $(hip_devices) GPU(s)"
-  fi
+  local ct d pci
+  for ct in $DS_CTS; do
+    ct_exists "$ct" || continue
+    printf -- '--- CT %s: %s, onboot=%s, memory=%s MiB ---\n' "$ct" "$(ct_state "$ct")" \
+      "$(onboot_of "$ct")" "$(memory_of "$ct")"
+    grep -E '^(dev[0-9]+: |lxc.cgroup2.devices.deny: )' "$(conf_of "$ct")" | sed 's/^/  /' || echo "  (no devices)"
+    if [ "$(ct_state "$ct")" = running ] && holds_gpu "$ct"; then
+      echo "  ROCm lists $(hip_devices "$ct") GPU(s)"
+    fi
+  done
   printf -- '--- CT %s: %s, onboot=%s ---\n' "$CT123" "$(ct_state "$CT123")" "$(onboot_of "$CT123")"
   echo "--- watchdog map: $(current_map) ---"
   for pci in "$GPU1_PCI" "$GPU2_PCI"; do
@@ -239,9 +284,9 @@ status() {
 }
 
 case "${1:-status}" in
-  dev) require_root; dev ;;
+  dev) require_root; dev "${2:-124}" ;;
   restore) require_root; restore ;;
   status) ;;
-  *) die "usage: $0 {dev|restore|status}" ;;
+  *) die "usage: $0 {dev [124|125|126]|restore|status}" ;;
 esac
 status

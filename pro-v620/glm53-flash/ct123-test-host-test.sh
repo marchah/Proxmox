@@ -144,7 +144,7 @@ set_unit() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >>"$T/units"; }
 run() {  # <action>
   PATH="$T/bin:$PATH" CONF="$T/lxc/123.conf" STATE_DIR="$T/state" WATCHDOG_ENV="$T/wd.env" \
     DRI_BY_PATH="$T/dri" CPU_ONLINE="$T/cpu-online" KFD_NODE="$T/kfd" \
-    STRATA_DEV_CONF="$T/lxc/124.conf" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
+    STRATA_DEV_CONFS="$T/lxc/124.conf $T/lxc/125.conf $T/lxc/126.conf" "$SCRIPT" "$1" >>"$T/out.log" 2>&1
 }
 tail_log() { echo "--- tail of out.log ---"; tail -12 "$T/out.log" | sed 's/^/      /'; }
 onboot()   { awk -F': ' '$1 == "onboot" {print $2}' "$T/lxc/$1.conf"; }
@@ -332,6 +332,13 @@ rm -rf "$T"
 echo "=== 11. TEST_ENGINE=maya one-card refuses with a dangling DRM link, and changes nothing ==="
 new_host; rm "$T/dri/card1"
 TEST_ENGINE=maya run one-card && bad "set up Maya with GPU 2's card node missing" || ok "refused"
+untouched
+rm -rf "$T"
+
+echo "=== 12. one-card refuses while a DeepSeek container (CT 125) holds GPU 2, and changes nothing ==="
+new_host; echo 'dev1: /dev/dri/renderD128,gid=993,mode=0660' >"$T/lxc/125.conf"
+run one-card && bad "set up a test while CT 125 held GPU 2" || ok "refused"
+grep -q 'CT 125 (DeepSeek) holds a V620' "$T/out.log" && ok "the refusal names CT 125" || bad "the refusal does not name CT 125"
 untouched
 rm -rf "$T"
 

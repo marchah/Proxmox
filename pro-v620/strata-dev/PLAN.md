@@ -1,7 +1,7 @@
 # Strata fork development container (CT 124): plan
 
-Plan written 2026-10-17. Nothing here is built or deployed. It describes the container in
-which an AI agent implements the [DeepSeek-V4.1-Flash fork](../strata/DEEPSEEK-V4.1-PLAN.md)
+Plan written 2026-10-17. CT 124 was built that day, and CT 125 and CT 126 on 2026-10-27
+([below](#ct-125-and-ct-126)). It describes the container in which an AI agent implements the [DeepSeek-V4.1-Flash fork](../strata/DEEPSEEK-V4.1-PLAN.md)
 of Strata. The [MiMo-V2.6-Pro-RL fork](../mimo-v26-pro/STRATA-REFACTOR-PLAN.md) waits until
 the host has substantially more VRAM.
 
@@ -20,7 +20,7 @@ reach.
 | Card | GPU 2, `0000:83:00.0`, taken from CT 123 | CT 120 keeps GPU 1, so Hermes keeps its model. The owner accepted Flash-Next going offline (2026-10-17). |
 | Agent user | `agent`, with passwordless sudo inside the container | The container is the boundary for files and processes: it can install packages and run anything inside it. |
 | Persistence | A tmux session started by systemd at boot, running the OpenCode TUI | An SSH drop detaches the owner and stops nothing. |
-| Thermal safety | A trip on a card CT 124 holds stops the whole container | The watchdog can only stop services, and the agent's test runs are not services. |
+| Thermal safety | A trip on the card a DeepSeek container holds stops the whole container | The watchdog can only stop services, and the agent's test runs are not services. |
 | GitHub | A private repository under the owner's account; a fine-grained token for that one repository | No GitHub fork is involved, so the one-fork-per-account limit and `gh`'s upstream default do not apply. |
 | Memory | A ceiling that fits a one-card DeepSeek Q2 run, Engram included, beside the running guests | The agent reaches every one-card step without the owner stopping other guests. |
 | Card order | Everything works on GPU 2 alone, DeepSeek Q2 and then Q4, before any two-card work (DeepSeek step 8) | Two-card runs stop CT 120; doing them last keeps whole-host runs few. |
@@ -28,7 +28,8 @@ reach.
 
 ## What it costs the lab
 
-- **Flash-Next is offline** while CT 124 holds GPU 2: CT 123 is stopped with autostart off.
+- **Flash-Next is offline** while a DeepSeek container holds GPU 2: CT 123 is stopped with
+  autostart off.
   `gpu2:1234` and `make bench GPU=2` are unavailable. `strata-dev-host.sh restore` gives
   the card back to the Flash-Next engine that was enabled before (llama.cpp or Strata).
 - **A bad kernel can take the card down.** Experimental HIP kernels can hang GPU 2. The 10 s
@@ -37,39 +38,64 @@ reach.
 - **Two-card tests borrow GPU 1.** They stop CT 120 (Hermes loses its model) and turn its
   autostart off, as `ct123-test-host.sh two-card` does. They start only after the one-card
   work is complete.
-- **Disk.** About 200 GB of `local-lvm` for ROCm, several Strata builds, ccache and the Python
-  reference implementations. `pvesm status` shows what is free.
+- **Disk.** 200 GB of `local-lvm` for CT 124: ROCm, several Strata builds, ccache and the
+  Python reference implementations; 100 GB each for CT 125 and CT 126. `pvesm status` shows
+  what is free.
 
 ## Container
 
 | Setting | Value | Note |
 | --- | --- | --- |
 | VMID, hostname | 124, `strata-dev` | AI range 120–139. Fixed MAC, reserved on the router, as for coder-runner. |
-| Template | Ubuntu 24.04 | AMD's ROCm 10.0 repository targets `ubuntu2404`, as in CT 123. |
+| Template | Ubuntu 24.04, the newest build of its standard template | AMD's ROCm repository has a path per Ubuntu release (`ubuntu2404`, `ubuntu2604`); the provisioners take it from the container's release. |
 | Privilege | Unprivileged, `lxc.prlimit.memlock: unlimited` | CT 123 is privileged (the llama-swap provisioner created it), so HIP with page-locked memory in an unprivileged container is unverified here. Fall back to privileged only if KFD or pinning fails, and record why. |
-| Cores | 24 | As CT 123. Owner tests set an explicit `TEST_CPUSET` (siblings n/n+32). |
-| Memory | 64 GiB while CT 123 still runs; raised when GPU 2 moves (see [Memory](#memory)); swap 0 | The fork plans reject runs that swap. |
+| Cores | 48: `lxc.cgroup2.cpuset.cpus: 8-31,40-63`, cores 8-31 and their SMT siblings, shared with CT 125 and CT 126 | Strata's engine pins one thread per physical core. CT 120 and CT 121 keep cores 0-7: Proxmox's balancer moves `cores` guests off the CPUs of a running container with its own cpuset. |
+| Memory | 64 GiB without GPU 2; raised when it gets the card (see [Memory](#memory)); swap 0 | The fork plans reject runs that swap. |
 | Root disk | 200 GB on `local-lvm` | |
 | Devices | `dev0: /dev/kfd`; `dev1`, `dev2`: GPU 2's render and card nodes at their real names; group `render` (`video` for the card), mode 0660; `lxc.cgroup2.devices.deny` for GPU 1's render and card nodes | An unprivileged container's device cgroup allows every device no rule denies, and KFD reports every GPU whose render node the cgroup allows. With GPU 1 visible, ROCm 10 fails with `Failed to set mem policy for GPU` and finds no device ([Strata README](../strata/README.md)); denying GPU 1's nodes leaves one gfx1030 (2026-10-17). Names and minors come from `/dev/dri/by-path/` at every switch. |
-| Mounts | `mp0: /mnt/models/store,mp=/models,ro=1`; `mp1: /mnt/models/store/dev,mp=/models-dev` | The agent reads every GGUF and cannot change one. `/models-dev` holds derived files: fixtures, manifests, converted tables. |
-| onboot | 1 while it holds GPU 2, 0 after `restore` | |
+| Mounts | `mp0: /mnt/models/store,mp=/models,ro=1`; `mp1: /mnt/models/store/dev,mp=/models-dev`; `mp2: /mnt/ds41-telemetry,mp=/owner-telemetry,ro=1` | The agent reads every GGUF and cannot change one. `/models-dev` holds derived files: fixtures, manifests, converted tables. `/mnt/ds41-telemetry` is a 64 MiB host tmpfs from `/etc/fstab`, where the owner's start gate publishes host telemetry. |
+| onboot | 1 while it holds GPU 2, 0 otherwise | Only the card's owner comes back after a host reboot. |
 | Firewall | `firewall=1` and rules written; not enforced while the datacenter firewall is off | See [Network](#network). |
 
 [`create-lxc-strata-dev.sh`](create-lxc-strata-dev.sh) creates it without the GPU, and
-installs: ROCm `amdrocm-core-dev10.0-gfx1030=10.0.0-4`, pinned to the values in
-`../strata/strata-qwen38fn.env` and on every login's paths; build tools, ccache, Python venv
-support, `gh` and tmux from Ubuntu; the latest OpenCode 2. The agent makes its own Python
+installs: the newest ROCm series for gfx1030 in AMD's repository
+(`amdrocm-core-dev<series>-gfx1030`, under `/opt/rocm/core-<series>`, on every login's paths);
+build tools, ccache, Python venv support, `gh` and tmux from Ubuntu; the latest OpenCode 2.
+A re-run keeps the series a container has; a newer one installs beside it. CT 124-126 run
+10.0.0-4, held since their install; AMD published 10.1.0-3 since. The agent makes its own Python
 environments, such as CPU PyTorch for the reference implementations. The DeepSeek checkout
 lives in `/opt/strata-ds41/`, owned by `agent`.
 
+## CT 125 and CT 126
+
+[strata-ds41 #211](https://github.com/marchah/strata-ds41/issues/211) measures upstream
+Strata's `strata-dsv41` engine and llama.cpp on the same DeepSeek-V4.1-Flash file, each in
+its own container, apart from CT 124's development trees (#212):
+
+| CT | Hostname | Runs |
+| --- | --- | --- |
+| 125 | `ds41-strata` | Upstream Strata's `strata-dsv41` and its server (API `:1234`); `marchah/strata-v620`, a fork of it, is developed and served here since 2026-10-27 |
+| 126 | `ds41-llama` | llama.cpp, the comparison engine |
+
+[`create-lxc-ds41-engine.sh`](create-lxc-ds41-engine.sh) `strata` or `llama` creates them as
+copies of CT 124, with these differences:
+
+- 100 GB root disk; MACs `BC:24:11:C0:DE:25` and `:26`.
+- No OpenCode, `gh` or GitHub credentials. Results come back through `/models-dev` and are
+  committed from CT 124 or the Mac.
+- The user `agent` logs in with CT 124's authorized keys.
+- CT 126 has CT 124's firewall rules. CT 125 has none: it serves its API to the LAN.
+
+`./strata-dev-host.sh dev 125` or `dev 126` gives one of them GPU 2.
+
 ## Memory
 
-The host has about 503.6 GiB usable. CT 124's limit, the limits of the other running guests
-and a 16 GiB host reserve fit within it. On 2026-10-17 the others were CT 120 16 GiB,
-CT 121 8 GiB, CT 140 4 GiB and VM 300 4 GiB: 32 GiB. So CT 124 runs at 64 GiB while CT 123
-(120 GiB) still serves, enough for builds and fixtures, and gets about 455 GiB once
-`strata-dev-host.sh dev` stops CT 123. Keep the engine's `--memory-limit-mib` below the
-container limit by the reserve the DeepSeek plan declares.
+The host has about 503.6 GiB usable. The limit of the DeepSeek container holding GPU 2, the
+limits of the other running guests and a 16 GiB host reserve fit within it.
+`strata-dev-host.sh dev` sets that container's limit to what the others leave: 474,679 MiB
+with CT 120 (16 GiB) and CT 121 (8 GiB) running, as on 2026-11-02. The containers without the
+card run at 64 GiB, enough for builds and fixtures. Keep the engine's `--memory-limit-mib`
+below the container limit by the reserve the DeepSeek plan declares.
 
 The DeepSeek plan's provisional Q2 budget is 384–416 GiB, with routed experts (142.4 GiB)
 and Engram (188.8 GiB) both in RAM; step 1's ledger replaces it. Q4 does not fit with
@@ -84,22 +110,27 @@ near 300 GiB.
 [`strata-dev-host.sh`](strata-dev-host.sh), on the host:
 
 ```bash
-./strata-dev-host.sh dev        # GPU 2 to CT 124; CT 123 stopped with autostart off
-./strata-dev-host.sh restore    # CT 124 stopped and off the card; CT 123 started on GPU 2
+./strata-dev-host.sh dev [124|125|126]   # GPU 2 to that container (default 124)
+./strata-dev-host.sh restore             # CT 124-126 off the card; CT 123 started on GPU 2
 ./strata-dev-host.sh status
 ```
 
-`dev` passes `/dev/kfd` and GPU 2's render and card nodes into CT 124 as device entries,
-at their real names, denies GPU 1's nodes in its device cgroup, sets CT 124's memory (see [Memory](#memory)), maps GPU 2 to
-`124:@container` in the watchdog, and checks that ROCm lists exactly one GPU in CT 124.
+`dev` stops CT 123 and turns its autostart off, and releases the other two DeepSeek
+containers: stopped, autostart off, 64 GiB, no GPU entries. It maps GPU 2 to `<ct>:@container`
+in the watchdog, then passes `/dev/kfd` and GPU 2's render and card nodes into the container
+as device entries, at their real names, denies GPU 1's nodes in its device cgroup, sets its
+memory (see [Memory](#memory)) and autostart, and checks that ROCm lists exactly one GPU.
 Both directions keep the lab's two invariants, including across a host reboot: no two
-containers own a card, and the watchdog maps each card to the workload on it. CT 123's
-onboot and the watchdog map from before the first `dev` live in `/root/strata-dev/`, and
-`restore` puts them back. A `two-card` mode, which also takes GPU 1 from CT 120, comes with
-the owner's two-card tests.
+containers own a card, and the watchdog maps each card to the workload on it. A released
+container can be started by hand for CPU work. CT 123's onboot and the watchdog map from
+before the first `dev` live in `/root/strata-dev/`, and `restore` puts them back. A
+`two-card` mode, which also takes GPU 1 from CT 120, comes with the owner's two-card tests;
+`dev` refuses while a DeepSeek container holds GPU 1. `strata-dev-host-test.sh` runs it
+against a mocked host.
 
 `use-engine.sh`, `ct123-test-host.sh` and `ct120-cutover.sh` refuse to change the cards while
-CT 124 holds one, so a habitual `use-engine.sh strata` cannot give GPU 2 to two containers.
+CT 124, 125 or 126 holds one, so a habitual `use-engine.sh strata` cannot give GPU 2 to two
+containers.
 
 ## Thermal safety
 
@@ -108,11 +139,12 @@ and it re-issues the stop every poll while the card is hot. The agent runs its G
 ordinary processes, which no unit owns. So `gpu-thermal-watchdog.sh` gets one new map form: a
 service named `@container` stops the container itself with `pct stop`. An already-stopped
 container counts as stopped, so the repeated stop logs no failures. In dev mode the map is
-`0000:03:00.0=120:llamacpp,0000:83:00.0=124:@container`; in `two-card` mode both cards
-map to `124:@container`.
+`0000:03:00.0=120:llamacpp,0000:83:00.0=<ct>:@container`; in `two-card` mode both cards
+map to `<ct>:@container`.
 
 A trip ends the agent's session as well. Its work is on GitHub, and OpenCode keeps its
-sessions on disk. As for any trip, the owner checks cooling before starting CT 124 again.
+sessions on disk. As for any trip, the owner checks cooling before starting the container
+again.
 
 ## Agent runtime: OpenCode 2
 
