@@ -32,7 +32,8 @@ with [undervolting](pro-v620/undervolt/README.md) and a
 
 The GGUF store is an LVM-thin pool on the whole NVMe holding one ext4 volume,
 `models/shared`, sized to the whole pool and mounted at `/mnt/models`. CT 120 and
-CT 123 both bind `/mnt/models/store` (owned by UID 1000) at `/models`. Each GGUF is
+CT 123 both bind `/mnt/models/store` (owned by UID 1000) at `/models`; the unprivileged
+CT 125 and CT 126 bind it read-only. Each GGUF is
 stored once, and survives `pct destroy`. It is not ZFS: the ARC would cache the
 mmapped GGUFs a second time next to the page cache. Its `/etc/fstab` entry:
 
