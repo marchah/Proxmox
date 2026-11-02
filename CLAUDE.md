@@ -75,7 +75,7 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
 | PCI address | Workload | Blower |
 | --- | --- | --- |
 | `0000:03:00.0` | CT 120 `llamacpp` | FAN5 |
-| `0000:83:00.0` | CT 125 `strata-deepseek` since 2026-10-31; CT 126 or CT 123 `llamacpp-qwen38fn` after `ds41-host.sh take 126` or `restore` | FAN4 |
+| `0000:83:00.0` | CT 125 `strata-deepseek` since 2026-10-31; CT 126 after `ds41-host.sh take 126`, CT 123's Flash-Next unit after `restore` | FAN4 |
 
 - The two cards are not interchangeable for measurements: compare a result only with
   others taken on the same card.
