@@ -1,12 +1,16 @@
 # Radeon Pro V620
 
 The ROMED8-2T host has two Radeon Pro V620s (Navi 21 / gfx1030, 32 GB each),
-both on CPU-direct Gen4 x16 slots. Deployment recorded 2026-09-18:
+both on CPU-direct Gen4 x16 slots. Deployment since 2026-10-31:
 
 | PCI address | Container | Runtime |
 | --- | --- | --- |
 | `0000:03:00.0` | CT 120 `llamacpp` | Qwen3.6-35B-A3B, `llamacpp.service`, API `:1234` |
-| `0000:83:00.0` | CT 123 `gpu2` | [Qwen3.8-Flash-Next](qwen38-flash-next/README.md), `llamacpp-qwen38fn.service`, API `:1234` |
+| `0000:83:00.0` | CT 125 `ds41-strata` | [DeepSeek-V4.1-Flash](ds41/README.md), `strata-deepseek.service`, API `:1234` |
+
+CT 123 `gpu2` ([Qwen3.8-Flash-Next](qwen38-flash-next/README.md)) served `0000:83:00.0`
+from 2026-09-18 and is stopped while CT 125 or CT 126 holds the card;
+`ds41/ds41-host.sh restore` gives it back.
 
 Each card has a 9733 blower controlled by [gpu-blower-control](gpu-blower-control/README.md)
 over IPMI: FAN5 cools `03:00.0`, FAN4 cools `83:00.0`. Both run at stock voltage: the

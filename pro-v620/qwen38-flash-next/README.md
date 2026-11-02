@@ -3,7 +3,9 @@
 Qwen3.8-Flash-Next (`qwen4exp`, 180B total / 6B active) uses four `UD-Q4_K_XL`
 GGUF shards totaling 111.33 GB. Its PLE table and part of the routed experts stay
 in system RAM. The deployment recorded 2026-09-18 is **CT 123 `gpu2`, one V620
-at `0000:83:00.0`**, leaving CT 120's Qwen3.6 service on the other card.
+at `0000:83:00.0`**, leaving CT 120's Qwen3.6 service on the other card. CT 123 is
+stopped: since 2026-10-31 that card serves DeepSeek-V4.1-Flash from CT 125
+([ds41](../ds41/README.md)), and `ds41-host.sh restore` gives it back.
 
 ## Shipped configurations
 
