@@ -68,15 +68,16 @@ MODEL_REQUEST_TIMEOUT_SECONDS="${MODEL_REQUEST_TIMEOUT_SECONDS:-1800}"
 # installer is still fetched from that tag's IMMUTABLE raw URL and run with `--branch <tag>`,
 # so the installer and the checked-out code are the same tagged commit.
 #
-# HERMES_VERSION=<tag>  pin an explicit release for a reproducible rebuild (e.g. v2026.7.20).
-#                       Use the GIT TAG, NOT the "v0.19.0" marketing title on the release
-#                       page — that is not a valid git ref.
+# HERMES_VERSION=<tag>  pin an explicit release for a reproducible rebuild (e.g. v0.22.5).
+#                       The install step passes v0.22 installer flags (--dir,
+#                       --skip-computer-use), so a tag older than v0.22.0 needs this
+#                       script's earlier revision.
 # HERMES_INSTALLER_SHA256=<sha>
 #                       optional, and only meaningful with an explicit tag: verify that tag's
 #                       installer before running it as root. Cannot be pre-known for `latest`.
 #                         curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/<tag>/scripts/install.sh | sha256sum
-# HERMES_VERSION=head   stream the mutable upstream installer at main HEAD — UNVERIFIED (no
-#                       checksum, and no release gate on a repo that lands ~2k commits per
+# HERMES_VERSION=head   install main HEAD (the hosted installer with --channel main) — UNVERIFIED
+#                       (no checksum, and no release gate on a repo that lands ~2k commits per
 #                       release). Testing only.
 HERMES_VERSION="${HERMES_VERSION:-latest}"
 HERMES_INSTALLER_SHA256="${HERMES_INSTALLER_SHA256:-}"
@@ -88,7 +89,7 @@ API_SERVER_KEY="${API_SERVER_KEY:-}"
 API_SERVER_PORT="${API_SERVER_PORT:-8642}"
 
 # --- Browser automation (Playwright Chromium) ---
-INSTALL_BROWSER="${INSTALL_BROWSER:-1}"         # 1 → Playwright Chromium + the readability extractor (trafilatura) used by the KB-ingestion skill
+INSTALL_BROWSER="${INSTALL_BROWSER:-1}"         # 1 → browser tools (agent-browser + Chromium) + the readability extractor (trafilatura) used by the KB-ingestion skill
 
 # --- Messaging gateway platforms ---
 # Not pre-wired here: the gateway starts with no platforms. Add Telegram/Discord/Slack/…
@@ -111,10 +112,10 @@ Useful overrides:
   TARGET_BASE_URL=http://<ct120-ip>:1234/v1 ./create-lxc-hermes-agent.sh  # pin an exact endpoint (skips discovery)
   MODEL_IDENTIFIER=qwen3.6-35b-a3b ./create-lxc-hermes-agent.sh
   # Default installs the NEWEST release tag (resolved at run time). Override to:
-  HERMES_VERSION=v2026.7.20 ./create-lxc-hermes-agent.sh  # pin a release (GIT TAG, not the v0.x.y title)
-  HERMES_VERSION=v2026.7.20 HERMES_INSTALLER_SHA256=<sha> ./create-lxc-hermes-agent.sh  # + verify its installer
+  HERMES_VERSION=v0.22.5 ./create-lxc-hermes-agent.sh  # pin a release (v0.22.0 or newer)
+  HERMES_VERSION=v0.22.5 HERMES_INSTALLER_SHA256=<sha> ./create-lxc-hermes-agent.sh  # + verify its installer
   HERMES_VERSION=head ./create-lxc-hermes-agent.sh        # track main HEAD, UNVERIFIED (no checksum/pin)
-  INSTALL_BROWSER=0 ./create-lxc-hermes-agent.sh        # skip Playwright Chromium + readability extractor (leaner)
+  INSTALL_BROWSER=0 ./create-lxc-hermes-agent.sh        # skip the browser tools + readability extractor (leaner)
   API_SERVER_KEY=my-secret ./create-lxc-hermes-agent.sh # else auto-generated and printed
 
 After it is up, add messaging platforms (Telegram/Discord/Slack/…) without re-provisioning:
@@ -159,7 +160,7 @@ resolve_hermes_version() {
   tag="$(printf '%s' "${body}" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
   [[ -n ${tag} ]] || die "could not parse tag_name from the GitHub releases API; set HERMES_VERSION=<tag> explicitly"
 
-  # Guard against a garbage/HTML response silently becoming a "tag": tags look like v2026.7.20.
+  # Guard against a garbage/HTML response silently becoming a "tag": tags look like v0.22.5.
   [[ ${tag} =~ ^v[0-9][0-9A-Za-z._-]*$ ]] \
     || die "resolved an implausible Hermes tag '${tag}'; set HERMES_VERSION=<tag> explicitly"
 
@@ -356,10 +357,10 @@ rm -f "${SECRET_FILE}"
 
 export HERMES_HOME=/root/.hermes
 
-# 1. Bootstrap packages the upstream installer needs to run. The installer itself
-# installs uv/Python 3.11, Node 22, ripgrep, ffmpeg, and (with browser enabled)
-# `playwright install --with-deps chromium` — all of which need root/apt, which is why
-# this container installs and runs Hermes as root.
+# 1. Bootstrap packages the upstream installer needs to run. The installer's package
+# manager (`hermes pm`) then installs uv, its own Python 3.14 under /root/.hermes/tools,
+# Node, ripgrep, ffmpeg and (with browser enabled) agent-browser with Chromium — some of
+# which need root/apt, which is why this container installs and runs Hermes as root.
 # build-essential + python3 are REQUIRED here: Hermes's `npm install` builds the native
 # node-pty module via node-gyp, which needs make/g++/python3. The Debian template ships
 # none of them, so without this the installer's npm step fails silently ("npm install
@@ -375,7 +376,7 @@ apt-get install -y ca-certificates curl git build-essential python3 jq
 # `--branch <tag>` so the installer and the checked-out code are the same tagged commit.
 # A checksum is only pre-knowable for an explicitly pinned tag, so it is enforced when set
 # and skipped when empty — the immutable per-tag raw URL is the baseline protection either
-# way. `head` opts out entirely: it streams the mutable upstream installer at main HEAD.
+# way. `head` opts out entirely: it runs the mutable hosted installer on the main channel.
 installer="$(mktemp)"
 if [[ "${HERMES_VERSION}" == "head" ]]; then
   printf 'warning: HERMES_VERSION=head — installing UNPINNED main HEAD with NO checksum verification\n' >&2
@@ -396,16 +397,19 @@ else
   fi
 fi
 
-# --non-interactive is mandatory (no TTY under `pct exec`); --skip-setup skips the config
-# wizard because we write config.yaml/.env ourselves below. --branch <tag> pins the
-# checkout (git clone --branch accepts tags and detaches HEAD at the tagged commit).
-# NOTE: --branch <tag> only resolves unaided on a FRESH clone, which is all this script does.
-# Re-running the installer over an EXISTING install (i.e. an upgrade) fails with
-# "pathspec '<tag>' did not match any file(s) known to git", because that checkout is shallow
-# and carries no tag refs; fix it there with
-#   git -C /usr/local/lib/hermes-agent fetch --depth 1 origin tag <tag>
-install_args=(--non-interactive --skip-setup)
-if [[ "${HERMES_VERSION}" != "head" ]]; then
+# --non-interactive is mandatory (no TTY under `pct exec`) and skips the setup and gateway
+# wizards: config.yaml, .env and the unit are written below. --dir keeps the checkout at
+# /usr/local/lib/hermes-agent; the installer's own default is $HERMES_HOME/hermes-agent.
+# --branch <tag> pins this FRESH clone (git clone --branch accepts a tag and detaches HEAD
+# there). `head` passes --channel main instead: the installer's default channel is the newest
+# stable release. --skip-computer-use: a headless container has no desktop to drive.
+# Upgrading an existing install takes different steps (README.md, "Upgrading"): on an
+# existing checkout --branch fetches refs/heads/<name>, so a tag fails there.
+HERMES_DIR=/usr/local/lib/hermes-agent
+install_args=(--non-interactive --dir "${HERMES_DIR}" --skip-computer-use)
+if [[ "${HERMES_VERSION}" == "head" ]]; then
+  install_args+=(--channel main)
+else
   install_args+=(--branch "${HERMES_VERSION}")
 fi
 if [[ "${INSTALL_BROWSER}" != "1" ]]; then
@@ -414,10 +418,16 @@ fi
 bash "${installer}" "${install_args[@]}"
 rm -f "${installer}"
 
-command -v hermes >/dev/null 2>&1 || [[ -x /usr/local/bin/hermes ]] \
-  || { printf 'error: hermes CLI not found after install\n' >&2; exit 1; }
-HERMES_BIN="$(command -v hermes 2>/dev/null || echo /usr/local/bin/hermes)"
-"${HERMES_BIN}" --version 2>/dev/null || true
+# The installer publishes its launcher at ${HERMES_DIR}/.hermes/bin/hermes and at
+# ~/.local/bin/hermes (on PATH through ~/.bashrc and ~/.profile), neither of which a non-login
+# `pct exec` sees. /usr/local/bin/hermes is the path the unit, the loop helpers and the
+# operator commands use; an upgrade's installer run rewrites this same wrapper.
+launcher="${HERMES_DIR}/.hermes/bin/hermes"
+[[ -x "${launcher}" ]] || { printf 'error: %s missing after install\n' "${launcher}" >&2; exit 1; }
+printf '#!/bin/sh\nexec %s "$@"\n' "${launcher}" >/usr/local/bin/hermes
+chmod 755 /usr/local/bin/hermes
+HERMES_BIN=/usr/local/bin/hermes
+"${HERMES_BIN}" --version
 
 # 2b. Web-ingestion toolchain for the KB skills (part of the browser toolchain, INSTALL_BROWSER=1):
 #   - gh (GitHub CLI): the knowledge-ingestion `kb-open-pr` helper uses it to clone/push/open PRs.
@@ -479,6 +489,10 @@ terminal:
   # context file (.hermes.md / AGENTS.md / ...) from the working dir on every prompt; without this it
   # falls back to the install dir and pulls its ~70 KB codebase AGENTS.md into every turn's context.
   cwd: /root
+sessions:
+  # Delete ended sessions inactive for retention_days (default 90) about once a day at startup;
+  # upstream leaves it off. Preview with: hermes sessions prune --dry-run
+  auto_prune: true
 YAML
 
 # 3b. Small project-context file for the agent's cwd (/root) — Hermes loads it as `.hermes.md` on
