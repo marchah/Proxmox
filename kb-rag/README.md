@@ -97,8 +97,16 @@ Verify from CT 121 with `hermes mcp test kb-rag`, including after MCP SDK upgrad
 ## Index design
 
 The default embedder is `BAAI/bge-small-en-v1.5` (384 dimensions, fastembed/ONNX
-on CPU). SQLite stores metadata, FTS5 keyword ranks and sqlite-vec nearest
-neighbors; hybrid search merges ranks with Reciprocal Rank Fusion (`k=60`).
+on CPU). It embeds the first 512 tokens of a chunk. The embedder L2-normalizes every
+vector, because `vec0` ranks by L2 distance, which matches cosine only for unit vectors.
+SQLite stores metadata, FTS5 keyword ranks and sqlite-vec nearest neighbors; hybrid search
+merges ranks with Reciprocal Rank Fusion (`k=60`).
+
+Test records are in [runs/](runs/), with the harness in
+[eval/known_item_eval.py](eval/known_item_eval.py):
+[2026-11-03-granite-embedding.md](runs/2026-11-03-granite-embedding.md) compares
+`ibm-granite/granite-embedding-small-english-r2` with bge-small, and two rerankers, on
+questions written from the corpus's own chunks.
 
 The chunker splits at H2 headings, then H3/paragraph boundaries for sections
 larger than about 1000 tokens. Chunks retain frontmatter and freshness metadata.

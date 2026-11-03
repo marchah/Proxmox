@@ -108,4 +108,58 @@ its usual traffic.
 
 ## Results
 
-Appended after the run.
+Run 2026-11-03, 12:09–12:29 EST, harness `c7a268a`, on the Mac at 8 threads. Both indexes
+hold 873 files and 7,435 chunks. bge-small built in 343 s at batch 32, Granite in 318 s at
+batch 2.
+
+Recall@8 is the share of questions whose source chunk is in the top 8; 60 questions per
+stratum.
+
+| configuration | uniform R@8 | long R@8 | all R@8 | all R@1 | all MRR@8 | all doc R@8 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `bge/hybrid` (deployed) | 78.3 | 43.3 | 60.8 | 35.8 | 0.442 | 70.8 |
+| `bge/vector` | 70.0 | 20.0 | 45.0 | 21.7 | 0.305 | 63.3 |
+| `granite/hybrid` | 81.7 | 58.3 | 70.0 | 40.0 | 0.498 | 75.8 |
+| `granite/vector` | 63.3 | 35.0 | 49.2 | 25.8 | 0.338 | 59.2 |
+| `keyword` (both indexes) | 85.0 | 60.0 | 72.5 | 42.5 | 0.534 | 76.7 |
+| `bge/hybrid` + MiniLM rerank | 83.3 | 31.7 | 57.5 | 37.5 | 0.442 | 73.3 |
+| `bge/hybrid` + Jina turbo rerank | 86.7 | 30.0 | 58.3 | 37.5 | 0.441 | 72.5 |
+| `granite/hybrid` + MiniLM rerank | 83.3 | 30.0 | 56.7 | 37.5 | 0.442 | 70.8 |
+| `granite/hybrid` + Jina turbo rerank | 83.3 | 28.3 | 55.8 | 36.7 | 0.429 | 70.8 |
+
+Paired, source chunk in the top 8 (both / bge only / Granite only / neither):
+
+| mode | uniform | long |
+| --- | --- | --- |
+| hybrid | 45 / 2 / 4 / 9 | 24 / 2 / 11 / 23 |
+| vector | 36 / 6 / 2 / 16 | 9 / 3 / 12 / 36 |
+
+- **Questions:** the longest phrase a question copies from its passage is 3 words at the
+  median. 26 questions (11 uniform, 15 long) copy four words or more, against the prompt.
+  Without them, hybrid recall@8 is 37/49 uniform and 17/45 long for bge, 38/49 and 25/45
+  for Granite, and 40/49 and 26/45 for keyword search.
+- **Rerankers:** the hybrid top 30 they rescore holds the source chunk for 54 of 60 uniform
+  questions with either embedder, and for 38 (bge) and 44 (Granite) of 60 long questions.
+  After reranking, the top 8 keeps 50 (MiniLM) and 52 (Jina) uniform chunks on bge, but 19
+  and 18 long ones; on Granite, 18 and 17 long ones.
+- **Time, Mac, median per query:** embedding the query 6.7 ms (bge) and 6.8 ms (Granite);
+  reranking 30 candidates 0.64 s (MiniLM) and 0.86 s (Jina turbo).
+- The sample, questions, per-question results and logs are on CT 140 in
+  `/opt/kb-rag/eval/2026-11-03/`.
+
+## Conclusion
+
+- **Granite meets the plan's bar.** In hybrid mode it finds 49 of the 60 uniform questions
+  against bge's 47 (the bar: at most 2 fewer), and 35 of the 60 long ones against 26 (the
+  bar: at least 6 more). Paired, 15 questions are found only by Granite and 4 only by bge.
+  The gain is in the text past token 512: in vector mode Granite finds 21 long questions to
+  bge's 12, and 4 fewer uniform ones.
+- **Neither reranker meets its bar.** On bge they add 3 (MiniLM) and 5 (Jina turbo) uniform
+  questions and lose 7 and 8 long ones, 4 and 3 fewer overall. On Granite they find 68 and
+  67 of the 120 questions, against 84 without them.
+- **Keyword search alone** finds 87 of the 120 questions, more than bge hybrid (73) or
+  Granite hybrid (84), and still more without the 26 copying questions (66 of 94, against
+  54 and 63). Questions written by a model from the passage share its wording, which
+  favors keyword search; how close Hermes's own queries are is not measured.
+- Whether to deploy is decided separately. A switch also needs the rebuild time and peak
+  memory on CT 140 at a batch size that fits (batch 2 ran here).
