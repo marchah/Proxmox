@@ -6,6 +6,8 @@
     known_item_eval.py questions --out DIR --llm URL [--model NAME]
     known_item_eval.py run       --out DIR [--threads N]
     known_item_eval.py fusion    --index DB --set NAME=QUESTIONS.json ... [--threads N]
+    known_item_eval.py hidden-sample --index DB --out DIR [--cap N]
+    known_item_eval.py compare   --old DB --new DB --set NAME=QUESTIONS.json ... [--threads N]
 
 build      indexes a CognitiveStack export twice with kb-rag's own reindex (full rebuild, no
            git), into OUT/bge.sqlite and OUT/granite.sqlite, and writes OUT/build.json.
@@ -25,6 +27,16 @@ fusion     searches question sets against one index (capped Granite, as deployed
            reciprocal rank fusion, w_vector/(k + rank) + w_keyword/(k + rank), over a grid of
            k and keyword weights; k=60, weights 1 and 1 is kb-rag's search. Prints recall@8
            per set and stratum, and how much each set's questions share the passage's words.
+hidden-sample  lists the table rows and list items (40+ characters) that sit past Granite token
+           N (default 2,048) in every chunk of the index that holds them: the lines its
+           vector search cannot see. Each becomes a `hidden` item into OUT/sample.json, with
+           the line as `target_line` and, as passage, the section heading, the table header
+           and the row (or the list item).
+compare    searches question sets against two indexes (chunkers) with the deployed config's
+           fusion (Store with rrf_k and keyword_weight), in hybrid and vector mode. An item
+           with `target_line` counts as found if a top-8 chunk contains that line; any other
+           counts only if its target chunk is unchanged in both indexes (same uid and
+           content hash), and the others are counted as excluded.
 
 Run with kb-rag's packages (fastembed, sqlite-vec, pathspec, PyYAML). Set FASTEMBED_CACHE_PATH
 to keep the model downloads out of the default cache. The generated files stay out of git.
@@ -388,6 +400,90 @@ def cmd_fusion(a):
     print(text)
 
 
+def cmd_hidden_sample(a):
+    from fastembed import TextEmbedding
+
+    tok = TextEmbedding(ARMS["granite"]["model"], threads=8).model.tokenizer
+    tok.no_truncation()
+    tok.no_padding()
+    con = sqlite3.connect(a.index)
+    rows = con.execute("SELECT chunk_uid, path, title, section, content FROM chunks ORDER BY chunk_uid").fetchall()
+    visible, where = {}, {}
+    for uid, path, title, section, body in rows:
+        text = (" — ".join(p for p in (title, section) if p) + "\n\n" + body) if (title or section) else body
+        enc = tok.encode(text)
+        cut = len(text) if len(enc.ids) <= a.cap else enc.offsets[a.cap - 1][1]
+        lines, pos, header = text.splitlines(keepends=True), 0, ""
+        for i, ln in enumerate(lines):
+            line = ln.strip()
+            nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            if line.startswith("|") and re.match(r"^\|?\s*:?-{3,}", nxt):
+                header = line + "\n" + nxt
+            is_row = line.startswith("|") and not re.match(r"^\|?\s*:?-{3,}", line) and line != header.split("\n")[0]
+            if (is_row or line.startswith("- ")) and len(line) >= 40:
+                where.setdefault(line, (uid, path, section, header if is_row else ""))
+                visible[line] = visible.get(line, False) or pos + len(ln) <= cut
+            pos += len(ln)
+    items = []
+    for line, (uid, path, section, header) in sorted(where.items()):
+        if visible[line]:
+            continue
+        passage = "\n".join(x for x in (f"Section: {section}" if section else "", header, line) if x)
+        items.append({"stratum": "hidden", "chunk_uid": uid, "path": path, "token_count": 0,
+                      "target_line": line, "passage": passage})
+    os.makedirs(a.out, exist_ok=True)
+    _save(a.out, "sample.json", {"cap": a.cap, "chunks_in_index": len(rows), "items": items})
+    print(f"{len(items)} lines hidden past token {a.cap}")
+
+
+def cmd_compare(a):
+    from embedder import Embedder
+    from store import Store
+
+    spec = ARMS["granite2k"]
+    emb = Embedder(spec["model"], spec["dim"], spec["query_prefix"], threads=a.threads,
+                   max_tokens=spec["max_tokens"])
+    stores = {name: Store(path, spec["dim"], rrf_k=DEPLOYED["rrf_k"], keyword_weight=DEPLOYED["keyword_weight"])
+              for name, path in (("old", a.old), ("new", a.new))}
+    meta = {name: {r["chunk_uid"]: (r["content_hash"], r["content"])
+                   for r in st.conn.execute("SELECT chunk_uid, content_hash, content FROM chunks")}
+            for name, st in stores.items()}
+    lines = [f"Fusion: rrf_k {DEPLOYED['rrf_k']}, keyword_weight {DEPLOYED['keyword_weight']}. Chunks: "
+             f"old {len(meta['old'])}, new {len(meta['new'])}.", "",
+             "| set | stratum | questions | excluded | old hybrid | new hybrid | old vector | new vector |",
+             "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+    for arg in a.set:
+        name, path = arg.split("=", 1)
+        with open(path, encoding="utf-8") as f:
+            items = [it for it in json.load(f)["items"] if it.get("question")]
+        tally = {}
+        for it in items:
+            t = tally.setdefault(it["stratum"], {"n": 0, "excluded": 0})
+            line = it.get("target_line")
+            uid = it["chunk_uid"]
+            if not line and not (uid in meta["old"] and meta["old"][uid][0] == meta["new"].get(uid, ("",))[0]):
+                t["excluded"] += 1
+                continue
+            t["n"] += 1
+            vec = emb.embed_query(it["question"])
+            for side, st in stores.items():
+                for mode in ("hybrid", "vector"):
+                    res = st.search(vec, it["question"], top_k=TOP_K, mode=mode)
+                    if line:
+                        hit = any(line in meta[side][r["chunk_uid"]][1] for r in res)
+                    else:
+                        hit = any(r["chunk_uid"] == uid for r in res)
+                    t[f"{side} {mode}"] = t.get(f"{side} {mode}", 0) + hit
+        for stratum, t in tally.items():
+            lines.append(f"| {name} | {stratum} | {t['n']} | {t['excluded']} | " + " | ".join(
+                str(t.get(k, 0)) for k in ("old hybrid", "new hybrid", "old vector", "new vector")) + " |")
+    text = "\n".join(lines) + "\n"
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write(text)
+    print(text)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -404,12 +500,17 @@ def main():
     f = sub.add_parser("fusion"); f.add_argument("--index", required=True)
     f.add_argument("--set", action="append", required=True, help="NAME=questions.json")
     f.add_argument("--out", help="also write the tables here"); f.add_argument("--threads", type=int, default=8)
+    h = sub.add_parser("hidden-sample"); h.add_argument("--index", required=True); h.add_argument("--out", required=True)
+    h.add_argument("--cap", type=int, default=2048)
+    c = sub.add_parser("compare"); c.add_argument("--old", required=True); c.add_argument("--new", required=True)
+    c.add_argument("--set", action="append", required=True, help="NAME=questions.json")
+    c.add_argument("--out", help="also write the table here"); c.add_argument("--threads", type=int, default=8)
     r = sub.add_parser("run"); r.add_argument("--out", required=True); r.add_argument("--threads", type=int, default=8)
     r.add_argument("--arms", default="bge,granite", help="comma-separated arms to search")
     r.add_argument("--no-rerank", action="store_true", help="skip the rerankers")
     a = ap.parse_args()
     {"build": cmd_build, "sample": cmd_sample, "questions": cmd_questions, "run": cmd_run,
-     "fusion": cmd_fusion}[a.cmd](a)
+     "fusion": cmd_fusion, "hidden-sample": cmd_hidden_sample, "compare": cmd_compare}[a.cmd](a)
 
 
 if __name__ == "__main__":
