@@ -12,7 +12,7 @@ stopped: since 2026-10-31 that card serves DeepSeek-V4.1-Flash from CT 125
 | Setting | CT 123: deployed | CT 120: two-card alternative |
 | --- | --- | --- |
 | Env file | `qwen38fn-gpu2.env` | `qwen38fn.env` |
-| Binary tree | `llama-b11505` (release tarball) | `llama-b11505` (release tarball) |
+| Binary tree | `llama-b12052` (release tarball) | `llama-b11505` (release tarball) |
 | GPUs | one, `0000:83:00.0` | both V620s |
 | CPU expert layers | 37 | 16 |
 | Load mode | `dio` | `auto` |
