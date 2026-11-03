@@ -5,6 +5,7 @@
     known_item_eval.py sample    --out DIR [--seed N] [--per-stratum N]
     known_item_eval.py questions --out DIR --llm URL [--model NAME]
     known_item_eval.py run       --out DIR [--threads N]
+    known_item_eval.py fusion    --index DB --set NAME=QUESTIONS.json ... [--threads N]
 
 build      indexes a CognitiveStack export twice with kb-rag's own reindex (full rebuild, no
            git), into OUT/bge.sqlite and OUT/granite.sqlite, and writes OUT/build.json.
@@ -19,6 +20,11 @@ run        searches every question in each configuration through kb-rag's Embedd
            Store, as the API's do_search does, and writes OUT/results.json and
            OUT/summary.md. Rerankers rescore the hybrid top 30 and keep 8; kb-rag has no
            reranker, so those rows exist only here.
+fusion     searches question sets against one index (capped Granite, as deployed) and fuses
+           the vector and keyword candidate lists (100 each, as Store.search) with weighted
+           reciprocal rank fusion, w_vector/(k + rank) + w_keyword/(k + rank), over a grid of
+           k and keyword weights; k=60, weights 1 and 1 is kb-rag's search. Prints recall@8
+           per set and stratum, and how much each set's questions share the passage's words.
 
 Run with kb-rag's packages (fastembed, sqlite-vec, pathspec, PyYAML). Set FASTEMBED_CACHE_PATH
 to keep the model downloads out of the default cache. The generated files stay out of git.
@@ -75,6 +81,26 @@ Write one question that someone could type into a search box and that this passa
 Reply with the question only."""
 
 
+PROMPT_REWORDED = """Here is a passage from a technical knowledge base about AI tools, models and infrastructure.
+
+<passage>
+{passage}
+</passage>
+
+Write one question that someone could type into a search box and that this passage answers.
+- Ask about a specific fact stated in the passage.
+- Use your own words: avoid the passage's distinctive terms and phrases. Keep names of
+  products, models, companies and people as they are, since a searcher would type them.
+- Do not mention "the passage", "the text" or "the document".
+- Use at most 25 words.
+Reply with the question only."""
+PROMPTS = {"standard": PROMPT, "reworded": PROMPT_REWORDED}
+FUSION_GRID = [(k, w) for k in (60, 10) for w in (1, 1.5, 2, 3, 5)]
+STOP = set("what which when where with that this from does have into about their there they them than then "
+           "these those were been being will would could should also only more most such over used uses using "
+           "much many make made each other some your".split())
+
+
 def _path(out, name):
     return os.path.join(out, name)
 
@@ -118,11 +144,16 @@ def cmd_build(a):
 
 
 def cmd_sample(a):
-    con = sqlite3.connect(_path(a.out, "bge.sqlite"))
+    con = sqlite3.connect(_path(a.out, a.index))
     con.row_factory = sqlite3.Row
     rows = con.execute(
         "SELECT chunk_uid, path, title, section, content, token_count FROM chunks ORDER BY chunk_uid"
     ).fetchall()
+    skip = set()
+    for f in a.exclude or []:
+        with open(f, encoding="utf-8") as fh:
+            skip |= {it["chunk_uid"] for it in json.load(fh)["items"]}
+    rows = [r for r in rows if r["chunk_uid"] not in skip]
     rng = random.Random(a.seed)
     long_pick = rng.sample([r for r in rows if r["token_count"] > 512], a.per_stratum)
     taken = {r["chunk_uid"] for r in long_pick}
@@ -134,7 +165,8 @@ def cmd_sample(a):
             passage = r["content"][LONG_OFFSET:] if stratum == "long" else r["content"]
             items.append({"stratum": stratum, "chunk_uid": r["chunk_uid"], "path": r["path"],
                           "token_count": r["token_count"], "passage": passage[:PASSAGE_CHARS]})
-    _save(a.out, "sample.json", {"seed": a.seed, "chunks_in_index": len(rows), "items": items})
+    _save(a.out, "sample.json", {"seed": a.seed, "chunks_in_index": len(rows) + len(skip),
+                                 "excluded": len(skip), "items": items})
     print(f"{len(items)} chunks sampled from {len(rows)}")
 
 
@@ -162,14 +194,15 @@ def cmd_questions(a):
         if it.get("question"):
             continue
         body = {"model": a.model, "temperature": 0, "max_tokens": 80,
-                "messages": [{"role": "user", "content": PROMPT.format(passage=it["passage"])}]}
+                "messages": [{"role": "user", "content": PROMPTS[a.style].format(passage=it["passage"])}]}
         req = urllib.request.Request(a.llm.rstrip("/") + "/v1/chat/completions", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=300) as resp:
             text = json.loads(resp.read())["choices"][0]["message"]["content"] or ""
         it["question"] = text.strip().strip('"').strip()
         it["copied_words"] = _longest_copy(it["question"], it["passage"])
-        _save(a.out, "questions.json", {**data, "llm": a.llm, "llm_model": a.model, "prompt": PROMPT})
+        _save(a.out, "questions.json", {**data, "llm": a.llm, "llm_model": a.model, "style": a.style,
+                                        "prompt": PROMPTS[a.style]})
         print(f"{n}/{len(data['items'])} [{it['stratum']}] {it['question']}")
 
 
@@ -273,6 +306,74 @@ def _summary(out, items, rows, timing):
     print(text)
 
 
+def _content_overlap(question, passage):
+    """Share of the question's content words (4+ letters, not stopwords) found in the passage."""
+    words = [w for w in _words(question) if len(w) >= 4 and w not in STOP]
+    if not words:
+        return 0.0
+    have = set(_words(passage))
+    return sum(1 for w in words if w in have) / len(words)
+
+
+def cmd_fusion(a):
+    from embedder import Embedder
+    from store import Store, _CANDIDATES
+
+    spec = ARMS["granite2k"]
+    store = Store(a.index, spec["dim"])
+    emb = Embedder(spec["model"], spec["dim"], spec["query_prefix"], threads=a.threads,
+                   max_tokens=spec["max_tokens"])
+    uid_of = {r["id"]: r["chunk_uid"] for r in store.conn.execute("SELECT id, chunk_uid FROM chunks")}
+    sets = {}
+    for arg in a.set:
+        name, path = arg.split("=", 1)
+        with open(path, encoding="utf-8") as f:
+            sets[name] = [it for it in json.load(f)["items"] if it.get("question")]
+    configs = [f"k{k} kw{w:g}" for k, w in FUSION_GRID] + ["keyword", "vector"]
+    hits = {c: {} for c in configs}
+    checked = 0
+    lines = ["| set | questions | longest copy, median words | content words in the passage, median |",
+             "| --- | --- | --- | --- |"]
+    for name, items in sets.items():
+        lines.append(f"| {name} | {len(items)} | {statistics.median(_longest_copy(i['question'], i['passage']) for i in items)} | "
+                     f"{100 * statistics.median(_content_overlap(i['question'], i['passage']) for i in items):.0f}% |")
+        for it in items:
+            q, uid = it["question"], it["chunk_uid"]
+            vec = emb.embed_query(q)
+            v_ids = store._vector_ids(vec, _CANDIDATES)
+            k_ids = store._keyword_ids(q, _CANDIDATES)
+            ranked = {"keyword": k_ids[:TOP_K], "vector": v_ids[:TOP_K]}
+            for k, w in FUSION_GRID:
+                scores = {}
+                for weight, ids in ((1.0, v_ids), (w, k_ids)):
+                    for rank, cid in enumerate(ids):
+                        scores[cid] = scores.get(cid, 0.0) + weight / (k + rank + 1)
+                ranked[f"k{k} kw{w:g}"] = [cid for cid, _ in sorted(scores.items(), key=lambda kv: kv[1],
+                                                                   reverse=True)[:TOP_K]]
+            if checked < 20:  # the k=60, equal-weight row must be kb-rag's own search
+                live = [r["chunk_uid"] for r in store.search(vec, q, top_k=TOP_K, mode="hybrid")]
+                assert [uid_of[c] for c in ranked["k60 kw1"]] == live, "fusion grid does not match Store.search"
+                checked += 1
+            for c in configs:
+                key = (name, it["stratum"])
+                h = hits[c].setdefault(key, [0, 0])
+                h[0] += any(uid_of[cid] == uid for cid in ranked[c])
+                h[1] += 1
+    cols = [(n, st) for n in sets for st in ("uniform", "long")]
+    lines += ["", "| fusion | " + " | ".join(f"{n} {st}" for n, st in cols) + " | " +
+              " | ".join(f"{n} all" for n in sets) + " |",
+              "| --- |" + " --- |" * (len(cols) + len(sets))]
+    for c in configs:
+        cells = [f"{hits[c][col][0]}/{hits[c][col][1]}" for col in cols]
+        alls = [f"{sum(hits[c][(n, st)][0] for st in ('uniform', 'long'))}" for n in sets]
+        lines.append(f"| `{c}` | " + " | ".join(cells) + " | " + " | ".join(alls) + " |")
+    text = "\n".join(lines) + "\n"
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write(text)
+    print(text)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -281,13 +382,20 @@ def main():
     b.add_argument("--arms", default=",".join(ARMS), help="comma-separated arms to (re)build")
     s = sub.add_parser("sample"); s.add_argument("--out", required=True)
     s.add_argument("--seed", type=int, default=20261103); s.add_argument("--per-stratum", type=int, default=60)
+    s.add_argument("--index", default="bge.sqlite", help="index file in OUT to sample from")
+    s.add_argument("--exclude", action="append", help="questions or sample JSON whose chunks to skip")
     q = sub.add_parser("questions"); q.add_argument("--out", required=True); q.add_argument("--llm", required=True)
     q.add_argument("--model", default="qwen3.6-35b-a3b")
+    q.add_argument("--style", choices=sorted(PROMPTS), default="standard")
+    f = sub.add_parser("fusion"); f.add_argument("--index", required=True)
+    f.add_argument("--set", action="append", required=True, help="NAME=questions.json")
+    f.add_argument("--out", help="also write the tables here"); f.add_argument("--threads", type=int, default=8)
     r = sub.add_parser("run"); r.add_argument("--out", required=True); r.add_argument("--threads", type=int, default=8)
     r.add_argument("--arms", default="bge,granite", help="comma-separated arms to search")
     r.add_argument("--no-rerank", action="store_true", help="skip the rerankers")
     a = ap.parse_args()
-    {"build": cmd_build, "sample": cmd_sample, "questions": cmd_questions, "run": cmd_run}[a.cmd](a)
+    {"build": cmd_build, "sample": cmd_sample, "questions": cmd_questions, "run": cmd_run,
+     "fusion": cmd_fusion}[a.cmd](a)
 
 
 if __name__ == "__main__":
