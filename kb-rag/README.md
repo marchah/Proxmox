@@ -42,7 +42,8 @@ API_PORT=8770 REINDEX_INTERVAL=10min ...
 ```
 
 Changing `EMBED_MODEL`/`EMBED_DIM` later requires a full rebuild (`kb-reindex --full`) — the
-vector dimension must match the stored index.
+vector dimension must match the stored index. The model's query prefix, batch size and input
+cap are in `app/index.config.yaml`; set them for the model you choose.
 
 ## Operate
 
@@ -60,6 +61,19 @@ pct exec 140 -- systemctl list-timers kb-reindex.timer
 
 A `kb-reindex.timer` pulls + reindexes every 10 min; reindex is incremental (only chunks whose
 content hash changed are re-embedded) and stamps the source commit into the index.
+
+`kb-reindex --full` drops the index first, so searches come back empty until it ends: about
+22 minutes on CT 140 with Granite, peaking at 2.4 GB. To keep search working, build into a
+second file and swap it in. The `kb-reindex` wrapper sources `/etc/kb-rag.env`, which sets
+`KB_DB_PATH`, so pass the path after sourcing it, not to the wrapper:
+
+```bash
+pct exec 140 -- systemctl stop kb-reindex.timer
+pct exec 140 -- bash -c 'set -a; . /etc/kb-rag.env; set +a;
+  KB_DB_PATH=/opt/kb-rag/data/kb-new.sqlite /opt/kb-rag/venv/bin/python /opt/kb-rag/app/reindex.py --full --no-git'
+pct exec 140 -- sh -c 'systemctl stop kb-rag && cd /opt/kb-rag/data && rm -f kb.sqlite-wal kb.sqlite-shm &&
+  mv kb.sqlite kb-old.sqlite && mv kb-new.sqlite kb.sqlite && systemctl start kb-rag kb-reindex.timer'
+```
 
 ## Consume
 
@@ -96,17 +110,28 @@ Verify from CT 121 with `hermes mcp test kb-rag`, including after MCP SDK upgrad
 
 ## Index design
 
-The default embedder is `BAAI/bge-small-en-v1.5` (384 dimensions, fastembed/ONNX
-on CPU). It embeds the first 512 tokens of a chunk. The embedder L2-normalizes every
-vector, because `vec0` ranks by L2 distance, which matches cosine only for unit vectors.
-SQLite stores metadata, FTS5 keyword ranks and sqlite-vec nearest neighbors; hybrid search
-merges ranks with Reciprocal Rank Fusion (`k=60`).
+The embedder is `ibm-granite/granite-embedding-small-english-r2` since 2026-11-03 (384
+dimensions, fastembed/ONNX on CPU, weights from
+`onnx-community/granite-embedding-small-english-r2-ONNX`). It replaced
+`BAAI/bge-small-en-v1.5`, which embeds only the first 512 tokens of a chunk; 883 of the
+7,435 chunks are longer. Granite reads up to 8,192 tokens and takes no query prefix.
+`index.config.yaml` caps its input at 2,048 tokens (22 chunks are longer) and embeds 2
+chunks a batch: attention memory grows with the square of the input, and one 4,013-token
+chunk alone runs CT 140's 4 GB out. fastembed keeps the model in `/opt/kb-rag/models`
+(`FASTEMBED_CACHE_PATH`), which survives a reboot. The embedder L2-normalizes every vector,
+because `vec0` ranks by L2 distance, which matches cosine only for unit vectors, and
+fastembed returns Granite's unnormalized. SQLite stores metadata, FTS5 keyword ranks and
+sqlite-vec nearest neighbors; hybrid search merges ranks with Reciprocal Rank Fusion
+(`k=60`).
 
 Test records are in [runs/](runs/), with the harness in
-[eval/known_item_eval.py](eval/known_item_eval.py):
-[2026-11-03-granite-embedding.md](runs/2026-11-03-granite-embedding.md) compares
-`ibm-granite/granite-embedding-small-english-r2` with bge-small, and two rerankers, on
-questions written from the corpus's own chunks.
+[eval/known_item_eval.py](eval/known_item_eval.py).
+[2026-11-03-granite-embedding.md](runs/2026-11-03-granite-embedding.md) wrote 120 questions
+from the corpus's own chunks. In hybrid mode, Granite put the source chunk in the top 8 for
+84 of them and bge-small for 73; for the 60 about text past token 512, 35 against 26. The
+cap changes none of them. Two cross-encoder rerankers lost more long-chunk questions than
+they gained. Replayed through CT 140's API after the switch, the questions give the same
+counts: 49 of 60 and 35 of 60, against 47 and 26 before it.
 
 The chunker splits at H2 headings, then H3/paragraph boundaries for sections
 larger than about 1000 tokens. Chunks retain frontmatter and freshness metadata.
