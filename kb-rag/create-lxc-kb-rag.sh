@@ -39,7 +39,8 @@ DEPLOY_KEY_FILE="${DEPLOY_KEY_FILE:-}"
 
 # --- Embedding model (CPU, fastembed/ONNX) ---
 # Changing EMBED_MODEL or EMBED_DIM later requires `kb-reindex --full` (vector dim must match).
-EMBED_MODEL="${EMBED_MODEL:-BAAI/bge-small-en-v1.5}"
+# The query prefix and batch size for the model are in app/index.config.yaml.
+EMBED_MODEL="${EMBED_MODEL:-ibm-granite/granite-embedding-small-english-r2}"
 EMBED_DIM="${EMBED_DIM:-384}"
 
 # --- API server ---
@@ -286,7 +287,7 @@ python3 -m venv /opt/kb-rag/venv
 /opt/kb-rag/venv/bin/pip install ${PIP_PACKAGES}
 
 # 4. Deploy app/. Local checkout -> extract the pushed tarball; standalone -> download each file.
-install -d -m 755 /opt/kb-rag/app /opt/kb-rag/data
+install -d -m 755 /opt/kb-rag/app /opt/kb-rag/data /opt/kb-rag/models
 if [[ "${HAVE_LOCAL}" == "1" ]]; then
   tar -C /opt/kb-rag -xzf /root/kb-rag-app.tar.gz
   rm -f /root/kb-rag-app.tar.gz
@@ -308,6 +309,7 @@ KB_REPO_DIR=/opt/kb-rag/data/repo
 KB_DB_PATH=/opt/kb-rag/data/kb.sqlite
 KB_EMBED_MODEL=${EMBED_MODEL}
 KB_EMBED_DIM=${EMBED_DIM}
+FASTEMBED_CACHE_PATH=/opt/kb-rag/models
 GIT_SSH_COMMAND="ssh -i /root/.ssh/kb-rag-deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 ENV
 chmod 600 /etc/kb-rag.env

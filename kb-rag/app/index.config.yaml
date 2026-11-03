@@ -7,9 +7,17 @@ repo_dir: /opt/kb-rag/data/repo
 db_path: /opt/kb-rag/data/kb.sqlite
 
 # Embedding model — CPU (fastembed/ONNX). Changing this or embed_dim requires `kb-reindex --full`.
-embed_model: BAAI/bge-small-en-v1.5
+# Granite embeds up to 8,192 tokens and takes no query prefix; a bge-* model needs its
+# instruction here ("Represent this sentence for searching relevant passages: "). Batch 2: a
+# batch of 32 long chunks makes ONNX Runtime refuse a > 4 GiB attention-mask tensor
+# (../runs/2026-11-03-granite-embedding.md).
+embed_model: ibm-granite/granite-embedding-small-english-r2
 embed_dim: 384
-query_prefix: "Represent this sentence for searching relevant passages: "
+embed_batch_size: 2
+# Cap Granite's input at 2,048 tokens (22 of 7,435 chunks are longer): a 4,013-token chunk
+# alone runs CT 140's 4 GB out of memory, because attention memory grows with its square.
+embed_max_tokens: 2048
+query_prefix: ""
 
 # Corpus policy (gitignore-style globs). A file is indexed if it matches `include`
 # AND not `exclude`. Only *.md is ever eligible. The catalogs are split into per-item
