@@ -19,13 +19,13 @@ writes into. VMs use the repo's `300+` VMID range so container and VM ids never 
 Downloads a pinned, SHA-512-verified Debian cloud image, creates the VM with
 cloud-init (a dedicated SSH key is generated at `/root/.ssh/docker-host`), then installs the qemu
 guest agent, Docker from Docker's own apt repo, the Compose plugin, and Portainer CE — and
-**health-polls Portainer's `/api/status`** before reporting success.
+**health-polls Portainer's `/api/system/status`** before reporting success.
 
 ```bash
 ./docker-host/create-vm-docker-host.sh --reinstall-docker   # re-run ONLY the in-guest install
 VMID=310 VM_NAME=apps ./docker-host/create-vm-docker-host.sh
 MEMORY_MB=8192 CORES=6 DISK_SIZE=80G ./docker-host/create-vm-docker-host.sh
-PORTAINER_IMAGE=portainer/portainer-ce:2.39.5 ./docker-host/create-vm-docker-host.sh
+PORTAINER_IMAGE=portainer/portainer-ce:2.45.3 ./docker-host/create-vm-docker-host.sh
 ```
 
 ## First-time setup

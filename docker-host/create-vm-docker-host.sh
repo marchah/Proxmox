@@ -58,8 +58,9 @@ SSH_KEY_FILE="${SSH_KEY_FILE:-/root/.ssh/docker-host}"
 # --- Portainer --------------------------------------------------------------
 # CE, pinned to an explicit version (not :latest) so a rebuild is reproducible. Upgrading is
 # `docker pull` a newer tag + recreate; settings/users/stacks survive in the portainer_data
-# volume. Bump from https://hub.docker.com/r/portainer/portainer-ce/tags
-PORTAINER_IMAGE="${PORTAINER_IMAGE:-portainer/portainer-ce:2.39.5}"
+# volume. Bump from https://hub.docker.com/r/portainer/portainer-ce/tags; Portainer's LTS
+# line is 2.45.x.
+PORTAINER_IMAGE="${PORTAINER_IMAGE:-portainer/portainer-ce:2.45.3}"
 PORTAINER_HTTPS_PORT="${PORTAINER_HTTPS_PORT:-9443}"
 # Where compose stacks are kept in the guest (a git clone of the stacks repo lands here too).
 STACKS_DIR="${STACKS_DIR:-/opt/stacks}"
@@ -308,13 +309,13 @@ docker run -d \
 docker --version
 docker compose version
 for _ in $(seq 1 45); do
-  if curl -fsSk "https://127.0.0.1:${PORTAINER_HTTPS_PORT}/api/status" >/dev/null 2>&1; then
+  if curl -fsSk "https://127.0.0.1:${PORTAINER_HTTPS_PORT}/api/system/status" >/dev/null 2>&1; then
     echo "portainer: up"
     exit 0
   fi
   sleep 2
 done
-echo "error: Portainer did not answer /api/status within ~90s" >&2
+echo "error: Portainer did not answer /api/system/status within ~90s" >&2
 docker logs --tail 50 portainer >&2 || true
 exit 1
 GUEST_SCRIPT
