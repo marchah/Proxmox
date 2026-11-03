@@ -65,6 +65,15 @@ from their chunks and share their wording, which favors keyword search.
 The run is on the Mac and measures ranking; CT 140 and every other guest keep running. CT 120
 answers 240 short requests at temperature 0.
 
+## Deviations
+
+- Set C did not do what it was for. Its questions share more of the passage's content words
+  than set B's (median 71% against 60%): the model kept most of the wording. Set C2 asks for
+  the same chunks with a stricter prompt (`--style paraphrase`): no word of four or more
+  letters from the passage except names, numbers and version strings. It is held to set C's
+  bar, at most 2 fewer than kb-rag's fusion, for the configuration already chosen on set A.
+  The prompt was added after the first run (harness commit after the plan).
+
 ## Results
 
 Appended after the run.

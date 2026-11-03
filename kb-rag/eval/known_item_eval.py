@@ -94,7 +94,21 @@ Write one question that someone could type into a search box and that this passa
 - Do not mention "the passage", "the text" or "the document".
 - Use at most 25 words.
 Reply with the question only."""
-PROMPTS = {"standard": PROMPT, "reworded": PROMPT_REWORDED}
+PROMPT_PARAPHRASE = """Here is a passage from a technical knowledge base about AI tools, models and infrastructure.
+
+<passage>
+{passage}
+</passage>
+
+Write one question that someone could type into a search box and that this passage answers.
+- Ask about a specific fact stated in the passage.
+- Write it in different words from the passage. You may reuse names of products, models,
+  companies and people, numbers and version strings, but no other word of four or more
+  letters that appears in the passage: use synonyms, or describe the idea instead.
+- Do not mention "the passage", "the text" or "the document".
+- Use at most 25 words.
+Reply with the question only."""
+PROMPTS = {"standard": PROMPT, "reworded": PROMPT_REWORDED, "paraphrase": PROMPT_PARAPHRASE}
 FUSION_GRID = [(k, w) for k in (60, 10) for w in (1, 1.5, 2, 3, 5)]
 STOP = set("what which when where with that this from does have into about their there they them than then "
            "these those were been being will would could should also only more most such over used uses using "
