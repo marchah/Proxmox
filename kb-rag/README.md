@@ -139,7 +139,11 @@ hybrid search found 89 of 120 held-out questions and 64 of 120 paraphrased ones,
 and 58 at `k=60` with equal weights. Keyword search alone found 96 and 61.
 
 The chunker splits at H2 headings, then H3/paragraph boundaries for sections
-larger than about 1000 tokens. Chunks retain frontmatter and freshness metadata.
+larger than about 1000 tokens. Inside those, a table or list estimated above 500 tokens
+becomes chunks of its own: a table by row groups that repeat its header, a list by top-level
+item. No chunk then exceeds Granite's 2,048-token cap (the longest is 1,854);
+[2026-11-03-oversized-blocks.md](runs/2026-11-03-oversized-blocks.md) measured hybrid search
+finding 45 of 64 questions about rows past that cap, against 24 before the split. Chunks retain frontmatter and freshness metadata.
 Incremental reindexing embeds changed content hashes, prunes deleted chunks and
 records the source commit. Rebuild after changing embedding model or dimensions.
 The API returns full chunks by `chunk_uid`, or all chunks of a file by `path`.
