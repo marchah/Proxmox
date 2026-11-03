@@ -78,4 +78,42 @@ short requests at temperature 0.
 
 ## Results
 
-Appended after the run.
+Run 2026-11-03, 14:46–14:52 EST, harness `92588a3`, on the Mac. The new index built in
+300 s: 7,655 chunks, the longest 1,854 Granite tokens, none over 2,048. `hidden-sample`
+found the 64 hidden lines (kolibri 25, inkling-small 12, benchmarks 11, leaderboards 10,
+gstack 4, large-moe-build-shapes 2).
+
+Questions found in the top 8 (`rrf_k` 10, `keyword_weight` 1.5):
+
+| set | stratum | questions | excluded | old hybrid | new hybrid | old vector | new vector |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| T | hidden | 64 | 0 | 24 | 45 | 29 | 28 |
+| A | uniform | 59 | 1 | 52 | 51 | 38 | 38 |
+| A | long | 45 | 15 | 29 | 29 | 17 | 17 |
+| B | uniform | 59 | 1 | 52 | 52 | 37 | 36 |
+| B | long | 46 | 14 | 28 | 28 | 8 | 8 |
+| C2 | uniform | 59 | 1 | 39 | 40 | 29 | 28 |
+| C2 | long | 46 | 14 | 17 | 16 | 10 | 10 |
+
+- On set T the old index's vector search finds 29 questions although their lines sit past
+  the cap: a question about one row of a table retrieves the oversized chunk through the
+  rows before the cap, and that chunk contains the line. After the split, vector search has
+  to pick the piece holding the row among pieces that share the table's header.
+- On set T the old index's hybrid search finds fewer than its vector search (24 against 29),
+  and the new index's hybrid search finds 45: the keyword list ranks a short piece holding
+  the row far above one long chunk holding the whole table.
+- A, B and C2 exclude 15 or 16 questions each, mostly `long` ones, whose target chunk
+  changed; the comparison covers the rest.
+- The sample and questions are on CT 140 in `/opt/kb-rag/eval/2026-11-03/split/`.
+
+## Conclusion
+
+- **No chunk over 2,048 tokens:** met (the longest is 1,854).
+- **Set T:** hybrid search, which kb-rag serves, finds 45 of 64 against 24, which meets its
+  half of the bar. Vector search finds 28 against 29, short of the quarter more the plan
+  asked for: the plan assumed the old index's vector search could not find those lines, and
+  it found them through the chunk that holds them.
+- **Sets A, B and C2:** hybrid search finds 80, 80 and 56 with the new index against 81, 80
+  and 56, within the bar of 2 fewer.
+- The split does not meet the plan's bar as written, because of the vector criterion.
+  Whether to deploy is decided separately.
