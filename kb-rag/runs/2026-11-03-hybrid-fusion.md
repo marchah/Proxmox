@@ -76,4 +76,47 @@ answers 240 short requests at temperature 0.
 
 ## Results
 
-Appended after the run.
+Run 2026-11-03, 14:15–14:20 EST: sets A, B and C at harness `48c2cd1`, then C2 at `021a0fd`
+(the fusion grid unchanged between them). The `k=60`, weight 1 rows matched `Store.search`
+for the first 20 questions.
+
+| set | longest phrase copied, median words | content words found in the passage, median |
+| --- | --- | --- |
+| A | 3 | 60% |
+| B | 3 | 60% |
+| C | 3 | 71% |
+| C2 | 2 | 50% |
+
+Questions with the source chunk in the top 8, of 60 per stratum and 120 per set:
+
+| fusion | A uniform | A long | B uniform | B long | C uniform | C long | C2 uniform | C2 long | A | B | C | C2 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `k60 kw1` (kb-rag) | 49 | 35 | 49 | 22 | 55 | 35 | 40 | 18 | 84 | 71 | 90 | 58 |
+| `k60 kw1.5` | 51 | 39 | 49 | 26 | 56 | 38 | 42 | 21 | 90 | 75 | 94 | 63 |
+| `k60 kw2` | 50 | 38 | 50 | 28 | 56 | 40 | 41 | 22 | 88 | 78 | 96 | 63 |
+| `k60 kw3` | 51 | 39 | 53 | 35 | 56 | 39 | 41 | 24 | 90 | 88 | 95 | 65 |
+| `k60 kw5` | 52 | 39 | 54 | 37 | 57 | 43 | 39 | 23 | 91 | 91 | 100 | 62 |
+| `k10 kw1` | 50 | 37 | 51 | 29 | 57 | 41 | 41 | 24 | 87 | 80 | 98 | 65 |
+| `k10 kw1.5` | 52 | 40 | 53 | 36 | 57 | 44 | 40 | 24 | 92 | 89 | 101 | 64 |
+| `k10 kw2` | 52 | 39 | 54 | 38 | 57 | 44 | 41 | 25 | 91 | 92 | 101 | 66 |
+| `k10 kw3` | 52 | 37 | 54 | 39 | 57 | 44 | 40 | 25 | 89 | 93 | 101 | 65 |
+| `k10 kw5` | 52 | 38 | 55 | 40 | 57 | 43 | 40 | 24 | 90 | 95 | 100 | 64 |
+| keyword only | 51 | 36 | 55 | 41 | 57 | 43 | 37 | 24 | 87 | 96 | 100 | 61 |
+| vector only | 38 | 21 | 38 | 10 | 51 | 19 | 29 | 10 | 59 | 48 | 70 | 39 |
+
+- Some C2 questions append an answer to the question, and at least one asks about a
+  different figure than its chunk gives; C2's counts carry that noise.
+- The sets, questions and tables are on CT 140 in `/opt/kb-rag/eval/2026-11-03/fusion/`.
+
+## Conclusion
+
+- **The choice on set A** is `k=10`, keyword weight 1.5: 92 of 120, against 84 for kb-rag's
+  fusion.
+- **It meets the plan's bar.** On the held-out set B it finds 89 against 71 (the bar: at
+  least 6 more), on set C 101 against 90 and on set C2 64 against 58 (the bar: at most 2
+  fewer). No stratum of any set finds fewer than with kb-rag's fusion.
+- **Keyword search alone** finds more than the choice on set B (96 against 89) and fewer on
+  sets A and C2 (87 and 61, against 92 and 64): on the questions that share the least of the
+  passage's wording, fusion keeps an advantage over keyword search.
+- **The vector list alone** finds the fewest on every set (39 to 70).
+- Whether to deploy is decided separately.
