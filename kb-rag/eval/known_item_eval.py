@@ -45,7 +45,11 @@ from config import load_config  # noqa: E402
 DEPLOYED = load_config(CONFIG)
 ARMS = {
     "bge": {"model": "BAAI/bge-small-en-v1.5", "dim": 384, "query_prefix": DEPLOYED["query_prefix"]},
-    "granite": {"model": "ibm-granite/granite-embedding-small-english-r2", "dim": 384, "query_prefix": ""},
+    # Batch 2: at kb-rag's default 32, ONNX Runtime refuses the > 4 GiB tensor that Granite's
+    # global attention mask (/model/global_attn_mask/Tile) needs for a batch of long chunks.
+    # The batch size changes memory use, not the vectors.
+    "granite": {"model": "ibm-granite/granite-embedding-small-english-r2", "dim": 384, "query_prefix": "",
+                "batch_size": 2},
 }
 RERANKERS = {"minilm": "Xenova/ms-marco-MiniLM-L-6-v2", "jina-turbo": "jinaai/jina-reranker-v1-turbo-en"}
 LONG_OFFSET = 2048
@@ -86,8 +90,9 @@ def cmd_build(a):
     import reindex
 
     os.makedirs(a.out, exist_ok=True)
-    report = {}
-    for arm, spec in ARMS.items():
+    report = _load(a.out, "build.json") if os.path.exists(_path(a.out, "build.json")) else {}
+    for arm in a.arms.split(","):
+        spec = ARMS[arm]
         db = _path(a.out, f"{arm}.sqlite")
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(db + suffix):
@@ -95,6 +100,7 @@ def cmd_build(a):
         os.environ.update({
             "KB_REPO_DIR": os.path.abspath(a.corpus), "KB_DB_PATH": db, "KB_EMBED_MODEL": spec["model"],
             "KB_EMBED_DIM": str(spec["dim"]), "KB_EMBED_THREADS": str(a.threads),
+            "KB_EMBED_BATCH_SIZE": str(spec.get("batch_size", DEPLOYED["embed_batch_size"])),
         })
         start = time.time()
         summary = reindex.run(full=True, no_git=True, config_path=CONFIG)
@@ -261,6 +267,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build"); b.add_argument("--corpus", required=True); b.add_argument("--out", required=True)
     b.add_argument("--threads", type=int, default=8)
+    b.add_argument("--arms", default=",".join(ARMS), help="comma-separated arms to (re)build")
     s = sub.add_parser("sample"); s.add_argument("--out", required=True)
     s.add_argument("--seed", type=int, default=20261103); s.add_argument("--per-stratum", type=int, default=60)
     q = sub.add_parser("questions"); q.add_argument("--out", required=True); q.add_argument("--llm", required=True)

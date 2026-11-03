@@ -97,6 +97,15 @@ The run is on the Mac and measures ranking, not lab speed, so no guest is stoppe
 started. CT 140 keeps serving. CT 120 answers 120 short requests at temperature 0 beside
 its usual traffic.
 
+## Deviations
+
+- The first Granite build, at kb-rag's default batch of 32 chunks, stopped: ONNX Runtime
+  refused a tensor over 4 GiB in Granite's global attention mask
+  (`/model/global_attn_mask/Tile`) for a batch of long chunks. By Granite's tokenizer the
+  chunks run to 4,013 tokens (median 169, p99 1,544; 883, or 11.9%, over 512). The Granite
+  index was built again at batch 2 (harness commit after the plan); the batch size changes
+  memory use, not the vectors. The bge index, built at batch 32 before the failure, was kept.
+
 ## Results
 
 Appended after the run.
