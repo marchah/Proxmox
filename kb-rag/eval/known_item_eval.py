@@ -44,7 +44,9 @@ from config import load_config  # noqa: E402
 
 DEPLOYED = load_config(CONFIG)
 ARMS = {
-    "bge": {"model": "BAAI/bge-small-en-v1.5", "dim": 384, "query_prefix": DEPLOYED["query_prefix"]},
+    # bge's own query instruction, set here: index.config.yaml now holds Granite's empty prefix.
+    "bge": {"model": "BAAI/bge-small-en-v1.5", "dim": 384,
+            "query_prefix": "Represent this sentence for searching relevant passages: "},
     # Batch 2: at kb-rag's default 32, ONNX Runtime refuses the > 4 GiB tensor that Granite's
     # global attention mask (/model/global_attn_mask/Tile) needs for a batch of long chunks.
     # The batch size changes memory use, not the vectors.

@@ -178,3 +178,15 @@ questions and harness as above, without the rerankers.
 - **What answers it:** in `hybrid` mode, `granite2k` finds within 2 questions of `granite`
   in each stratum.
 
+**Results** (2026-11-03, 13:36–13:41 EST, harness `7a53ec6`, the Mac at 8 threads). The
+`granite2k` index built in 308 s. In `hybrid` and `vector` mode, `granite2k` finds the
+same questions as `granite`, each one: hybrid 49 uniform and 35 long, vector 38 and 21.
+None of the 120 source chunks is affected by the cap.
+
+- This run's bge rows are not the deployed configuration. The harness took bge's query
+  prefix from `index.config.yaml`, which this branch had already set to Granite's empty
+  one, so bge searched without its instruction: hybrid 47 uniform and 24 long (73 of 120
+  with it, 71 without). The harness now sets bge's prefix itself.
+
+**Conclusion:** the cap meets the bar; capped and uncapped Granite find the same questions.
+
