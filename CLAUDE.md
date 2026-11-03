@@ -21,18 +21,10 @@ Use component READMEs for deployment commands, defaults, and measurements.
 - [ds41/](pro-v620/ds41/README.md): CT 125 and CT 126, DeepSeek-V4.1-Flash on upstream
   Strata's engine and on llama.cpp; `ds41-host.sh take <ct>` gives one of them GPU 2,
   `restore` gives it back to CT 123.
-- [hermes/](hermes/README.md): CT 121 agent gateway.
-- [kb-rag/](kb-rag/README.md): CT 140 retrieval API and corpus policy. CT 140 runs on a
-  second Proxmox host, not on this one.
 - [bench-runner/](bench-runner/README.md) and [ansible/](ansible/README.md): endpoint
   benchmarks, telemetry and reports.
 - [docker-host/](docker-host/README.md): provisioner for a Debian VM with Docker, Compose and Portainer.
 - [host-notifications/](host-notifications/README.md): Proxmox notifications to Slack.
-
-The retired Hermes coding loop remains under [hermes/config/](hermes/config/README.md)
-and [coder-runner/](coder-runner/README.md). CT 122 was removed; those helpers require
-recreating the runner and its SSH key. Execute project builds/tests in a disposable
-runner, separate from the agent container holding credentials.
 
 ## Editing conventions
 
@@ -48,8 +40,6 @@ runner, separate from the agent container holding credentials.
   superseded instructions and duplicate explanations. Git history holds the change
   narrative. Label measurements with the build, hardware and settings used.
 - Host services use an idempotent `install.sh`, systemd unit and `.env` file.
-  `hermes/config/`, `hermes/token-usage-collector/` and `hermes/idea-capture/` installers run
-  inside CT 121.
 - Put comments on their own lines in systemd `EnvironmentFile` files; inline
   comments become part of the value.
 
@@ -59,7 +49,6 @@ Provisioners support both a local checkout and individual downloads from GitHub 
 When adding or renaming shipped files, update the matching download list:
 
 - `bench-runner/create-lxc-bench-runner.sh`: `files=(...)` in `download_benchmark_suite`.
-- `kb-rag/create-lxc-kb-rag.sh`: `APP_FILES=(...)`.
 
 ### Validation
 
@@ -145,25 +134,3 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   items, `SUITE=workloads` only the workloads. See `bench-runner/BENCHMARKS.md`.
 - Wrappers in `/usr/local/bin` need a login shell through `pct exec`:
   `pct exec 200 -- bash -lc 'llm-bench-baseline'`.
-
-## Host networking and backups
-
-Guests use DHCP on `vmbr0`, with LAN hostnames under `lan`. Reserve guest leases on
-the router; prefer hostnames to copied IP addresses. The host address is
-`192.168.1.93`.
-
-The weekly backup job runs Sundays at 01:00 to `Synology-Backup` NFS, keeps three
-copies and covers all guests. `/models` is a bind mount of the shared model store,
-which vzdump skips; root disks remain included. To omit rebuildable bulk on a root
-disk, use the backup job's `--exclude-path` setting.
-
-- `/etc/vzdump.conf` needs `tmpdir: /var/tmp`: the NAS rejects the mapped UID used
-  for unprivileged LXC temporary files. Archives still stream to NFS.
-- Allow-list the NAS's NFS clients by subnet (`192.168.1.0/24`), not by the host's
-  exact IP: an exact-IP entry breaks every backup silently with `mount.nfs: access
-  denied by server` the next time the host address changes. Set it in DSM under
-  Control Panel → Shared Folder → NFS Permissions.
-- Back up Docker volumes for restores that do not roll back the whole VM.
-- The token ledger under `/root/.hermes/token-usage/` is excluded from the git
-  config backup; its off-box copy is CT 121's weekly vzdump. It cannot be rebuilt.
-- Use a bind mount when exposing another NAS share to a container.
