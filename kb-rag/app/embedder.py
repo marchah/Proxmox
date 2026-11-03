@@ -12,6 +12,14 @@ import math
 import os
 
 
+def _unit(vec) -> list[float]:
+    """L2-normalize. ``vec0`` ranks by L2 distance, which matches cosine only for unit vectors:
+    fastembed returns some models normalized (bge) and others not (granite-embedding-*-r2)."""
+    vals = [float(v) for v in vec]
+    norm = math.sqrt(sum(v * v for v in vals)) or 1.0
+    return [v / norm for v in vals]
+
+
 class Embedder:
     def __init__(
         self,
@@ -60,10 +68,10 @@ class Embedder:
         # parallel default (None) = in-process, no data-parallel workers. Multiprocessing
         # (parallel=0 or >1) deadlocks in the LXC (fork-after-onnxruntime-threads via
         # forkserver). Memory is bounded instead by the onnxruntime `threads` limit.
-        return [list(map(float, v)) for v in self._model.embed(list(texts), batch_size=self.batch_size)]
+        return [_unit(v) for v in self._model.embed(list(texts), batch_size=self.batch_size)]
 
     def embed_query(self, text: str) -> list[float]:
         if self.fake:
             return self._fake_vec(text)
         vec = next(iter(self._model.embed([self.query_prefix + text])))
-        return list(map(float, vec))
+        return _unit(vec)
