@@ -50,6 +50,9 @@ ARMS = {
     # The batch size changes memory use, not the vectors.
     "granite": {"model": "ibm-granite/granite-embedding-small-english-r2", "dim": 384, "query_prefix": "",
                 "batch_size": 2},
+    # Granite as deployed on CT 140: input capped at 2,048 tokens to fit its 4 GB.
+    "granite2k": {"model": "ibm-granite/granite-embedding-small-english-r2", "dim": 384, "query_prefix": "",
+                  "batch_size": 2, "max_tokens": 2048},
 }
 RERANKERS = {"minilm": "Xenova/ms-marco-MiniLM-L-6-v2", "jina-turbo": "jinaai/jina-reranker-v1-turbo-en"}
 LONG_OFFSET = 2048
@@ -93,6 +96,8 @@ def cmd_build(a):
     report = _load(a.out, "build.json") if os.path.exists(_path(a.out, "build.json")) else {}
     for arm in a.arms.split(","):
         spec = ARMS[arm]
+        if not spec.get("max_tokens"):
+            os.environ.pop("KB_EMBED_MAX_TOKENS", None)
         db = _path(a.out, f"{arm}.sqlite")
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(db + suffix):
@@ -101,6 +106,7 @@ def cmd_build(a):
             "KB_REPO_DIR": os.path.abspath(a.corpus), "KB_DB_PATH": db, "KB_EMBED_MODEL": spec["model"],
             "KB_EMBED_DIM": str(spec["dim"]), "KB_EMBED_THREADS": str(a.threads),
             "KB_EMBED_BATCH_SIZE": str(spec.get("batch_size", DEPLOYED["embed_batch_size"])),
+            "KB_EMBED_MAX_TOKENS": str(spec.get("max_tokens", 0)),
         })
         start = time.time()
         summary = reindex.run(full=True, no_git=True, config_path=CONFIG)
@@ -178,11 +184,14 @@ def cmd_run(a):
     from store import Store
 
     items = [it for it in _load(a.out, "questions.json")["items"] if it.get("question")]
-    rerankers = {name: TextCrossEncoder(model_name=m, threads=a.threads) for name, m in RERANKERS.items()}
+    rerankers = {} if a.no_rerank else {
+        name: TextCrossEncoder(model_name=m, threads=a.threads) for name, m in RERANKERS.items()}
     rows, timing = [], {}
-    for arm, spec in ARMS.items():
+    for arm in a.arms.split(","):
+        spec = ARMS[arm]
         store = Store(_path(a.out, f"{arm}.sqlite"), spec["dim"])
-        emb = Embedder(spec["model"], spec["dim"], spec["query_prefix"], threads=a.threads)
+        emb = Embedder(spec["model"], spec["dim"], spec["query_prefix"], threads=a.threads,
+                       max_tokens=spec.get("max_tokens", 0))
         doc_of = {r["chunk_uid"]: r["path"] for r in store.conn.execute("SELECT chunk_uid, path FROM chunks")}
         text_of = {r["chunk_uid"]: (" — ".join(p for p in (r["title"], r["section"]) if p) + "\n\n" + r["content"])
                    for r in store.conn.execute("SELECT chunk_uid, title, section, content FROM chunks")}
@@ -199,7 +208,7 @@ def cmd_run(a):
             for mode in ("hybrid", "vector") + (("keyword",) if arm == "bge" else ()):
                 res = store.search(vec if mode != "keyword" else None, q, top_k=TOP_K, mode=mode)
                 ranked[f"{arm}/{mode}" if mode != "keyword" else "keyword"] = [r["chunk_uid"] for r in res]
-            pool = [r["chunk_uid"] for r in store.search(vec, q, top_k=RERANK_POOL, mode="hybrid")]
+            pool = [r["chunk_uid"] for r in store.search(vec, q, top_k=RERANK_POOL, mode="hybrid")] if rerankers else []
             for name, rr in rerankers.items():
                 start = time.perf_counter()
                 scores = list(rr.rerank(q, [text_of[u] for u in pool]))
@@ -273,6 +282,8 @@ def main():
     q = sub.add_parser("questions"); q.add_argument("--out", required=True); q.add_argument("--llm", required=True)
     q.add_argument("--model", default="qwen3.6-35b-a3b")
     r = sub.add_parser("run"); r.add_argument("--out", required=True); r.add_argument("--threads", type=int, default=8)
+    r.add_argument("--arms", default="bge,granite", help="comma-separated arms to search")
+    r.add_argument("--no-rerank", action="store_true", help="skip the rerankers")
     a = ap.parse_args()
     {"build": cmd_build, "sample": cmd_sample, "questions": cmd_questions, "run": cmd_run}[a.cmd](a)
 

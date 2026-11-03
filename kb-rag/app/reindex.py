@@ -99,6 +99,7 @@ def run(full: bool = False, no_git: bool = False, config_path: str | None = None
         embedder = Embedder(
             cfg["embed_model"], cfg["embed_dim"], cfg["query_prefix"],
             threads=cfg["embed_threads"], batch_size=cfg["embed_batch_size"],
+            max_tokens=cfg["embed_max_tokens"],
         )
         vectors = embedder.embed_documents([c.embed_text() for c in changed])
         for chunk, vec in zip(changed, vectors):

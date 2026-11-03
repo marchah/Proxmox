@@ -50,7 +50,7 @@ def embedder() -> Embedder:
     if _embedder is None:
         _embedder = Embedder(
             CFG["embed_model"], CFG["embed_dim"], CFG["query_prefix"],
-            threads=CFG["embed_threads"],
+            threads=CFG["embed_threads"], max_tokens=CFG["embed_max_tokens"],
         )
     return _embedder
 

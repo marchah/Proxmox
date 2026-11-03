@@ -29,11 +29,13 @@ class Embedder:
         threads: int | None = None,
         batch_size: int = 32,
         fake: bool | None = None,
+        max_tokens: int = 0,
     ):
         self.dim = dim
         self.query_prefix = query_prefix or ""
-        # Small batches bound peak memory: at seq-len 512 the attention tensors scale with
-        # batch_size, and the default (256) OOMs a small LXC. 32 keeps the peak well under 1 GB.
+        # Small batches bound peak memory: the attention tensors scale with batch_size and with
+        # the square of the longest input in the batch, and fastembed's default (256) OOMs a
+        # small LXC. index.config.yaml sets 2 for Granite, which reads up to 8,192 tokens.
         self.batch_size = batch_size
         self.fake = os.environ.get("KB_FAKE_EMBED") == "1" if fake is None else fake
         self._model = None
@@ -50,6 +52,11 @@ class Embedder:
             # to pin threads to cores outside the container's cpuset (pthread_setaffinity_np
             # errors). Setting it also disables that affinity attempt.
             self._model = TextEmbedding(model_name=model, threads=threads)
+            if max_tokens:
+                # Attention memory grows with the square of the input length: one 4,013-token
+                # chunk alone needs more than CT 140's 4 GB with Granite, 2,048 tokens about
+                # 1.3 GB. Truncate below the model's own limit.
+                self._model.model.tokenizer.enable_truncation(max_length=max_tokens)
 
     def _fake_vec(self, text: str) -> list[float]:
         vals: list[float] = []

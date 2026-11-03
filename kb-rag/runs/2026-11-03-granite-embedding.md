@@ -163,3 +163,18 @@ Paired, source chunk in the top 8 (both / bge only / Granite only / neither):
   favors keyword search; how close Hermes's own queries are is not measured.
 - Whether to deploy is decided separately. A switch also needs the rebuild time and peak
   memory on CT 140 at a batch size that fits (batch 2 ran here).
+
+## Follow-up: Granite capped at 2,048 tokens
+
+**Plan** (committed before this run). A Granite rebuild on CT 140 at batch 2 was killed at
+the container's 4 GB (peak 4,011 MiB after 373 s). On CT 140, with Granite at batch 1, the
+longest chunk by characters (2,343 tokens) peaked at 1,357 MiB, the 40 longest one at a time
+(up to 4,013 tokens) ran out of memory, and the same 40 cut to 2,048 tokens peaked at
+1,248 MiB. kb-rag gains `embed_max_tokens`, which truncates the tokenizer's input; 22 of the
+7,435 chunks are longer than 2,048 tokens. The configuration for CT 140 is Granite at
+batch 2, capped at 2,048 tokens: arm `granite2k`, built and searched with the same corpus,
+questions and harness as above, without the rerankers.
+
+- **What answers it:** in `hybrid` mode, `granite2k` finds within 2 questions of `granite`
+  in each stratum.
+

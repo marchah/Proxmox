@@ -18,16 +18,18 @@ _DEFAULTS = {
     "branch": "main",
     "repo_dir": "/opt/kb-rag/data/repo",
     "db_path": "/opt/kb-rag/data/kb.sqlite",
-    "embed_model": "BAAI/bge-small-en-v1.5",
+    "embed_model": "ibm-granite/granite-embedding-small-english-r2",
     "embed_dim": 384,
     # onnxruntime intra-op threads — set explicitly so it doesn't size to the host core count
     # and try to pin threads outside the LXC cpuset. Keep small; embedding is a background job.
     "embed_threads": 2,
     # Embedding batch size — bounds peak memory (attention tensors scale with it at seq 512);
     # the fastembed default (256) OOMs a small LXC.
-    "embed_batch_size": 32,
+    "embed_batch_size": 2,
+    # 0 keeps the model's own input limit.
+    "embed_max_tokens": 0,
     # bge-* retrieval asymmetry: queries get an instruction prefix, passages do not.
-    "query_prefix": "Represent this sentence for searching relevant passages: ",
+    "query_prefix": "",
     "include": ["*.md"],
     "exclude": [],
     "defaults": {"top_k": 8, "mode": "hybrid"},
@@ -43,6 +45,7 @@ _ENV = {
     "KB_EMBED_DIM": ("embed_dim", int),
     "KB_EMBED_THREADS": ("embed_threads", int),
     "KB_EMBED_BATCH_SIZE": ("embed_batch_size", int),
+    "KB_EMBED_MAX_TOKENS": ("embed_max_tokens", int),
     "KB_QUERY_PREFIX": ("query_prefix", str),
 }
 
@@ -65,5 +68,6 @@ def load_config(path: str | None = None) -> dict:
     cfg["embed_dim"] = int(cfg["embed_dim"])
     cfg["embed_threads"] = int(cfg["embed_threads"])
     cfg["embed_batch_size"] = int(cfg["embed_batch_size"])
+    cfg["embed_max_tokens"] = int(cfg["embed_max_tokens"])
     cfg.setdefault("defaults", {})
     return cfg
