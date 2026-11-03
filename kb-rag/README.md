@@ -114,7 +114,7 @@ The embedder is `ibm-granite/granite-embedding-small-english-r2` since 2026-11-0
 dimensions, fastembed/ONNX on CPU, weights from
 `onnx-community/granite-embedding-small-english-r2-ONNX`). It replaced
 `BAAI/bge-small-en-v1.5`, which embeds only the first 512 tokens of a chunk; 883 of the
-7,435 chunks are longer. Granite reads up to 8,192 tokens and takes no query prefix.
+7,435 chunks are longer, counted with Granite's tokenizer. Granite reads up to 8,192 tokens and takes no query prefix.
 `index.config.yaml` caps its input at 2,048 tokens (22 chunks are longer) and embeds 2
 chunks a batch: attention memory grows with the square of the input, and one 4,013-token
 chunk alone runs CT 140's 4 GB out. fastembed keeps the model in `/opt/kb-rag/models`
