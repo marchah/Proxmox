@@ -59,6 +59,66 @@ def _est_tokens(text: str) -> int:
     return max(1, len(text) // _CHARS_PER_TOKEN)
 
 
+# A block (no blank line inside) estimated above this is split into pieces of at most this
+# size, each its own chunk. Table rows are dense: Granite reads 1.77 tokens per 4 characters
+# of a table at the median (2.13 at p90), so table lines count at 2.25 characters a token.
+_BLOCK_TOKENS = MAX_CHUNK_TOKENS // 2
+_TABLE_CHARS_PER_TOKEN = 2.25
+_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")
+_LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s")
+
+
+def _block_tokens(text: str) -> int:
+    """Token estimate that counts table lines at their density."""
+    n = 0.0
+    for ln in text.splitlines():
+        n += len(ln) / (_TABLE_CHARS_PER_TOKEN if ln.lstrip().startswith("|") else _CHARS_PER_TOKEN)
+    return max(1, int(n))
+
+
+def _group(units: list[str], head: str = "", lead: str = "") -> list[str]:
+    """Pack units (rows, items, lines) into pieces of at most _BLOCK_TOKENS. Every piece starts
+    with ``head`` (a table's header); the first also with ``lead``. A unit larger than the
+    budget on its own becomes its own piece."""
+    pieces: list[str] = []
+    cur: list[str] = []
+    prefix = "\n".join(x for x in (lead, head) if x)
+    for u in units:
+        trial = "\n".join(x for x in (prefix, *cur, u) if x)
+        if cur and _block_tokens(trial) > _BLOCK_TOKENS:
+            pieces.append("\n".join(x for x in (prefix, *cur) if x))
+            prefix, cur = head, []
+        cur.append(u)
+    if cur:
+        pieces.append("\n".join(x for x in (prefix, *cur) if x))
+    return pieces
+
+
+def _split_block(block: str) -> list[str]:
+    """Split one oversized block: a table into row groups that repeat its header, a list by
+    top-level item (nested lines stay with their item), anything else by line."""
+    lines = block.splitlines()
+    for i in range(len(lines) - 1):
+        if lines[i].lstrip().startswith("|") and _TABLE_SEP_RE.match(lines[i + 1]):
+            lead = "\n".join(lines[:i])
+            head = "\n".join(lines[i:i + 2])
+            rows, tail = [], []
+            for ln in lines[i + 2:]:
+                (rows if ln.lstrip().startswith("|") and not tail else tail).append(ln)
+            if tail:
+                rows.append("\n".join(tail))
+            return _group(rows, head=head, lead=lead)
+    if any(_LIST_ITEM_RE.match(ln) for ln in lines):
+        items: list[str] = []
+        for ln in lines:
+            if _LIST_ITEM_RE.match(ln) or not items:
+                items.append(ln)
+            else:
+                items[-1] += "\n" + ln
+        return _group(items)
+    return _group(lines)
+
+
 def _slug(text: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return s or "body"
@@ -144,11 +204,19 @@ def _split_h3(text: str) -> list[tuple[str, str]]:
 
 
 def _window_paragraphs(text: str) -> list[str]:
-    """Last-resort split of a too-large block into overlapping paragraph windows."""
+    """Last-resort split of a too-large block into overlapping paragraph windows. A block
+    estimated above _BLOCK_TOKENS (a long table or list) is split by _split_block, and each
+    piece becomes its own window, with no overlap carried into or out of it."""
     paras = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
     windows: list[str] = []
     cur: list[str] = []
     for p in paras:
+        if _block_tokens(p) > _BLOCK_TOKENS:
+            if cur:
+                windows.append("\n\n".join(cur))
+                cur = []
+            windows.extend(_split_block(p))
+            continue
         cur.append(p)
         if _est_tokens("\n\n".join(cur)) >= MAX_CHUNK_TOKENS:
             windows.append("\n\n".join(cur))
