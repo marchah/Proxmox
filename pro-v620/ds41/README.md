@@ -33,7 +33,7 @@ On the Proxmox host, as root:
 | Setting | Value |
 | --- | --- |
 | Template | The newest build of Ubuntu 24.04's standard template (`UBUNTU_RELEASE`) |
-| ROCm | The newest `amdrocm-core-dev<series>-gfx1030` in AMD's repository, from the path for the container's Ubuntu release; under `/opt/rocm/core-<series>`, on every login's paths. A re-run keeps the series a container has. |
+| ROCm | The newest `amdrocm-core-dev<series>-gfx1030` in AMD's repository, from the path for the container's Ubuntu release; under `/opt/rocm/core-<series>`, on every login's paths. A re-run keeps the newest series a container has; a newer series installs beside it by hand (`apt-get install amdrocm-core-dev<series>-gfx1030`). |
 | CPUs | `lxc.cgroup2.cpuset.cpus: 8-31,40-63` (cores 8-31 and their SMT siblings), `cores: 48`, the same set in both. Strata's engine pins one thread per physical core. CT 120 and CT 121 keep cores 0-7: Proxmox's balancer moves `cores` guests off the CPUs of a running container with its own cpuset. |
 | Memory | 64 GiB without GPU 2; `take` raises it (see below); swap 0 |
 | Disk | 100 GB on `local-lvm` |
@@ -49,8 +49,11 @@ container. The provisioner refuses to run without it; `/etc/fstab` holds:
 tmpfs /mnt/ds41-telemetry tmpfs size=64m,mode=0755,nosuid,nodev,noexec,x-systemd.before=pve-guests.service 0 0
 ```
 
-`dpkg -l 'amdrocm-core-dev*'` in a container shows its ROCm series. CT 125 and CT 126 run
-10.0.0-4, held since their install.
+`dpkg -l 'amdrocm-core-dev*'` in a container shows its ROCm series. CT 125 and CT 126 have 10.1.0-3
+beside 10.0.0-4, both held. CT 125 runs 10.1 since 2026-11-02: its profile, `/opt/rocm/*` alternatives,
+service unit and engine build name `/opt/rocm/core-10.1`. CT 126's profile and alternatives stay on 10.0,
+with a llama.cpp build for 10.1 beside the 10.0 one. strata-v620's baseline, "ROCm 10.1", has the
+measurements; its builds carry their series as `DT_RPATH`, because the two series share sonames.
 
 Engine builds and CT 125's service come from strata-v620 (`tools/v620/build-strata.sh`,
 `build-llama.sh`, `build-tree.sh`, `serving.env`). Without GitHub credentials, engine commits
