@@ -19,6 +19,13 @@ embed_batch_size: 2
 embed_max_tokens: 2048
 query_prefix: ""
 
+# Hybrid search fuses the vector and keyword lists (100 candidates each) with weighted
+# reciprocal rank fusion: 1/(rrf_k + rank) from the vector list, keyword_weight/(rrf_k + rank)
+# from the keyword list. k=10 and 1.5 found the source chunk for 89 of 120 held-out questions,
+# against 71 at k=60 with equal weights (../runs/2026-11-03-hybrid-fusion.md).
+rrf_k: 10
+keyword_weight: 1.5
+
 # Corpus policy (gitignore-style globs). A file is indexed if it matches `include`
 # AND not `exclude`. Only *.md is ever eligible. The catalogs are split into per-item
 # topic folders (ai-tools/, mcp/, ...), so include everything and exclude the rest.
