@@ -36,17 +36,22 @@ def _fts_query(text: str) -> str:
     return " OR ".join(f'"{t}"' for t in tokens)
 
 
-def _rrf(rank_lists: list[list[int]], k: int = _RRF_K) -> list[tuple[int, float]]:
+def _rrf(rank_lists: list[tuple[list[int], float]], k: int = _RRF_K) -> list[tuple[int, float]]:
+    """Weighted reciprocal rank fusion: each list adds weight / (k + rank) to its ids."""
     scores: dict[int, float] = {}
-    for rl in rank_lists:
+    for rl, weight in rank_lists:
         for rank, cid in enumerate(rl):
-            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank + 1)
+            scores[cid] = scores.get(cid, 0.0) + weight / (k + rank + 1)
     return sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
 
 
 class Store:
-    def __init__(self, db_path: str, dim: int):
+    def __init__(self, db_path: str, dim: int, rrf_k: int = _RRF_K, keyword_weight: float = 1.0):
+        """``rrf_k`` and ``keyword_weight`` shape hybrid search; the defaults are plain RRF
+        (k=60, equal weights). The server takes kb-rag's from the config."""
         self.dim = dim
+        self.rrf_k = rrf_k
+        self.keyword_weight = keyword_weight
         # check_same_thread=False: the FastAPI server runs sync handlers in a threadpool
         # sharing this connection for reads (SQLite serialized mode + WAL make that safe).
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -239,15 +244,15 @@ class Store:
         filters: dict | None = None,
     ) -> list[dict]:
         filters = filters or {}
-        rank_lists: list[list[int]] = []
+        rank_lists: list[tuple[list[int], float]] = []
         if mode in ("hybrid", "vector") and embedding is not None:
-            rank_lists.append(self._vector_ids(embedding, _CANDIDATES))
+            rank_lists.append((self._vector_ids(embedding, _CANDIDATES), 1.0))
         if mode in ("hybrid", "keyword"):
-            rank_lists.append(self._keyword_ids(query, _CANDIDATES))
+            rank_lists.append((self._keyword_ids(query, _CANDIDATES), self.keyword_weight))
         if not rank_lists:
             return []
 
-        fused = _rrf(rank_lists)
+        fused = _rrf(rank_lists, self.rrf_k)
         results: list[dict] = []
         for cid, score in fused:
             row = self.conn.execute(

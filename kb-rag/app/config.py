@@ -28,6 +28,8 @@ _DEFAULTS = {
     "embed_batch_size": 2,
     # 0 keeps the model's own input limit.
     "embed_max_tokens": 0,
+    "rrf_k": 10,
+    "keyword_weight": 1.5,
     # bge-* retrieval asymmetry: queries get an instruction prefix, passages do not.
     "query_prefix": "",
     "include": ["*.md"],
@@ -46,6 +48,8 @@ _ENV = {
     "KB_EMBED_THREADS": ("embed_threads", int),
     "KB_EMBED_BATCH_SIZE": ("embed_batch_size", int),
     "KB_EMBED_MAX_TOKENS": ("embed_max_tokens", int),
+    "KB_RRF_K": ("rrf_k", int),
+    "KB_KEYWORD_WEIGHT": ("keyword_weight", float),
     "KB_QUERY_PREFIX": ("query_prefix", str),
 }
 
@@ -69,5 +73,7 @@ def load_config(path: str | None = None) -> dict:
     cfg["embed_threads"] = int(cfg["embed_threads"])
     cfg["embed_batch_size"] = int(cfg["embed_batch_size"])
     cfg["embed_max_tokens"] = int(cfg["embed_max_tokens"])
+    cfg["rrf_k"] = int(cfg["rrf_k"])
+    cfg["keyword_weight"] = float(cfg["keyword_weight"])
     cfg.setdefault("defaults", {})
     return cfg

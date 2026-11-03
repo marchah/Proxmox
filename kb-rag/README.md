@@ -121,8 +121,9 @@ chunk alone runs CT 140's 4 GB out. fastembed keeps the model in `/opt/kb-rag/mo
 (`FASTEMBED_CACHE_PATH`), which survives a reboot. The embedder L2-normalizes every vector,
 because `vec0` ranks by L2 distance, which matches cosine only for unit vectors, and
 fastembed returns Granite's unnormalized. SQLite stores metadata, FTS5 keyword ranks and
-sqlite-vec nearest neighbors; hybrid search merges ranks with Reciprocal Rank Fusion
-(`k=60`).
+sqlite-vec nearest neighbors. Hybrid search takes 100 candidates from each and fuses them with
+weighted Reciprocal Rank Fusion: `1/(10 + rank)` from the vector list and `1.5/(10 + rank)`
+from the keyword list (`rrf_k` and `keyword_weight` in `index.config.yaml`).
 
 Test records are in [runs/](runs/), with the harness in
 [eval/known_item_eval.py](eval/known_item_eval.py).
@@ -132,6 +133,10 @@ from the corpus's own chunks. In hybrid mode, Granite put the source chunk in th
 cap changes none of them. Two cross-encoder rerankers lost more long-chunk questions than
 they gained. Replayed through CT 140's API after the switch, the questions give the same
 counts: 49 of 60 and 35 of 60, against 47 and 26 before it.
+[2026-11-03-hybrid-fusion.md](runs/2026-11-03-hybrid-fusion.md) chose the fusion weights on
+those questions and checked them on 240 more: with `k=10` and the keyword list weighted 1.5,
+hybrid search found 89 of 120 held-out questions and 64 of 120 paraphrased ones, against 71
+and 58 at `k=60` with equal weights. Keyword search alone found 96 and 61.
 
 The chunker splits at H2 headings, then H3/paragraph boundaries for sections
 larger than about 1000 tokens. Chunks retain frontmatter and freshness metadata.

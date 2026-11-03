@@ -41,7 +41,8 @@ _embedder: Embedder | None = None
 def store() -> Store:
     global _store
     if _store is None:
-        _store = Store(CFG["db_path"], CFG["embed_dim"])
+        _store = Store(CFG["db_path"], CFG["embed_dim"], rrf_k=CFG["rrf_k"],
+                       keyword_weight=CFG["keyword_weight"])
     return _store
 
 
