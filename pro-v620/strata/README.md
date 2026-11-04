@@ -136,8 +136,14 @@ whose greedy text is the same in every pass, and with `--against CELL` the rows 
 share. A row counts only when each of the manifest's passes has a successful reading of it,
 from a load that passed its gates.
 Missing or failed rows are reported in their own column, and the tool then exits 2.
-`test_strata_cell.py` checks all three offline (`python3 -m unittest
-test_strata_cell`).
+
+[`strata-community-bench.sh`](strata-community-bench.sh) runs Strata's own benchmark suite
+(`tools/strata_bench.py`, with `tools/needle_bench.py` on the first pass) on each cell of a
+cells file, three cold starts each. It takes the same cells and base-env check as the sweep. The
+results feed reports in the format of Strata's `docs/COMMUNITY_BENCHMARKS.md`.
+[`strata-bench-summary.py`](strata-bench-summary.py) pools each cell's results into that
+format's table and adds each start's medians. `test_strata_cell.py` checks these tools offline
+(`python3 -m unittest test_strata_cell`).
 
 [`strata-vs-llamacpp.sh`](strata-vs-llamacpp.sh) interleaves the two engines on CT 123. Each
 round is a llama.cpp pass of `placement-sweep.sh` on GPU 2, then a Strata pass of

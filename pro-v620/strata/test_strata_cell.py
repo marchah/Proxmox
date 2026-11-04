@@ -24,6 +24,7 @@ def load(name, path):
 cell = load("strata_cell", HERE / "strata-cell.py")
 strata_summary = load("strata_summary", HERE / "strata-summary.py")
 text_repeat = load("text_repeat", HERE / "text-repeat.py")
+bench_summary = load("bench_summary", HERE / "strata-bench-summary.py")
 
 GPU1, GPU2 = "0000:03:00.0", "0000:83:00.0"
 # Start lines as the engine prints them (stage 2's split21 and helper cells).
@@ -285,6 +286,61 @@ class TextRepeatTests(unittest.TestCase):
         row = [(0, "code", "a")]
         table = self.run_tool({"cell": [row, row, row]}, failed={("cell", 2)}, code=2)
         self.assertIn("| 0 of 1 | — | 1 |", table["`cell`"])
+
+
+def bench_results(chat, prompt_tps=(), hit=None, failures=(), skipped=None):
+    """A results.json as tools/strata_bench.py writes it, with the fields the summary reads."""
+    req = lambda **k: dict({"ok": True, "prompt_tokens": 30, "generated_tokens": 100, "reused_tokens": 0}, **k)
+    turns = [req(turn=0, ttft_s=1.0, decode_tps=40.0), req(turn=1, ttft_s=2.0, decode_tps=41.0, prompt_tokens=2100)]
+    return {"results": {
+        "chat": {"requests": [req(decode_tps=d, ttft_s=0.5, drafts_offered=100, drafts_accepted=80) if ok
+                              else req(ok=False, decode_tps=d, ttft_s=None) for d, ok in chat]},
+        "prompts": {"4K": {"requests": [req(prompt_tps=t, ttft_s=4.0, prompt_tokens=4100) for t in prompt_tps]}},
+        "agent": {"sessions": [turns], "hit_pct": hit and {"median": hit}, "reread_tokens": {"median": 0},
+                  "first_turn_ttft_s": {"median": 1.0}},
+        "skipped": skipped or {}, "failures": list(failures)}}
+
+
+class BenchSummaryTests(unittest.TestCase):
+    def run_tool(self, layout):
+        """strata-bench-summary.py over {load dir: (results or None, needles or None)}; returns its output."""
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory)
+            for name, (results, needles) in layout.items():
+                (d / name / "2026-10-17-community-v620").mkdir(parents=True)
+                if results is not None:
+                    (d / name / "2026-10-17-community-v620" / "results.json").write_text(json.dumps(results))
+                if needles is not None:
+                    (d / name / "needles.json").write_text(json.dumps(needles))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(bench_summary.main(["strata-bench-summary.py", str(d)]), 0)
+            return out.getvalue()
+
+    def test_pooled_and_per_load_medians(self):
+        out = self.run_tool({
+            "one-r1": (bench_results([(50.0, True), (52.0, True), (999.0, False)], [1000.0, 1010.0], hit=95.0), None),
+            "one-r2": (bench_results([(60.0, True)], [1200.0], hit=96.0), None)})
+        # Pooled over the successful requests of both loads; the failed one is left out.
+        self.assertIn("| short chat | 30 (30-30) | 0 | 100 (100-100) | 3 | not measured | 52.0 (50.0-60.0) | 0.50 (0.50-0.50) |", out)
+        self.assertIn("| 4K prompt, fresh | 4100 (4100-4100) | 0 (0-0) | 24 cap | 3 | 1010.0 (1000.0-1200.0) |", out)
+        self.assertIn("| r1 | 51.0 | 80.0 | 1005.0 | 95.0 | 2.00 |", out)
+        self.assertIn("| r2 | 60.0 | 80.0 | 1200.0 | 96.0 | 2.00 |", out)
+        self.assertIn("Failed and skipped: none.", out)
+
+    def test_needles_failures_and_a_load_without_results(self):
+        needles = [{"length": "32k", "depth": 10, "prompt_tokens": 32100, "seconds": 30.0, "found": True},
+                   {"length": "32k", "depth": 90, "prompt_tokens": 32100, "seconds": 31.0, "found": False},
+                   {"length": "56k", "depth": 50, "error": "HTTP 400"}]
+        out = self.run_tool({
+            "two-r1": (bench_results([(70.0, True)], [1400.0], failures=[{"where": "agent", "error": "timed out"}],
+                                     skipped={"32K": "the context is 16384 tokens"}), needles),
+            "two-r2": (None, None)})
+        self.assertIn("## `two`: 1 loads", out)
+        self.assertIn("Needles (load r1): 1 of 2 found.", out)
+        self.assertIn("| 56k | 50 | — | error: HTTP 400 | — |", out)
+        self.assertIn("- r1: skipped 32K: the context is 16384 tokens", out)
+        self.assertIn("- r1: failed agent: timed out", out)
 
 
 if __name__ == "__main__":
