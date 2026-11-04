@@ -340,8 +340,8 @@ if [[ "${CTX}" == "auto" ]]; then CTX_ARGS=(--fit on); fi
 # ⚠️ Same caveats as CT 120: these are counters SINCE PROCESS START. On this host they are
 # even less durable, because llama-swap unloads and reloads models on demand — every swap
 # resets them. Treat a scrape as "since this model was last loaded", never as a total, and
-# do NOT wire it into CT 121's token ledger (the `hermes_accounted` source already covers
-# anything Hermes sends here; see the token-accounting note in CLAUDE.md).
+# do NOT add it to a token ledger that already counts what Hermes sends here, or those
+# tokens count twice.
 exec "${LS}/llama-server" --model "${MODEL}" --host 127.0.0.1 --port "${PORT}" \
   --n-gpu-layers 99 "${CTX_ARGS[@]}" --parallel 1 --flash-attn on \
   --batch-size 4096 --ubatch-size 1024 --jinja --reasoning-format none \
