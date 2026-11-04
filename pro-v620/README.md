@@ -117,9 +117,7 @@ The container includes Mesa Vulkan and libglvnd/EGL libraries. Passthrough binds
 only the selected GPU's DRM nodes, and the serve guard rejects missing RADV devices.
 
 `--metrics` exposes prompt/completion token counters at `/metrics`. They reset
-on restart; [the CT 121 collector](../hermes/token-usage-collector/README.md)
-accumulates deltas for monthly reports. CT 123's endpoint is not in the configured
-source list.
+on restart, so a collector that reports monthly totals has to accumulate the deltas.
 
 ### Recovering after a DRM renumber
 
@@ -188,10 +186,11 @@ both, in alternating order, and samples each card's clocks, power and temperatur
 
 ## Backend and power
 
-Vulkan/RADV is the supported backend. ROCm needs AMD's `amdgpu-dkms` for discrete
-Radeon cards, which an LXC cannot load beside the host's in-tree `amdgpu`, so it runs
-only in a passthrough VM. Measured 2026-10-01 on `b11018` with ROCm 10.0
-([rocm-ab](rocm-ab/README.md)):
+Vulkan/RADV is the supported backend for llama.cpp. ROCm 10 also runs in an LXC, on the
+host's in-tree `amdgpu`: CT 123's Strata engine uses ROCm 10.0
+([strata](strata/README.md)), and CT 125 and CT 126 use ROCm 10.1 ([ds41](ds41/README.md)).
+The llama.cpp comparison below ran ROCm 10.0 in a passthrough VM with AMD's
+`amdgpu-dkms`, measured 2026-10-01 on `b11018` ([rocm-ab](rocm-ab/README.md)):
 
 - **The VM costs nothing measurable:** within ±1.8% of the LXC, with bit-identical
   perplexity.
@@ -202,7 +201,7 @@ only in a passthrough VM. Measured 2026-10-01 on `b11018` with ROCm 10.0
 
 With CT 120's MTP speculative decoding, ROCm ties on its real traffic: deep-context
 prefill offsets slower decode. Vulkan stays because ROCm cannot fit the production ubatch
-in VRAM (no GTT overflow), needs the VM, and decodes 7–16% slower in chat and tool calls.
+in VRAM (no GTT overflow) and decodes 7–16% slower in chat and tool calls.
 
 A dense coder is the opposite case. Qwen3.8-27B Q4 with its MTP head, in one 128k slot,
 finishes a 126k-token coding-agent session 24% sooner on ROCm (12.8 vs 16.9 min).
