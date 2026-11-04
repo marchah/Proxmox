@@ -343,9 +343,9 @@ q8_0 KV, one 64k slot, eight DIMMs) prefilled cold prompts of 8k to 48k tokens a
 2 h 40 min ([record](../pro-v620/qwen38-flash-next/runs/2026-10-10-prefill-slowdown.md)).
 
 On GPU 1, Hermes keeps using CT 120 during a run. Its requests slow the workloads and can
-take a session's slot (counted in `cache_misses`). Keep long runs clear of CT 121's 04:00 ET KB
-freshness cron: an entry whose refresh times out while CT 120 is saturated or restarting
-is quarantined for 14 days.
+take a session's slot (counted in `cache_misses`). Keep long runs clear of Hermes' scheduled
+jobs that call the model: a knowledge-base entry whose freshness check times out while CT 120
+is saturated or restarting is quarantined for 14 days.
 
 ## Optional llama-benchy Benchmark
 

@@ -91,7 +91,7 @@ PY
   cat >/etc/systemd/system/cpu-governor.service <<UNIT
 [Unit]
 Description=Set CPU governor=${gov} (replaces cpu-powersave.service)
-Documentation=CognitiveStack personal/hermes memory host-power-saving
+Documentation=https://github.com/marchah/Proxmox/tree/main/pro-v620/qwen38-flash-next
 After=multi-user.target
 
 [Service]

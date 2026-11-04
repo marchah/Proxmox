@@ -6,7 +6,8 @@ Use component READMEs for deployment commands, defaults, and measurements.
 
 ## Where to look
 
-- [README.md](README.md): guest inventory and VMID allocation.
+- [README.md](README.md): the hardware, what each GPU serves with headline measurements,
+  the component guides, guest inventory and VMID allocation.
 - [pro-v620/](pro-v620/README.md): CT 120, GPU passthrough and Qwen3.6 serving.
 - [qwen38-flash-next/](pro-v620/qwen38-flash-next/README.md): CT 123 and the optional
   two-card CT 120 configuration, placement measurements and cutover procedure.
