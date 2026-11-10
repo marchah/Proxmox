@@ -18,10 +18,10 @@ GPU2_PCI_ADDRESS="${GPU2_PCI_ADDRESS:-}"
 # llama-<tag>-bin-ubuntu-vulkan-x64.tar.gz; the SHA-256 is the release asset's
 # digest). The prebuilt is preferred over a source build for reproducibility.
 # This build includes the Gated-DeltaNet normalization fix (#28068).
-readonly LLAMACPP_RELEASE_TAG="b12052"
+readonly LLAMACPP_RELEASE_TAG="b12239"
 readonly LLAMACPP_ASSET="llama-${LLAMACPP_RELEASE_TAG}-bin-ubuntu-vulkan-x64.tar.gz"
 readonly LLAMACPP_ASSET_URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMACPP_RELEASE_TAG}/${LLAMACPP_ASSET}"
-readonly LLAMACPP_SHA256="3692c83304533ccf9c50d92126c8e268131913b0fcb25088441c85cce651bc38"
+readonly LLAMACPP_SHA256="c3f2bea44702f465c7deb150f36fe8bccdef8cfe989c39d2573ede1597fe5d6a"
 # Single-file Q5 model with the MTP head kept (block 40, nextn_predict_layers 1),
 # ~27.2 GB of weights. The head drives speculative decoding (see llamacpp-serve).
 # The file name matches unsloth/Qwen3.6-35B-A3B-GGUF's MTP-less file, so it is stored

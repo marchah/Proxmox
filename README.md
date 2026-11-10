@@ -46,7 +46,7 @@ governor. 512 output tokens, medians of 3 interleaved repetitions
 | Two streams, total t/s: code / JSON / prose | 115 / 115 / 115 | 140 / 159 / 117 |
 | Cold prefill at 16k / 48k, t/s | 1,020 / 527 | 1,346 / 917 |
 
-The cards now run at stock voltage ([below](#findings)), and CT 120 runs b12052.
+The cards now run at stock voltage ([below](#findings)), and CT 120 runs b12239.
 
 ### GPU 2
 
