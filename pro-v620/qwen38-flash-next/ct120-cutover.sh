@@ -44,9 +44,9 @@ require_root() { [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox host"; 
 
 gpu2_attached() { grep -q "${GPU2_PCI}-render" "$CONF"; }
 
-# CT 125 or CT 126 holds GPU 2 between ../ds41/ds41-host.sh take and restore; both
+# CT 125, CT 126 or CT 127 holds GPU 2 between ../ds41/ds41-host.sh take and restore; both
 # directions here hand GPU 2 to a server (CT 120's, or CT 123's on the way back).
-readonly DS41_CONFS="${DS41_CONFS:-/etc/pve/lxc/125.conf /etc/pve/lxc/126.conf}"
+readonly DS41_CONFS="${DS41_CONFS:-/etc/pve/lxc/125.conf /etc/pve/lxc/126.conf /etc/pve/lxc/127.conf}"
 assert_ds41_off_cards() {
   local conf
   for conf in $DS41_CONFS; do

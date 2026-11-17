@@ -112,7 +112,7 @@ stream and about 80 t/s total at four concurrent streams. LM Studio on the same 
 | [pro-v620/](pro-v620/README.md) | The V620s: passthrough, CT 120's provisioner and settings, recovery after a DRM renumber |
 | [qwen38-flash-next/](pro-v620/qwen38-flash-next/README.md) | Qwen3.8-Flash-Next: CPU/GPU placement, CT 123, the two-card alternative, memory bandwidth |
 | [strata/](pro-v620/strata/README.md) | The Strata engine on HIP (ROCm 10.0) beside llama.cpp in CT 123 |
-| [ds41/](pro-v620/ds41/README.md) | CT 125 and CT 126: DeepSeek-V4.1-Flash on Strata's engine and on llama.cpp, and moving GPU 2 between containers |
+| [ds41/](pro-v620/ds41/README.md) | CT 125-127: DeepSeek-V4.1-Flash on Strata's engine, llama.cpp and Project Maya, and moving GPU 2 between containers |
 | [glm53-flash/](pro-v620/glm53-flash/README.md), [maya/](pro-v620/maya/README.md), [mimo-v26-pro/](pro-v620/mimo-v26-pro/README.md) | GLM-5.3-Flash and MiMo-V2.6-Pro-RL: tested, not deployed |
 | [spec-ab/](pro-v620/spec-ab/README.md) | Speculative decoding on CT 120: MTP, draft length, DFlash |
 | [rocm-ab/](pro-v620/rocm-ab/README.md) | Vulkan against ROCm in a passthrough VM |
@@ -127,9 +127,10 @@ stream and about 80 t/s total at four concurrent streams. LM Studio on the same 
 | ID | Name | Service | Guide |
 | --- | --- | --- | --- |
 | CT 120 | `llamacpp` | Qwen3.6-35B-A3B on GPU 1, API `:1234` | [pro-v620/](pro-v620/README.md) |
-| CT 123 | `gpu2` | Qwen3.8-Flash-Next on GPU 2, API `:1234`; stopped while CT 125 or CT 126 holds the card | [qwen38-flash-next/](pro-v620/qwen38-flash-next/README.md) |
+| CT 123 | `gpu2` | Qwen3.8-Flash-Next on GPU 2, API `:1234`; stopped while a DeepSeek container (CT 125-127) holds the card | [qwen38-flash-next/](pro-v620/qwen38-flash-next/README.md) |
 | CT 125 | `ds41-strata` | DeepSeek-V4.1-Flash on upstream Strata's engine (`strata-dsv41`), API `:1234` | [ds41/](pro-v620/ds41/README.md) |
 | CT 126 | `ds41-llama` | DeepSeek-V4.1-Flash on llama.cpp, the comparison engine; started only for a run | [ds41/](pro-v620/ds41/README.md) |
+| CT 127 | `ds41-maya` | DeepSeek-V4.1-Flash on Project Maya's engine (`maya-ds4`), the comparison engine; started only for a run | [ds41/](pro-v620/ds41/README.md) |
 | CT 200 | `bench-runner` | Disposable OpenAI-compatible endpoint benchmarks | [bench-runner/](bench-runner/README.md) |
 
 | VMID range | Purpose |
@@ -151,7 +152,7 @@ stream and about 80 t/s total at four concurrent streams. LM Studio on the same 
 The GGUF store is an LVM-thin pool on the whole NVMe holding one ext4 volume,
 `models/shared`, sized to the whole pool and mounted at `/mnt/models`. CT 120 and
 CT 123 both bind `/mnt/models/store` (owned by UID 1000) at `/models`; the unprivileged
-CT 125 and CT 126 bind it read-only. Each GGUF is
+CT 125-127 bind it read-only. Each GGUF is
 stored once, and survives `pct destroy`. It is not ZFS: the ARC would cache the
 mmapped GGUFs a second time next to the page cache. Its `/etc/fstab` entry:
 

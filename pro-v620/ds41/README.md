@@ -1,6 +1,6 @@
-# DeepSeek-V4.1-Flash containers (CT 125, CT 126)
+# DeepSeek-V4.1-Flash containers (CT 125, CT 126, CT 127)
 
-Two unprivileged LXCs run DeepSeek-V4.1-Flash-1017 engines on GPU 2 (`0000:83:00.0`). One
+Three unprivileged LXCs run DeepSeek-V4.1-Flash-1017 engines on GPU 2 (`0000:83:00.0`). One
 of them holds the card at a time, and Flash-Next on CT 123 is stopped meanwhile. Since
 2026-10-31 CT 125 serves the model. Its engine is upstream
 [Strata](https://github.com/Niko1221/Strata)'s `strata-dsv41` with the gfx1030 patches of the
@@ -11,14 +11,17 @@ holds the builds, the serving settings, the measurements and the host scripts fo
 `docs/V620-BASELINE.md` and `tools/v620/`. This directory creates the containers and moves
 GPU 2 between them and CT 123.
 
-The containers were created on 2026-10-27 to compare upstream Strata's engine with
+CT 125 and CT 126 were created on 2026-10-27 to compare upstream Strata's engine with
 llama.cpp on the same file (strata-ds41 #211). The strata-ds41 fork and its development
-container, CT 124, were retired on 2026-11-02.
+container, CT 124, were retired on 2026-11-02. CT 127 was created on 2026-11-17 to compare
+[Project Maya](https://github.com/mw00/project-maya)'s DeepSeek engine, which Strata's was
+ported from, with CT 125 on the same file.
 
 | CT | Hostname | Runs | Guest firewall |
 | --- | --- | --- | --- |
 | 125 | `ds41-strata` | `strata-deepseek.service`: Strata's server (`serve/server.py`) with `strata-dsv41`, UD-Q4_K_XL with the DSpark drafter and the vision tower, 256K context, OpenAI-compatible API on `:1234`, no API key | None: it serves the LAN |
 | 126 | `ds41-llama` | llama.cpp, the comparison engine; started only for a run | SSH in from the LAN; out, DNS to the router and the internet |
+| 127 | `ds41-maya` | Project Maya's `maya-ds4` on UD-Q4_K_XL, `maya-deepseek.service` (disabled) on `:1234`; started only for a run | the same as CT 126 |
 
 The guest rules apply only while the datacenter firewall is on, and it stays off.
 
@@ -29,6 +32,8 @@ On the Proxmox host, as root:
 ```bash
 ./create-lxc-ds41-engine.sh strata   # CT 125
 ./create-lxc-ds41-engine.sh llama    # CT 126
+./create-lxc-ds41-engine.sh maya     # CT 127
+./install-maya.sh                    # CT 127: Maya, its pack, drafter and config
 ./ds41-host.sh take 125              # GPU 2, its memory and autostart
 ```
 
@@ -36,13 +41,13 @@ On the Proxmox host, as root:
 | --- | --- |
 | Template | The newest build of Ubuntu 24.04's standard template (`UBUNTU_RELEASE`) |
 | ROCm | The newest `amdrocm-core-dev<series>-gfx1030` in AMD's repository, from the path for the container's Ubuntu release; under `/opt/rocm/core-<series>`, on every login's paths. A re-run keeps the newest series a container has; a newer series installs beside it by hand (`apt-get install amdrocm-core-dev<series>-gfx1030`). |
-| CPUs | `lxc.cgroup2.cpuset.cpus: 8-31,40-63` (cores 8-31 and their SMT siblings), `cores: 48`, the same set in both. Strata's engine pins one thread per physical core. CT 120 and CT 121 keep cores 0-7: Proxmox's balancer moves `cores` guests off the CPUs of a running container with its own cpuset. |
+| CPUs | `lxc.cgroup2.cpuset.cpus: 8-31,40-63` (cores 8-31 and their SMT siblings), `cores: 48`, the same set in all three. Strata's engine pins one thread per physical core. CT 120 and CT 121 keep cores 0-7: Proxmox's balancer moves `cores` guests off the CPUs of a running container with its own cpuset. |
 | Memory | 64 GiB without GPU 2; `take` raises it (see below); swap 0 |
 | Disk | 100 GB on `local-lvm` |
 | Mounts | `/models` (the model store, read-only), `/models-dev` (`/mnt/models/store/dev`, writable), `/owner-telemetry` (`/mnt/ds41-telemetry`, read-only) |
-| Limits | `lxc.prlimit.memlock: unlimited`: both engines page-lock host memory |
-| User | `agent`, passwordless sudo inside the container, groups `video` and `render`; key-only SSH with the other container's authorized keys plus `AGENT_SSH_PUBKEY`. No GitHub credentials: results come back through `/models-dev`. |
-| MAC | `BC:24:11:C0:DE:` and the VMID's last two digits (`:25`, `:26`), reserved on the router |
+| Limits | `lxc.prlimit.memlock: unlimited`: the engines page-lock host memory |
+| User | `agent`, passwordless sudo inside the container, groups `video` and `render`; key-only SSH with another engine container's authorized keys plus `AGENT_SSH_PUBKEY`. No GitHub credentials: results come back through `/models-dev`. |
+| MAC | `BC:24:11:C0:DE:` and the VMID's last two digits (`:25`, `:26`, `:27`); `:25` and `:26` are reserved on the router |
 
 `/mnt/ds41-telemetry` is a host tmpfs, where a start gate publishes host telemetry to the
 container. The provisioner refuses to run without it; `/etc/fstab` holds:
@@ -68,12 +73,12 @@ come in as `git bundle`s (`build-tree.sh`). CT 125's server config lives in CT 1
 ## GPU 2: `ds41-host.sh`
 
 ```bash
-./ds41-host.sh take <125|126>   # GPU 2 to that container
-./ds41-host.sh restore          # both off the card; CT 123 started on GPU 2
+./ds41-host.sh take <125|126|127>   # GPU 2 to that container
+./ds41-host.sh restore              # all off the card; CT 123 started on GPU 2
 ./ds41-host.sh status
 ```
 
-`take` stops CT 123 and turns its autostart off, and releases the other DeepSeek container:
+`take` stops CT 123 and turns its autostart off, and releases the other DeepSeek containers:
 stopped, autostart off, 64 GiB, no GPU entries. It maps GPU 2 to `<ct>:@container` in the
 thermal watchdog, then passes `/dev/kfd` and GPU 2's render and card nodes into the
 container at their real names, denies GPU 1's DRM nodes in its device cgroup, sets its memory
@@ -88,7 +93,7 @@ card, only the card's owner starts at boot, and the watchdog maps each card to t
 on it. CT 123's onboot and the watchdog map from before the first `take` live in
 `/root/ds41/`, and `restore` puts them back. `take` refuses while CT 120 holds GPU 2 or a
 DeepSeek container holds GPU 1. `use-engine.sh`, `ct123-test-host.sh` and `ct120-cutover.sh`
-refuse to change the cards while CT 125 or CT 126 holds one.
+refuse to change the cards while CT 125, CT 126 or CT 127 holds one.
 
 `ds41-host-test.sh` runs `ds41-host.sh` against a mocked host.
 
@@ -99,7 +104,7 @@ strata-v620's `tools/v620/host/` scripts run on pve from `/root`, the `host-*.sh
   cards to `125:@container`. `take` refuses while CT 125 holds GPU 1.
 - `host-restore.sh` ends a two-card run: GPU 2 only for CT 125, GPU 1 back to CT 120, which
   it starts. It also writes GPU 1's deny rules into CT 126, which does no harm.
-- `ds41-211-gate.sh` gates every full-model run: the other DeepSeek container stopped, the
+- `ds41-211-gate.sh` gates every full-model run: the other DeepSeek containers stopped, the
   target holding GPU 2, the watchdog mapping GPU 2 to it, and the host memory reserves.
 
 ### Memory

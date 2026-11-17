@@ -9,7 +9,7 @@ both on CPU-direct Gen4 x16 slots. Deployment since 2026-10-31:
 | `0000:83:00.0` | CT 125 `ds41-strata` | [DeepSeek-V4.1-Flash](ds41/README.md), `strata-deepseek.service`, API `:1234` |
 
 CT 123 `gpu2` ([Qwen3.8-Flash-Next](qwen38-flash-next/README.md)) served `0000:83:00.0`
-from 2026-09-18 and is stopped while CT 125 or CT 126 holds the card;
+from 2026-09-18 and is stopped while a DeepSeek container (CT 125-127) holds the card;
 `ds41/ds41-host.sh restore` gives it back.
 
 Each card has a 9733 blower controlled by [gpu-blower-control](gpu-blower-control/README.md)
@@ -188,7 +188,7 @@ both, in alternating order, and samples each card's clocks, power and temperatur
 
 Vulkan/RADV is the supported backend for llama.cpp. ROCm 10 also runs in an LXC, on the
 host's in-tree `amdgpu`: CT 123's Strata engine uses ROCm 10.0
-([strata](strata/README.md)), and CT 125 and CT 126 use ROCm 10.1 ([ds41](ds41/README.md)).
+([strata](strata/README.md)), and CT 125-127 use ROCm 10.1 ([ds41](ds41/README.md)).
 The llama.cpp comparison below ran ROCm 10.0 in a passthrough VM with AMD's
 `amdgpu-dkms`, measured 2026-10-01 on `b11018` ([rocm-ab](rocm-ab/README.md)):
 

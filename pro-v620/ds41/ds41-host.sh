@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # Hand GPU 2 (0000:83:00.0) between Flash-Next on CT 123 and one of the DeepSeek-V4.1-Flash
-# containers (README.md): CT 125 ds41-strata (upstream Strata's engine) or CT 126 ds41-llama
-# (llama.cpp). Runs on the Proxmox HOST as root, after create-lxc-ds41-engine.sh.
+# containers (README.md): CT 125 ds41-strata (Strata's engine), CT 126 ds41-llama (llama.cpp)
+# or CT 127 ds41-maya (Project Maya). Runs on the Proxmox HOST as root, after
+# create-lxc-ds41-engine.sh.
 #
-#   ./ds41-host.sh take <125|126>   # GPU 2 to that container; CT 123 and the other one
-#                                   # stopped with autostart off
-#   ./ds41-host.sh restore          # both stopped and off the card; Flash-Next back on GPU 2
+#   ./ds41-host.sh take <125|126|127>   # GPU 2 to that container; CT 123 and the other ones
+#                                       # stopped with autostart off
+#   ./ds41-host.sh restore              # all stopped and off the card; Flash-Next back on GPU 2
 #   ./ds41-host.sh status
 #
 # Both directions keep the lab's two invariants, across a host reboot too: no two
 # containers own a card, and the thermal watchdog maps each card to the workload on it.
 # The DeepSeek containers' GPU runs belong to no unit, so the map entry is `<ct>:@container`:
 # a trip stops the whole container. Only the container holding GPU 2 starts at boot. The
-# other one can still be started by hand for CPU work, without the card and with
+# other ones can still be started by hand for CPU work, without the card and with
 # SHARED_MEMORY_MIB.
 #
 # The containers are unprivileged and take GPU 2 through Proxmox device entries. Their device
@@ -21,7 +22,7 @@
 # for GPU") and finds no device (../strata/README.md). So `take` also denies GPU 1's DRM nodes.
 set -Eeuo pipefail
 
-readonly DS_CTS="125 126"
+readonly DS_CTS="125 126 127"
 readonly CT123=123
 readonly LXC_CONF_DIR="${LXC_CONF_DIR:-/etc/pve/lxc}"
 readonly CT120_CONF="${CT120_CONF:-${LXC_CONF_DIR}/120.conf}"
@@ -286,6 +287,6 @@ case "${1:-status}" in
   take) require_root; take "${2:-}" ;;
   restore) require_root; restore ;;
   status) ;;
-  *) die "usage: $0 {take <125|126>|restore|status}" ;;
+  *) die "usage: $0 {take <125|126|127>|restore|status}" ;;
 esac
 status
