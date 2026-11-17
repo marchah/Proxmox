@@ -154,10 +154,12 @@ show_state() {
   log "state"
   pct exec "$VMID" -- "${ctenv[@]}" bash -s <<'CONTAINER_SCRIPT'
 ok() { if eval "$2" >/dev/null 2>&1; then echo "  $1: ok"; else echo "  $1: MISSING"; fi; }
-ok "engine maya-ds4" "test -x '${MAYA_HOME}/build/maya-ds4'"
-ok "pack           " "ls -d '${UD_DIR}'/pack* "
-ok "drafter        " "ls '${UD_DIR}/../dspark'/* "
-ok "kfd            " "test -c /dev/kfd"
+ok "engine maya-ds4" "test -x '${MAYA_HOME}/build-hip/maya-ds4'"
+ok "pack           " "test -d '${UD_DIR}/maya-ds4'"
+ok "drafter        " "test -s '$(dirname "$UD_DIR")/dspark/dspark.bin'"
+ok "vision tower   " "test -s '$(dirname "$UD_DIR")/vision/vision.bin'"
+ok "config         " "test -s '${MAYA_HOME}/maya-ds4-hip.json'"
+echo "  /dev/kfd: $(test -c /dev/kfd && echo present || echo 'absent until ds41-host.sh take 127')"
 ls "$MAYA_HOME"/run-maya-*.sh 2>/dev/null | sed 's/^/  start script: /'
 du -sh "$MAYA_ROOT" "$MODELS" 2>/dev/null | sed 's/^/  /'
 CONTAINER_SCRIPT
