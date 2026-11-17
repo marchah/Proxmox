@@ -62,7 +62,8 @@ beside 10.0.0-4, both held, and both run 10.1: their profiles and `/opt/rocm/*` 
 2026-11-03 (with a llama.cpp build for 10.1). `rocm-smi` and the profiler tools come only with 10.0 and stay on
 it. strata-v620's baseline, "ROCm 10.1", has the measurements; its builds carry their series as `DT_RPATH`,
 because the two series share sonames, and a 10.0 build without one needs
-`LD_LIBRARY_PATH=/opt/rocm/core-10.0/lib` to run on 10.0.
+`LD_LIBRARY_PATH=/opt/rocm/core-10.0/lib` to run on 10.0. CT 127, created after 10.1 came out, has
+10.1.0-3 only.
 
 Engine builds and CT 125's service come from strata-v620 (`tools/v620/build-strata.sh`,
 `build-llama.sh`, `build-tree.sh`, `serving.env`). Without GitHub credentials, engine commits
@@ -127,6 +128,33 @@ scripts in strata-v620's `tools/v620/host/` (each checks size and SHA-256):
 
 `strata-dsv41` loads a pack that upstream's `tools/dsv41/pack_gguf.py` builds from these
 files. The packs sit under `/models-dev/211-upstream-spike/`.
+
+## Project Maya (CT 127)
+
+`install-maya.sh` installs [Project Maya](https://github.com/mw00/project-maya)'s DeepSeek
+engine, `maya-ds4`, which Strata's `strata-dsv41` was ported from. It runs Maya's own setup
+without questions: `--ds4-quant gguf-q4` (UD-Q4_K_XL, which the setup installs when asked but
+no longer lists), one GPU, a 262,144-token context, DSpark on. The setup reads the cards from
+the kernel's KFD topology in sysfs, so it runs while CT 125 holds GPU 2.
+
+| Part | Where (CT 127) | Pinned by |
+| --- | --- | --- |
+| Maya's source, its venv and the HIP engine for gfx1030 (ROCm 10.1) | `/opt/maya-ds4/maya-v1.1.65`: `.venv/`, `build-hip/maya-ds4` | `MAYA_RELEASE`, `MAYA_COMMIT` |
+| llama.cpp (ggml) at Maya's pin, which CT 125's builds also use | `/opt/maya-ds4/llama.cpp-3cf03257` | `MAYA_GGML_COMMIT`, checked against Maya's `setup.py` |
+| UD-Q4_K_XL: links to the store's shards, and Maya's pack (an index: the weights stay in the shards) | `/models-dev/maya-ds4/DeepSeek-V4.1-Flash-1017-GGUF/UD-Q4_K_XL/`, its `maya-ds4/` | the store's `UD-Q4_K_XL.verified`; the shards' SHA-256 are the ones Maya's manifest pins |
+| The DSpark drafter (`dspark.bin`, 8.0 GB, Maya's) and the vision tower (shard 1 of DeepSeek's checkpoint) | `.../DeepSeek-V4.1-Flash-1017-GGUF/dspark/`, `.../vision/` | Maya's manifest: size and SHA-256 |
+| Config and start script | `/opt/maya-ds4/maya-v1.1.65/maya-ds4-hip.json`, `run-maya-ds4-hip.sh` | written by Maya's setup |
+| Unit | `maya-deepseek.service`, disabled, on `:1234` | this directory |
+
+- **The Engram tables.** The pack reads the file's own MXFP8 shard (202.8 GB), as Strata's
+  does. Maya's setup uses it when the shard is there whole; without it, the setup downloads
+  the Q6_K tables of Maya's own quants (161 GB).
+- **The setup's defaults.** `--reserve-mib 3072`: the VRAM the engine leaves free, Maya's value
+  for AMD, where CT 125's engine leaves about 580 MiB. `reasoning_effort: high`, and
+  temperature 1.0.
+- **Logs.** The engine log is `maya-ds4-hip.log` in the source folder. Run `du -sh /opt/maya-ds4
+  /models-dev/maya-ds4` in CT 127 for what the install takes.
+- **Re-running.** Maya's setup skips what is done, so a re-run takes about a minute.
 
 ## Thermal safety
 
