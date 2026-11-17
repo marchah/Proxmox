@@ -4,7 +4,9 @@ Two unprivileged LXCs run DeepSeek-V4.1-Flash-1017 engines on GPU 2 (`0000:83:00
 of them holds the card at a time, and Flash-Next on CT 123 is stopped meanwhile. Since
 2026-10-31 CT 125 serves the model. Its engine is upstream
 [Strata](https://github.com/Niko1221/Strata)'s `strata-dsv41` with the gfx1030 patches of the
-private fork [marchah/strata-v620](https://github.com/marchah/strata-v620). That repository
+private fork [marchah/strata-v620](https://github.com/marchah/strata-v620). Upstream removed the
+DeepSeek engine in 0.2.14 (2026-11-11), so the fork stays on `9b7a1d84f`, the last upstream commit
+that has it, and upstream releases no longer apply to CT 125. That repository
 holds the builds, the serving settings, the measurements and the host scripts for runs:
 `docs/V620-BASELINE.md` and `tools/v620/`. This directory creates the containers and moves
 GPU 2 between them and CT 123.
