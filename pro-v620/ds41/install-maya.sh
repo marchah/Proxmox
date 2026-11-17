@@ -65,7 +65,7 @@ tag="$(git ls-remote https://github.com/mw00/project-maya.git "refs/tags/${MAYA_
 [ "$tag" = "$MAYA_COMMIT" ] || { echo "FATAL: ${MAYA_RELEASE} is ${tag:-missing}, pinned ${MAYA_COMMIT}" >&2; exit 1; }
 checkout() {   # <dir> <url> <commit>: a shallow checkout of exactly that commit, owned by the agent
   local dir="$1" url="$2" commit="$3"
-  if [ -d "$dir/.git" ] && [ "$(git -C "$dir" rev-parse HEAD)" = "$commit" ]; then
+  if [ -d "$dir/.git" ] && [ "$(as_agent git -C "$dir" rev-parse HEAD)" = "$commit" ]; then
     echo "${dir} at ${commit:0:12}"
     return
   fi
@@ -74,7 +74,7 @@ checkout() {   # <dir> <url> <commit>: a shallow checkout of exactly that commit
   as_agent git init -q "$dir"
   as_agent git -C "$dir" fetch -q --depth 1 "$url" "$commit"
   as_agent git -C "$dir" -c advice.detachedHead=false checkout -q FETCH_HEAD
-  [ "$(git -C "$dir" rev-parse HEAD)" = "$commit" ] || { echo "FATAL: ${dir} is not at ${commit}" >&2; exit 1; }
+  [ "$(as_agent git -C "$dir" rev-parse HEAD)" = "$commit" ] || { echo "FATAL: ${dir} is not at ${commit}" >&2; exit 1; }
   echo "${dir} at ${commit:0:12}"
 }
 checkout "$MAYA_HOME" https://github.com/mw00/project-maya.git "$MAYA_COMMIT"
