@@ -168,7 +168,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-16 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Strata in place of llama.cpp on one card](runs/2026-10-16-strata.md) | done |
 | 2026-10-17 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Pipeline windows and a shorter draft on two cards](runs/2026-10-17-strata-pipeline.md) | done |
 | 2026-10-17 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Why greedy text changes between starts with pipeline windows](runs/2026-10-17-strata-text.md) | done |
-| 2026-11-18 | — | — | [Host memory: store types and read-only bandwidth](../runs/2026-11-18-memory-bandwidth.md) | planned |
+| 2026-11-18 | — | — | [Host memory: store types and read-only bandwidth](../runs/2026-11-18-memory-bandwidth.md) | done |
 
 ## Benchmark tools
 
@@ -397,11 +397,26 @@ passes.
 | 32 | 148.6 | 95.4 | 104.3 | 104.4 |
 | 64 | 141.9 | 94.1 | 103.6 | 103.6 |
 
-Copy peaks at 75% of the 204.8 GB/s
-theoretical bandwidth. STREAM reports application bytes; counting
-read-for-ownership, Triad moves about 143 GB/s. Untested settings that can add
-bandwidth: NPS4, APBDIS 1 with SOC P-state P0, DF C-states disabled, and a STREAM
-build with non-temporal stores, which removes the read-for-ownership traffic.
+Copy peaks at 75% of the 204.8 GB/s theoretical bandwidth. STREAM reports the bytes a
+kernel names, not the bytes it moves. GCC compiles Copy to a `memcpy` call, and glibc
+copies blocks that large with non-temporal stores, so Copy moves what it reports. Scale,
+Add and Triad use ordinary stores, which first read each destination line.
+[`membench-kernels.sh`](membench-kernels.sh) builds STREAM with non-temporal stores in
+every kernel, plus a read-only pass ([`membench-readbw.c`](membench-readbw.c)). Measured
+2026-11-18 on kernel `7.0.14-29-pve` with the same BIOS settings and every guest shut
+down, at 16 threads, median of three rounds
+([record](../runs/2026-11-18-memory-bandwidth.md)):
+
+| Build | Copy | Scale | Add | Triad |
+| --- | ---: | ---: | ---: | ---: |
+| `membench.sh`'s flags | 149.9 GB/s | 96.3 | 104.9 | 104.9 |
+| Non-temporal stores in every kernel | 145.6 | 147.7 | 144.7 | 144.9 |
+
+Counting the destination reads, every kernel moves 140–150 GB/s. A non-temporal build
+changes what STREAM reports, not the bandwidth. The read-only pass reached 113.0 GB/s at
+8 threads, 136.6 at 16 and 141.7 at 32, still rising at the highest count tested.
+Untested settings that can add bandwidth: NPS4, APBDIS 1 with SOC P-state P0, and DF
+C-states disabled.
 
 A random pointer chase with huge pages measured 116.45 ns/load over 256 MiB and
 123.86 ns over 4 GiB. Report page configuration with latency: 4 KiB pages add
