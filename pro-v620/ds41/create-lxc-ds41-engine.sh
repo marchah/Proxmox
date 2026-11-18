@@ -10,6 +10,7 @@ case "${ENGINE}" in
   # CT 125 serves its API to the LAN on :1234, without guest firewall rules.
   strata) DEFAULT_VMID=125; DEFAULT_HOSTNAME=ds41-strata; DEFAULT_FIREWALL=0; DEFAULT_KEYS_FROM=126 ;;
   llama) DEFAULT_VMID=126; DEFAULT_HOSTNAME=ds41-llama; DEFAULT_FIREWALL=1; DEFAULT_KEYS_FROM=125 ;;
+  maya) DEFAULT_VMID=127; DEFAULT_HOSTNAME=ds41-maya; DEFAULT_FIREWALL=1; DEFAULT_KEYS_FROM=125 ;;
   *) DEFAULT_VMID=""; DEFAULT_HOSTNAME=""; DEFAULT_FIREWALL=1; DEFAULT_KEYS_FROM="" ;;
 esac
 VMID="${VMID:-${DEFAULT_VMID}}"
@@ -22,8 +23,8 @@ TEMPLATE="${TEMPLATE:-}"
 ROOT_STORAGE="${ROOT_STORAGE:-local-lvm}"
 # ROCm is about 8 GB; one engine's builds and logs fit in the rest.
 ROOT_SIZE_GB="${ROOT_SIZE_GB:-100}"
-# Cores 8-31 with their SMT siblings 40-63, shared by CT 125 and CT 126: ds41-host.sh lets
-# one of them hold GPU 2 and run. Strata's engine pins one thread per physical core. CT 120
+# Cores 8-31 with their SMT siblings 40-63, shared by the DeepSeek containers (CT 125-127):
+# ds41-host.sh lets one of them hold GPU 2 and run. Strata's engine pins one thread per physical core. CT 120
 # and CT 121 keep cores 0-7: Proxmox's balancer moves `cores` guests off the CPUs of a
 # running container with its own cpuset.
 CPUSET="${CPUSET:-8-31,40-63}"
@@ -69,18 +70,20 @@ the Proxmox host as root.
 
   ./create-lxc-ds41-engine.sh strata   # CT 125 ds41-strata: upstream Strata (strata-dsv41)
   ./create-lxc-ds41-engine.sh llama    # CT 126 ds41-llama: llama.cpp
+  ./create-lxc-ds41-engine.sh maya     # CT 127 ds41-maya: Project Maya (maya-ds4); then install-maya.sh
   ./ds41-host.sh take 125              # then GPU 2, its memory and autostart
 
 Creates an unprivileged Ubuntu LXC (the newest UBUNTU_RELEASE template) with the newest
 ROCm for ROCM_GFX, build tools, the user `agent` (passwordless sudo inside the container,
-groups video and render) and key-only sshd. The agent's authorized_keys are copied from the
-other engine container (KEYS_FROM_VMID), plus AGENT_SSH_PUBKEY. No GitHub credentials:
-results come back through /models-dev. The model store is mounted read-only at /models, the
-owner telemetry read-only at /owner-telemetry, and /models-dev is writable. Both containers
+groups video and render) and key-only sshd. The agent's authorized_keys are copied from
+another engine container (KEYS_FROM_VMID: CT 126 for CT 125, else CT 125), plus
+AGENT_SSH_PUBKEY. No GitHub credentials: results come back through /models-dev. The model
+store is mounted read-only at /models, the
+owner telemetry read-only at /owner-telemetry, and /models-dev is writable. The containers
 share the CPUs in CPUSET.
 
-GPU 2 is not attached here: only one of CT 125 and CT 126 holds it, and ds41-host.sh moves
-it with the thermal watchdog's map.
+GPU 2 is not attached here: only one of CT 125, CT 126 and CT 127 holds it, and ds41-host.sh
+moves it with the thermal watchdog's map.
 
 Re-running is safe: an existing container is configured, not recreated, and keeps its
 ROCm.
@@ -350,10 +353,10 @@ print_summary() {
   IP (this boot):   ${ip:-unknown}  (reserve MAC ${MAC} on the router)
   Login:            ssh ${AGENT_USER}@${ip:-<ip>}  (key only)
   Mounts:           /models and /owner-telemetry read-only, /models-dev writable
-  CPUs:             ${CPUSET}, shared with the other engine container
+  CPUs:             ${CPUSET}, shared with the other engine containers
 
   GPU 2 is not attached: ./ds41-host.sh take ${VMID} gives it the card, its memory and
-  autostart, and stops the other one.
+  autostart, and stops the others.
 SUMMARY
 }
 

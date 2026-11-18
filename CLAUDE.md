@@ -19,8 +19,8 @@ Use component READMEs for deployment commands, defaults, and measurements.
   test records; `ct123-test-host.sh` with `TEST_ENGINE=maya` sets the container up.
 - [mimo-v26-pro/](pro-v620/mimo-v26-pro/README.md): MiMo-V2.6-Pro-RL model notes, RAM fit
   and test records; not deployed.
-- [ds41/](pro-v620/ds41/README.md): CT 125 and CT 126, DeepSeek-V4.1-Flash on upstream
-  Strata's engine and on llama.cpp; `ds41-host.sh take <ct>` gives one of them GPU 2,
+- [ds41/](pro-v620/ds41/README.md): CT 125-127, DeepSeek-V4.1-Flash on Strata's engine,
+  llama.cpp and Project Maya; `ds41-host.sh take <ct>` gives one of them GPU 2,
   `restore` gives it back to CT 123.
 - [bench-runner/](bench-runner/README.md) and [ansible/](ansible/README.md): endpoint
   benchmarks, telemetry and reports.
@@ -79,8 +79,8 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   two-card alternative: it changes passthrough, CT 123's `onboot` and the watchdog
   service map together. `glm53-flash/ct123-test-host.sh` does the same in the other
   direction for the GLM-5.3-Flash and MiMo-V2.6-Pro-RL tests, giving CT 123 both cards
-  while CT 120 stays off. `ds41/ds41-host.sh` gives GPU 2 to CT 125 or CT 126 with CT 123
-  stopped; the other switches refuse to run while either holds a card.
+  while CT 120 stays off. `ds41/ds41-host.sh` gives GPU 2 to CT 125, CT 126 or CT 127 with
+  CT 123 stopped; the other switches refuse to run while any of them holds a card.
 - Both servers use `--reasoning off --reasoning-format auto`. The first disables
   thinking; the second removes empty think tags from response content. Revalidate
   response content and tool calls when changing these flags or the KV cache type.

@@ -27,8 +27,8 @@ DRI_BY_PATH="${DRI_BY_PATH:-/dev/dri/by-path}"
 WATCHDOG_ENV="${WATCHDOG_ENV:-/etc/gpu-thermal-watchdog.env}"
 BAK_DIR="${BAK_DIR:-/root/strata-backups}"
 CT120_ONBOOT_FILE="${BAK_DIR}/120.onboot.before-two-card"
-# CT 125 or CT 126 holds GPU 2 between ../ds41/ds41-host.sh take and restore.
-DS41_CONFS="${DS41_CONFS:-/etc/pve/lxc/125.conf /etc/pve/lxc/126.conf}"
+# CT 125, CT 126 or CT 127 holds GPU 2 between ../ds41/ds41-host.sh take and restore.
+DS41_CONFS="${DS41_CONFS:-/etc/pve/lxc/125.conf /etc/pve/lxc/126.conf /etc/pve/lxc/127.conf}"
 PORT="${PORT:-1234}"
 LLAMACPP_UNIT=llamacpp-qwen38fn
 STRATA_UNIT=strata-qwen38fn

@@ -27,9 +27,9 @@ memory: 122880
 onboot: 1
 lxc.mount.entry: /dev/dri/by-path/pci-${GPU2}-render dev/dri/renderD128 none bind,optional,create=file
 EOF
-  for ct in 125 126; do printf 'memory: 65536\nonboot: 0\n' >"$T/lxc/$ct.conf"; done
+  for ct in 125 126 127; do printf 'memory: 65536\nonboot: 0\n' >"$T/lxc/$ct.conf"; done
   echo running >"$T/status.120"; echo running >"$T/status.121"; echo running >"$T/status.123"
-  echo running >"$T/status.125"; echo stopped >"$T/status.126"
+  echo running >"$T/status.125"; echo stopped >"$T/status.126"; echo stopped >"$T/status.127"
   echo "GPU_SERVICE_MAP=${GPU1}=120:llamacpp,${GPU2}=123:llamacpp-qwen38fn" >"$T/wd.env"
   echo 'MemTotal:       528014336 kB' >"$T/meminfo"   # 515,639 MiB, as pve
   # by-path links resolve to the real node names, as udev's do
@@ -119,17 +119,17 @@ memory() { awk -F': ' '$1 == "memory" {print $2}' "$T/lxc/$1.conf"; }
 map() { grep '^GPU_SERVICE_MAP=' "$T/wd.env" | cut -d= -f2-; }
 gpu_holders() {  # the DeepSeek containers whose config passes GPU 2 through
   local ct
-  for ct in 125 126; do
+  for ct in 125 126 127; do
     grep -qE '^dev[0-9]+: /dev/dri/renderD128,' "$T/lxc/$ct.conf" && printf '%s ' "$ct"
   done
 }
-autostart() {  # the containers among CT 123, 125 and 126 that start at boot
+autostart() {  # the containers among CT 123 and 125-127 that start at boot
   local ct
-  for ct in 123 125 126; do [ "$(onboot "$ct")" = 1 ] && printf '%s ' "$ct"; done
+  for ct in 123 125 126 127; do [ "$(onboot "$ct")" = 1 ] && printf '%s ' "$ct"; done
 }
 owns_alone() {  # <ct>: the one GPU 2 holder, the one that autostarts, and the map's entry
   local ct="$1" other
-  [ "$(gpu_holders)" = "$ct " ] && ok "only CT $ct holds GPU 2 of CT 125-126" || bad "GPU 2 holders: $(gpu_holders)"
+  [ "$(gpu_holders)" = "$ct " ] && ok "only CT $ct holds GPU 2 of CT 125-127" || bad "GPU 2 holders: $(gpu_holders)"
   [ "$(cat "$T/status.123")/$(onboot 123)" = stopped/0 ] && ok "CT 123 stopped, autostart off" \
     || bad "CT 123: $(cat "$T/status.123"), onboot $(onboot 123)"
   [ "$(autostart)" = "$ct " ] && ok "only CT $ct starts at boot" || bad "autostart: $(autostart)"
@@ -137,7 +137,7 @@ owns_alone() {  # <ct>: the one GPU 2 holder, the one that autostarts, and the m
   grep -q '^lxc.cgroup2.devices.deny: c 226:129 rwm$' "$T/lxc/$ct.conf" \
     && grep -q '^lxc.cgroup2.devices.deny: c 226:2 rwm$' "$T/lxc/$ct.conf" \
     && ok "CT $ct denies GPU 1's nodes" || bad "CT $ct lacks GPU 1's deny rules"
-  for other in 125 126; do
+  for other in 125 126 127; do
     [ "$other" = "$ct" ] && continue
     [ "$(cat "$T/status.$other")/$(memory "$other")" = stopped/65536 ] \
       && ! grep -q '^lxc.cgroup2.devices.deny: c 226:' "$T/lxc/$other.conf" \
@@ -161,12 +161,18 @@ owns_alone 126
 [ "$(memory 126)" = 474679 ] && ok "CT 126 memory 474,679 MiB" || bad "CT 126 memory $(memory 126)"
 
 echo "=== 3. simulated host reboot: only the owner comes back ==="
-for ct in 123 125 126; do
+for ct in 123 125 126 127; do
   echo stopped >"$T/status.$ct"
   [ "$(onboot "$ct")" = 1 ] && echo running >"$T/status.$ct"
 done
-running=""; for ct in 123 125 126; do [ "$(cat "$T/status.$ct")" = running ] && running+="$ct "; done
+running=""; for ct in 123 125 126 127; do [ "$(cat "$T/status.$ct")" = running ] && running+="$ct "; done
 [ "$running" = "126 " ] && ok "only CT 126 runs after the reboot" || bad "running after reboot: $running"
+
+echo "=== 3b. take 127 moves the card from CT 126 ==="
+run take 127 || { bad "take 127 exited non-zero"; tail_log; }
+owns_alone 127
+[ "$(cat "$T/status.127")" = running ] && ok "CT 127 started" || bad "CT 127 is $(cat "$T/status.127")"
+[ "$(memory 127)" = 474679 ] && ok "CT 127 memory 474,679 MiB" || bad "CT 127 memory $(memory 127)"
 
 echo "=== 4. take 125 on the live state of 2026-11-02: CT 125 serving, CT 126 also holds GPU 2 ==="
 rm -rf "$T"; new_host
@@ -204,7 +210,7 @@ sed_out="$(grep -v '^dev3: ' "$T/lxc/125.conf")"; printf '%s\n' "$sed_out" >"$T/
 
 echo "=== 6. restore gives the card back to Flash-Next ==="
 run restore || { bad "restore exited non-zero"; tail_log; }
-[ -z "$(gpu_holders)" ] && ok "CT 125 and CT 126 hold no card" || bad "GPU 2 holders: $(gpu_holders)"
+[ -z "$(gpu_holders)" ] && ok "CT 125-127 hold no card" || bad "GPU 2 holders: $(gpu_holders)"
 [ "$(autostart)" = "123 " ] && ok "only CT 123 starts at boot" || bad "autostart: $(autostart)"
 [ "$(map)" = "${GPU1}=120:llamacpp,${GPU2}=123:llamacpp-qwen38fn" ] && ok "watchdog map restored" || bad "map is $(map)"
 [ "$(cat "$T/status.123")" = running ] && ok "CT 123 started" || bad "CT 123 is $(cat "$T/status.123")"
