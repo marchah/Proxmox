@@ -169,7 +169,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-17 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Pipeline windows and a shorter draft on two cards](runs/2026-10-17-strata-pipeline.md) | done |
 | 2026-10-17 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Why greedy text changes between starts with pipeline windows](runs/2026-10-17-strata-text.md) | done |
 | 2026-11-18 | — | — | [Host memory: store types and read-only bandwidth](../runs/2026-11-18-memory-bandwidth.md) | done |
-| 2026-11-19 | — | — | [Host memory: read bandwidth at 64 threads](../runs/2026-11-19-memory-read-64-threads.md) | planned |
+| 2026-11-19 | — | — | [Host memory: read bandwidth at 64 threads](../runs/2026-11-19-memory-read-64-threads.md) | done |
 
 ## Benchmark tools
 
@@ -415,7 +415,11 @@ down, at 16 threads, median of three rounds
 
 Counting the destination reads, every kernel moves 140–150 GB/s. A non-temporal build
 changes what STREAM reports, not the bandwidth. The read-only pass reached 113.0 GB/s at
-8 threads, 136.6 at 16 and 141.7 at 32, still rising at the highest count tested.
+8 threads, 136.6 at 16 and 141.7 at 32. On 2026-11-19 it read 141.5 GB/s at 32 threads and
+142.1 at 64, the same within the rounds' spread
+([record](../runs/2026-11-19-memory-read-64-threads.md)): the host reads at about 142 GB/s,
+69% of the theoretical bandwidth, from 32 threads up. At 64 threads every STREAM kernel of
+every build moves 0.4–4.0% less than at 32.
 Untested settings that can add bandwidth: NPS4, APBDIS 1 with SOC P-state P0, and DF
 C-states disabled.
 
