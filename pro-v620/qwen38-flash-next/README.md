@@ -170,6 +170,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-17 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Why greedy text changes between starts with pipeline windows](runs/2026-10-17-strata-text.md) | done |
 | 2026-11-18 | — | — | [Host memory: store types and read-only bandwidth](../runs/2026-11-18-memory-bandwidth.md) | done |
 | 2026-11-19 | — | — | [Host memory: read bandwidth at 64 threads](../runs/2026-11-19-memory-read-64-threads.md) | done |
+| 2026-11-19 | — | — | [Host memory: BIOS settings and read bandwidth](../runs/2026-11-19-memory-bios-settings.md) | planned |
 
 ## Benchmark tools
 
