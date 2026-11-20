@@ -170,7 +170,7 @@ Plans and results of each test campaign, per [TEST-RECORDS.md](../TEST-RECORDS.m
 | 2026-10-17 | Strata v0.1.44.1 | HIP, ROCm 10.0 | [Why greedy text changes between starts with pipeline windows](runs/2026-10-17-strata-text.md) | done |
 | 2026-11-18 | — | — | [Host memory: store types and read-only bandwidth](../runs/2026-11-18-memory-bandwidth.md) | done |
 | 2026-11-19 | — | — | [Host memory: read bandwidth at 64 threads](../runs/2026-11-19-memory-read-64-threads.md) | done |
-| 2026-11-19 | — | — | [Host memory: BIOS settings and read bandwidth](../runs/2026-11-19-memory-bios-settings.md) | planned |
+| 2026-11-19 | — | — | [Host memory: BIOS settings and read bandwidth](../runs/2026-11-19-memory-bios-settings.md) | done |
 
 ## Benchmark tools
 
@@ -421,8 +421,15 @@ changes what STREAM reports, not the bandwidth. The read-only pass reached 113.0
 ([record](../runs/2026-11-19-memory-read-64-threads.md)): the host reads at about 142 GB/s,
 69% of the theoretical bandwidth, from 32 threads up. At 64 threads every STREAM kernel of
 every build moves 0.4–4.0% less than at 32.
-Untested settings that can add bandwidth: NPS4, APBDIS 1 with SOC P-state P0, and DF
-C-states disabled.
+
+BIOS settings, each measured alone on 2026-11-19 between two NPS1 baselines
+([record](../runs/2026-11-19-memory-bios-settings.md)): NPS4 raises the read-only pass to
+168.8 GB/s at 16 threads and 169.5 at 32, 18–24% above NPS1 and 83% of the theoretical
+bandwidth, with each thread reading its own node's memory. Its passes vary: at the average
+pass time it reads 8–10% more than NPS1. APBDIS 1 and DF C-states disabled make no
+measurable difference (within 1.1%). The host runs NPS1, APBDIS Auto and DF C-states
+enabled. BIOS settings are changed in iKVM: the BMC refuses Redfish BIOS writes, in Setup
+too, and Redfish reads them back.
 
 A random pointer chase with huge pages measured 116.45 ns/load over 256 MiB and
 123.86 ns over 4 GiB. Report page configuration with latency: 4 KiB pages add
