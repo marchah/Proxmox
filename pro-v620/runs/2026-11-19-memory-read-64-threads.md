@@ -8,7 +8,7 @@ On [2026-11-18](2026-11-18-memory-bandwidth.md) the read-only pass rose with eve
 thread count, 113.0, 136.6 and 141.7 GB/s at 8, 16 and 32 threads, so 32, the highest
 count tested, may not be the host's read peak. Does it read faster with 64 threads, one per
 SMT thread of the EPYC 7532? STREAM at 64 threads was the slowest count for every kernel on
-[2026-10-08](../qwen38-flash-next/README.md#host-memory-bandwidth--2026-10-08); does that
+[2026-10-08](../host-memory/README.md#bandwidth); does that
 still hold for every store type?
 
 ## What answers it
@@ -27,7 +27,7 @@ All figures are the median of three rounds' best rates, in this session.
 
 BIOS, binaries and build flags as on 2026-11-18: NPS1, APBDIS Auto, DF C-states enabled;
 `stream-gcc`, `stream-plain`, `stream-nt` and `readbw`, built by the same
-[`membench-kernels.sh`](../qwen38-flash-next/membench-kernels.sh), unchanged. Two thread
+[`membench-kernels.sh`](../host-memory/membench-kernels.sh), unchanged. Two thread
 counts: 32 (one per core) and 64 (two per core, both SMT threads), each with
 `OMP_PROC_BIND=spread OMP_PLACES=cores`.
 
@@ -47,7 +47,7 @@ Left out:
 - STREAM validates its arrays after every run and `readbw` checks every pass's sum; a run
   that fails validation is left out.
 - Each run starts with the hottest DIMM at or below 55 °C, and a run during which any DIMM
-  reaches 66 °C, the [bandwidth cap](../qwen38-flash-next/README.md#dimm-thermal-throttle),
+  reaches 66 °C, the [bandwidth cap](../host-memory/README.md#dimm-thermal-throttle),
   is left out.
 
 ## Method

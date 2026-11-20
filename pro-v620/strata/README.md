@@ -105,7 +105,7 @@ and exports the env file's `STRATA_*` switches to the engine. The starting value
 | Prompt chunks | `--prefill auto` (8,192 tokens) | setup.py |
 | Draft | MTP draft layer, `--spec 4 --spec-min-p 0.5` | setup.py |
 | Cards | `MODEL_GPUS=0000:83:00.0`: GPU 2, by PCI address | the launcher resolves addresses to HIP's numbering at every start; two addresses run a layer split (`MODEL_LAYER_SPLIT=auto`) or, without it, an expert helper |
-| CPU expert workers | `--pool-workers 15` | CT 123's 24 CPUs sit on 21 cores; STREAM peaks at 16 threads ([memory bandwidth](../qwen38-flash-next/README.md#host-memory-bandwidth--2026-10-08)) |
+| CPU expert workers | `--pool-workers 15` | CT 123's 24 CPUs sit on 21 cores; STREAM peaks at 16 threads ([memory bandwidth](../host-memory/README.md#bandwidth)) |
 | n-gram (PLE) table | `--ple-io direct` from the NVMe store | engine default |
 | Memory limit | `--memory-limit-mib 118784` | the engine cannot see CT 123's 120 GiB limit from inside |
 | Reasoning | `reasoning_effort: none` | llama.cpp runs `--reasoning off` |
