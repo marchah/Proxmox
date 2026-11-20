@@ -71,7 +71,7 @@ Left out:
 ## Method
 
 - Harness: this commit. `membench-kernels.sh` staged on the host with `../push-harness.sh`;
-  [`bios-set.sh`](../host-memory/bios-set.sh) run on the Mac from a checkout of this
+  [`bios-set.sh`](https://github.com/marchah/Proxmox/blob/d4eaba3eb6848ab8ab69fa00c8af9cf4276bba37/pro-v620/qwen38-flash-next/bios-set.sh) run on the Mac from a checkout of this
   commit, with the BMC login in a mode-600 netrc file outside the repository.
 - `bios-set.sh` checks each name and value against the BIOS's attribute registry, sets a
   one-time boot into Setup with `ipmitool chassis bootdev bios`, reboots the host, writes the

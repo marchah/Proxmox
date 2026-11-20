@@ -15,7 +15,7 @@ which logs each guest's CPU time instead.
 | [`membench.sh`](membench.sh) | STREAM 5.10 at 8–64 threads and a pointer-chase latency, built into `/root/membench` |
 | [`membench-sustained.sh`](membench-sustained.sh) | `membench.sh`'s STREAM back to back for a set time, each pass beside the DIMM temperatures |
 | [`membench-kernels.sh`](membench-kernels.sh) | STREAM with ordinary and with non-temporal stores ([`membench-stream-nt.c`](membench-stream-nt.c)), and a read-only pass ([`membench-readbw.c`](membench-readbw.c)), in rotated rounds behind a DIMM-temperature gate; run from a harness staged by [`../push-harness.sh`](../push-harness.sh) |
-| [`bios-set.sh`](bios-set.sh) | Run on the Mac: writes BIOS attributes over Redfish from UEFI Setup. The BMC refuses those writes (see [BIOS settings](#bios-settings)) |
+| [`bios-check.sh`](bios-check.sh) | Run on the Mac: reads BIOS attributes over Redfish and checks them against expected values ([changing a setting](#changing-a-bios-setting)) |
 
 ## Test records
 
@@ -76,8 +76,37 @@ Each measured alone on 2026-11-19 between two NPS1 baselines
 bandwidth, with each thread reading its own node's memory. Its passes vary: at the average
 pass time it reads 8–10% more than NPS1. APBDIS 1 and DF C-states disabled make no
 measurable difference (within 1.1%). The host runs NPS1, APBDIS Auto and DF C-states
-enabled. BIOS settings are changed in iKVM: the BMC refuses Redfish BIOS writes, in Setup
-too, and Redfish reads them back.
+enabled.
+
+### Changing a BIOS setting
+
+The BMC answers every Redfish BIOS write (PATCH `/redfish/v1/Systems/Self/Bios/SD`) with
+HTTP 500 and an HTML Lua trace, `[web.lua] Error in RequestHandler, thread: … is dead`, both
+while the OS runs and with the host in UEFI Setup. Settings change in iKVM, and Redfish reads
+them back:
+
+1. Shut down every guest. If more than one reboot follows, set `onboot` 0 on the guests that
+   start at boot, saving the old values to restore afterwards.
+2. `ssh pve 'ipmitool chassis bootdev bios options=efiboot && systemctl reboot'`: the next boot
+   stops in Setup.
+3. In iKVM (the BMC's web interface, Remote Control), change the setting, then F4 to save and
+   exit:
+
+   | Setting | Setup menu | Redfish attribute |
+   | --- | --- | --- |
+   | NUMA nodes per socket | Advanced → AMD CBS → DF Common Options → Memory Addressing | `CbsDfCmnDramNps` |
+   | APBDIS | Advanced → AMD CBS → NBIO Common Options → SMU Common Options | `CbsCmnApbdis` |
+   | Fixed SOC Pstate | the same, below APBDIS | `CbsCmnFixedSocPstate` |
+   | DF Cstates | the same | `CbsCmnGnbSMUDfCstates` |
+
+4. Once the host is up, `./bios-check.sh <attribute>=<value> ...` on the Mac exits non-zero if
+   the BIOS reports anything else. Run without arguments, it prints the four attributes above.
+   Check the GPU render nodes before starting the guests
+   ([after a DRM renumber](../README.md#recovering-after-a-drm-renumber)).
+
+The values are named after the attribute, such as `CbsDfCmnDramNpsNPS4`, `CbsCmnApbdis1` and
+`CbsCmnGnbSMUDfCstatesDisabled`. `bios-check.sh` reads the BMC login from a curl netrc file,
+`~/.config/bmc/romed8.netrc` by default (`BMC_NETRC`), mode 600 and outside the repository.
 
 ## DIMM thermal throttle
 
