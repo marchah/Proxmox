@@ -66,12 +66,12 @@ Left out:
 - STREAM validates its arrays after every run and `readbw` checks every pass's sum; a run that
   fails is left out. Each run starts with the hottest DIMM at or below 55 °C, and a run during
   which any DIMM reaches 66 °C, the
-  [bandwidth cap](../qwen38-flash-next/README.md#dimm-thermal-throttle), is left out.
+  [bandwidth cap](../host-memory/README.md#dimm-thermal-throttle), is left out.
 
 ## Method
 
 - Harness: this commit. `membench-kernels.sh` staged on the host with `../push-harness.sh`;
-  [`bios-set.sh`](../qwen38-flash-next/bios-set.sh) run on the Mac from a checkout of this
+  [`bios-set.sh`](../host-memory/bios-set.sh) run on the Mac from a checkout of this
   commit, with the BMC login in a mode-600 netrc file outside the repository.
 - `bios-set.sh` checks each name and value against the BIOS's attribute registry, sets a
   one-time boot into Setup with `ipmitool chassis bootdev bios`, reboots the host, writes the

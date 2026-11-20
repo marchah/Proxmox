@@ -4,7 +4,7 @@ Plan committed 2026-11-18 · Run 2026-11-18 · Status: done
 
 ## Question
 
-The [2026-10-08 STREAM run](../qwen38-flash-next/README.md#host-memory-bandwidth--2026-10-08)
+The [2026-10-08 STREAM run](../host-memory/README.md#bandwidth)
 reports Copy at 152.7 GB/s but Scale, Add and Triad at 97–107 GB/s on the same memory.
 GCC compiles STREAM's Copy loop to a `memcpy` call (confirmed on the host's binary), and
 glibc 2.41 copies anything over 12 MiB with non-temporal stores. The other three kernels
@@ -36,8 +36,8 @@ values last set at the console (2026-09-16).
 | --- | --- | --- | --- |
 | `stream-gcc` | `membench.sh`'s flags: `gcc -O3 -march=native -fopenmp -mcmodel=medium` | non-temporal (`memcpy`) | ordinary stores |
 | `stream-plain` | the same plus `-fno-tree-loop-distribute-patterns` | ordinary stores | ordinary stores |
-| `stream-nt` | the same with `-DTUNED` and [`membench-stream-nt.c`](../qwen38-flash-next/membench-stream-nt.c) | non-temporal | non-temporal |
-| `readbw` | [`membench-readbw.c`](../qwen38-flash-next/membench-readbw.c), same flags | read only: AVX2 loads summed into four accumulators | — |
+| `stream-nt` | the same with `-DTUNED` and [`membench-stream-nt.c`](../host-memory/membench-stream-nt.c) | non-temporal | non-temporal |
+| `readbw` | [`membench-readbw.c`](../host-memory/membench-readbw.c), same flags | read only: AVX2 loads summed into four accumulators | — |
 
 `membench-kernels.sh` checks each build's instructions before running and stops if one
 does not store the way its row says.
@@ -58,7 +58,7 @@ Left out:
   that fails validation is left out of the summary.
 - Each run starts with the hottest DIMM at or below 55 °C. The BMC's DIMM temperatures are
   sampled every 5 s; a run during which any DIMM reaches 66 °C, the
-  [bandwidth cap](../qwen38-flash-next/README.md#dimm-thermal-throttle), is left out.
+  [bandwidth cap](../host-memory/README.md#dimm-thermal-throttle), is left out.
 
 ## Method
 

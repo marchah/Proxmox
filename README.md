@@ -82,7 +82,7 @@ stream and about 80 t/s total at four concurrent streams. LM Studio on the same 
   generates ([rocm-ab/](pro-v620/rocm-ab/README.md)).
 - **Memory bandwidth depends on DIMM cooling.** STREAM Copy reaches 152.7 GB/s on all eight
   channels, 75% of the theoretical 204.8 GB/s, and drops to a third when a DIMM reaches 66 °C
-  ([memory bandwidth](pro-v620/qwen38-flash-next/README.md#host-memory-bandwidth--2026-10-08)).
+  ([memory bandwidth](pro-v620/host-memory/README.md#bandwidth)).
 - **The two cards are not interchangeable for measurements.** Under `llama-bench` (b11505,
   Mesa 26.2.4, 2026-10-08), GPU 2 ran Qwen3.6-35B-A3B 3.4–4.8% slower in prefill and 1.1–1.3%
   slower in decode, at about 115 MHz lower sclk with the same limits
@@ -110,7 +110,8 @@ stream and about 80 t/s total at four concurrent streams. LM Studio on the same 
 | Guide | Covers |
 | --- | --- |
 | [pro-v620/](pro-v620/README.md) | The V620s: passthrough, CT 120's provisioner and settings, recovery after a DRM renumber |
-| [qwen38-flash-next/](pro-v620/qwen38-flash-next/README.md) | Qwen3.8-Flash-Next: CPU/GPU placement, CT 123, the two-card alternative, memory bandwidth |
+| [qwen38-flash-next/](pro-v620/qwen38-flash-next/README.md) | Qwen3.8-Flash-Next: CPU/GPU placement, CT 123, the two-card alternative |
+| [host-memory/](pro-v620/host-memory/README.md) | The host's memory bandwidth, the BIOS settings that act on it, and the DIMM thermal throttle |
 | [strata/](pro-v620/strata/README.md) | The Strata engine on HIP (ROCm 10.0) beside llama.cpp in CT 123 |
 | [ds41/](pro-v620/ds41/README.md) | CT 125-127: DeepSeek-V4.1-Flash on Strata's engine, llama.cpp and Project Maya, and moving GPU 2 between containers |
 | [glm53-flash/](pro-v620/glm53-flash/README.md), [maya/](pro-v620/maya/README.md), [mimo-v26-pro/](pro-v620/mimo-v26-pro/README.md) | GLM-5.3-Flash and MiMo-V2.6-Pro-RL: tested, not deployed |

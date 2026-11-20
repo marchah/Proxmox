@@ -11,6 +11,8 @@ Use component READMEs for deployment commands, defaults, and measurements.
 - [pro-v620/](pro-v620/README.md): CT 120, GPU passthrough and Qwen3.6 serving.
 - [qwen38-flash-next/](pro-v620/qwen38-flash-next/README.md): CT 123 and the optional
   two-card CT 120 configuration, placement measurements and cutover procedure.
+- [host-memory/](pro-v620/host-memory/README.md): the host's memory bandwidth (STREAM,
+  read-only), the BIOS settings measured against it, and the DIMM thermal throttle.
 - [strata/](pro-v620/strata/README.md): the Strata engine (HIP, ROCm 10.0) in CT 123 beside
   llama.cpp for Flash-Next; `use-engine.sh` switches the unit and the watchdog map together.
 - [glm53-flash/](pro-v620/glm53-flash/README.md): GLM-5.3-Flash model notes and test
@@ -97,7 +99,7 @@ The ROMED8-2T has two V620s on CPU-direct Gen4 x16 slots:
   `ppl-determinism.sh`: repeated perplexity runs must be bit-identical.
   Confirm physical fan pairing after rewiring. The BMC manages CPU/DIMM cooling; its
   curve reaches 100% at 58 °C because the DIMMs cap memory bandwidth to a third at
-  66 °C. Even at full fan speed, sustained full-bandwidth load leaves about 1 °C. See the [memory bandwidth notes](pro-v620/qwen38-flash-next/README.md#dimm-thermal-throttle).
+  66 °C. Even at full fan speed, sustained full-bandwidth load leaves about 1 °C. See the [memory bandwidth notes](pro-v620/host-memory/README.md#dimm-thermal-throttle).
 - `pro-v620/amdgpu-lockup-timeout.sh` sets amdgpu's compute job timeout to 10 s (default
   2 s, after which the ring resets and Vulkan returns `ErrorDeviceLost`). GLM-5.3-Flash
   prompts past about 65k tokens need it; it applies after a host reboot.
